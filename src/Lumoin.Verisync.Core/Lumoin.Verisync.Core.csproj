@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Verisync.Core</RootNamespace>
+    <Description>Core primitives for Lumoin.Verisync: replica identity, causal contexts, version vectors, dot stores, and base CRDT shapes.</Description>
+  </PropertyGroup>
+
+</Project>

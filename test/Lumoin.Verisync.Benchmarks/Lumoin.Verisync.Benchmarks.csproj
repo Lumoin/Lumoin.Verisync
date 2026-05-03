@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+
+    <!--
+      BenchmarkDotNet generates and compiles benchmark host code at runtime
+      and uses reflection to invoke benchmark methods, so it is fundamentally
+      incompatible with AOT and trimming. The repository inherits
+      IsAotCompatible=true and EnableTrimAnalyzer=true from
+      Directory.Build.props for every project; opt out here.
+    -->
+    <IsAotCompatible>false</IsAotCompatible>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
+
+    <!--
+      Benchmark methods must be public, instance, and parameterless to be
+      discovered by BenchmarkDotNet, which conflicts with several analyzers
+      under AnalysisMode=All and TreatWarningsAsErrors=true. Suppress the
+      ones that fire on the canonical benchmark shape.
+
+      CA1707: Identifiers should not contain underscores. BDN convention
+              uses underscored parameter names in [Params]-driven reports.
+      CA1812: Avoid uninstantiated internal classes. Benchmark classes are
+              instantiated by BDN at runtime via reflection; the analyzer
+              cannot see that.
+      CA1822: Mark members as static. Benchmark methods must be instance
+              methods to be discoverable by BDN.
+      CA1849: Call async methods when in an async method. The benchmark
+              host code synchronously waits on async paths to obtain wall
+              time over the whole operation.
+    -->
+    <NoWarn>$(NoWarn);CA1707;CA1812;CA1822;CA1849</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Lumoin.Verisync.Core\Lumoin.Verisync.Core.csproj" />
+  </ItemGroup>
+
+</Project>

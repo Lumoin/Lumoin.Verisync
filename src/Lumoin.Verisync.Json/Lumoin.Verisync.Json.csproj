@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Verisync.Json</RootNamespace>
+    <Description>System.Text.Json serialization adapters for Lumoin.Verisync message channels. AOT-safe via source-generated JsonTypeInfo.</Description>
+    <!-- This project implements serialization, so it opts out of the serialization banlist. -->
+    <EnableSerializationBan>false</EnableSerializationBan>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Verisync.Core\Lumoin.Verisync.Core.csproj" />
+  </ItemGroup>
+
+</Project>
