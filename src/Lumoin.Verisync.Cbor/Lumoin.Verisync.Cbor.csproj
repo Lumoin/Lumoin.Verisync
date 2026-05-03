@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Verisync.Cbor</RootNamespace>
+    <Description>System.Formats.Cbor serialization adapters for Lumoin.Verisync message channels. Deterministic canonical CBOR for digest-stable encoding.</Description>
+    <!-- This project implements serialization, so it opts out of the serialization banlist. -->
+    <EnableSerializationBan>false</EnableSerializationBan>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Verisync.Core\Lumoin.Verisync.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Formats.Cbor" />
+  </ItemGroup>
+
+</Project>

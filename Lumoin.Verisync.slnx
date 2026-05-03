@@ -1,0 +1,26 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+    <File Path=".gitattributes" />
+    <File Path=".gitignore" />
+    <File Path="BannedSymbols.Serialization.txt" />
+    <File Path="BannedSymbols.txt" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="global.json" />
+    <File Path="LICENSE" />
+    <File Path="NuGet.config" />
+    <File Path="README.md" />
+    <File Path="spellcheckerexclusion.dic" />
+    <File Path="verify-packages.sh" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Lumoin.Verisync.Core/Lumoin.Verisync.Core.csproj" />
+    <Project Path="src/Lumoin.Verisync.Json/Lumoin.Verisync.Json.csproj" />
+    <Project Path="src/Lumoin.Verisync.Cbor/Lumoin.Verisync.Cbor.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/Lumoin.Verisync.Benchmarks/Lumoin.Verisync.Benchmarks.csproj" />
+    <Project Path="test/Lumoin.Verisync.Tests/Lumoin.Verisync.Tests.csproj" />
+  </Folder>
+</Solution>
