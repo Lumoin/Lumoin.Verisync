@@ -45,6 +45,10 @@ public sealed class GCounter: IEquatable<GCounter>
 
 
     /// <summary>Gets the counter value: the sum of every replica's sub-counter.</summary>
+    /// <exception cref="OverflowException">
+    /// Thrown when the sum of the sub-counters exceeds <see cref="int.MaxValue"/>. The total is computed
+    /// with checked arithmetic so an overflowing tally is reported rather than wrapping to a corrupt value.
+    /// </exception>
     public int Value => Counts.Values.Sum();
 
 
@@ -64,9 +68,17 @@ public sealed class GCounter: IEquatable<GCounter>
     /// <param name="amount">The positive amount to add. A grow-only counter never decreases.</param>
     /// <returns>A new <see cref="GCounter"/>; this counter is not modified.</returns>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="amount"/> is less than or equal to zero.</exception>
+    /// <exception cref="OverflowException">
+    /// Thrown when the increment would push <paramref name="replica"/>'s sub-counter past
+    /// <see cref="int.MaxValue"/>. The addition is checked so an overflow throws rather than wrapping: a
+    /// wrapped (smaller) sub-counter is permanently rejected by the element-wise max merge, which would
+    /// silently lose the increment and break monotonicity. This counter is not modified when the throw occurs.
+    /// </exception>
     public GCounter Increment(ReplicaId replica, int amount)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(amount, 0);
+
+        int next = checked((Counts.TryGetValue(replica, out int existing) ? existing : 0) + amount);
 
         var dict = new Dictionary<ReplicaId, int>(Counts.Count + 1);
         foreach(KeyValuePair<ReplicaId, int> entry in Counts)
@@ -74,7 +86,7 @@ public sealed class GCounter: IEquatable<GCounter>
             dict[entry.Key] = entry.Value;
         }
 
-        dict[replica] = (Counts.TryGetValue(replica, out int existing) ? existing : 0) + amount;
+        dict[replica] = next;
 
         return new GCounter(dict.ToFrozenDictionary());
     }
@@ -129,6 +141,17 @@ public sealed class GCounter: IEquatable<GCounter>
     /// <param name="state">The state to reconstruct from.</param>
     /// <returns>The reconstructed counter.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown if any entry has a negative count: a grow-only sub-counter is never negative, so no honest
+    /// history produces one and accepting it would corrupt the value and the max merge.
+    /// </exception>
+    /// <remarks>
+    /// Zero-count entries are filtered out: an absent replica already means zero, so a stored zero carries
+    /// no information. Keeping it would break the <see cref="Equals(GCounter)"/>/<see cref="GetHashCode"/>
+    /// contract, because <see cref="Equals(GCounter)"/> compares over the union of replicas treating absent
+    /// ones as zero while <see cref="GetHashCode"/> hashes only the stored entries — a stored zero would
+    /// equal a counter without it yet hash differently.
+    /// </remarks>
     public static GCounter FromState(GCounterState state)
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -136,6 +159,16 @@ public sealed class GCounter: IEquatable<GCounter>
         var dict = new Dictionary<ReplicaId, int>(state.Entries.Length);
         foreach(ReplicaCounterEntry entry in state.Entries)
         {
+            if(entry.Count < 0)
+            {
+                throw new ArgumentException("A grow-only counter entry cannot be negative.", nameof(state));
+            }
+
+            if(entry.Count == 0)
+            {
+                continue;
+            }
+
             dict[ReplicaId.FromSpan(entry.Replica.AsSpan())] = entry.Count;
         }
 

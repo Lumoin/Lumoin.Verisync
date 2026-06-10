@@ -171,23 +171,47 @@ public abstract class TaggedMemory: IDisposable, IEquatable<TaggedMemory>
 
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// Equality is over live byte content and therefore fails closed once disposed: comparing a disposed
+    /// instance throws <see cref="ObjectDisposedException"/> rather than reading recycled bytes or silently
+    /// succeeding. Equality of disposed sensitive memory is a use-after-clear bug in the caller, so it is
+    /// surfaced rather than masked — the same disposal guard as <see cref="AsReadOnlySpan"/> applies.
+    /// </remarks>
+    /// <exception cref="ObjectDisposedException">Thrown if this instance or <paramref name="other"/> has been disposed.</exception>
     [EditorBrowsable(EditorBrowsableState.Never)]
     public bool Equals([NotNullWhen(true)] TaggedMemory? other)
     {
-        return other is not null
-            && MemoryOwner.Memory.Span.SequenceEqual(other.MemoryOwner.Memory.Span);
+        ObjectDisposedException.ThrowIf(disposed, this);
+
+        if(other is null)
+        {
+            return false;
+        }
+
+        ObjectDisposedException.ThrowIf(other.disposed, other);
+
+        return MemoryOwner.Memory.Span.SequenceEqual(other.MemoryOwner.Memory.Span);
     }
 
 
     /// <inheritdoc/>
+    /// <exception cref="ObjectDisposedException">Thrown if this instance or <paramref name="obj"/> (when a <see cref="TaggedMemory"/>) has been disposed.</exception>
     [EditorBrowsable(EditorBrowsableState.Never)]
     public override bool Equals([NotNullWhen(true)] object? obj) => obj is TaggedMemory other && Equals(other);
 
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// Fails closed once disposed for the same reason as <see cref="Equals(TaggedMemory)"/>: the hash is over
+    /// live byte content, so a disposed instance throws <see cref="ObjectDisposedException"/> rather than
+    /// hashing recycled bytes.
+    /// </remarks>
+    /// <exception cref="ObjectDisposedException">Thrown if this instance has been disposed.</exception>
     [EditorBrowsable(EditorBrowsableState.Never)]
     public override int GetHashCode()
     {
+        ObjectDisposedException.ThrowIf(disposed, this);
+
         var hash = new HashCode();
         hash.AddBytes(MemoryOwner.Memory.Span);
 
@@ -196,11 +220,15 @@ public abstract class TaggedMemory: IDisposable, IEquatable<TaggedMemory>
 
 
     /// <summary>Determines whether two instances contain identical bytes.</summary>
+    /// <remarks>Throws <see cref="ObjectDisposedException"/> if either non-null operand has been disposed; see <see cref="Equals(TaggedMemory)"/>.</remarks>
+    /// <exception cref="ObjectDisposedException">Thrown if either non-null operand has been disposed.</exception>
     [EditorBrowsable(EditorBrowsableState.Never)]
     public static bool operator ==(TaggedMemory? left, TaggedMemory? right) => left is null ? right is null : left.Equals(right);
 
 
     /// <summary>Determines whether two instances differ in their bytes.</summary>
+    /// <remarks>Throws <see cref="ObjectDisposedException"/> if either non-null operand has been disposed; see <see cref="Equals(TaggedMemory)"/>.</remarks>
+    /// <exception cref="ObjectDisposedException">Thrown if either non-null operand has been disposed.</exception>
     [EditorBrowsable(EditorBrowsableState.Never)]
     public static bool operator !=(TaggedMemory? left, TaggedMemory? right) => !(left == right);
 

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using Lumoin.Verisync.Core;
 
@@ -97,9 +98,26 @@ internal sealed class RgaTests
 
         Rga<string> merged = withB.Merge(withC);
 
-        //After A: B has the higher counter (2) than C (1), so B sorts first.
-        string[] expected = ["A", "B", "C"];
+        //Truly concurrent inserts over the same observed state mint equal counters (both 2), so the
+        //replica id breaks the tie deterministically: R2 orders above R1.
+        string[] expected = ["A", "C", "B"];
         CollectionAssert.AreEqual(expected, merged.Values.ToArray());
+    }
+
+
+    [TestMethod]
+    public void InsertAfterPlacesValueImmediatelyAfterPredecessorAcrossReplicas()
+    {
+        //R1 builds A then B after A. R2 merges that state and inserts C after A: C's identity must
+        //dominate B's, or C would land behind B's whole subtree instead of immediately after A.
+        (Rga<string> withA, Dot idA) = Rga<string>.Empty.InsertAtHead("A", R1);
+        (Rga<string> withB, _) = withA.InsertAfter(idA, "B", R1);
+
+        (Rga<string> merged, _) = Rga<string>.Empty.Merge(withB).InsertAfter(idA, "C", R2);
+
+        string[] expected = ["A", "C", "B"];
+        CollectionAssert.AreEqual(expected, merged.Values.ToArray());
+        CollectionAssert.AreEqual(expected, withB.Merge(merged).Values.ToArray());
     }
 
 
@@ -137,6 +155,54 @@ internal sealed class RgaTests
 
         Assert.AreEqual(a, b);
     }
+
+
+    [TestMethod]
+    public void FromStateRejectsMissingPredecessor()
+    {
+        //A vertex points at a predecessor that is not itself a vertex.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        var vertex = new RgaVertexEntry<string>(Dot(R1, 1), Dot(R2, 9), "A");
+        var state = new RgaState<string>(context, [vertex], []);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsPredecessorCycle()
+    {
+        //Two vertices each name the other as predecessor: the order traversal never reaches a head.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 2)]);
+        var first = new RgaVertexEntry<string>(Dot(R1, 1), Dot(R1, 2), "A");
+        var second = new RgaVertexEntry<string>(Dot(R1, 2), Dot(R1, 1), "B");
+        var state = new RgaState<string>(context, [first, second], []);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateAcceptsUnknownTombstoneHarmlessly()
+    {
+        //A remove can be serialized separately from its vertex, so a tombstone for an absent dot is accepted
+        //and affects neither Values nor Count.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        var vertex = new RgaVertexEntry<string>(Dot(R1, 1), null, "A");
+        var state = new RgaState<string>(context, [vertex], [Dot(R2, 7)]);
+
+        Rga<string> reconstructed = Rga<string>.FromState(state);
+
+        Assert.AreEqual(1, reconstructed.Count);
+        string[] expected = ["A"];
+        CollectionAssert.AreEqual(expected, reconstructed.Values.ToArray());
+    }
+
+
+    private static DotState Dot(ReplicaId replica, int counter) => new(Bytes(replica), counter);
+
+
+    private static ImmutableArray<byte> Bytes(ReplicaId replica) => ImmutableArray.Create(replica.AsSpan());
 
 
     private static ReplicaId Replica(byte id)

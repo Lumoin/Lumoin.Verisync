@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using CsCheck;
 using Lumoin.Verisync.Core;
@@ -44,6 +45,59 @@ internal sealed class VerisyncMemoryPoolTests
 
         owner.Dispose();
         owner.Dispose();
+    }
+
+
+    [TestMethod]
+    public void OwnerConcurrentDoubleDisposeIsIdempotent()
+    {
+        using VerisyncMemoryPool<byte> pool = new();
+        IMemoryOwner<byte> owner = pool.Rent(8);
+
+        //A plain bool disposed flag let two threads both pass the guard, with the loser hitting the pool's
+        //double-return validation and surfacing InvalidOperationException out of Dispose. The Interlocked
+        //flag makes concurrent disposal a no-op for all but the first caller.
+        Parallel.Invoke(owner.Dispose, owner.Dispose);
+    }
+
+
+    [TestMethod]
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Rent throws on the oversized-slab check before any owner or backing array is created, so there is nothing to dispose.")]
+    public void RentRejectsOversizedBuffer()
+    {
+        using VerisyncMemoryPool<byte> pool = new();
+
+        //The default strategy allocates a slab of bufferSize * 4 elements for large buffers; int.MaxValue * 4
+        //overflows int range, so the slab constructor must reject it with a clear ArgumentOutOfRangeException
+        //before attempting any allocation rather than wrapping into a confusing OverflowException or a later
+        //ArraySegment ArgumentException.
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => pool.Rent(int.MaxValue));
+    }
+
+
+    [TestMethod]
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Rent throws on the oversized-slab check before any owner is created; the assertion verifies the activity left behind is stopped.")]
+    public void OversizedRentLeavesNoUnstoppedActivity()
+    {
+        Activity? captured = null;
+        using ActivityListener listener = new()
+        {
+            ShouldListenTo = source => source.Name == VerisyncActivitySource.Name,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStarted = activity => captured = activity
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        using VerisyncMemoryPool<byte> pool = new();
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => pool.Rent(int.MaxValue));
+
+        //The rental span is started before slab construction, so a throwing rent must stop and dispose it
+        //rather than leaking an open activity. A disposed activity is detached from Activity.Current and
+        //carries the Error status the catch path stamped on it.
+        Assert.IsNotNull(captured);
+        Assert.IsNull(Activity.Current);
+        Assert.AreEqual(ActivityStatusCode.Error, captured.Status);
     }
 
 

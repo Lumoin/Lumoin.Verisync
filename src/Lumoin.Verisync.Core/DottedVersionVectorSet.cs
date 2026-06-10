@@ -183,6 +183,13 @@ public sealed class DottedVersionVectorSet<T>: IEquatable<DottedVersionVectorSet
     /// <param name="state">The state to reconstruct from.</param>
     /// <returns>The reconstructed set.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown if any dot violates the maintained invariant that the context dominates the set's own dots: a
+    /// dot counter must be at least one (a dot is minted by advancing the context past zero) and must not
+    /// exceed the context entry for its replica (every retained dot is an event the context has observed).
+    /// No honest history produces a dot outside this range, and accepting one would let a later merge fail
+    /// to dominate the dot and so misjudge whether the value was observed and dropped.
+    /// </exception>
     public static DottedVersionVectorSet<T> FromState(DottedVersionVectorSetState<T> state)
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -191,8 +198,18 @@ public sealed class DottedVersionVectorSet<T>: IEquatable<DottedVersionVectorSet
         var dict = new Dictionary<Dot, T>(state.Entries.Length);
         foreach(DottedEntry<T> entry in state.Entries)
         {
-            var dot = new Dot(ReplicaId.FromSpan(entry.Replica.AsSpan()), entry.Counter);
-            dict[dot] = entry.Value;
+            if(entry.Counter < 1)
+            {
+                throw new ArgumentException("A dot counter must be at least one.", nameof(state));
+            }
+
+            ReplicaId replica = ReplicaId.FromSpan(entry.Replica.AsSpan());
+            if(entry.Counter > context[replica])
+            {
+                throw new ArgumentException("A dot counter cannot exceed its replica's context entry.", nameof(state));
+            }
+
+            dict[new Dot(replica, entry.Counter)] = entry.Value;
         }
 
         return new DottedVersionVectorSet<T>(context, dict.ToFrozenDictionary());

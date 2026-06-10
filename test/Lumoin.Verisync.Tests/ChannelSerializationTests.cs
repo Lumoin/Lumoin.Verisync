@@ -1,8 +1,11 @@
+using System.Buffers;
 using System.Collections.Generic;
 using System.Formats.Cbor;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Lumoin.Verisync.Cbor;
 using Lumoin.Verisync.Core;
@@ -81,6 +84,58 @@ internal sealed class ChannelSerializationTests
         await writeTask.ConfigureAwait(false);
 
         CollectionAssert.AreEqual(Messages, received);
+    }
+
+
+    [TestMethod]
+    public void JsonDeserializerRejectsLiteralNullPayload()
+    {
+        //A channel message is never null. The JSON literal "null" deserializes to a null reference, which
+        //the deserializer must reject rather than smuggle through the null-forgiving operator.
+        Assert.ThrowsExactly<JsonException>(() => DeserializeJson("null"));
+    }
+
+
+    [TestMethod]
+    public void JsonDeserializerRejectsTrailingObject()
+    {
+        //A valid message followed by a second value is two tokens; allowing it would let distinct byte
+        //sequences decode to the same message, breaking canonical-bytes assumptions. Reading the trailing
+        //token surfaces a JsonReaderException, which derives from JsonException.
+        Assert.Throws<JsonException>(() => DeserializeJson("""{"Sequence":1,"Payload":"one"}{"""));
+    }
+
+
+    [TestMethod]
+    public void JsonDeserializerRejectsTrailingNumber()
+    {
+        Assert.Throws<JsonException>(() => DeserializeJson("""{"Sequence":1,"Payload":"one"}1"""));
+    }
+
+
+    [TestMethod]
+    public void JsonDeserializerRejectsTrailingValueAfterWhitespace()
+    {
+        Assert.Throws<JsonException>(() => DeserializeJson("""{"Sequence":1,"Payload":"one"}   {}"""));
+    }
+
+
+    [TestMethod]
+    public void JsonDeserializerAcceptsTrailingWhitespace()
+    {
+        //Insignificant whitespace after the value is legal JSON and Utf8JsonReader skips it, so the message
+        //still deserializes.
+        SampleMessage message = DeserializeJson("""{"Sequence":1,"Payload":"one"}   """ + "\r\n\t");
+
+        Assert.AreEqual(new SampleMessage(1, "one"), message);
+    }
+
+
+    private static SampleMessage DeserializeJson(string json)
+    {
+        DeserializeMessageDelegate<SampleMessage> deserialize = JsonChannelSerialization.CreateDeserializer(SampleJsonContext.Default.SampleMessage);
+
+        return deserialize(new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(json)));
     }
 
 

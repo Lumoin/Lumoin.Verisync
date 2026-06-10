@@ -21,6 +21,14 @@ namespace Lumoin.Verisync.Core;
 /// distinct current dots, the dot is cleared; retaining concurrent siblings is the responsibility of a
 /// dotted-version-vector <em>set</em>, introduced with the observed-remove set in a later wave.
 /// </para>
+/// <para>
+/// Because of that clearing rule, only the <see cref="Context"/> is a join-semilattice. The dot
+/// component is not associative: re-merging a state whose dot was already incorporated can bring a
+/// cleared dot back, so replicas that received the same states in different orders converge on
+/// <see cref="Context"/> but may disagree on <see cref="Dot"/> indefinitely. Do not build replicated
+/// decisions on <see cref="Dot"/> after gossip; treat it as a local hint. Convergent
+/// concurrent-value tracking lives in <see cref="DottedVersionVectorSet{TValue}"/>.
+/// </para>
 /// </remarks>
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
 public sealed class DottedVersionVector: IEquatable<DottedVersionVector>

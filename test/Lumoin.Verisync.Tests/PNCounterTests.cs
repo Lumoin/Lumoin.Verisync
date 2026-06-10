@@ -166,6 +166,18 @@ internal sealed class PNCounterTests
     }
 
 
+    [TestMethod]
+    public void IncrementInheritsGCounterOverflowGuard()
+    {
+        //PNCounter wraps two GCounters, so the checked-arithmetic guard carries over to its increment half.
+        PNCounter atMax = PNCounter.Empty.Increment(R1, int.MaxValue);
+
+        Assert.ThrowsExactly<OverflowException>(() => atMax.Increment(R1, 1));
+
+        Assert.AreEqual(int.MaxValue, atMax.Value);
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

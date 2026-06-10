@@ -74,7 +74,7 @@ internal sealed class FastProposerTests
             runTasks[i] = nodes[i].RunAsync(
                 requests.Reader.ReadAllAsync(TestContext.CancellationToken),
                 (reply, token) => replies.Writer.WriteAsync(reply, token),
-                TestContext.CancellationToken);
+                cancellationToken: TestContext.CancellationToken);
 
             endpoints[i] = async (request, token) =>
             {

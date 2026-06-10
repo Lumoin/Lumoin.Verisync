@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using Lumoin.Verisync.Core;
 
@@ -112,6 +113,43 @@ internal sealed class GCounterTests
 
         Assert.AreNotEqual(a, b);
     }
+
+
+    [TestMethod]
+    public void IncrementThrowsOnOverflowAndLeavesOriginalUnchanged()
+    {
+        GCounter atMax = GCounter.Empty.Increment(R1, int.MaxValue);
+
+        Assert.ThrowsExactly<OverflowException>(() => atMax.Increment(R1, 1));
+
+        //Immutability means the throw cannot have altered the receiver; assert it explicitly.
+        Assert.AreEqual(int.MaxValue, atMax.Value);
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsNegativeCount()
+    {
+        var state = new GCounterState([new ReplicaCounterEntry(Bytes(R1), -1)]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => GCounter.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateFiltersZeroCountEntry()
+    {
+        //A stored zero must be dropped so the result equals one built without the entry and hashes identically.
+        var withZero = new GCounterState([new ReplicaCounterEntry(Bytes(R1), 3), new ReplicaCounterEntry(Bytes(R2), 0)]);
+        GCounter reconstructed = GCounter.FromState(withZero);
+        GCounter expected = GCounter.Empty.Increment(R1, 3);
+
+        Assert.AreEqual(expected, reconstructed);
+        Assert.AreEqual(expected.GetHashCode(), reconstructed.GetHashCode());
+    }
+
+
+    private static ImmutableArray<byte> Bytes(ReplicaId replica) => ImmutableArray.Create(replica.AsSpan());
 
 
     private static ReplicaId Replica(byte id)

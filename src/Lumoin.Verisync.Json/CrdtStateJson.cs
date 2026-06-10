@@ -169,7 +169,7 @@ public static class CrdtStateJson
                 root.GetProperty("utcTicks").GetInt64(),
                 writerElement.ValueKind == JsonValueKind.Null
                     ? ImmutableArray<byte>.Empty
-                    : FromHex(writerElement.GetString()!));
+                    : ReadReplicaBytes(writerElement.GetString()!));
         };
     }
 
@@ -425,9 +425,13 @@ public static class CrdtStateJson
         ImmutableArray<ReplicaCounterEntry>.Builder entries = ImmutableArray.CreateBuilder<ReplicaCounterEntry>(entriesElement.GetArrayLength());
         foreach(JsonElement entry in entriesElement.EnumerateArray())
         {
-            entries.Add(new ReplicaCounterEntry(
-                FromHex(entry.GetProperty("replica").GetString()!),
-                entry.GetProperty("count").GetInt32()));
+            int count = entry.GetProperty("count").GetInt32();
+            if(count < 0)
+            {
+                throw new JsonException($"A replica counter cannot be negative, got {count}.");
+            }
+
+            entries.Add(new ReplicaCounterEntry(ReadReplicaBytes(entry.GetProperty("replica").GetString()!), count));
         }
 
         return entries.ToImmutable();
@@ -463,8 +467,8 @@ public static class CrdtStateJson
         foreach(JsonElement entry in entriesElement.EnumerateArray())
         {
             entries.Add(new DottedEntry<TValue>(
-                FromHex(entry.GetProperty("replica").GetString()!),
-                entry.GetProperty("counter").GetInt32(),
+                ReadReplicaBytes(entry.GetProperty("replica").GetString()!),
+                ReadDotCounter(entry),
                 readValue(entry.GetProperty("value"))));
         }
 
@@ -486,14 +490,43 @@ public static class CrdtStateJson
     private static DotState ReadDotState(JsonElement element)
     {
         return new DotState(
-            FromHex(element.GetProperty("replica").GetString()!),
-            element.GetProperty("counter").GetInt32());
+            ReadReplicaBytes(element.GetProperty("replica").GetString()!),
+            ReadDotCounter(element));
     }
 
 
-    private static ImmutableArray<byte> FromHex(string hex)
+    private static int ReadDotCounter(JsonElement element)
     {
+        int counter = element.GetProperty("counter").GetInt32();
+        if(counter < 1)
+        {
+            throw new JsonException($"A dot counter is at least one, got {counter}.");
+        }
+
+        return counter;
+    }
+
+
+    private static ImmutableArray<byte> ReadReplicaBytes(string hex)
+    {
+        //The payload may come from an untrusted peer; the hex and the decoded length are validated
+        //before the bytes are allowed to act as a replica identity.
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromHexString(hex);
+        }
+        catch(FormatException exception)
+        {
+            throw new JsonException("A replica id must be hex-encoded.", exception);
+        }
+
+        if(bytes.Length != ReplicaId.Size)
+        {
+            throw new JsonException($"A replica id must be {ReplicaId.Size} bytes, got {bytes.Length}.");
+        }
+
         //The decoded array is fresh and never aliased, so wrapping it without a copy is safe.
-        return ImmutableCollectionsMarshal.AsImmutableArray(Convert.FromHexString(hex));
+        return ImmutableCollectionsMarshal.AsImmutableArray(bytes);
     }
 }

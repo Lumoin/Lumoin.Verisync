@@ -47,6 +47,16 @@ internal sealed class BallotTests
     }
 
 
+    [TestMethod]
+    public void RejectsRoundBelowOne()
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new Ballot(0, R1));
+
+        //A negative round, as an overflowed counter would produce, must be rejected at construction.
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new Ballot(-1, R1));
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

@@ -59,15 +59,56 @@ public sealed class VectorClock: IEquatable<VectorClock>
     /// </summary>
     /// <param name="replica">The replica whose counter to advance.</param>
     /// <returns>A new <see cref="VectorClock"/>; this clock is not modified.</returns>
+    /// <exception cref="OverflowException">
+    /// Thrown when the increment would push <paramref name="replica"/>'s counter past
+    /// <see cref="int.MaxValue"/>. The addition is checked so an overflow throws rather than wrapping: these
+    /// dot counters feed <see cref="Rga{TValue}"/> and the dotted-version-vector types, and a wrapped
+    /// (smaller) counter would corrupt causality and the element-wise max merge. This clock is not modified
+    /// when the throw occurs.
+    /// </exception>
     public VectorClock Increment(ReplicaId replica)
     {
+        int next = checked((Counts.TryGetValue(replica, out int existing) ? existing : 0) + 1);
+
         var dict = new Dictionary<ReplicaId, int>(Counts.Count + 1);
         foreach(KeyValuePair<ReplicaId, int> entry in Counts)
         {
             dict[entry.Key] = entry.Value;
         }
 
-        dict[replica] = (Counts.TryGetValue(replica, out int existing) ? existing : 0) + 1;
+        dict[replica] = next;
+
+        return new VectorClock(dict.ToFrozenDictionary());
+    }
+
+
+    /// <summary>
+    /// Returns a new clock with <paramref name="replica"/>'s counter advanced to one more than the
+    /// largest counter in the clock, Lamport-style, so the new event's counter exceeds every counter
+    /// this clock has observed.
+    /// </summary>
+    /// <param name="replica">The replica whose counter to advance.</param>
+    /// <returns>A new <see cref="VectorClock"/>; this clock is not modified.</returns>
+    /// <exception cref="OverflowException">
+    /// Thrown when one more than the largest counter exceeds <see cref="int.MaxValue"/>. The addition is
+    /// checked so an overflow throws rather than wrapping: these dot counters feed <see cref="Rga{TValue}"/>
+    /// and the dotted-version-vector types, and a wrapped (smaller) counter would corrupt causality and the
+    /// element-wise max merge. This clock is not modified when the throw occurs.
+    /// </exception>
+    public VectorClock IncrementPastAll(ReplicaId replica)
+    {
+        var dict = new Dictionary<ReplicaId, int>(Counts.Count + 1);
+        int largest = 0;
+        foreach(KeyValuePair<ReplicaId, int> entry in Counts)
+        {
+            dict[entry.Key] = entry.Value;
+            if(entry.Value > largest)
+            {
+                largest = entry.Value;
+            }
+        }
+
+        dict[replica] = checked(largest + 1);
 
         return new VectorClock(dict.ToFrozenDictionary());
     }
@@ -165,6 +206,17 @@ public sealed class VectorClock: IEquatable<VectorClock>
     /// <param name="state">The state to reconstruct from.</param>
     /// <returns>The reconstructed clock.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown if any entry has a negative count: a clock counter only ever increases from zero, so no honest
+    /// history produces a negative counter and accepting it would corrupt causality and the max merge.
+    /// </exception>
+    /// <remarks>
+    /// Zero-count entries are filtered out: an absent replica already has a counter of zero, so a stored
+    /// zero carries no information. Keeping it would break the <see cref="Equals(VectorClock)"/>/
+    /// <see cref="GetHashCode"/> contract, because <see cref="Equals(VectorClock)"/> compares over the union
+    /// of replicas treating absent ones as zero while <see cref="GetHashCode"/> hashes only the stored
+    /// entries — a stored zero would equal a clock without it yet hash differently.
+    /// </remarks>
     public static VectorClock FromState(VectorClockState state)
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -172,6 +224,16 @@ public sealed class VectorClock: IEquatable<VectorClock>
         var dict = new Dictionary<ReplicaId, int>(state.Entries.Length);
         foreach(ReplicaCounterEntry entry in state.Entries)
         {
+            if(entry.Count < 0)
+            {
+                throw new ArgumentException("A vector clock entry cannot be negative.", nameof(state));
+            }
+
+            if(entry.Count == 0)
+            {
+                continue;
+            }
+
             dict[ReplicaId.FromSpan(entry.Replica.AsSpan())] = entry.Count;
         }
 

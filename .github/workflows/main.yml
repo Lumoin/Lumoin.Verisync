@@ -124,8 +124,8 @@ jobs:
     - name: Restore local .NET tools
       run: dotnet tool restore
 
-    # Compute the package version once per leg. The rules mirror the Verifiable /
-    # Veridical / Veritas convention so consumers comparing the repositories see one
+    # Compute the package version once per leg. The rules follow the sibling
+    # repositories' shared convention so consumers comparing them see one
     # version-numbering style:
     #   release         -> "<tag>+<sha7>"        (e.g. 1.2.0+ab12cd3)
     #   develop branch  -> "<tag>-develop.<run>+<sha7>"

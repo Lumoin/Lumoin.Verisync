@@ -52,16 +52,31 @@ public sealed class FastProposer<TValue>
     /// <param name="fastBallot">The fast-round ballot. Must be a fast ballot.</param>
     /// <param name="value">The value to propose.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
+    /// <param name="next">
+    /// An optional fast ballot to piggyback on the accept. Each acceptor that accepts also raises its promise
+    /// to <paramref name="next"/>, establishing the next fast round on that acceptor so a subsequent
+    /// <see cref="TryFastWriteAsync"/> at <paramref name="next"/> can blind-write without a prepare.
+    /// </param>
     /// <returns>The number of acceptors that accepted and whether that is a fast quorum.</returns>
     /// <exception cref="ArgumentException">Thrown if <paramref name="fastBallot"/> is not a fast ballot.</exception>
-    public async Task<(int AcceptedCount, bool IsCommitted)> TryFastWriteAsync(FastBallot fastBallot, TValue value, CancellationToken cancellationToken)
+    /// <remarks>
+    /// A failed fast write is retried with the <em>same</em> fast ballot and value — acceptors treat the
+    /// exact (ballot, value) retry idempotently — or completed through <see cref="RecoverAsync"/>. Acceptors
+    /// reject fast ballots above their promise, so a higher fast round cannot be used to retry: a fast round
+    /// is blind-writable only once it has been established, either as the pre-promised initial round or by a
+    /// preceding accept that piggybacked it as its <paramref name="next"/> ballot. Piggybacking a next fast
+    /// ballot is a liveness optimization: a subsequent <see cref="TryFastWriteAsync"/> at that ballot succeeds
+    /// on the acceptors that saw the raise, but safety never depends on how many did — an acceptor that missed
+    /// the piggyback simply rejects the next fast write, which then falls back to recovery.
+    /// </remarks>
+    public async Task<(int AcceptedCount, bool IsCommitted)> TryFastWriteAsync(FastBallot fastBallot, TValue value, CancellationToken cancellationToken, FastBallot? next = null)
     {
         if(!fastBallot.IsFast)
         {
             throw new ArgumentException("A fast write requires a fast ballot.", nameof(fastBallot));
         }
 
-        ConsensusReply<TValue>?[] replies = await RequestAllAsync(new AcceptRequest<TValue>(fastBallot, value), cancellationToken).ConfigureAwait(false);
+        ConsensusReply<TValue>?[] replies = await RequestAllAsync(new AcceptRequest<TValue>(fastBallot, value, next), cancellationToken).ConfigureAwait(false);
 
         int accepted = CountAccepts(replies);
 
@@ -77,10 +92,20 @@ public sealed class FastProposer<TValue>
     /// <param name="classicBallot">The classic recovery ballot. Must be a proposer-owned (non-fast) ballot.</param>
     /// <param name="update">The change function applied to the recovered value.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
+    /// <param name="next">
+    /// An optional fast ballot to piggyback on the final accept. Each acceptor that accepts the recovered value
+    /// also raises its promise to <paramref name="next"/>, establishing that fast round so a following
+    /// <see cref="TryFastWriteAsync"/> at <paramref name="next"/> can blind-write — letting a recovery hand off
+    /// straight back to the coordinator-free fast path.
+    /// </param>
     /// <returns>The change outcome.</returns>
     /// <exception cref="ArgumentException">Thrown if <paramref name="classicBallot"/> is a fast ballot.</exception>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="update"/> is <see langword="null"/>.</exception>
-    public async Task<ChangeOutcome<TValue>> RecoverAsync(FastBallot classicBallot, Func<TValue?, TValue> update, CancellationToken cancellationToken)
+    /// <remarks>
+    /// Piggybacking a next fast ballot is a liveness optimization: a subsequent <see cref="TryFastWriteAsync"/>
+    /// at that ballot succeeds on the acceptors that saw the raise, but safety never depends on how many did.
+    /// </remarks>
+    public async Task<ChangeOutcome<TValue>> RecoverAsync(FastBallot classicBallot, Func<TValue?, TValue> update, CancellationToken cancellationToken, FastBallot? next = null)
     {
         if(classicBallot.IsFast)
         {
@@ -120,7 +145,7 @@ public sealed class FastProposer<TValue>
         }
 
         TValue newValue = update(recovered);
-        ConsensusReply<TValue>?[] acceptReplies = await RequestAllAsync(new AcceptRequest<TValue>(classicBallot, newValue), cancellationToken).ConfigureAwait(false);
+        ConsensusReply<TValue>?[] acceptReplies = await RequestAllAsync(new AcceptRequest<TValue>(classicBallot, newValue, next), cancellationToken).ConfigureAwait(false);
 
         int accepts = CountAccepts(acceptReplies);
 

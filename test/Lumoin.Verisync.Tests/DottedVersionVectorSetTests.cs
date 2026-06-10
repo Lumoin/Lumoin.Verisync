@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using Lumoin.Verisync.Core;
 
@@ -102,6 +103,42 @@ internal sealed class DottedVersionVectorSetTests
 
         Assert.AreEqual(a, b);
     }
+
+
+    [TestMethod]
+    public void FromStateRejectsDotAboveItsContextEntry()
+    {
+        //Context observes R1 up to 1, but a dot claims counter 2: the context cannot dominate it.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        var state = new DottedVersionVectorSetState<string>(context, [new DottedEntry<string>(Bytes(R1), 2, "a")]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => DottedVersionVectorSet<string>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsZeroCounterDot()
+    {
+        //A dot is minted by advancing the context past zero, so a zero counter never occurs honestly.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        var state = new DottedVersionVectorSetState<string>(context, [new DottedEntry<string>(Bytes(R1), 0, "a")]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => DottedVersionVectorSet<string>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateAcceptsHonestRoundTrip()
+    {
+        DottedVersionVectorSet<string> set = DottedVersionVectorSet<string>.Empty.Add(R1, "a").Add(R2, "b");
+
+        DottedVersionVectorSet<string> back = DottedVersionVectorSet<string>.FromState(set.ToState());
+
+        Assert.AreEqual(set, back);
+    }
+
+
+    private static ImmutableArray<byte> Bytes(ReplicaId replica) => ImmutableArray.Create(replica.AsSpan());
 
 
     private static ReplicaId Replica(byte id)

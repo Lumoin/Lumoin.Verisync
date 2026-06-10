@@ -66,6 +66,99 @@ internal sealed class InterleavedClusterTests
 
 
     [TestMethod]
+    public async Task WritersLinearizeWhenRequestsAreDuplicated()
+    {
+        //Retransmitted requests land on acceptors after the proposer has moved on — the histories where a
+        //stale accept could overwrite newer state if the acceptor's promise did not rise with each accept.
+        for(int seed = 1; seed <= 30; seed++)
+        {
+            InterleavedCluster<string> cluster = new(5, seed)
+            {
+                RequestDuplicationPercent = 25
+            };
+
+            Task<RegisterOperation[]>[] writers =
+            [
+                RunWriterAsync(cluster, Replica(1), 'A', 'B', TestContext.CancellationToken),
+                RunWriterAsync(cluster, Replica(2), 'C', 'D', TestContext.CancellationToken),
+                RunWriterAsync(cluster, Replica(3), 'E', 'F', TestContext.CancellationToken)
+            ];
+
+            cluster.RunToQuiescence();
+            RegisterOperation[][] results = await Task.WhenAll(writers).ConfigureAwait(false);
+            string finalValue = await ReadFinalAsync(cluster, TestContext.CancellationToken).ConfigureAwait(false);
+
+            List<RegisterOperation> history = [.. results.SelectMany(operations => operations)];
+            Assert.HasCount(6, history);
+            AppendRegisterChecker.AssertLinearizable(history, finalValue);
+        }
+    }
+
+
+    [TestMethod]
+    public async Task FastPathWritersLinearizeUnderContentionAndDuplication()
+    {
+        //Both writers race the leaderless fast path for their first append — at most one can fast-commit,
+        //the other falls back to classic recovery, and a failed fast write's value may still be resurrected
+        //by the rival's recovery tally. The idempotent append plus the checker verify every resolution.
+        for(int seed = 1; seed <= 30; seed++)
+        {
+            InterleavedCluster<string> cluster = new(5, seed)
+            {
+                RequestDuplicationPercent = 25
+            };
+
+            Task<RegisterOperation[]>[] writers =
+            [
+                RunFastFirstWriterAsync(cluster, Replica(1), 'A', 'B', TestContext.CancellationToken),
+                RunFastFirstWriterAsync(cluster, Replica(2), 'C', 'D', TestContext.CancellationToken)
+            ];
+
+            cluster.RunToQuiescence();
+            RegisterOperation[][] results = await Task.WhenAll(writers).ConfigureAwait(false);
+            string finalValue = await ReadFinalAsync(cluster, TestContext.CancellationToken).ConfigureAwait(false);
+
+            List<RegisterOperation> history = [.. results.SelectMany(operations => operations)];
+            Assert.HasCount(4, history);
+            AppendRegisterChecker.AssertLinearizable(history, finalValue);
+        }
+    }
+
+
+    [TestMethod]
+    public async Task PiggybackFastPathWritersLinearizeUnderContentionAndDuplication()
+    {
+        //Each writer chains its two appends on the leaderless fast path: the first fast write piggybacks
+        //fast(2) so the second can blind-write at fast(2) without a prepare — the recurring fast round. Under
+        //contention at most one writer wins the fast(1) round and reaches fast(2); the rival and every
+        //failed fast write fall back to classic recovery. With requests duplicated, a stale piggybacked
+        //accept can land after newer ballots, so the run only linearizes if the promise rises with every
+        //accept and the equality rule keeps an un-established fast round un-writable.
+        for(int seed = 1; seed <= 30; seed++)
+        {
+            InterleavedCluster<string> cluster = new(5, seed)
+            {
+                RequestDuplicationPercent = 25
+            };
+
+            Task<RegisterOperation[]>[] writers =
+            [
+                RunPiggybackFastWriterAsync(cluster, Replica(1), 'A', 'B', TestContext.CancellationToken),
+                RunPiggybackFastWriterAsync(cluster, Replica(2), 'C', 'D', TestContext.CancellationToken)
+            ];
+
+            cluster.RunToQuiescence();
+            RegisterOperation[][] results = await Task.WhenAll(writers).ConfigureAwait(false);
+            string finalValue = await ReadFinalAsync(cluster, TestContext.CancellationToken).ConfigureAwait(false);
+
+            List<RegisterOperation> history = [.. results.SelectMany(operations => operations)];
+            Assert.HasCount(4, history);
+            AppendRegisterChecker.AssertLinearizable(history, finalValue);
+        }
+    }
+
+
+    [TestMethod]
     public async Task WritersLinearizeWhenAMinorityIsPartitioned()
     {
         for(int seed = 1; seed <= 10; seed++)
@@ -209,9 +302,66 @@ internal sealed class InterleavedClusterTests
     }
 
 
-    private static async Task<RegisterOperation> AppendAsync(InterleavedCluster<string> cluster, FastProposer<string> proposer, ReplicaId writer, char label, Func<int> nextRound, CancellationToken cancellationToken)
+    private static async Task<RegisterOperation[]> RunFastFirstWriterAsync(InterleavedCluster<string> cluster, ReplicaId writer, char firstLabel, char secondLabel, CancellationToken cancellationToken)
     {
+        FastProposer<string> proposer = cluster.CreateProposer();
+        int round = 0;
+
+        //The first append races the leaderless fast path; when the fast round is contended away, the
+        //append completes through classic recovery like any other write.
         long invoked = cluster.Tick();
+        (_, bool committed) = await proposer.TryFastWriteAsync(FastBallot.Fast(1), firstLabel.ToString(), cancellationToken).ConfigureAwait(false);
+        RegisterOperation first = committed
+            ? new RegisterOperation(firstLabel, invoked, cluster.Tick(), "", firstLabel.ToString())
+            : await AppendAsync(cluster, proposer, writer, firstLabel, NextRound, cancellationToken, invoked).ConfigureAwait(false);
+        RegisterOperation second = await AppendAsync(cluster, proposer, writer, secondLabel, NextRound, cancellationToken).ConfigureAwait(false);
+
+        return [first, second];
+
+        int NextRound() => ++round;
+    }
+
+
+    private static async Task<RegisterOperation[]> RunPiggybackFastWriterAsync(InterleavedCluster<string> cluster, ReplicaId writer, char firstLabel, char secondLabel, CancellationToken cancellationToken)
+    {
+        FastProposer<string> proposer = cluster.CreateProposer();
+        int round = 0;
+
+        //The first append races the leaderless fast path and piggybacks fast(2): a successful accept raises
+        //each acceptor's promise to fast(2), establishing the next fast round. At most one writer wins the
+        //fast(1) round, so only that writer's own bare label is the whole register here.
+        long firstInvoked = cluster.Tick();
+        (_, bool firstCommitted) = await proposer.TryFastWriteAsync(FastBallot.Fast(1), firstLabel.ToString(), cancellationToken, FastBallot.Fast(2)).ConfigureAwait(false);
+        if(!firstCommitted)
+        {
+            //The fast round was contended away; both appends complete through classic recovery like any other write.
+            RegisterOperation recoveredFirst = await AppendAsync(cluster, proposer, writer, firstLabel, NextRound, cancellationToken, firstInvoked).ConfigureAwait(false);
+            RegisterOperation recoveredSecond = await AppendAsync(cluster, proposer, writer, secondLabel, NextRound, cancellationToken).ConfigureAwait(false);
+
+            return [recoveredFirst, recoveredSecond];
+        }
+
+        RegisterOperation first = new(firstLabel, firstInvoked, cluster.Tick(), "", firstLabel.ToString());
+
+        //The second append blind-writes at the established fast(2) round. The winner built the chain itself,
+        //so its observed prefix is exactly the first label and the value written is the two-label chain. When
+        //the recurring fast round loses its quorum, it falls back to recovery, which reads the live value.
+        long secondInvoked = cluster.Tick();
+        string chain = string.Concat(firstLabel, secondLabel);
+        (_, bool secondCommitted) = await proposer.TryFastWriteAsync(FastBallot.Fast(2), chain, cancellationToken).ConfigureAwait(false);
+        RegisterOperation second = secondCommitted
+            ? new RegisterOperation(secondLabel, secondInvoked, cluster.Tick(), firstLabel.ToString(), chain)
+            : await AppendAsync(cluster, proposer, writer, secondLabel, NextRound, cancellationToken, secondInvoked).ConfigureAwait(false);
+
+        return [first, second];
+
+        int NextRound() => ++round;
+    }
+
+
+    private static async Task<RegisterOperation> AppendAsync(InterleavedCluster<string> cluster, FastProposer<string> proposer, ReplicaId writer, char label, Func<int> nextRound, CancellationToken cancellationToken, long? invokedAt = null)
+    {
+        long invoked = invokedAt ?? cluster.Tick();
         for(int attempt = 0; attempt < MaxAttempts; attempt++)
         {
             string? observed = null;
