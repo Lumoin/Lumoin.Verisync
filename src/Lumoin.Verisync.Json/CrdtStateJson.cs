@@ -376,6 +376,360 @@ public static class CrdtStateJson
     }
 
 
+    /// <summary>Creates a serializer for <see cref="OffsetAnchoredSequenceState{TValue}"/>.</summary>
+    /// <typeparam name="TValue">The element type.</typeparam>
+    /// <param name="writeValue">Writes a value to the JSON writer.</param>
+    /// <returns>A serialize delegate.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
+    public static SerializeMessageDelegate<OffsetAnchoredSequenceState<TValue>> CreateOffsetAnchoredSequenceStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    {
+        ArgumentNullException.ThrowIfNull(writeValue);
+
+        return (state, output) =>
+        {
+            using var writer = new Utf8JsonWriter(output);
+            writer.WriteStartObject();
+
+            writer.WriteStartArray("base");
+            foreach(TValue value in state.Base)
+            {
+                writeValue(writer, value);
+            }
+
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("removedBaseOffsets");
+            foreach(int offset in state.RemovedBaseOffsets)
+            {
+                writer.WriteNumberValue(offset);
+            }
+
+            writer.WriteEndArray();
+
+            writer.WritePropertyName("context");
+            WriteVectorClockState(writer, state.Context);
+
+            writer.WriteStartArray("vertices");
+            foreach(OffsetVertexEntry<TValue> vertex in state.Vertices)
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("id");
+                WriteDotState(writer, vertex.Id);
+                writer.WritePropertyName("anchor");
+                WriteOffsetAnchorState(writer, vertex.Anchor);
+                writer.WritePropertyName("value");
+                writeValue(writer, vertex.Value);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("tombstones");
+            foreach(DotState tombstone in state.Tombstones)
+            {
+                WriteDotState(writer, tombstone);
+            }
+
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("compactedDotAnchors");
+            foreach(OffsetTranslationEntry entry in state.CompactedDotAnchors)
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("dropped");
+                WriteDotState(writer, entry.Dropped);
+                writer.WritePropertyName("target");
+                WriteOffsetAnchorState(writer, entry.Target);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("compactedBaseOffsets");
+            foreach(OffsetRebaseEntry entry in state.CompactedBaseOffsets)
+            {
+                writer.WriteStartObject();
+                writer.WriteNumber("previous", entry.PreviousOffset);
+                writer.WriteNumber("current", entry.CurrentOffset);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        };
+    }
+
+
+    /// <summary>Creates a deserializer for <see cref="OffsetAnchoredSequenceState{TValue}"/>.</summary>
+    /// <typeparam name="TValue">The element type.</typeparam>
+    /// <param name="readValue">Reads a value from a JSON element.</param>
+    /// <returns>A deserialize delegate.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
+    public static DeserializeMessageDelegate<OffsetAnchoredSequenceState<TValue>> CreateOffsetAnchoredSequenceStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    {
+        ArgumentNullException.ThrowIfNull(readValue);
+
+        return payload =>
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            JsonElement root = document.RootElement;
+
+            JsonElement baseElement = root.GetProperty("base");
+            ImmutableArray<TValue>.Builder baseValues = ImmutableArray.CreateBuilder<TValue>(baseElement.GetArrayLength());
+            foreach(JsonElement value in baseElement.EnumerateArray())
+            {
+                baseValues.Add(readValue(value));
+            }
+
+            JsonElement removedElement = root.GetProperty("removedBaseOffsets");
+            ImmutableArray<int>.Builder removed = ImmutableArray.CreateBuilder<int>(removedElement.GetArrayLength());
+            foreach(JsonElement offset in removedElement.EnumerateArray())
+            {
+                removed.Add(ReadNonNegative(offset, "A removed base offset"));
+            }
+
+            JsonElement verticesElement = root.GetProperty("vertices");
+            ImmutableArray<OffsetVertexEntry<TValue>>.Builder vertices = ImmutableArray.CreateBuilder<OffsetVertexEntry<TValue>>(verticesElement.GetArrayLength());
+            foreach(JsonElement vertex in verticesElement.EnumerateArray())
+            {
+                vertices.Add(new OffsetVertexEntry<TValue>(
+                    ReadDotState(vertex.GetProperty("id")),
+                    ReadOffsetAnchorState(vertex.GetProperty("anchor")),
+                    readValue(vertex.GetProperty("value"))));
+            }
+
+            JsonElement tombstonesElement = root.GetProperty("tombstones");
+            ImmutableArray<DotState>.Builder tombstones = ImmutableArray.CreateBuilder<DotState>(tombstonesElement.GetArrayLength());
+            foreach(JsonElement tombstone in tombstonesElement.EnumerateArray())
+            {
+                tombstones.Add(ReadDotState(tombstone));
+            }
+
+            JsonElement dotAnchorsElement = root.GetProperty("compactedDotAnchors");
+            ImmutableArray<OffsetTranslationEntry>.Builder dotAnchors = ImmutableArray.CreateBuilder<OffsetTranslationEntry>(dotAnchorsElement.GetArrayLength());
+            foreach(JsonElement entry in dotAnchorsElement.EnumerateArray())
+            {
+                dotAnchors.Add(new OffsetTranslationEntry(
+                    ReadDotState(entry.GetProperty("dropped")),
+                    ReadOffsetAnchorState(entry.GetProperty("target"))));
+            }
+
+            JsonElement baseOffsetsElement = root.GetProperty("compactedBaseOffsets");
+            ImmutableArray<OffsetRebaseEntry>.Builder baseOffsets = ImmutableArray.CreateBuilder<OffsetRebaseEntry>(baseOffsetsElement.GetArrayLength());
+            foreach(JsonElement entry in baseOffsetsElement.EnumerateArray())
+            {
+                baseOffsets.Add(new OffsetRebaseEntry(
+                    ReadNonNegative(entry.GetProperty("previous"), "A compacted base offset's previous offset"),
+                    ReadNonNegative(entry.GetProperty("current"), "A compacted base offset's current offset")));
+            }
+
+            return new OffsetAnchoredSequenceState<TValue>(
+                baseValues.ToImmutable(),
+                removed.ToImmutable(),
+                ReadVectorClockState(root.GetProperty("context")),
+                vertices.ToImmutable(),
+                tombstones.ToImmutable(),
+                dotAnchors.ToImmutable(),
+                baseOffsets.ToImmutable());
+        };
+    }
+
+
+    /// <summary>Creates a serializer for <see cref="RgaRunState{TValue}"/>.</summary>
+    /// <typeparam name="TValue">The element type.</typeparam>
+    /// <param name="writeValue">Writes a value to the JSON writer.</param>
+    /// <returns>A serialize delegate.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
+    public static SerializeMessageDelegate<RgaRunState<TValue>> CreateRgaRunStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    {
+        ArgumentNullException.ThrowIfNull(writeValue);
+
+        return (state, output) =>
+        {
+            using var writer = new Utf8JsonWriter(output);
+            writer.WriteStartObject();
+            writer.WritePropertyName("context");
+            WriteVectorClockState(writer, state.Context);
+
+            writer.WriteStartArray("runs");
+            foreach(RgaRunEntry<TValue> run in state.Runs)
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("first");
+                WriteDotState(writer, run.First);
+                writer.WritePropertyName("predecessor");
+                if(run.Predecessor is null)
+                {
+                    writer.WriteNullValue();
+                }
+                else
+                {
+                    WriteDotState(writer, run.Predecessor);
+                }
+
+                writer.WriteStartArray("values");
+                foreach(TValue value in run.Values)
+                {
+                    writeValue(writer, value);
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("tombstoneSpans");
+            foreach(RgaTombstoneSpan span in state.TombstoneSpans)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("replica", Convert.ToHexStringLower(span.Replica.AsSpan()));
+                writer.WriteNumber("from", span.FromCounter);
+                writer.WriteNumber("to", span.ToCounter);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("translations");
+            foreach(RgaTranslationEntry translation in state.Translations)
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("dropped");
+                WriteDotState(writer, translation.Dropped);
+                writer.WritePropertyName("target");
+                WriteDotState(writer, translation.Target);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        };
+    }
+
+
+    /// <summary>Creates a deserializer for <see cref="RgaRunState{TValue}"/>.</summary>
+    /// <typeparam name="TValue">The element type.</typeparam>
+    /// <param name="readValue">Reads a value from a JSON element.</param>
+    /// <returns>A deserialize delegate.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
+    public static DeserializeMessageDelegate<RgaRunState<TValue>> CreateRgaRunStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    {
+        ArgumentNullException.ThrowIfNull(readValue);
+
+        return payload =>
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            JsonElement root = document.RootElement;
+
+            JsonElement runsElement = root.GetProperty("runs");
+            ImmutableArray<RgaRunEntry<TValue>>.Builder runs = ImmutableArray.CreateBuilder<RgaRunEntry<TValue>>(runsElement.GetArrayLength());
+            foreach(JsonElement run in runsElement.EnumerateArray())
+            {
+                JsonElement predecessor = run.GetProperty("predecessor");
+                JsonElement valuesElement = run.GetProperty("values");
+                if(valuesElement.GetArrayLength() == 0)
+                {
+                    throw new JsonException("A run must carry at least one value.");
+                }
+
+                ImmutableArray<TValue>.Builder values = ImmutableArray.CreateBuilder<TValue>(valuesElement.GetArrayLength());
+                foreach(JsonElement value in valuesElement.EnumerateArray())
+                {
+                    values.Add(readValue(value));
+                }
+
+                runs.Add(new RgaRunEntry<TValue>(
+                    ReadDotState(run.GetProperty("first")),
+                    predecessor.ValueKind == JsonValueKind.Null ? null : ReadDotState(predecessor),
+                    values.ToImmutable()));
+            }
+
+            JsonElement spansElement = root.GetProperty("tombstoneSpans");
+            ImmutableArray<RgaTombstoneSpan>.Builder spans = ImmutableArray.CreateBuilder<RgaTombstoneSpan>(spansElement.GetArrayLength());
+            foreach(JsonElement span in spansElement.EnumerateArray())
+            {
+                int from = span.GetProperty("from").GetInt32();
+                int to = span.GetProperty("to").GetInt32();
+                if(from < 1 || to < from)
+                {
+                    throw new JsonException($"A tombstone span must satisfy 1 <= from <= to, got from {from}, to {to}.");
+                }
+
+                spans.Add(new RgaTombstoneSpan(ReadReplicaBytes(span.GetProperty("replica").GetString()!), from, to));
+            }
+
+            JsonElement translationsElement = root.GetProperty("translations");
+            ImmutableArray<RgaTranslationEntry>.Builder translations = ImmutableArray.CreateBuilder<RgaTranslationEntry>(translationsElement.GetArrayLength());
+            foreach(JsonElement translation in translationsElement.EnumerateArray())
+            {
+                translations.Add(new RgaTranslationEntry(
+                    ReadDotState(translation.GetProperty("dropped")),
+                    ReadDotState(translation.GetProperty("target"))));
+            }
+
+            return new RgaRunState<TValue>(
+                ReadVectorClockState(root.GetProperty("context")),
+                runs.ToImmutable(),
+                spans.ToImmutable(),
+                translations.ToImmutable());
+        };
+    }
+
+
+    private static void WriteOffsetAnchorState(Utf8JsonWriter writer, OffsetAnchorState anchor)
+    {
+        writer.WriteStartObject();
+        writer.WriteNumber("baseOffset", anchor.BaseOffset);
+        writer.WritePropertyName("liveId");
+        if(anchor.LiveId is null)
+        {
+            writer.WriteNullValue();
+        }
+        else
+        {
+            WriteDotState(writer, anchor.LiveId);
+        }
+
+        writer.WriteEndObject();
+    }
+
+
+    private static OffsetAnchorState ReadOffsetAnchorState(JsonElement element)
+    {
+        int baseOffset = element.GetProperty("baseOffset").GetInt32();
+        if(baseOffset < -1)
+        {
+            throw new JsonException($"An anchor base offset is at least -1, got {baseOffset}.");
+        }
+
+        JsonElement liveId = element.GetProperty("liveId");
+        if(liveId.ValueKind == JsonValueKind.Null)
+        {
+            return new OffsetAnchorState(baseOffset, null);
+        }
+
+        if(baseOffset != -1)
+        {
+            throw new JsonException($"A live anchor must carry base offset -1, got {baseOffset}.");
+        }
+
+        return new OffsetAnchorState(baseOffset, ReadDotState(liveId));
+    }
+
+
+    private static int ReadNonNegative(JsonElement element, string label)
+    {
+        int value = element.GetInt32();
+        if(value < 0)
+        {
+            throw new JsonException($"{label} cannot be negative, got {value}.");
+        }
+
+        return value;
+    }
+
+
     private static void WriteGCounterState(Utf8JsonWriter writer, GCounterState state)
     {
         writer.WriteStartObject();

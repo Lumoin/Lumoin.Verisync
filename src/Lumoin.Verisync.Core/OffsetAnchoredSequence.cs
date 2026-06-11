@@ -469,6 +469,283 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
     }
 
 
+    /// <summary>
+    /// Returns the serializable state of this sequence, for persistence or transfer. The output is
+    /// deterministic: vertices and tombstones in (replica, counter) order, removed offsets ascending, the
+    /// dot-translation map in dropped-dot (replica, counter) order, and the base-offset-translation map in
+    /// previous-offset order, so equal sequences serialize to equal records regardless of operation order.
+    /// </summary>
+    /// <returns>The sequence's state, carrying both translation maps for a compacted generation.</returns>
+    public OffsetAnchoredSequenceState<TValue> ToState()
+    {
+        ImmutableArray<int>.Builder removedBuilder = ImmutableArray.CreateBuilder<int>(RemovedBaseOffsets.Count);
+        removedBuilder.AddRange(RemovedBaseOffsets);
+        removedBuilder.Sort();
+
+        var orderedVertices = new List<Dot>(Vertices.Keys);
+        orderedVertices.Sort(CompareDotsByReplica);
+        ImmutableArray<OffsetVertexEntry<TValue>>.Builder vertexBuilder = ImmutableArray.CreateBuilder<OffsetVertexEntry<TValue>>(orderedVertices.Count);
+        foreach(Dot dot in orderedVertices)
+        {
+            Vertex vertex = Vertices[dot];
+            vertexBuilder.Add(new OffsetVertexEntry<TValue>(ToDotState(dot), ToAnchorState(vertex.Anchor), vertex.Value));
+        }
+
+        var orderedTombstones = new List<Dot>(Tombstones);
+        orderedTombstones.Sort(CompareDotsByReplica);
+        ImmutableArray<DotState>.Builder tombstoneBuilder = ImmutableArray.CreateBuilder<DotState>(orderedTombstones.Count);
+        foreach(Dot tombstone in orderedTombstones)
+        {
+            tombstoneBuilder.Add(ToDotState(tombstone));
+        }
+
+        var dotAnchors = new List<OffsetTranslationEntry>(CompactedDotAnchors.Count);
+        foreach(KeyValuePair<Dot, OffsetAnchor> entry in CompactedDotAnchors)
+        {
+            dotAnchors.Add(new OffsetTranslationEntry(ToDotState(entry.Key), ToAnchorState(entry.Value)));
+        }
+
+        dotAnchors.Sort(static (left, right) => CompareDotStatesByReplica(left.Dropped, right.Dropped));
+
+        var baseOffsets = new List<OffsetRebaseEntry>(CompactedBaseOffsets.Count);
+        foreach(KeyValuePair<int, int> entry in CompactedBaseOffsets)
+        {
+            baseOffsets.Add(new OffsetRebaseEntry(entry.Key, entry.Value));
+        }
+
+        baseOffsets.Sort(static (left, right) => left.PreviousOffset.CompareTo(right.PreviousOffset));
+
+        return new OffsetAnchoredSequenceState<TValue>(Base, removedBuilder.ToImmutable(), Context.ToState(), vertexBuilder.ToImmutable(), tombstoneBuilder.ToImmutable(), [.. dotAnchors], [.. baseOffsets]);
+    }
+
+
+    /// <summary>
+    /// Reconstructs a sequence from previously serialized <paramref name="state"/>.
+    /// </summary>
+    /// <param name="state">The state to reconstruct from.</param>
+    /// <returns>The reconstructed sequence.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown if a removed offset is outside <c>[0, Base.Length)</c> or duplicated; if a vertex id is
+    /// duplicated; if an anchor (a vertex anchor or a translation target) violates the canonical shape, names
+    /// a base offset at or beyond the base, or names a live dot that is not a vertex; if the live-anchor graph
+    /// contains a cycle (following <c>AtLive</c> links must terminate at the head or a base anchor); or if a
+    /// base-offset translation has a negative previous offset, a current offset outside <c>[0, Base.Length)</c>,
+    /// or a duplicated previous offset. No honest history produces any of these, and admitting one would
+    /// silently desynchronize the visible order from the vertex set, so each fails closed.
+    /// </exception>
+    /// <remarks>
+    /// A tombstone naming a dot that is not a vertex is accepted and harmless: a remove can be serialized and
+    /// merged separately from the insert it tombstones, so its target may legitimately be absent. A
+    /// dot-translation entry whose dropped dot is also a live vertex is accepted too: a laggard merge can
+    /// resurrect a dropped tombstone while the entry remains, which is harmless because
+    /// <see cref="TranslateAnchor"/> consults the vertices first.
+    /// </remarks>
+    public static OffsetAnchoredSequence<TValue> FromState(OffsetAnchoredSequenceState<TValue> state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        VectorClock context = VectorClock.FromState(state.Context);
+
+        var removed = new HashSet<int>(state.RemovedBaseOffsets.Length);
+        foreach(int offset in state.RemovedBaseOffsets)
+        {
+            if(offset < 0 || offset >= state.Base.Length)
+            {
+                throw new ArgumentException($"A removed base offset {offset} is outside the base of {state.Base.Length} element(s).", nameof(state));
+            }
+
+            if(!removed.Add(offset))
+            {
+                throw new ArgumentException($"The removed base offset {offset} is duplicated.", nameof(state));
+            }
+        }
+
+        var vertices = new Dictionary<Dot, Vertex>(state.Vertices.Length);
+        foreach(OffsetVertexEntry<TValue> entry in state.Vertices)
+        {
+            Dot id = FromDotState(entry.Id);
+            if(!vertices.TryAdd(id, new Vertex(FromAnchorState(entry.Anchor), entry.Value)))
+            {
+                throw new ArgumentException("A vertex id is duplicated.", nameof(state));
+            }
+        }
+
+        ValidateAnchors(vertices, state.Base.Length);
+
+        var tombstones = new HashSet<Dot>(state.Tombstones.Length);
+        foreach(DotState tombstone in state.Tombstones)
+        {
+            tombstones.Add(FromDotState(tombstone));
+        }
+
+        var compactedDotAnchors = new Dictionary<Dot, OffsetAnchor>(state.CompactedDotAnchors.Length);
+        foreach(OffsetTranslationEntry entry in state.CompactedDotAnchors)
+        {
+            OffsetAnchor target = FromAnchorState(entry.Target);
+            ValidateTargetAnchor(target, vertices, state.Base.Length);
+            compactedDotAnchors[FromDotState(entry.Dropped)] = target;
+        }
+
+        var compactedBaseOffsets = new Dictionary<int, int>(state.CompactedBaseOffsets.Length);
+        foreach(OffsetRebaseEntry entry in state.CompactedBaseOffsets)
+        {
+            if(entry.PreviousOffset < 0)
+            {
+                throw new ArgumentException($"A compacted base offset has a negative previous offset {entry.PreviousOffset}.", nameof(state));
+            }
+
+            if(entry.CurrentOffset < 0 || entry.CurrentOffset >= state.Base.Length)
+            {
+                throw new ArgumentException($"A compacted base offset's current offset {entry.CurrentOffset} is outside the base of {state.Base.Length} element(s).", nameof(state));
+            }
+
+            if(!compactedBaseOffsets.TryAdd(entry.PreviousOffset, entry.CurrentOffset))
+            {
+                throw new ArgumentException($"The compacted base offset's previous offset {entry.PreviousOffset} is duplicated.", nameof(state));
+            }
+        }
+
+        return new OffsetAnchoredSequence<TValue>(state.Base, removed.ToFrozenSet(), context, vertices.ToFrozenDictionary(), tombstones.ToFrozenSet(), compactedDotAnchors.ToFrozenDictionary(), compactedBaseOffsets.ToFrozenDictionary());
+    }
+
+
+    private static DotState ToDotState(Dot dot)
+    {
+        return new DotState(ImmutableArray.Create(dot.Replica.AsSpan()), dot.Counter);
+    }
+
+
+    private static Dot FromDotState(DotState state)
+    {
+        return new Dot(ReplicaId.FromSpan(state.Replica.AsSpan()), state.Counter);
+    }
+
+
+    //Maps a live anchor to its canonical state shape: the head and a base anchor carry a null live id, a
+    //live anchor carries its dot and a base offset of -1.
+    private static OffsetAnchorState ToAnchorState(OffsetAnchor anchor)
+    {
+        return anchor.LiveId is { } liveId ? new OffsetAnchorState(-1, ToDotState(liveId)) : new OffsetAnchorState(anchor.BaseOffset, null);
+    }
+
+
+    //Rebuilds a live anchor from its state, enforcing the one-canonical-shape-per-anchor discipline: a live
+    //id forces a base offset of -1, the head is -1 with no live id, a base anchor is a non-negative offset.
+    private static OffsetAnchor FromAnchorState(OffsetAnchorState state)
+    {
+        if(state.LiveId is { } liveId)
+        {
+            if(state.BaseOffset != -1)
+            {
+                throw new ArgumentException($"A live anchor must carry base offset -1, got {state.BaseOffset}.", nameof(state));
+            }
+
+            return OffsetAnchor.AtLive(FromDotState(liveId));
+        }
+
+        if(state.BaseOffset == -1)
+        {
+            return OffsetAnchor.Head;
+        }
+
+        if(state.BaseOffset < 0)
+        {
+            throw new ArgumentException($"A base anchor offset cannot be {state.BaseOffset}.", nameof(state));
+        }
+
+        return OffsetAnchor.AtBase(state.BaseOffset);
+    }
+
+
+    //Validates an anchor that addresses content of this sequence: a base anchor must fall within the base
+    //and a live anchor must name a vertex. The head is always servable.
+    private static void ValidateTargetAnchor(OffsetAnchor anchor, Dictionary<Dot, Vertex> vertices, int baseLength)
+    {
+        if(anchor.LiveId is { } liveId)
+        {
+            if(!vertices.ContainsKey(liveId))
+            {
+                throw new ArgumentException("A live anchor names a dot that is not a vertex.", nameof(vertices));
+            }
+
+            return;
+        }
+
+        if(anchor.BaseOffset >= baseLength)
+        {
+            throw new ArgumentException($"A base anchor offset {anchor.BaseOffset} is at or beyond the base of {baseLength} element(s).", nameof(vertices));
+        }
+    }
+
+
+    //Validates every vertex anchor against the base and the vertex set, then proves the live-anchor graph is
+    //acyclic: following vertex anchors through AtLive links must terminate at a head or a base anchor rather
+    //than loop. A global done-set records vertices already proven to terminate, so each chain is walked once.
+    private static void ValidateAnchors(Dictionary<Dot, Vertex> vertices, int baseLength)
+    {
+        foreach(Vertex vertex in vertices.Values)
+        {
+            ValidateTargetAnchor(vertex.Anchor, vertices, baseLength);
+        }
+
+        var done = new HashSet<Dot>(vertices.Count);
+        var onPath = new HashSet<Dot>();
+        foreach(Dot start in vertices.Keys)
+        {
+            if(done.Contains(start))
+            {
+                continue;
+            }
+
+            onPath.Clear();
+            Dot current = start;
+            while(true)
+            {
+                if(done.Contains(current))
+                {
+                    break;
+                }
+
+                if(!onPath.Add(current))
+                {
+                    throw new ArgumentException("The live-anchor graph contains a cycle.", nameof(vertices));
+                }
+
+                if(vertices[current].Anchor.LiveId is not { } parent)
+                {
+                    break;
+                }
+
+                current = parent;
+            }
+
+            foreach(Dot visited in onPath)
+            {
+                done.Add(visited);
+            }
+        }
+    }
+
+
+    private static int CompareDotsByReplica(Dot left, Dot right)
+    {
+        int byReplica = left.Replica.CompareTo(right.Replica);
+
+        return byReplica != 0 ? byReplica : left.Counter.CompareTo(right.Counter);
+    }
+
+
+    private static int CompareDotStatesByReplica(DotState left, DotState right)
+    {
+        ReplicaId leftReplica = ReplicaId.FromSpan(left.Replica.AsSpan());
+        ReplicaId rightReplica = ReplicaId.FromSpan(right.Replica.AsSpan());
+        int byReplica = leftReplica.CompareTo(rightReplica);
+
+        return byReplica != 0 ? byReplica : left.Counter.CompareTo(right.Counter);
+    }
+
+
     /// <inheritdoc/>
     public bool Equals([NotNullWhen(true)] OffsetAnchoredSequence<TValue>? other)
     {

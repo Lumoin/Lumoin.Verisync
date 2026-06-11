@@ -91,6 +91,13 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   fail-closed on reconstruction — while `ToState` now refuses to serialize an instance carrying
   translations rather than silently dropping them. Both compaction strategies pass the same four
   shared compaction laws.
+- Serialization for both compaction strategies: `OffsetAnchoredSequence<TValue>.ToState`/`FromState`
+  with the `OffsetAnchoredSequenceState` record family (vertices with anchors, removed offsets, and
+  both translation maps; deterministic replica-major output; reconstruction validates anchors,
+  ranges, duplicates, and anchor-graph acyclicity fail-closed), and `CrdtStateJson` codecs for
+  `OffsetAnchoredSequenceState` and `RgaRunState` — hand-written and AOT-safe like the existing
+  state codecs, with codec-level shape validation (`JsonException`) layered under the state-level
+  relational validation (`ArgumentException`).
 - Fast CASPaxos next-ballot piggybacking: a successful accept may carry the next fast ballot, raising
   the acceptor's promise to it and establishing the next fast round coordinator-free — recurring
   one-round-trip fast commits, as in the original design. All reject rules ignore the piggyback, the
