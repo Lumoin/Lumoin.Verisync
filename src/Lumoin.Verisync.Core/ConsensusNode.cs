@@ -71,7 +71,7 @@ public sealed class ConsensusNode<TValue>
     /// the stream ends or the token is signalled.
     /// </summary>
     /// <param name="requests">The inbound request stream.</param>
-    /// <param name="sendReply">The reply sink — a push writer over the chosen transport.</param>
+    /// <param name="sendReply">The reply sink — see <see cref="SendReplyDelegate{TValue}"/>, a push writer over the chosen transport.</param>
     /// <param name="persistAcceptor">
     /// An optional durability hook. When supplied, it is awaited after every request that changes the acceptor
     /// and before the matching reply is sent, so the promise or accept is durable before it becomes observable.
@@ -85,11 +85,12 @@ public sealed class ConsensusNode<TValue>
     /// <remarks>
     /// If <paramref name="persistAcceptor"/> throws, the exception propagates out of this method and the reply
     /// for that request is never sent — the correct fail-closed behavior, since an unpersisted promise must
-    /// never be observed.
+    /// never be observed. A throwing <paramref name="sendReply"/> likewise propagates out and ends the loop:
+    /// a node whose transport has failed cannot keep serving requests.
     /// </remarks>
     public async Task RunAsync(
         IAsyncEnumerable<ConsensusRequest<TValue>> requests,
-        Func<ConsensusReply<TValue>, CancellationToken, ValueTask> sendReply,
+        SendReplyDelegate<TValue> sendReply,
         PersistAcceptorDelegate<TValue>? persistAcceptor = null,
         CancellationToken cancellationToken = default)
     {

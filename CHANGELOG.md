@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   plane, verifiable against the agreed commitment. `Create` takes the canonicalize and digest
   delegates; the register type is `CasPaxosRegister<CheckpointCommitment>`.
 
+- `ConsensusNode.RunAsync` takes the reply sink as the named `SendReplyDelegate<TValue>` instead of
+  a naked `Func`, matching the named-seam convention. Source-compatible: lambdas and method groups
+  at existing call sites convert unchanged.
+
 ### Fixed
 
 - Fast CASPaxos acceptor safety: accepting now raises the promise to the accepted ballot, so a stale
