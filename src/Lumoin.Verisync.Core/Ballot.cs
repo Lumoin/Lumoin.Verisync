@@ -7,7 +7,7 @@ namespace Lumoin.Verisync.Core;
 /// A CASPaxos ballot number: a monotonically increasing round paired with the proposing
 /// <see cref="ReplicaId"/>, giving every ballot a unique position in a total order.
 /// </summary>
-/// <param name="Round">The proposer's monotonically increasing round number.</param>
+/// <param name="Round">The proposer's monotonically increasing round number. Must be positive.</param>
 /// <param name="Proposer">The replica that issued the ballot.</param>
 /// <remarks>
 /// Ballots are ordered by round first and by proposer second, so two proposers that pick the same round
@@ -15,8 +15,33 @@ namespace Lumoin.Verisync.Core;
 /// proposals and lets a higher ballot supersede a lower one.
 /// </remarks>
 [DebuggerDisplay("Ballot({Round}, {Proposer})")]
-public readonly record struct Ballot(int Round, ReplicaId Proposer): IComparable<Ballot>
+public readonly record struct Ballot: IComparable<Ballot>
 {
+    /// <summary>Initializes a new <see cref="Ballot"/>.</summary>
+    /// <param name="Round">The proposer's monotonically increasing round number. Must be positive.</param>
+    /// <param name="Proposer">The replica that issued the ballot.</param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown if <paramref name="Round"/> is less than one. A round is monotonically increasing from one, so a
+    /// non-positive round (in particular a negative round produced by counter overflow) is rejected at
+    /// construction rather than admitted into the ballot total order.
+    /// </exception>
+    public Ballot(int Round, ReplicaId Proposer)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(Round, 1);
+
+        this.Round = Round;
+        this.Proposer = Proposer;
+    }
+
+
+    /// <summary>The proposer's monotonically increasing round number.</summary>
+    public int Round { get; init; }
+
+
+    /// <summary>The replica that issued the ballot.</summary>
+    public ReplicaId Proposer { get; init; }
+
+
     /// <inheritdoc/>
     public int CompareTo(Ballot other)
     {

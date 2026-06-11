@@ -1,6 +1,6 @@
+using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
-using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -44,6 +44,16 @@ internal sealed class BallotTests
     {
         Assert.AreEqual(new Ballot(3, R1), new Ballot(3, R1));
         Assert.AreNotEqual(new Ballot(3, R1), new Ballot(3, R2));
+    }
+
+
+    [TestMethod]
+    public void RejectsRoundBelowOne()
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new Ballot(0, R1));
+
+        //A negative round, as an overflowed counter would produce, must be rejected at construction.
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new Ballot(-1, R1));
     }
 
 

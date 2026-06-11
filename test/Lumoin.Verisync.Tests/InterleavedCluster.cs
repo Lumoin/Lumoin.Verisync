@@ -1,7 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Threading.Tasks;
 using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
@@ -24,6 +20,12 @@ namespace Lumoin.Verisync.Tests;
 /// <para>
 /// A partitioned acceptor loses messages at delivery time — requests and replies alike — so a partition
 /// that appears mid-flight also kills the replies already in the air, the way a real link failure does.
+/// </para>
+/// <para>
+/// With <see cref="RequestDuplicationPercent"/> set, a delivered request may be re-enqueued as a stale
+/// duplicate that hits the acceptor again at a later delivery point with its reply discarded — the way a
+/// retransmission lands after the proposer has already moved on. Duplicates mutate acceptor state, so they
+/// exercise the histories where an old request arrives after newer ballots have been accepted.
 /// </para>
 /// </remarks>
 internal sealed class InterleavedCluster<TValue>
@@ -52,6 +54,13 @@ internal sealed class InterleavedCluster<TValue>
 
     /// <summary>The virtual clock: advances per delivered message and per <see cref="Tick"/>.</summary>
     public long Now { get; private set; }
+
+
+    /// <summary>
+    /// The percentage chance (0–100) that a delivered request is re-enqueued as a stale duplicate. The
+    /// duplicate is handled by its acceptor at a later delivery point and its reply is discarded.
+    /// </summary>
+    public int RequestDuplicationPercent { get; set; }
 
 
     /// <summary>The number of in-flight messages awaiting delivery.</summary>
@@ -115,10 +124,12 @@ internal sealed class InterleavedCluster<TValue>
         InFlight.RemoveAt(picked);
         Now++;
 
+        //A duplicate carries no completion: it mutates acceptor state but its reply goes nowhere.
+        string kind = message.Completion is null ? $"{Describe(message)}:dup" : Describe(message);
         if(Partitioned.Contains(message.Acceptor))
         {
-            deliveryTrace.Add($"{Now}:a{message.Acceptor}:{Describe(message)}:lost");
-            message.Completion.SetException(new IOException($"Acceptor {message.Acceptor} is partitioned."));
+            deliveryTrace.Add($"{Now}:a{message.Acceptor}:{kind}:lost");
+            message.Completion?.SetException(new IOException($"Acceptor {message.Acceptor} is partitioned."));
 
             return true;
         }
@@ -126,13 +137,21 @@ internal sealed class InterleavedCluster<TValue>
         if(message.Request is not null)
         {
             ConsensusReply<TValue> reply = Nodes[message.Acceptor].Handle(message.Request);
-            deliveryTrace.Add($"{Now}:a{message.Acceptor}:{Describe(message)}");
-            InFlight.Add(new InFlightMessage(message.Acceptor, null, reply, message.Completion));
+            deliveryTrace.Add($"{Now}:a{message.Acceptor}:{kind}");
+            if(message.Completion is not null)
+            {
+                InFlight.Add(new InFlightMessage(message.Acceptor, null, reply, message.Completion));
+            }
+
+            if(RequestDuplicationPercent > 0 && NextIndex(100) < RequestDuplicationPercent)
+            {
+                InFlight.Add(new InFlightMessage(message.Acceptor, message.Request, null, null));
+            }
         }
         else
         {
-            deliveryTrace.Add($"{Now}:a{message.Acceptor}:{Describe(message)}");
-            message.Completion.SetResult(message.Reply!);
+            deliveryTrace.Add($"{Now}:a{message.Acceptor}:{kind}");
+            message.Completion!.SetResult(message.Reply!);
         }
 
         return true;
@@ -169,5 +188,5 @@ internal sealed class InterleavedCluster<TValue>
     }
 
 
-    private sealed record InFlightMessage(int Acceptor, ConsensusRequest<TValue>? Request, ConsensusReply<TValue>? Reply, TaskCompletionSource<ConsensusReply<TValue>> Completion);
+    private sealed record InFlightMessage(int Acceptor, ConsensusRequest<TValue>? Request, ConsensusReply<TValue>? Reply, TaskCompletionSource<ConsensusReply<TValue>>? Completion);
 }

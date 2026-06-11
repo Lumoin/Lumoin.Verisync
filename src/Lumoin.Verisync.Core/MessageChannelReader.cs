@@ -16,8 +16,20 @@ namespace Lumoin.Verisync.Core;
 /// </summary>
 /// <typeparam name="TMessage">The message type.</typeparam>
 /// <remarks>
+/// <para>
 /// Enumeration ends when the pipe is completed by the writer or the token is signalled. A pipe that ends
-/// part-way through a frame is a protocol violation and throws.
+/// part-way through a frame is a protocol violation and throws, as is a frame whose declared length
+/// exceeds the configured maximum — the length prefix is attacker-controlled on an untrusted transport,
+/// so it is never trusted beyond that bound.
+/// </para>
+/// <para>
+/// With a <see cref="FramePadding"/> policy, the outer prefix declares a padded bucket length and the frame
+/// itself begins with a four-byte big-endian <em>real</em> length prefix; the reader deserializes only the
+/// real payload slice and discards the zero fill — see <see cref="FramePadding"/> for the wire format. The
+/// inner length is just as attacker-influenced as the outer prefix, so it is rejected the moment it would
+/// reach past the frame bounds. The writing peer must be configured with the same policy, exactly as it
+/// must share the maximum frame length: a mismatch yields a deserialization failure, not a clean error.
+/// </para>
 /// </remarks>
 public sealed class MessageChannelReader<TMessage>
 {
@@ -25,6 +37,8 @@ public sealed class MessageChannelReader<TMessage>
 
     private PipeReader Reader { get; }
     private DeserializeMessageDelegate<TMessage> Deserialize { get; }
+    private int MaxFrameLength { get; }
+    private FramePadding? Padding { get; }
 
 
     /// <summary>
@@ -32,13 +46,19 @@ public sealed class MessageChannelReader<TMessage>
     /// </summary>
     /// <param name="reader">The source pipe reader.</param>
     /// <param name="deserialize">The deserializer for each framed payload.</param>
+    /// <param name="maxFrameLength">The largest frame payload accepted, in bytes. Defaults to <see cref="MessageChannel.DefaultMaxFrameLength"/>. When <paramref name="padding"/> is supplied this bounds the padded length, matching the writing peer.</param>
+    /// <param name="padding">An optional padding policy that must match the writing peer's. When <see langword="null"/> the reader expects the unpadded wire format, byte for byte. A policy mismatch deserializes the wrong span and so fails, exactly as a maximum-frame-length mismatch does.</param>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="reader"/> or <paramref name="deserialize"/> is <see langword="null"/>.</exception>
-    public MessageChannelReader(PipeReader reader, DeserializeMessageDelegate<TMessage> deserialize)
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="maxFrameLength"/> is less than one.</exception>
+    public MessageChannelReader(PipeReader reader, DeserializeMessageDelegate<TMessage> deserialize, int maxFrameLength = MessageChannel.DefaultMaxFrameLength, FramePadding? padding = null)
     {
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(deserialize);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxFrameLength, 1);
         Reader = reader;
         Deserialize = deserialize;
+        MaxFrameLength = maxFrameLength;
+        Padding = padding;
     }
 
 
@@ -47,37 +67,44 @@ public sealed class MessageChannelReader<TMessage>
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>An async stream of deserialized messages.</returns>
-    /// <exception cref="InvalidOperationException">Thrown if the channel ends part-way through a frame.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if the channel ends part-way through a frame, or a frame declares a payload longer than the configured maximum.</exception>
     public async IAsyncEnumerable<TMessage> ReadAllAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        while(true)
+        //Completion runs even when the deserializer or a protocol violation throws, so the writer side
+        //always observes the reader ending instead of waiting on an abandoned pipe.
+        try
         {
-            ReadResult result = await Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-            ReadOnlySequence<byte> buffer = result.Buffer;
-
-            while(TryReadFrame(ref buffer, out ReadOnlySequence<byte> frame))
+            while(true)
             {
-                yield return Deserialize(frame);
-            }
+                ReadResult result = await Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                ReadOnlySequence<byte> buffer = result.Buffer;
 
-            Reader.AdvanceTo(buffer.Start, buffer.End);
-
-            if(result.IsCompleted)
-            {
-                if(!buffer.IsEmpty)
+                while(TryReadFrame(ref buffer, out ReadOnlySequence<byte> frame))
                 {
-                    throw new InvalidOperationException("The channel ended part-way through a frame.");
+                    yield return Deserialize(Padding is null ? frame : ExtractRealPayload(frame));
                 }
 
-                break;
+                Reader.AdvanceTo(buffer.Start, buffer.End);
+
+                if(result.IsCompleted)
+                {
+                    if(!buffer.IsEmpty)
+                    {
+                        throw new InvalidOperationException("The channel ended part-way through a frame.");
+                    }
+
+                    break;
+                }
             }
         }
-
-        await Reader.CompleteAsync().ConfigureAwait(false);
+        finally
+        {
+            await Reader.CompleteAsync().ConfigureAwait(false);
+        }
     }
 
 
-    private static bool TryReadFrame(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> frame)
+    private bool TryReadFrame(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> frame)
     {
         frame = default;
         if(buffer.Length < FrameHeaderLength)
@@ -89,6 +116,11 @@ public sealed class MessageChannelReader<TMessage>
         buffer.Slice(0, FrameHeaderLength).CopyTo(header);
         uint payloadLength = BinaryPrimitives.ReadUInt32BigEndian(header);
 
+        if(payloadLength > (uint)MaxFrameLength)
+        {
+            throw new InvalidOperationException($"A frame declares a payload of {payloadLength} bytes, above the maximum of {MaxFrameLength}; the peer is faulty, hostile, or speaking another protocol.");
+        }
+
         if(buffer.Length < FrameHeaderLength + payloadLength)
         {
             return false;
@@ -98,5 +130,28 @@ public sealed class MessageChannelReader<TMessage>
         buffer = buffer.Slice(FrameHeaderLength + payloadLength);
 
         return true;
+    }
+
+
+    private static ReadOnlySequence<byte> ExtractRealPayload(ReadOnlySequence<byte> frame)
+    {
+        //A padded frame begins with a four-byte real-length prefix. With padding configured every frame
+        //carries it, so a frame too short even for the prefix is a faulty or unpadding peer.
+        if(frame.Length < FrameHeaderLength)
+        {
+            throw new InvalidOperationException("A padded frame is shorter than its inner length prefix; the peer is faulty, hostile, or not padding.");
+        }
+
+        Span<byte> header = stackalloc byte[FrameHeaderLength];
+        frame.Slice(0, FrameHeaderLength).CopyTo(header);
+        uint realLength = BinaryPrimitives.ReadUInt32BigEndian(header);
+
+        //The inner length is attacker-influenced and is never trusted past the frame bounds.
+        if(realLength > frame.Length - FrameHeaderLength)
+        {
+            throw new InvalidOperationException("The inner length exceeds the padded frame; the peer is faulty, hostile, or not padding.");
+        }
+
+        return frame.Slice(FrameHeaderLength, realLength);
     }
 }

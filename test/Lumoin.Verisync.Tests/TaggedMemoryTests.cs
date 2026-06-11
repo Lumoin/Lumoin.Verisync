@@ -1,7 +1,7 @@
+using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -148,6 +148,99 @@ internal sealed class TaggedMemoryTests
 
 
     [TestMethod]
+    public void EqualsThrowsWhenThisIsDisposed()
+    {
+        using TestTaggedMemory other = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        TestTaggedMemory disposedLeft = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        disposedLeft.Dispose();
+
+        Assert.ThrowsExactly<ObjectDisposedException>(() => disposedLeft.Equals(other));
+    }
+
+
+    [TestMethod]
+    public void EqualsThrowsWhenOtherIsDisposed()
+    {
+        using TestTaggedMemory left = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        TestTaggedMemory disposedRight = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        disposedRight.Dispose();
+
+        Assert.ThrowsExactly<ObjectDisposedException>(() => left.Equals(disposedRight));
+    }
+
+
+    [TestMethod]
+    public void EqualsReturnsFalseForNullEvenWhenNotDisposed()
+    {
+        using TestTaggedMemory left = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+
+        Assert.IsFalse(left.Equals(null));
+    }
+
+
+    [TestMethod]
+    public void ObjectEqualsThrowsWhenThisIsDisposed()
+    {
+        using TestTaggedMemory other = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        TestTaggedMemory disposedLeft = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        disposedLeft.Dispose();
+
+        Assert.ThrowsExactly<ObjectDisposedException>(() => disposedLeft.Equals((object)other));
+    }
+
+
+    [TestMethod]
+    public void GetHashCodeThrowsAfterDispose()
+    {
+        TestTaggedMemory instance = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        instance.Dispose();
+
+        Assert.ThrowsExactly<ObjectDisposedException>(() => instance.GetHashCode());
+    }
+
+
+    [TestMethod]
+    public void EqualityOperatorThrowsWhenLeftIsDisposed()
+    {
+        using TestTaggedMemory right = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        TestTaggedMemory disposedLeft = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        disposedLeft.Dispose();
+
+        Assert.ThrowsExactly<ObjectDisposedException>(() => disposedLeft == right);
+    }
+
+
+    [TestMethod]
+    public void EqualityOperatorThrowsWhenRightIsDisposed()
+    {
+        using TestTaggedMemory left = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        TestTaggedMemory disposedRight = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        disposedRight.Dispose();
+
+        Assert.ThrowsExactly<ObjectDisposedException>(() => left == disposedRight);
+    }
+
+
+    [TestMethod]
+    public void InequalityOperatorThrowsWhenRightIsDisposed()
+    {
+        using TestTaggedMemory left = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        TestTaggedMemory disposedRight = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        disposedRight.Dispose();
+
+        Assert.ThrowsExactly<ObjectDisposedException>(() => left != disposedRight);
+    }
+
+
+    [TestMethod]
+    public void EqualityOperatorTreatsTwoNullsAsEqualWithoutDisposalGuard()
+    {
+        Assert.IsTrue((TaggedMemory?)null == (TaggedMemory?)null);
+        Assert.IsFalse((TaggedMemory?)null != (TaggedMemory?)null);
+    }
+
+
+    [TestMethod]
     public void LifetimeActivityIsNullWithoutListener()
     {
         Activity? currentBefore = Activity.Current;
@@ -215,7 +308,7 @@ internal sealed class TaggedMemoryTests
 
     private sealed class TestTaggedMemory: TaggedMemory
     {
-        public TestTaggedMemory(IMemoryOwner<byte> memoryOwner, Tag tag): base(memoryOwner, tag)
+        public TestTaggedMemory(IMemoryOwner<byte> memoryOwner, Tag tag) : base(memoryOwner, tag)
         {
         }
     }

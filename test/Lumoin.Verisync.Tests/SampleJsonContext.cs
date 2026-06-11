@@ -1,5 +1,5 @@
-using System.Text.Json.Serialization;
 using Lumoin.Verisync.Core;
+using System.Text.Json.Serialization;
 
 namespace Lumoin.Verisync.Tests;
 

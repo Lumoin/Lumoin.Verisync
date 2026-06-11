@@ -1,6 +1,7 @@
-using System.Buffers;
-using System.Diagnostics.CodeAnalysis;
 using Lumoin.Verisync.Core;
+using System.Buffers;
+using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -36,6 +37,25 @@ internal sealed class VectorClockTests
 
         Assert.AreEqual(1, once[R1]);
         Assert.AreEqual(2, twice[R1]);
+    }
+
+
+    [TestMethod]
+    public void IncrementPastAllAdvancesPastTheLargestEntry()
+    {
+        VectorClock clock = VectorClock.Empty.Increment(R1).Increment(R1).Increment(R1);
+
+        VectorClock advanced = clock.IncrementPastAll(R2);
+
+        Assert.AreEqual(4, advanced[R2]);
+        Assert.AreEqual(3, advanced[R1]);
+    }
+
+
+    [TestMethod]
+    public void IncrementPastAllOnEmptyStartsAtOne()
+    {
+        Assert.AreEqual(1, VectorClock.Empty.IncrementPastAll(R1)[R1]);
     }
 
 
@@ -115,6 +135,54 @@ internal sealed class VectorClockTests
 
         Assert.AreEqual(Causality.Concurrent, a.Compare(b));
     }
+
+
+    [TestMethod]
+    public void IncrementThrowsOnOverflowAndLeavesOriginalUnchanged()
+    {
+        VectorClock atMax = VectorClock.FromState(new VectorClockState([new ReplicaCounterEntry(Bytes(R1), int.MaxValue)]));
+
+        Assert.ThrowsExactly<OverflowException>(() => atMax.Increment(R1));
+
+        Assert.AreEqual(int.MaxValue, atMax[R1]);
+    }
+
+
+    [TestMethod]
+    public void IncrementPastAllThrowsOnOverflowAndLeavesOriginalUnchanged()
+    {
+        VectorClock atMax = VectorClock.FromState(new VectorClockState([new ReplicaCounterEntry(Bytes(R1), int.MaxValue)]));
+
+        Assert.ThrowsExactly<OverflowException>(() => atMax.IncrementPastAll(R2));
+
+        Assert.AreEqual(int.MaxValue, atMax[R1]);
+        Assert.AreEqual(0, atMax[R2]);
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsNegativeCount()
+    {
+        var state = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), -1)]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => VectorClock.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateFiltersZeroCountEntry()
+    {
+        //A stored zero must be dropped so the result equals one built without the entry and hashes identically.
+        var withZero = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 2), new ReplicaCounterEntry(Bytes(R2), 0)]);
+        VectorClock reconstructed = VectorClock.FromState(withZero);
+        VectorClock expected = VectorClock.Empty.Increment(R1).Increment(R1);
+
+        Assert.AreEqual(expected, reconstructed);
+        Assert.AreEqual(expected.GetHashCode(), reconstructed.GetHashCode());
+    }
+
+
+    private static ImmutableArray<byte> Bytes(ReplicaId replica) => ImmutableArray.Create(replica.AsSpan());
 
 
     private static ReplicaId Replica(byte id)

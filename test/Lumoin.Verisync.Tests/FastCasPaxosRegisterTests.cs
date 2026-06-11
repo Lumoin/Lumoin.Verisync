@@ -1,7 +1,7 @@
+using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
-using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
 
