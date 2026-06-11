@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-06-11
+
 ### Changed
 
 - `CheckpointedSequence.Promote` proposes a `CheckpointCommitment` — the digest of the snapshot's
