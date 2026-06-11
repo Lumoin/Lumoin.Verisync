@@ -1,7 +1,7 @@
-using System.Buffers;
-using System.Diagnostics.CodeAnalysis;
 using Lumoin.Verisync.Core;
 using Microsoft.Extensions.Time.Testing;
+using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Lumoin.Verisync.Tests;
 

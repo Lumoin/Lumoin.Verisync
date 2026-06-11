@@ -1,8 +1,7 @@
-using System;
+using Lumoin.Verisync.Core;
 using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
-using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
 

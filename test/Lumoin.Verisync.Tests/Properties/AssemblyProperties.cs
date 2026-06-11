@@ -1,4 +1,4 @@
-﻿// Reproducing property-test failures
+// Reproducing property-test failures
 // -----------------------------------
 // The property tests use CsCheck's Gen...Sample(...) and run unseeded, so each run explores fresh
 // random cases. When a Sample fails it has already shrunk to a minimal counter-example and prints the

@@ -18,12 +18,11 @@
 
         If you must temporarily reproduce inside the test host, uncomment and edit this section locally
         (never commit it):
-
+    -->
         <RunConfiguration>
             <EnvironmentVariables>
                 <CsCheck_Seed>PASTE_SEED_FROM_FAILURE_MESSAGE</CsCheck_Seed>
                 <!-- <CsCheck_Iter>1000</CsCheck_Iter> -->
             </EnvironmentVariables>
-        </RunConfiguration>
-    -->
+        </RunConfiguration>    
 </RunSettings>

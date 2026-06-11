@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-using System.IO;
 using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;

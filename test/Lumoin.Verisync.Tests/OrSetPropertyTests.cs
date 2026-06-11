@@ -1,7 +1,7 @@
-using System.Buffers;
-using System.Diagnostics.CodeAnalysis;
 using CsCheck;
 using Lumoin.Verisync.Core;
+using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Lumoin.Verisync.Tests;
 

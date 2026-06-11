@@ -1,6 +1,5 @@
-using System.Collections.Generic;
-using System.Security.Cryptography;
 using Lumoin.Verisync.Core;
+using System.Security.Cryptography;
 
 namespace Lumoin.Verisync.Tests;
 

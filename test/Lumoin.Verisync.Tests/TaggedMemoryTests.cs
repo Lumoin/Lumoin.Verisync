@@ -1,7 +1,7 @@
+using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -308,7 +308,7 @@ internal sealed class TaggedMemoryTests
 
     private sealed class TestTaggedMemory: TaggedMemory
     {
-        public TestTaggedMemory(IMemoryOwner<byte> memoryOwner, Tag tag): base(memoryOwner, tag)
+        public TestTaggedMemory(IMemoryOwner<byte> memoryOwner, Tag tag) : base(memoryOwner, tag)
         {
         }
     }

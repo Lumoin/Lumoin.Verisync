@@ -1,7 +1,7 @@
+using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
-using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
 

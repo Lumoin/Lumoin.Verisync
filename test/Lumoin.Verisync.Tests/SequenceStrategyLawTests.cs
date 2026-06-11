@@ -1,7 +1,6 @@
-using System.Collections.Generic;
-using System.Collections.Immutable;
 using CsCheck;
 using Lumoin.Verisync.Core;
+using System.Collections.Immutable;
 
 namespace Lumoin.Verisync.Tests;
 
