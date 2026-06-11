@@ -108,6 +108,18 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   promise only ever rises, and an acceptor that never saw the piggyback keeps rejecting that fast
   round via the equality rule, so blind writes at un-established rounds remain impossible. The wire
   encoding's `next` field is optional and back-compatible.
+- The Raft production story around the safety core: `RaftNode.ToState`/`FromState` with
+  `RaftNodeState` (the Figure 2 durable triple, validated fail-closed on restore; a restored node is
+  a follower at commit zero rediscovering the volatile commit index), `RaftRunner` — a
+  single-consumer message-driven loop preserving the node's single-threaded contract with the
+  universal handle → persist → apply → send sequencing, named seams
+  (`SendRaftEnvelopeDelegate`, `PersistRaftStateDelegate`, `ApplyCommittedDelegate`), host-triggered
+  elections and heartbeats (still no timers or entropy in the library), propose with a faulting task
+  on non-leaders, and self-quiescing follower catch-up off append replies — plus `RaftJson` wire
+  codecs for the envelope and the durable state, mirroring the consensus message codecs' strictness.
+  Apply is exactly-once per process lifetime and at-least-once across restarts, documented on the
+  seam. Proven over real localhost sockets: election, replication, identical applied sequences on
+  every node, and a follower restarted from its persisted state converging after reconnect.
 - A naive, safety-correct, in-memory Raft node (`RaftNode<TCommand>` and its message records): the
   complete Figure 2 safety core — election restriction, log matching with conflict truncation and
   idempotent re-delivery, and the current-term commit rule — with liveness explicitly external

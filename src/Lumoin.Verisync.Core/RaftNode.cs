@@ -90,6 +90,13 @@ public sealed class RaftNode<TCommand>
     /// <summary>This replica's identity.</summary>
     public ReplicaId Id { get; }
 
+    /// <summary>
+    /// The fixed cluster membership, including <see cref="Id"/>. A quorum is a strict majority of its length.
+    /// Exposes the immutable membership the node was constructed with so a host can derive the set of peers
+    /// (every member except <see cref="Id"/>) it must send per-follower requests to.
+    /// </summary>
+    public ImmutableArray<ReplicaId> Members => members;
+
     /// <summary>The role this node currently occupies in <see cref="CurrentTerm"/>.</summary>
     public RaftRole Role { get; private set; } = RaftRole.Follower;
 
@@ -113,6 +120,105 @@ public sealed class RaftNode<TCommand>
     /// <see cref="AppendEntriesRequest{TCommand}"/>), or <see langword="null"/> if none has been seen.
     /// </summary>
     public ReplicaId? LeaderId { get; private set; }
+
+
+    /// <summary>
+    /// Snapshots the node's durable state — the Figure 2 persistent triple of
+    /// <see cref="CurrentTerm"/>, <see cref="VotedFor"/>, and <see cref="Log"/> — for persistence. The log is
+    /// copied into an <see cref="ImmutableArray{T}"/> so the returned snapshot is independent of subsequent
+    /// mutations of this node.
+    /// </summary>
+    /// <returns>The durable state to make stable before any dependent reply is sent.</returns>
+    /// <remarks>
+    /// The role, commit index, observed leader, and the leader's replication bookkeeping are volatile by
+    /// Figure 2 and are intentionally not part of the snapshot; a restored node rediscovers them from the
+    /// current leader. The empty-means-no-vote convention of <see cref="LwwRegisterState{TValue}.Writer"/>
+    /// applies: an absent vote is an empty byte array, not a sentinel.
+    /// </remarks>
+    public RaftNodeState<TCommand> ToState()
+    {
+        ImmutableArray<byte> votedFor = VotedFor is { } vote ? ImmutableArray.Create(vote.AsSpan()) : ImmutableArray<byte>.Empty;
+
+        return new RaftNodeState<TCommand>(CurrentTerm, votedFor, [.. log]);
+    }
+
+
+    /// <summary>
+    /// Reconstructs a node from durable <paramref name="state"/>, validating fail-closed against everything no
+    /// honest history can produce. The restored node is a <see cref="RaftRole.Follower"/> with
+    /// <see cref="CommitIndex"/> zero and no known leader: the commit index is volatile by Figure 2 and is
+    /// rediscovered from the leader once a current-term append arrives.
+    /// </summary>
+    /// <param name="id">This replica's identity. Must appear in <paramref name="members"/>.</param>
+    /// <param name="members">The fixed cluster membership, including <paramref name="id"/>.</param>
+    /// <param name="state">The durable state to restore.</param>
+    /// <returns>A follower restored to the persisted durable triple.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown by the constructor when <paramref name="members"/> is empty or omits <paramref name="id"/>, and
+    /// when the durable state is internally impossible: a negative <see cref="RaftNodeState{TCommand}.CurrentTerm"/>;
+    /// a <see cref="RaftNodeState{TCommand}.VotedFor"/> that is neither empty nor exactly
+    /// <see cref="ReplicaId.Size"/> bytes; a non-empty vote that is not a member; a log entry with a term below
+    /// one; log terms that decrease; or a last log term above the current term.
+    /// </exception>
+    public static RaftNode<TCommand> FromState(ReplicaId id, ImmutableArray<ReplicaId> members, RaftNodeState<TCommand> state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        //The constructor performs the membership checks (non-empty, contains id) and throws ArgumentException.
+        var node = new RaftNode<TCommand>(id, members);
+
+        if(state.CurrentTerm < 0)
+        {
+            throw new ArgumentException($"A restored current term cannot be negative, got {state.CurrentTerm}.", nameof(state));
+        }
+
+        ReplicaId? votedFor = null;
+        if(!state.VotedFor.IsDefaultOrEmpty)
+        {
+            if(state.VotedFor.Length != ReplicaId.Size)
+            {
+                throw new ArgumentException($"A restored vote must be empty or exactly {ReplicaId.Size} bytes, got {state.VotedFor.Length}.", nameof(state));
+            }
+
+            ReplicaId vote = ReplicaId.FromSpan(state.VotedFor.AsSpan());
+            if(!members.Contains(vote))
+            {
+                throw new ArgumentException("A restored vote must name a member of the cluster.", nameof(state));
+            }
+
+            votedFor = vote;
+        }
+
+        ImmutableArray<RaftLogEntry<TCommand>> log = state.Log.IsDefault ? [] : state.Log;
+        long previousTerm = 0;
+        for(int i = 0; i < log.Length; i++)
+        {
+            long entryTerm = log[i].Term;
+            if(entryTerm < 1)
+            {
+                throw new ArgumentException($"A restored log entry term is at least one, got {entryTerm} at index {i + 1}.", nameof(state));
+            }
+
+            if(entryTerm < previousTerm)
+            {
+                throw new ArgumentException($"Restored log terms cannot decrease, got {entryTerm} after {previousTerm} at index {i + 1}.", nameof(state));
+            }
+
+            previousTerm = entryTerm;
+        }
+
+        if(previousTerm > state.CurrentTerm)
+        {
+            throw new ArgumentException($"A restored last log term ({previousTerm}) cannot exceed the current term ({state.CurrentTerm}).", nameof(state));
+        }
+
+        node.CurrentTerm = state.CurrentTerm;
+        node.VotedFor = votedFor;
+        node.log.AddRange(log);
+
+        return node;
+    }
 
 
     /// <summary>
