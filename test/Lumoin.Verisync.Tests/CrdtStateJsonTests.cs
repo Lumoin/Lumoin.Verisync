@@ -1,7 +1,8 @@
-using System.Buffers;
-using System.Text.Json;
 using Lumoin.Verisync.Core;
 using Lumoin.Verisync.Json;
+using System.Buffers;
+using System.Text;
+using System.Text.Json;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -152,6 +153,45 @@ internal sealed class CrdtStateJsonTests
 
 
     [TestMethod]
+    public void DeserializerRejectsNegativeReplicaCounter()
+    {
+        //A hostile peer must not be able to inject negative entries: max-merge would then silently
+        //prefer stale values and counter monotonicity would be corrupted.
+        string json = $$"""{"entries":[{"replica":"{{HexReplica(1)}}","count":-1}]}""";
+
+        Assert.ThrowsExactly<JsonException>(() => Deserialize(json, CrdtStateJson.CreateVectorClockStateDeserializer()));
+    }
+
+
+    [TestMethod]
+    public void DeserializerRejectsWrongLengthReplicaId()
+    {
+        string json = """{"entries":[{"replica":"0102","count":1}]}""";
+
+        Assert.ThrowsExactly<JsonException>(() => Deserialize(json, CrdtStateJson.CreateVectorClockStateDeserializer()));
+    }
+
+
+    [TestMethod]
+    public void DeserializerRejectsNonHexReplicaId()
+    {
+        string json = """{"entries":[{"replica":"not-hex","count":1}]}""";
+
+        Assert.ThrowsExactly<JsonException>(() => Deserialize(json, CrdtStateJson.CreateVectorClockStateDeserializer()));
+    }
+
+
+    [TestMethod]
+    public void DeserializerRejectsNonPositiveDotCounter()
+    {
+        //Dots are minted starting at one; a zero or negative counter is not a value any replica produces.
+        string json = $$"""{"context":{"entries":[]},"entries":[{"replica":"{{HexReplica(1)}}","counter":0,"value":"x"}]}""";
+
+        Assert.ThrowsExactly<JsonException>(() => Deserialize(json, CrdtStateJson.CreateDottedVersionVectorSetStateDeserializer(ReadString)));
+    }
+
+
+    [TestMethod]
     public void StateCodecFactoriesRejectNullValueDelegates()
     {
         Assert.ThrowsExactly<ArgumentNullException>(() => CrdtStateJson.CreateLwwRegisterStateSerializer<string>(null!));
@@ -173,6 +213,21 @@ internal sealed class CrdtStateJsonTests
         serialize(state, buffer);
 
         return deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory));
+    }
+
+
+    private static TMessage Deserialize<TMessage>(string json, DeserializeMessageDelegate<TMessage> deserializer)
+    {
+        return deserializer(new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(json)));
+    }
+
+
+    private static string HexReplica(byte id)
+    {
+        Span<byte> buffer = stackalloc byte[ReplicaId.Size];
+        buffer[0] = id;
+
+        return Convert.ToHexStringLower(buffer);
     }
 
 

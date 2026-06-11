@@ -1,5 +1,5 @@
-using System.Collections.Immutable;
 using Lumoin.Verisync.Core;
+using System.Collections.Immutable;
 
 namespace Lumoin.Verisync.Tests;
 

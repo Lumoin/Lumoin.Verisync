@@ -1,7 +1,7 @@
+using Lumoin.Verisync.Core;
 using System;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
-using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Json;
 
@@ -49,7 +49,26 @@ public static class JsonChannelSerialization
         {
             var jsonReader = new Utf8JsonReader(payload);
 
-            return JsonSerializer.Deserialize(ref jsonReader, typeInfo)!;
+            TMessage? message = JsonSerializer.Deserialize(ref jsonReader, typeInfo);
+
+            //A channel message is never null. A payload that is the JSON literal "null" deserializes to a
+            //null reference, which the null-forgiving operator would otherwise smuggle through; reject it
+            //explicitly so the channel never yields a null message.
+            if(message is null)
+            {
+                throw new JsonException("the payload is the JSON literal null, which is not a message");
+            }
+
+            //Reject trailing data after the JSON value. Deserialize stops at the end of the first value, so
+            //anything that remains (beyond insignificant whitespace, which Utf8JsonReader skips) is a second
+            //token. Allowing it would let multiple distinct byte sequences decode to the same message, which
+            //breaks canonical-bytes assumptions if these codecs are ever reused near digest-relevant content.
+            if(jsonReader.Read())
+            {
+                throw new JsonException("the payload contains trailing data after the JSON value");
+            }
+
+            return message;
         };
     }
 }

@@ -1,7 +1,7 @@
+using Lumoin.Verisync.Core;
 using System;
 using System.Buffers;
 using System.Text.Json;
-using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Json;
 
@@ -43,6 +43,13 @@ public static class ConsensusMessageJson
                 WriteBallot(writer, "ballot", accept.Ballot);
                 writer.WritePropertyName("value");
                 writeValue(writer, accept.Value);
+
+                //The piggybacked next ballot is optional; an absent field decodes as no piggyback, keeping
+                //wire back-compat with payloads that predate the field.
+                if(accept.Next is { } next)
+                {
+                    WriteBallot(writer, "next", next);
+                }
             }
             else
             {
@@ -73,7 +80,12 @@ public static class ConsensusMessageJson
             return kind switch
             {
                 "prepare" => new PrepareRequest<TValue>(ballot),
-                "accept" => new AcceptRequest<TValue>(ballot, readValue(root.GetProperty("value"))),
+                "accept" => new AcceptRequest<TValue>(
+                    ballot,
+                    readValue(root.GetProperty("value")),
+                    //An absent (or null) next field decodes as no piggyback, so payloads that predate the
+                    //field deserialize unchanged.
+                    root.TryGetProperty("next", out JsonElement next) && next.ValueKind != JsonValueKind.Null ? ReadBallot(next) : null),
                 _ => throw new NotSupportedException($"Unknown request kind '{kind}'.")
             };
         };

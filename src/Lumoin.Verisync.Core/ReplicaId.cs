@@ -14,8 +14,8 @@ namespace Lumoin.Verisync.Core;
 /// <para>
 /// A <see cref="ReplicaId"/> is a value type whose <see cref="Size"/> bytes live inline in whatever frame,
 /// field, array, or dictionary entry holds it. There is no separate allocation, no owner to dispose, and no
-/// GC object per identity: an id's lifetime is exactly its container's. This mirrors the family's inline
-/// fixed-identity idiom (Veritas <c>Digest32</c>) and ports to a Rust <c>[u8; 32]</c> directly.
+/// GC object per identity: an id's lifetime is exactly its container's. This is the inline fixed-identity
+/// idiom, and it ports to a Rust <c>[u8; 32]</c> directly.
 /// </para>
 /// <para>
 /// A replica identity is <em>public protocol state</em> — acceptors, learners, and reads all see it, quorum

@@ -56,7 +56,18 @@ public sealed class VerisyncMemoryPool<T>: MemoryPool<T>
     /// <summary>A shared, lazily created pool using the default strategy.</summary>
     public static new VerisyncMemoryPool<T> Shared => SharedInstance.Value;
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// The largest buffer size this pool will accept, reported as <see cref="int.MaxValue"/> for the base
+    /// <see cref="MemoryPool{T}"/> contract.
+    /// </summary>
+    /// <remarks>
+    /// The <em>effective</em> maximum is smaller: a rent of <c>bufferSize</c> allocates a slab of
+    /// <c>bufferSize * <see cref="SlabCapacityStrategy"/>(bufferSize)</c> elements as a single contiguous
+    /// array, so the real ceiling is the largest <c>bufferSize</c> whose slab product does not exceed
+    /// <see cref="Array.MaxLength"/>. With the <see cref="DefaultCapacityStrategy"/> (capacity 4 for large
+    /// buffers) that is roughly <c>Array.MaxLength / 4</c>. A rent whose slab product would overflow is
+    /// rejected with <see cref="ArgumentOutOfRangeException"/> before any allocation is attempted.
+    /// </remarks>
     public override int MaxBufferSize => int.MaxValue;
 
     /// <summary>Whether rental spans are emitted.</summary>
@@ -83,7 +94,10 @@ public sealed class VerisyncMemoryPool<T>: MemoryPool<T>
     /// <param name="bufferSize">The exact number of elements required.</param>
     /// <returns>An owner over exactly <paramref name="bufferSize"/> elements. Dispose it to return the memory.</returns>
     /// <exception cref="ObjectDisposedException">Thrown if the pool has been disposed.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="bufferSize"/> is less than or equal to zero.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown if <paramref name="bufferSize"/> is less than or equal to zero, or if the backing slab it would
+    /// allocate (<paramref name="bufferSize"/> times the configured capacity) exceeds <see cref="Array.MaxLength"/>.
+    /// </exception>
     [SuppressMessage("Naming", "CA1725:Parameter names should match base declaration", Justification = "This pool returns a buffer of exactly the requested size, so the parameter is named for that contract.")]
     public override IMemoryOwner<T> Rent(int bufferSize)
     {
@@ -96,42 +110,54 @@ public sealed class VerisyncMemoryPool<T>: MemoryPool<T>
         activity?.SetTag(VerisyncTelemetry.TagBufferSize, bufferSize);
 
         IMemoryOwner<T> result;
-        using(LockObject.EnterScope())
+        try
         {
-            if(!Slabs.TryGetValue(bufferSize, out List<Slab>? slabList))
+            using(LockObject.EnterScope())
             {
-                slabList = [];
-                Slabs.Add(bufferSize, slabList);
-            }
-
-            Slab? available = null;
-            ArraySegment<T> rented = default;
-            foreach(Slab slab in slabList)
-            {
-                if(slab.TryRent(out rented))
+                if(!Slabs.TryGetValue(bufferSize, out List<Slab>? slabList))
                 {
-                    available = slab;
-                    break;
+                    slabList = [];
+                    Slabs.Add(bufferSize, slabList);
                 }
+
+                Slab? available = null;
+                ArraySegment<T> rented = default;
+                foreach(Slab slab in slabList)
+                {
+                    if(slab.TryRent(out rented))
+                    {
+                        available = slab;
+                        break;
+                    }
+                }
+
+                if(available is null)
+                {
+                    int capacity = CapacityStrategy(bufferSize);
+                    available = new Slab(bufferSize, capacity);
+                    slabList.Add(available);
+
+                    Interlocked.Increment(ref totalSlabs);
+                    Interlocked.Add(ref totalMemoryAllocated, (long)bufferSize * capacity);
+                    Interlocked.Add(ref totalSegments, capacity);
+                    VerisyncMetrics.MemoryAllocatedBytes.Record((long)bufferSize * capacity);
+
+                    bool rentSuccess = available.TryRent(out rented);
+                    Debug.Assert(rentSuccess, "A new slab should always have an available segment.");
+                }
+
+                Interlocked.Increment(ref activeRentals);
+                result = new ExactSizeMemoryOwner(rented, available, this, activity);
             }
+        }
+        catch(Exception ex)
+        {
+            //Slab construction can throw (capacity strategy returning <= 0, or a slab-size product that
+            //overflows int): stop and dispose the rental span so a throwing rent never leaks an open activity.
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.Dispose();
 
-            if(available is null)
-            {
-                int capacity = CapacityStrategy(bufferSize);
-                available = new Slab(bufferSize, capacity);
-                slabList.Add(available);
-
-                Interlocked.Increment(ref totalSlabs);
-                Interlocked.Add(ref totalMemoryAllocated, (long)bufferSize * capacity);
-                Interlocked.Add(ref totalSegments, capacity);
-                VerisyncMetrics.MemoryAllocatedBytes.Record((long)bufferSize * capacity);
-
-                bool rentSuccess = available.TryRent(out rented);
-                Debug.Assert(rentSuccess, "A new slab should always have an available segment.");
-            }
-
-            Interlocked.Increment(ref activeRentals);
-            result = new ExactSizeMemoryOwner(rented, available, this, activity);
+            throw;
         }
 
         VerisyncMetrics.MemoryRented.Add(1);
@@ -220,8 +246,9 @@ public sealed class VerisyncMemoryPool<T>: MemoryPool<T>
             Interlocked.Decrement(ref activeRentals);
         }
 
+        //The MemoryActiveRentals gauge is decremented by the owner's Dispose finally block instead, so that
+        //a return racing pool shutdown (which throws out of slab.Return above) still balances the gauge.
         VerisyncMetrics.MemoryReturned.Add(1);
-        VerisyncMetrics.MemoryActiveRentals.Add(-1);
         VerisyncMetrics.MemoryRentalDurationMs.Record(Stopwatch.GetElapsedTime(rentTimestamp).TotalMilliseconds);
     }
 
@@ -239,9 +266,19 @@ public sealed class VerisyncMemoryPool<T>: MemoryPool<T>
             ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(segmentSize, 0);
             ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(segmentCount, 0);
 
+            //The backing buffer is a single contiguous array of segmentSize * segmentCount elements.
+            //An unchecked int multiply would wrap (negative -> a confusing OverflowException from the
+            //array allocation, or a small positive -> a later ArraySegment ArgumentException), so the
+            //product is validated against int range up front with a clear message.
+            long totalLength = (long)segmentSize * segmentCount;
+            if(totalLength > Array.MaxLength)
+            {
+                throw new ArgumentOutOfRangeException(nameof(segmentSize), segmentSize, $"The slab buffer length {segmentSize} * {segmentCount} = {totalLength} exceeds the maximum array length of {Array.MaxLength}.");
+            }
+
             SegmentSize = segmentSize;
             SegmentCount = segmentCount;
-            Buffer = new T[segmentSize * segmentCount];
+            Buffer = new T[(int)totalLength];
             RentedSegments = new BitArray(segmentCount, false);
             AvailableSegments = new Stack<int>(segmentCount);
             for(int i = 0; i < segmentCount; i++)
@@ -321,7 +358,7 @@ public sealed class VerisyncMemoryPool<T>: MemoryPool<T>
     private sealed class ExactSizeMemoryOwner: IMemoryOwner<T>
     {
         private readonly Slab slab;
-        private bool disposed;
+        private int disposed;
 
         private ArraySegment<T> Segment { get; }
         private VerisyncMemoryPool<T> Pool { get; }
@@ -349,7 +386,7 @@ public sealed class VerisyncMemoryPool<T>: MemoryPool<T>
         {
             get
             {
-                ObjectDisposedException.ThrowIf(disposed, this);
+                ObjectDisposedException.ThrowIf(disposed != 0, this);
 
                 return Segment;
             }
@@ -357,7 +394,10 @@ public sealed class VerisyncMemoryPool<T>: MemoryPool<T>
 
         public void Dispose()
         {
-            if(disposed)
+            //Idempotent and race-safe: only the thread that flips the flag from 0 runs the return path.
+            //A plain bool let two threads both pass the check, with the loser hitting the pool's
+            //double-return validation and surfacing InvalidOperationException out of Dispose.
+            if(Interlocked.Exchange(ref disposed, 1) != 0)
             {
                 return;
             }
@@ -374,8 +414,11 @@ public sealed class VerisyncMemoryPool<T>: MemoryPool<T>
             }
             finally
             {
+                //Decrement the active-rentals gauge here rather than inside Pool.Return so it always pairs
+                //with the increment Rent emitted, even when the return raced pool shutdown and threw above.
+                //Leaving it in Return would permanently inflate the gauge on the shutdown-race path.
+                VerisyncMetrics.MemoryActiveRentals.Add(-1);
                 Lifecycle?.Dispose();
-                disposed = true;
             }
         }
     }

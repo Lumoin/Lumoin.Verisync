@@ -1,10 +1,7 @@
-using System.Buffers;
-using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
-using System.Linq;
-using System.Threading.Channels;
-using System.Threading.Tasks;
 using Lumoin.Verisync.Core;
+using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
+using System.Threading.Channels;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -74,7 +71,7 @@ internal sealed class FastProposerTests
             runTasks[i] = nodes[i].RunAsync(
                 requests.Reader.ReadAllAsync(TestContext.CancellationToken),
                 (reply, token) => replies.Writer.WriteAsync(reply, token),
-                TestContext.CancellationToken);
+                cancellationToken: TestContext.CancellationToken);
 
             endpoints[i] = async (request, token) =>
             {

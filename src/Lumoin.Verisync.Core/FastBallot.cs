@@ -33,6 +33,12 @@ public readonly record struct FastBallot(int Round, ReplicaId? Proposer): ICompa
 
     /// <summary>The shared fast-round ballot for the given round.</summary>
     /// <param name="round">The round number. Must be positive.</param>
+    /// <remarks>
+    /// Only the initial fast round is pre-promised and therefore blind-writable; acceptors accept a fast
+    /// ballot only while it equals their promise, so fast rounds beyond <see cref="InitialFast"/> exist for
+    /// ordering purposes but cannot carry writes — a contended fast round is superseded by a classic
+    /// recovery ballot, never by a higher fast round.
+    /// </remarks>
     public static FastBallot Fast(int round)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(round, 1);

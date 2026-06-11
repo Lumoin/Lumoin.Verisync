@@ -1,7 +1,6 @@
+using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
-using System.Threading.Tasks;
-using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -99,6 +98,28 @@ internal sealed class SimulatedClusterTests
 
 
     [TestMethod]
+    public async Task PiggybackedNextBallotChainsTwoFastRoundsCoordinatorFree()
+    {
+        SimulatedCluster<string> cluster = new(5);
+        FastProposer<string> proposer = cluster.CreateProposer();
+
+        //The first fast write piggybacks fast(2), establishing the next fast round on every acceptor that
+        //accepts — the recurring-fast-round handoff the original Fast CASPaxos design uses.
+        (int firstAccepted, bool firstCommitted) = await proposer.TryFastWriteAsync(FastBallot.Fast(1), "x", TestContext.CancellationToken, FastBallot.Fast(2)).ConfigureAwait(false);
+
+        Assert.AreEqual(5, firstAccepted);
+        Assert.IsTrue(firstCommitted);
+
+        //The second write commits at fast(2) in a single round trip — no prepare, because the piggyback
+        //already promised fast(2) on each acceptor.
+        (int secondAccepted, bool secondCommitted) = await proposer.TryFastWriteAsync(FastBallot.Fast(2), "y", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(5, secondAccepted);
+        Assert.IsTrue(secondCommitted);
+    }
+
+
+    [TestMethod]
     public async Task HealingAPartitionRestoresTheFastQuorum()
     {
         SimulatedCluster<string> cluster = new(5);
@@ -111,7 +132,10 @@ internal sealed class SimulatedClusterTests
 
         cluster.Heal(3);
 
-        (int accepted, bool committedAfterHeal) = await proposer.TryFastWriteAsync(FastBallot.Fast(2), "x", TestContext.CancellationToken).ConfigureAwait(false);
+        //A fast retry reuses the same fast ballot and value: the three earlier acceptors treat it
+        //idempotently and the healed acceptor accepts it fresh. A higher fast round would be rejected —
+        //only the pre-promised initial fast round is blind-writable.
+        (int accepted, bool committedAfterHeal) = await proposer.TryFastWriteAsync(FastBallot.Fast(1), "x", TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreEqual(4, accepted);
         Assert.IsTrue(committedAfterHeal);

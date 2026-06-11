@@ -1,8 +1,7 @@
-using System.Buffers;
-using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using CsCheck;
 using Lumoin.Verisync.Core;
+using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -60,6 +59,46 @@ internal sealed class RgaPropertyTests
     }
 
 
+    [TestMethod]
+    public void InsertAfterIsIntentionPreservingOverMergedState()
+    {
+        //A replica that merges arbitrary remote state and inserts after any visible element must see
+        //the new element immediately after that element, regardless of what siblings already hang there.
+        Gen.Select(GenRgaUsing(R0), GenRgaUsing(R1), Gen.Int[0, 100], (a, b, pick) => (a, b, pick)).Sample(input =>
+        {
+            Rga<int> merged = input.a.Merge(input.b);
+            if(merged.Count == 0)
+            {
+                return;
+            }
+
+            IReadOnlyList<int> before = merged.Values;
+            int targetIndex = input.pick % before.Count;
+            Dot target = FindIdAt(merged, targetIndex);
+            (Rga<int> inserted, _) = merged.InsertAfter(target, -1, R2);
+
+            Assert.AreEqual(-1, inserted.Values[targetIndex + 1]);
+        });
+    }
+
+
+    private static Dot FindIdAt(Rga<int> rga, int index)
+    {
+        //Values are globally unique by construction (per-replica ranges in BuildChain), so the visible
+        //element's identity is recoverable from the serialized vertices by value.
+        int value = rga.Values[index];
+        foreach(RgaVertexEntry<int> entry in rga.ToState().Vertices)
+        {
+            if(entry.Value == value)
+            {
+                return new Dot(ReplicaId.FromSpan(entry.Id.Replica.AsSpan()), entry.Id.Counter);
+            }
+        }
+
+        throw new InvalidOperationException("The visible element was not found.");
+    }
+
+
     private static Gen<Rga<int>> GenRgaUsing(ReplicaId replica)
     {
         return Gen.Int[0, 100].Array[0, 5].Select(seeds => BuildChain(replica, seeds));
@@ -70,7 +109,9 @@ internal sealed class RgaPropertyTests
     {
         Rga<int> rga = Rga<int>.Empty;
         var ids = new List<Dot>();
-        int value = 0;
+
+        //Per-replica value ranges keep values globally unique across merged operands.
+        int value = replica.AsSpan()[0] * 1000;
 
         foreach(int seed in seeds)
         {

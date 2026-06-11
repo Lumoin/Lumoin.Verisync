@@ -1,7 +1,7 @@
+using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
-using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -146,11 +146,11 @@ internal sealed class StateCodecTests
         //The tombstone survived, so merging the pre-removal array does not resurrect the element.
         Assert.HasCount(2, back.Merge(array).Values);
 
-        //The causal context survived, so an insert after reload gets a fresh dot and converges on merge.
-        //After "a", the tombstoned "b" (counter 2) still sorts before the new "d" (counter 1), and "c"
-        //follows its predecessor "b", so "d" lands after "c".
+        //The causal context survived, so an insert after reload gets a fresh dot that dominates every
+        //observed identity: "d" lands immediately after its predecessor "a", ahead of the tombstoned
+        //"b" and its subtree, and converges on merge.
         (Rga<string> extended, _) = back.InsertAfter(first, "d", R2);
-        string[] expectedExtended = ["a", "c", "d"];
+        string[] expectedExtended = ["a", "d", "c"];
         CollectionAssert.AreEqual(expectedExtended, extended.Values.ToArray());
         Assert.AreEqual(extended, extended.Merge(array));
     }

@@ -1,6 +1,6 @@
+using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
-using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -163,6 +163,18 @@ internal sealed class PNCounterTests
         //Value nets to zero, but the state is not the empty counter: both halves carry history.
         Assert.AreEqual(0, incThenDec.Value);
         Assert.AreNotEqual(PNCounter.Empty, incThenDec);
+    }
+
+
+    [TestMethod]
+    public void IncrementInheritsGCounterOverflowGuard()
+    {
+        //PNCounter wraps two GCounters, so the checked-arithmetic guard carries over to its increment half.
+        PNCounter atMax = PNCounter.Empty.Increment(R1, int.MaxValue);
+
+        Assert.ThrowsExactly<OverflowException>(() => atMax.Increment(R1, 1));
+
+        Assert.AreEqual(int.MaxValue, atMax.Value);
     }
 
 
