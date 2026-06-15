@@ -1,3 +1,4 @@
+using System;
 using BenchmarkDotNet.Running;
 
 namespace Lumoin.Verisync.Benchmarks;
@@ -18,13 +19,29 @@ internal static class Program
     /// runs one benchmark class.
     /// </para>
     /// <para>
-    /// BenchmarkDotNet's own argument parser handles every flag
-    /// after the bare <c>--</c>, so the entry point itself does
-    /// not need to interpret <paramref name="args"/>.
+    /// The driver intercepts two custom flags before the switcher:
+    /// <c>--reconciliation-overhead</c> runs <see cref="ReconciliationOverheadReport.Run"/>, a seed-pinned
+    /// wire-cost measurement; <c>--reconciliation-soak</c> runs <see cref="ReconciliationSoak.Run"/>, a
+    /// long-running throughput and allocation baseline. Neither is a timing benchmark. Every other flag after
+    /// the bare <c>--</c> is handed to BenchmarkDotNet's own argument parser.
     /// </para>
     /// </remarks>
     public static void Main(string[] args)
     {
+        if(Array.Exists(args, argument => string.Equals(argument, "--reconciliation-overhead", StringComparison.Ordinal)))
+        {
+            ReconciliationOverheadReport.Run();
+
+            return;
+        }
+
+        if(Array.Exists(args, argument => string.Equals(argument, "--reconciliation-soak", StringComparison.Ordinal)))
+        {
+            ReconciliationSoak.Run();
+
+            return;
+        }
+
         BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }

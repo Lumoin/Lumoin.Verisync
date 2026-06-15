@@ -124,7 +124,16 @@
         "contentHash": "CJW+x/F6fmRQ7N6K8paasTw9PDZp4t7G76UjGNlSDgoHPF0h08vTzLYbLZpOLEJSg35d5wy2jCXGo84EN05DpQ=="
       },
       "lumoin.verisync.core": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Base": "[0.0.2, )"
+        }
+      },
+      "Lumoin.Base": {
+        "type": "CentralTransitive",
+        "requested": "[0.0.2, )",
+        "resolved": "0.0.2",
+        "contentHash": "mFsXJq9SVg0poCevJ13u40iETZ6/fhNgsY/jFV+47PCqyTLz1KAQcjaM12dwUFba4GVcBqAOeNw2QseqOU6X2g=="
       },
       "System.Security.Cryptography.Xml": {
         "type": "CentralTransitive",

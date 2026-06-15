@@ -95,7 +95,7 @@ internal sealed class LogCommitmentJsonTests
         string json = SerializeSeal(seal);
         string tampered = FlipFirstCommitmentDigit(json);
 
-        Assert.ThrowsExactly<JsonException>(() => DeserializeSeal(tampered));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeSeal(tampered));
     }
 
 
@@ -104,7 +104,7 @@ internal sealed class LogCommitmentJsonTests
     {
         string json = """{"treeSize":1,"root":"zz"}""";
 
-        Assert.ThrowsExactly<JsonException>(
+        Assert.ThrowsExactly<MessageDeserializationException>(
             () => Deserialize(json, LogCommitmentJson.CreateLogHeadDeserializer()));
     }
 
@@ -114,7 +114,7 @@ internal sealed class LogCommitmentJsonTests
     {
         string json = """{"leafIndex":0,"treeSize":2,"path":["zz"]}""";
 
-        Assert.ThrowsExactly<JsonException>(
+        Assert.ThrowsExactly<MessageDeserializationException>(
             () => Deserialize(json, LogCommitmentJson.CreateInclusionProofDeserializer()));
     }
 
@@ -124,7 +124,7 @@ internal sealed class LogCommitmentJsonTests
     {
         string json = """{"treeSize":-1,"root":"00"}""";
 
-        Assert.ThrowsExactly<JsonException>(
+        Assert.ThrowsExactly<MessageDeserializationException>(
             () => Deserialize(json, LogCommitmentJson.CreateLogHeadDeserializer()));
     }
 
@@ -133,10 +133,10 @@ internal sealed class LogCommitmentJsonTests
     public void InvertedSealRangeIsRejected()
     {
         //A last index below the first index is rejected by SegmentSeal.Create; the codec wraps it so the
-        //hostile payload surfaces as a JsonException, not a raw ArgumentOutOfRangeException.
+        //hostile payload surfaces as MessageDeserializationException, not a raw ArgumentOutOfRangeException.
         string json = """{"firstIndex":5,"lastIndex":2,"previousSealDigest":null,"commitment":"ab","digest":"00","proofs":[]}""";
 
-        Assert.ThrowsExactly<JsonException>(() => DeserializeSeal(json));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeSeal(json));
     }
 
 
@@ -145,9 +145,40 @@ internal sealed class LogCommitmentJsonTests
     {
         string json = """{"treeSize":1,"root":"de""";
 
-        //JsonDocument.Parse throws the internal JsonReaderException subclass, so match by base type.
-        Assert.Throws<JsonException>(
+        //JsonDocument.Parse throws an internal JsonReaderException, which the codec wraps as the uniform
+        //MessageDeserializationException.
+        Assert.Throws<MessageDeserializationException>(
             () => Deserialize(json, LogCommitmentJson.CreateLogHeadDeserializer()));
+    }
+
+
+    [TestMethod]
+    public void MissingRequiredFieldsFailClosed()
+    {
+        //A required field absent from an otherwise well-formed object must fail closed as MessageDeserializationException, not
+        //surface the framework's KeyNotFoundException from a raw property accessor. One omission per arm.
+
+        //LogHead.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"root":"00"}""", LogCommitmentJson.CreateLogHeadDeserializer()));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"treeSize":1}""", LogCommitmentJson.CreateLogHeadDeserializer()));
+
+        //Inclusion proof.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"treeSize":2,"path":[]}""", LogCommitmentJson.CreateInclusionProofDeserializer()));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"leafIndex":0,"path":[]}""", LogCommitmentJson.CreateInclusionProofDeserializer()));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"leafIndex":0,"treeSize":2}""", LogCommitmentJson.CreateInclusionProofDeserializer()));
+
+        //Consistency proof.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"newTreeSize":2,"path":[]}""", LogCommitmentJson.CreateConsistencyProofDeserializer()));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"oldTreeSize":1,"path":[]}""", LogCommitmentJson.CreateConsistencyProofDeserializer()));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"oldTreeSize":1,"newTreeSize":2}""", LogCommitmentJson.CreateConsistencyProofDeserializer()));
+
+        //Segment seal: each of its six fields (the read order is first, last, previous, commitment, digest, proofs).
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeSeal("""{"lastIndex":2,"previousSealDigest":null,"commitment":"ab","digest":"00","proofs":[]}"""));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeSeal("""{"firstIndex":0,"previousSealDigest":null,"commitment":"ab","digest":"00","proofs":[]}"""));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeSeal("""{"firstIndex":0,"lastIndex":2,"commitment":"ab","digest":"00","proofs":[]}"""));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeSeal("""{"firstIndex":0,"lastIndex":2,"previousSealDigest":null,"digest":"00","proofs":[]}"""));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeSeal("""{"firstIndex":0,"lastIndex":2,"previousSealDigest":null,"commitment":"ab","proofs":[]}"""));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeSeal("""{"firstIndex":0,"lastIndex":2,"previousSealDigest":null,"commitment":"ab","digest":"00"}"""));
     }
 
 

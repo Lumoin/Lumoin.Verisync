@@ -22,6 +22,8 @@
       under AnalysisMode=All and TreatWarningsAsErrors=true. Suppress the
       ones that fire on the canonical benchmark shape.
 
+      CA1515: Types can be made internal. Benchmark classes must be public
+              for the BenchmarkSwitcher to reflect over and discover them.
       CA1707: Identifiers should not contain underscores. BDN convention
               uses underscored parameter names in [Params]-driven reports.
       CA1812: Avoid uninstantiated internal classes. Benchmark classes are
@@ -33,11 +35,12 @@
               host code synchronously waits on async paths to obtain wall
               time over the whole operation.
     -->
-    <NoWarn>$(NoWarn);CA1707;CA1812;CA1822;CA1849</NoWarn>
+    <NoWarn>$(NoWarn);CA1515;CA1707;CA1812;CA1822;CA1849</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="BenchmarkDotNet.Diagnostics.Windows" />
   </ItemGroup>
 
   <ItemGroup>

@@ -5,4 +5,8 @@
     <Description>Core primitives for Lumoin.Verisync: replica identity, causal contexts, version vectors, dot stores, and base CRDT shapes.</Description>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Lumoin.Base" />
+  </ItemGroup>
+
 </Project>

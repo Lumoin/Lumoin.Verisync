@@ -18,20 +18,8 @@ public static class VerisyncTelemetry
     public const string MeterName = "Lumoin.Verisync";
 
 
-    /// <summary>Metric name for the count of memory rentals taken from a pool.</summary>
-    public const string MemoryRented = "verisync.memory.rented";
-
-    /// <summary>Metric name for the count of memory rentals returned to a pool.</summary>
-    public const string MemoryReturned = "verisync.memory.returned";
-
-    /// <summary>Metric name for the current number of active (rented and not yet returned) memory rentals.</summary>
-    public const string MemoryActiveRentals = "verisync.memory.active_rentals";
-
     /// <summary>Metric name for the distribution of allocated buffer sizes in bytes.</summary>
     public const string MemoryAllocatedBytes = "verisync.memory.allocated_bytes";
-
-    /// <summary>Metric name for the distribution of pool rental durations in milliseconds.</summary>
-    public const string MemoryRentalDurationMs = "verisync.memory.rental_duration_ms";
 
     /// <summary>Metric name for the distribution of tagged-memory lifetimes in milliseconds.</summary>
     public const string MemoryLifetimeMs = "verisync.memory.lifetime_ms";
@@ -49,7 +37,4 @@ public static class VerisyncTelemetry
 
     /// <summary>Activity name for the lifetime span of a tagged-memory instance.</summary>
     public const string ActivityNameMemoryLifetime = "verisync.memory.lifetime";
-
-    /// <summary>Activity name for the rental span of a pool-backed buffer.</summary>
-    public const string ActivityNamePoolRental = "verisync.memory.pool.rental";
 }

@@ -45,7 +45,7 @@ public static class JsonChannelSerialization
     {
         ArgumentNullException.ThrowIfNull(typeInfo);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<TMessage>(payload =>
         {
             var jsonReader = new Utf8JsonReader(payload);
 
@@ -69,6 +69,6 @@ public static class JsonChannelSerialization
             }
 
             return message;
-        };
+        });
     }
 }

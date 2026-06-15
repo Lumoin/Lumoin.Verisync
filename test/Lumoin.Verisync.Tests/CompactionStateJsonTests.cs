@@ -10,7 +10,8 @@ namespace Lumoin.Verisync.Tests;
 /// <summary>
 /// Round-trips both compaction-strategy JSON codecs — the offset-anchored sequence state and the RGA
 /// run-length state — for uncompacted and compacted instances, and asserts the codecs fail closed with
-/// <see cref="JsonException"/> on hand-authored payloads that mutate one field of the wire format at a time.
+/// <see cref="MessageDeserializationException"/> on hand-authored payloads that mutate one field of the wire
+/// format at a time.
 /// </summary>
 [TestClass]
 internal sealed class CompactionStateJsonTests
@@ -112,7 +113,7 @@ internal sealed class CompactionStateJsonTests
     {
         string json = OffsetStateJson($$"""{"id":{"replica":"not-hex","counter":1},"anchor":{"baseOffset":0,"liveId":null},"value":99}""");
 
-        Assert.ThrowsExactly<JsonException>(() => DeserializeOffset(json));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeOffset(json));
     }
 
 
@@ -121,7 +122,7 @@ internal sealed class CompactionStateJsonTests
     {
         string json = OffsetStateJson($$"""{"id":{"replica":"0102","counter":1},"anchor":{"baseOffset":0,"liveId":null},"value":99}""");
 
-        Assert.ThrowsExactly<JsonException>(() => DeserializeOffset(json));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeOffset(json));
     }
 
 
@@ -130,7 +131,7 @@ internal sealed class CompactionStateJsonTests
     {
         string json = OffsetStateJson($$"""{"id":{"replica":"{{Hex(R1)}}","counter":0},"anchor":{"baseOffset":0,"liveId":null},"value":99}""");
 
-        Assert.ThrowsExactly<JsonException>(() => DeserializeOffset(json));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeOffset(json));
     }
 
 
@@ -140,7 +141,7 @@ internal sealed class CompactionStateJsonTests
         //A non-null liveId paired with a baseOffset other than -1 is a shape no honest anchor takes.
         string json = OffsetStateJson($$$"""{"id":{"replica":"{{{Hex(R1)}}}","counter":1},"anchor":{"baseOffset":0,"liveId":{"replica":"{{{Hex(R2)}}}","counter":1}},"value":99}""");
 
-        Assert.ThrowsExactly<JsonException>(() => DeserializeOffset(json));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeOffset(json));
     }
 
 
@@ -149,7 +150,7 @@ internal sealed class CompactionStateJsonTests
     {
         string json = OffsetStateJson($$"""{"id":{"replica":"{{Hex(R1)}}","counter":1},"anchor":{"baseOffset":-2,"liveId":null},"value":99}""");
 
-        Assert.ThrowsExactly<JsonException>(() => DeserializeOffset(json));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeOffset(json));
     }
 
 
@@ -168,7 +169,7 @@ internal sealed class CompactionStateJsonTests
         }
         """;
 
-        Assert.ThrowsExactly<JsonException>(() => DeserializeOffset(json));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeOffset(json));
     }
 
 
@@ -185,7 +186,7 @@ internal sealed class CompactionStateJsonTests
         }
         """;
 
-        Assert.ThrowsExactly<JsonException>(() => DeserializeRunState(json));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeRunState(json));
     }
 
 
@@ -201,7 +202,7 @@ internal sealed class CompactionStateJsonTests
         }
         """;
 
-        Assert.ThrowsExactly<JsonException>(() => DeserializeRunState(json));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeRunState(json));
     }
 
 
@@ -217,7 +218,7 @@ internal sealed class CompactionStateJsonTests
         }
         """;
 
-        Assert.ThrowsExactly<JsonException>(() => DeserializeRunState(json));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeRunState(json));
     }
 
 

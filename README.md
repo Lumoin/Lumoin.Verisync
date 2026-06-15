@@ -38,7 +38,7 @@ Verisync is designed to be a peer of credential, identity, and graph stacks rath
 
 **Pluggable transport.** The channel seam is `System.IO.Pipelines` with serialization injected as delegates: length-prefixed frames over any duplex byte stream. JSON and CBOR implementations are provided; the library does not own sockets, schedulers, or clocks.
 
-**Disciplined memory.** Byte payloads rent from an exact-size slab pool (`VerisyncMemoryPool`) wired to OpenTelemetry metrics and traces, and pooled memory is always deterministically returned. Small fixed-size identifiers such as `ReplicaId` are inline value types — no allocation, a mechanical mapping to `[u8; 32]` if a Rust port is ever written.
+**Disciplined memory.** Byte payloads rent from an exact-size slab pool wired to OpenTelemetry metrics and traces, and pooled memory is always deterministically returned. Small fixed-size identifiers such as `ReplicaId` are inline value types — no allocation, a mechanical mapping to `[u8; 32]` if a Rust port is ever written.
 
 ## Architecture principles
 

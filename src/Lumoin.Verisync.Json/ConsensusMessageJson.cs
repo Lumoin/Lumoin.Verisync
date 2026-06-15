@@ -70,25 +70,25 @@ public static class ConsensusMessageJson
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<ConsensusRequest<TValue>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
-            string kind = root.GetProperty("kind").GetString()!;
-            FastBallot ballot = ReadBallot(root.GetProperty("ballot"));
+            string kind = RequireProperty(root, "kind", "A consensus request").GetString()!;
+            FastBallot ballot = ReadBallot(RequireProperty(root, "ballot", "A consensus request"));
 
             return kind switch
             {
                 "prepare" => new PrepareRequest<TValue>(ballot),
                 "accept" => new AcceptRequest<TValue>(
                     ballot,
-                    readValue(root.GetProperty("value")),
+                    readValue(RequireProperty(root, "value", "A consensus request")),
                     //An absent (or null) next field decodes as no piggyback, so payloads that predate the
                     //field deserialize unchanged.
                     root.TryGetProperty("next", out JsonElement next) && next.ValueKind != JsonValueKind.Null ? ReadBallot(next) : null),
                 _ => throw new NotSupportedException($"Unknown request kind '{kind}'.")
             };
-        };
+        });
     }
 
 
@@ -148,32 +148,48 @@ public static class ConsensusMessageJson
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<ConsensusReply<TValue>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
-            string kind = root.GetProperty("kind").GetString()!;
+            string kind = RequireProperty(root, "kind", "A consensus reply").GetString()!;
 
             if(kind == "prepare-reply")
             {
-                JsonElement acceptedValue = root.GetProperty("acceptedValue");
+                JsonElement acceptedValue = RequireProperty(root, "acceptedValue", "A consensus reply");
 
                 return new PrepareReply<TValue>(
-                    root.GetProperty("promised").GetBoolean(),
-                    ReadBallot(root.GetProperty("acceptedBallot")),
+                    RequireProperty(root, "promised", "A consensus reply").GetBoolean(),
+                    ReadBallot(RequireProperty(root, "acceptedBallot", "A consensus reply")),
                     acceptedValue.ValueKind == JsonValueKind.Null ? default : readValue(acceptedValue),
-                    ReadBallot(root.GetProperty("conflictingBallot")));
+                    ReadBallot(RequireProperty(root, "conflictingBallot", "A consensus reply")));
             }
 
             if(kind == "accept-reply")
             {
                 return new AcceptReply<TValue>(
-                    root.GetProperty("accepted").GetBoolean(),
-                    ReadBallot(root.GetProperty("ballot")));
+                    RequireProperty(root, "accepted", "A consensus reply").GetBoolean(),
+                    ReadBallot(RequireProperty(root, "ballot", "A consensus reply")));
             }
 
             throw new NotSupportedException($"Unknown reply kind '{kind}'.");
-        };
+        });
+    }
+
+
+    private static JsonElement RequireProperty(JsonElement element, string name, string label)
+    {
+        //A required field absent from an object is malformed input, so it fails closed as JsonException
+        //rather than the KeyNotFoundException the raw GetProperty accessor throws. A non-object element still
+        //surfaces InvalidOperationException exactly as GetProperty did, so only the missing-field case changes.
+        //The optional piggybacked next ballot is exempt: it keeps its own TryGetProperty so its absence stays
+        //a legal "no piggyback" rather than a rejection.
+        if(!element.TryGetProperty(name, out JsonElement property))
+        {
+            throw new JsonException($"{label} must carry a '{name}' field.");
+        }
+
+        return property;
     }
 
 
@@ -197,8 +213,8 @@ public static class ConsensusMessageJson
 
     private static FastBallot ReadBallot(JsonElement element)
     {
-        int round = element.GetProperty("round").GetInt32();
-        JsonElement proposer = element.GetProperty("proposer");
+        int round = RequireProperty(element, "round", "A ballot").GetInt32();
+        JsonElement proposer = RequireProperty(element, "proposer", "A ballot");
         if(proposer.ValueKind == JsonValueKind.Null)
         {
             return new FastBallot(round, null);

@@ -41,12 +41,12 @@ public static class CrdtStateJson
     /// <returns>A deserialize delegate.</returns>
     public static DeserializeMessageDelegate<GCounterState> CreateGCounterStateDeserializer()
     {
-        return payload =>
+        return JsonMessageGuard.FailClosed<GCounterState>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
 
             return ReadGCounterState(document.RootElement);
-        };
+        });
     }
 
 
@@ -66,12 +66,12 @@ public static class CrdtStateJson
     /// <returns>A deserialize delegate.</returns>
     public static DeserializeMessageDelegate<VectorClockState> CreateVectorClockStateDeserializer()
     {
-        return payload =>
+        return JsonMessageGuard.FailClosed<VectorClockState>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
 
             return ReadVectorClockState(document.RootElement);
-        };
+        });
     }
 
 
@@ -96,15 +96,15 @@ public static class CrdtStateJson
     /// <returns>A deserialize delegate.</returns>
     public static DeserializeMessageDelegate<PNCounterState> CreatePNCounterStateDeserializer()
     {
-        return payload =>
+        return JsonMessageGuard.FailClosed<PNCounterState>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
 
             return new PNCounterState(
-                ReadGCounterState(root.GetProperty("increments")),
-                ReadGCounterState(root.GetProperty("decrements")));
-        };
+                ReadGCounterState(RequireProperty(root, "increments", "A PN-counter")),
+                ReadGCounterState(RequireProperty(root, "decrements", "A PN-counter")));
+        });
     }
 
 
@@ -156,21 +156,21 @@ public static class CrdtStateJson
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<LwwRegisterState<TValue>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
-            JsonElement value = root.GetProperty("value");
-            JsonElement writerElement = root.GetProperty("writer");
+            JsonElement value = RequireProperty(root, "value", "An LWW register");
+            JsonElement writerElement = RequireProperty(root, "writer", "An LWW register");
 
             return new LwwRegisterState<TValue>(
-                root.GetProperty("hasValue").GetBoolean(),
+                RequireProperty(root, "hasValue", "An LWW register").GetBoolean(),
                 value.ValueKind == JsonValueKind.Null ? default : readValue(value),
-                root.GetProperty("utcTicks").GetInt64(),
+                RequireProperty(root, "utcTicks", "An LWW register").GetInt64(),
                 writerElement.ValueKind == JsonValueKind.Null
                     ? ImmutableArray<byte>.Empty
                     : ReadReplicaBytes(writerElement.GetString()!));
-        };
+        });
     }
 
 
@@ -200,12 +200,12 @@ public static class CrdtStateJson
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<DottedVersionVectorSetState<TValue>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
 
             return ReadDottedVersionVectorSetState(document.RootElement, readValue);
-        };
+        });
     }
 
 
@@ -238,12 +238,12 @@ public static class CrdtStateJson
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<OrSetState<TValue>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
 
-            return new OrSetState<TValue>(ReadDottedVersionVectorSetState(document.RootElement.GetProperty("set"), readValue));
-        };
+            return new OrSetState<TValue>(ReadDottedVersionVectorSetState(RequireProperty(document.RootElement, "set", "An OR-set"), readValue));
+        });
     }
 
 
@@ -276,12 +276,12 @@ public static class CrdtStateJson
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<MvRegisterState<TValue>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
 
-            return new MvRegisterState<TValue>(ReadDottedVersionVectorSetState(document.RootElement.GetProperty("entries"), readValue));
-        };
+            return new MvRegisterState<TValue>(ReadDottedVersionVectorSetState(RequireProperty(document.RootElement, "entries", "An MV-register"), readValue));
+        });
     }
 
 
@@ -345,23 +345,23 @@ public static class CrdtStateJson
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<RgaState<TValue>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
 
-            JsonElement verticesElement = root.GetProperty("vertices");
+            JsonElement verticesElement = RequireProperty(root, "vertices", "An RGA");
             ImmutableArray<RgaVertexEntry<TValue>>.Builder vertices = ImmutableArray.CreateBuilder<RgaVertexEntry<TValue>>(verticesElement.GetArrayLength());
             foreach(JsonElement vertex in verticesElement.EnumerateArray())
             {
-                JsonElement predecessor = vertex.GetProperty("predecessor");
+                JsonElement predecessor = RequireProperty(vertex, "predecessor", "An RGA vertex");
                 vertices.Add(new RgaVertexEntry<TValue>(
-                    ReadDotState(vertex.GetProperty("id")),
+                    ReadDotState(RequireProperty(vertex, "id", "An RGA vertex")),
                     predecessor.ValueKind == JsonValueKind.Null ? null : ReadDotState(predecessor),
-                    readValue(vertex.GetProperty("value"))));
+                    readValue(RequireProperty(vertex, "value", "An RGA vertex"))));
             }
 
-            JsonElement tombstonesElement = root.GetProperty("tombstones");
+            JsonElement tombstonesElement = RequireProperty(root, "tombstones", "An RGA");
             ImmutableArray<DotState>.Builder tombstones = ImmutableArray.CreateBuilder<DotState>(tombstonesElement.GetArrayLength());
             foreach(JsonElement tombstone in tombstonesElement.EnumerateArray())
             {
@@ -369,10 +369,10 @@ public static class CrdtStateJson
             }
 
             return new RgaState<TValue>(
-                ReadVectorClockState(root.GetProperty("context")),
+                ReadVectorClockState(RequireProperty(root, "context", "An RGA")),
                 vertices.ToImmutable(),
                 tombstones.ToImmutable());
-        };
+        });
     }
 
 
@@ -469,69 +469,69 @@ public static class CrdtStateJson
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<OffsetAnchoredSequenceState<TValue>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
 
-            JsonElement baseElement = root.GetProperty("base");
+            JsonElement baseElement = RequireProperty(root, "base", "An offset-anchored sequence");
             ImmutableArray<TValue>.Builder baseValues = ImmutableArray.CreateBuilder<TValue>(baseElement.GetArrayLength());
             foreach(JsonElement value in baseElement.EnumerateArray())
             {
                 baseValues.Add(readValue(value));
             }
 
-            JsonElement removedElement = root.GetProperty("removedBaseOffsets");
+            JsonElement removedElement = RequireProperty(root, "removedBaseOffsets", "An offset-anchored sequence");
             ImmutableArray<int>.Builder removed = ImmutableArray.CreateBuilder<int>(removedElement.GetArrayLength());
             foreach(JsonElement offset in removedElement.EnumerateArray())
             {
                 removed.Add(ReadNonNegative(offset, "A removed base offset"));
             }
 
-            JsonElement verticesElement = root.GetProperty("vertices");
+            JsonElement verticesElement = RequireProperty(root, "vertices", "An offset-anchored sequence");
             ImmutableArray<OffsetVertexEntry<TValue>>.Builder vertices = ImmutableArray.CreateBuilder<OffsetVertexEntry<TValue>>(verticesElement.GetArrayLength());
             foreach(JsonElement vertex in verticesElement.EnumerateArray())
             {
                 vertices.Add(new OffsetVertexEntry<TValue>(
-                    ReadDotState(vertex.GetProperty("id")),
-                    ReadOffsetAnchorState(vertex.GetProperty("anchor")),
-                    readValue(vertex.GetProperty("value"))));
+                    ReadDotState(RequireProperty(vertex, "id", "An offset-anchored sequence vertex")),
+                    ReadOffsetAnchorState(RequireProperty(vertex, "anchor", "An offset-anchored sequence vertex")),
+                    readValue(RequireProperty(vertex, "value", "An offset-anchored sequence vertex"))));
             }
 
-            JsonElement tombstonesElement = root.GetProperty("tombstones");
+            JsonElement tombstonesElement = RequireProperty(root, "tombstones", "An offset-anchored sequence");
             ImmutableArray<DotState>.Builder tombstones = ImmutableArray.CreateBuilder<DotState>(tombstonesElement.GetArrayLength());
             foreach(JsonElement tombstone in tombstonesElement.EnumerateArray())
             {
                 tombstones.Add(ReadDotState(tombstone));
             }
 
-            JsonElement dotAnchorsElement = root.GetProperty("compactedDotAnchors");
+            JsonElement dotAnchorsElement = RequireProperty(root, "compactedDotAnchors", "An offset-anchored sequence");
             ImmutableArray<OffsetTranslationEntry>.Builder dotAnchors = ImmutableArray.CreateBuilder<OffsetTranslationEntry>(dotAnchorsElement.GetArrayLength());
             foreach(JsonElement entry in dotAnchorsElement.EnumerateArray())
             {
                 dotAnchors.Add(new OffsetTranslationEntry(
-                    ReadDotState(entry.GetProperty("dropped")),
-                    ReadOffsetAnchorState(entry.GetProperty("target"))));
+                    ReadDotState(RequireProperty(entry, "dropped", "A compacted dot anchor")),
+                    ReadOffsetAnchorState(RequireProperty(entry, "target", "A compacted dot anchor"))));
             }
 
-            JsonElement baseOffsetsElement = root.GetProperty("compactedBaseOffsets");
+            JsonElement baseOffsetsElement = RequireProperty(root, "compactedBaseOffsets", "An offset-anchored sequence");
             ImmutableArray<OffsetRebaseEntry>.Builder baseOffsets = ImmutableArray.CreateBuilder<OffsetRebaseEntry>(baseOffsetsElement.GetArrayLength());
             foreach(JsonElement entry in baseOffsetsElement.EnumerateArray())
             {
                 baseOffsets.Add(new OffsetRebaseEntry(
-                    ReadNonNegative(entry.GetProperty("previous"), "A compacted base offset's previous offset"),
-                    ReadNonNegative(entry.GetProperty("current"), "A compacted base offset's current offset")));
+                    ReadNonNegative(RequireProperty(entry, "previous", "A compacted base offset"), "A compacted base offset's previous offset"),
+                    ReadNonNegative(RequireProperty(entry, "current", "A compacted base offset"), "A compacted base offset's current offset")));
             }
 
             return new OffsetAnchoredSequenceState<TValue>(
                 baseValues.ToImmutable(),
                 removed.ToImmutable(),
-                ReadVectorClockState(root.GetProperty("context")),
+                ReadVectorClockState(RequireProperty(root, "context", "An offset-anchored sequence")),
                 vertices.ToImmutable(),
                 tombstones.ToImmutable(),
                 dotAnchors.ToImmutable(),
                 baseOffsets.ToImmutable());
-        };
+        });
     }
 
 
@@ -617,17 +617,17 @@ public static class CrdtStateJson
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<RgaRunState<TValue>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
 
-            JsonElement runsElement = root.GetProperty("runs");
+            JsonElement runsElement = RequireProperty(root, "runs", "An RGA run state");
             ImmutableArray<RgaRunEntry<TValue>>.Builder runs = ImmutableArray.CreateBuilder<RgaRunEntry<TValue>>(runsElement.GetArrayLength());
             foreach(JsonElement run in runsElement.EnumerateArray())
             {
-                JsonElement predecessor = run.GetProperty("predecessor");
-                JsonElement valuesElement = run.GetProperty("values");
+                JsonElement predecessor = RequireProperty(run, "predecessor", "An RGA run");
+                JsonElement valuesElement = RequireProperty(run, "values", "An RGA run");
                 if(valuesElement.GetArrayLength() == 0)
                 {
                     throw new JsonException("A run must carry at least one value.");
@@ -640,40 +640,40 @@ public static class CrdtStateJson
                 }
 
                 runs.Add(new RgaRunEntry<TValue>(
-                    ReadDotState(run.GetProperty("first")),
+                    ReadDotState(RequireProperty(run, "first", "An RGA run")),
                     predecessor.ValueKind == JsonValueKind.Null ? null : ReadDotState(predecessor),
                     values.ToImmutable()));
             }
 
-            JsonElement spansElement = root.GetProperty("tombstoneSpans");
+            JsonElement spansElement = RequireProperty(root, "tombstoneSpans", "An RGA run state");
             ImmutableArray<RgaTombstoneSpan>.Builder spans = ImmutableArray.CreateBuilder<RgaTombstoneSpan>(spansElement.GetArrayLength());
             foreach(JsonElement span in spansElement.EnumerateArray())
             {
-                int from = span.GetProperty("from").GetInt32();
-                int to = span.GetProperty("to").GetInt32();
+                int from = RequireProperty(span, "from", "A tombstone span").GetInt32();
+                int to = RequireProperty(span, "to", "A tombstone span").GetInt32();
                 if(from < 1 || to < from)
                 {
                     throw new JsonException($"A tombstone span must satisfy 1 <= from <= to, got from {from}, to {to}.");
                 }
 
-                spans.Add(new RgaTombstoneSpan(ReadReplicaBytes(span.GetProperty("replica").GetString()!), from, to));
+                spans.Add(new RgaTombstoneSpan(ReadReplicaBytes(RequireProperty(span, "replica", "A tombstone span").GetString()!), from, to));
             }
 
-            JsonElement translationsElement = root.GetProperty("translations");
+            JsonElement translationsElement = RequireProperty(root, "translations", "An RGA run state");
             ImmutableArray<RgaTranslationEntry>.Builder translations = ImmutableArray.CreateBuilder<RgaTranslationEntry>(translationsElement.GetArrayLength());
             foreach(JsonElement translation in translationsElement.EnumerateArray())
             {
                 translations.Add(new RgaTranslationEntry(
-                    ReadDotState(translation.GetProperty("dropped")),
-                    ReadDotState(translation.GetProperty("target"))));
+                    ReadDotState(RequireProperty(translation, "dropped", "A translation")),
+                    ReadDotState(RequireProperty(translation, "target", "A translation"))));
             }
 
             return new RgaRunState<TValue>(
-                ReadVectorClockState(root.GetProperty("context")),
+                ReadVectorClockState(RequireProperty(root, "context", "An RGA run state")),
                 runs.ToImmutable(),
                 spans.ToImmutable(),
                 translations.ToImmutable());
-        };
+        });
     }
 
 
@@ -697,13 +697,13 @@ public static class CrdtStateJson
 
     private static OffsetAnchorState ReadOffsetAnchorState(JsonElement element)
     {
-        int baseOffset = element.GetProperty("baseOffset").GetInt32();
+        int baseOffset = RequireProperty(element, "baseOffset", "An offset anchor").GetInt32();
         if(baseOffset < -1)
         {
             throw new JsonException($"An anchor base offset is at least -1, got {baseOffset}.");
         }
 
-        JsonElement liveId = element.GetProperty("liveId");
+        JsonElement liveId = RequireProperty(element, "liveId", "An offset anchor");
         if(liveId.ValueKind == JsonValueKind.Null)
         {
             return new OffsetAnchorState(baseOffset, null);
@@ -775,17 +775,17 @@ public static class CrdtStateJson
 
     private static ImmutableArray<ReplicaCounterEntry> ReadReplicaCounterEntries(JsonElement element)
     {
-        JsonElement entriesElement = element.GetProperty("entries");
+        JsonElement entriesElement = RequireProperty(element, "entries", "A replica-counter set");
         ImmutableArray<ReplicaCounterEntry>.Builder entries = ImmutableArray.CreateBuilder<ReplicaCounterEntry>(entriesElement.GetArrayLength());
         foreach(JsonElement entry in entriesElement.EnumerateArray())
         {
-            int count = entry.GetProperty("count").GetInt32();
+            int count = RequireProperty(entry, "count", "A replica-counter entry").GetInt32();
             if(count < 0)
             {
                 throw new JsonException($"A replica counter cannot be negative, got {count}.");
             }
 
-            entries.Add(new ReplicaCounterEntry(ReadReplicaBytes(entry.GetProperty("replica").GetString()!), count));
+            entries.Add(new ReplicaCounterEntry(ReadReplicaBytes(RequireProperty(entry, "replica", "A replica-counter entry").GetString()!), count));
         }
 
         return entries.ToImmutable();
@@ -816,18 +816,18 @@ public static class CrdtStateJson
 
     private static DottedVersionVectorSetState<TValue> ReadDottedVersionVectorSetState<TValue>(JsonElement element, Func<JsonElement, TValue> readValue)
     {
-        JsonElement entriesElement = element.GetProperty("entries");
+        JsonElement entriesElement = RequireProperty(element, "entries", "A dotted version-vector set");
         ImmutableArray<DottedEntry<TValue>>.Builder entries = ImmutableArray.CreateBuilder<DottedEntry<TValue>>(entriesElement.GetArrayLength());
         foreach(JsonElement entry in entriesElement.EnumerateArray())
         {
             entries.Add(new DottedEntry<TValue>(
-                ReadReplicaBytes(entry.GetProperty("replica").GetString()!),
+                ReadReplicaBytes(RequireProperty(entry, "replica", "A dotted entry").GetString()!),
                 ReadDotCounter(entry),
-                readValue(entry.GetProperty("value"))));
+                readValue(RequireProperty(entry, "value", "A dotted entry"))));
         }
 
         return new DottedVersionVectorSetState<TValue>(
-            ReadVectorClockState(element.GetProperty("context")),
+            ReadVectorClockState(RequireProperty(element, "context", "A dotted version-vector set")),
             entries.ToImmutable());
     }
 
@@ -844,20 +844,34 @@ public static class CrdtStateJson
     private static DotState ReadDotState(JsonElement element)
     {
         return new DotState(
-            ReadReplicaBytes(element.GetProperty("replica").GetString()!),
+            ReadReplicaBytes(RequireProperty(element, "replica", "A dot").GetString()!),
             ReadDotCounter(element));
     }
 
 
     private static int ReadDotCounter(JsonElement element)
     {
-        int counter = element.GetProperty("counter").GetInt32();
+        int counter = RequireProperty(element, "counter", "A dot").GetInt32();
         if(counter < 1)
         {
             throw new JsonException($"A dot counter is at least one, got {counter}.");
         }
 
         return counter;
+    }
+
+
+    private static JsonElement RequireProperty(JsonElement element, string name, string label)
+    {
+        //A required field absent from an object is malformed input, so it fails closed as JsonException
+        //rather than the KeyNotFoundException the raw GetProperty accessor throws. A non-object element still
+        //surfaces InvalidOperationException exactly as GetProperty did, so only the missing-field case changes.
+        if(!element.TryGetProperty(name, out JsonElement property))
+        {
+            throw new JsonException($"{label} must carry a '{name}' field.");
+        }
+
+        return property;
     }
 
 
