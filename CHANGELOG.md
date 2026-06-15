@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-06-16
+
 ### Changed
 
 - Deserialization fails closed under one type across encodings: every `DeserializeMessageDelegate` the
