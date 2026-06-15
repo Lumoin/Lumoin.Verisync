@@ -26,11 +26,13 @@ Verisync is designed to be a peer of credential, identity, and graph stacks rath
 
 ## Key capabilities
 
-**State-based CRDTs with property-tested merges.** Grow-only and positive-negative counters (`GCounter`, `PNCounter`), last-writer-wins and multi-value registers (`LwwRegister`, `MvRegister`), an observed-remove set (`OrSet`), and a replicated growable array for collaborative sequences (`Rga`). Every merge is a join-semilattice operation — commutative, associative, idempotent — verified with property-based tests.
+**State-based CRDTs with property-tested merges.** Grow-only and positive-negative counters (`GCounter`, `PNCounter`), last-writer-wins and multi-value registers (`LwwRegister`, `MvRegister`), an observed-remove set (`OrSet`), and a replicated growable array for collaborative sequences (`Rga`). Every merge is a join-semilattice operation (commutative, associative, idempotent), verified with property-based tests.
 
 **Causal contexts as first-class types.** Version vectors, dots, dotted version vectors, and dotted-version-vector sets are semantic types rather than dictionaries of opaque keys. Happens-before, concurrency, and observed-remove semantics are properties of these types, not ad-hoc comparisons in user code.
 
-**Serializable state.** Every CRDT exposes `ToState`/`FromState` over pure, serialization-trivial records, so a host can persist state in any store — a database row, a message table, a blob — and reload and merge it later. AOT-safe JSON codecs for all state records ship in `Lumoin.Verisync.Json`.
+**Serializable state.** Every CRDT exposes `ToState`/`FromState` over plain records a host can persist (a database row, a message table, a blob) and reload and merge later. JSON codecs ship in `Lumoin.Verisync.Json`, CBOR in `Lumoin.Verisync.Cbor`.
+
+**Set reconciliation.** A rateless anti-entropy protocol exchanges coded symbols to recover only the differences between two replicas; traffic scales with the divergence, not the set size. Runs over the transport seam.
 
 **Leaderless consensus.** Classic CASPaxos and Fast CASPaxos registers: linearizable read-modify-write without leader election. The fast path commits in a single round trip when uncontended; contention falls back to a classic recovery round that tallies the fast-round winner. The protocol layer is message-driven, so the same proposer and acceptor run over in-process calls, in-memory channels, or sockets.
 
@@ -38,13 +40,11 @@ Verisync is designed to be a peer of credential, identity, and graph stacks rath
 
 **Pluggable transport.** The channel seam is `System.IO.Pipelines` with serialization injected as delegates: length-prefixed frames over any duplex byte stream. JSON and CBOR implementations are provided; the library does not own sockets, schedulers, or clocks.
 
-**Disciplined memory.** Byte payloads rent from an exact-size slab pool wired to OpenTelemetry metrics and traces, and pooled memory is always deterministically returned. Small fixed-size identifiers such as `ReplicaId` are inline value types — no allocation, a mechanical mapping to `[u8; 32]` if a Rust port is ever written.
-
 ## Architecture principles
 
 Verisync follows the same data-oriented principles as the rest of the family: code is separate from immutable data, CRDTs are values rather than entities with hidden identity, and merges are pure functions. Domain types are agnostic to serialization format; encoding lives at serialization boundaries in the dedicated `Lumoin.Verisync.Json` and `Lumoin.Verisync.Cbor` packages.
 
-Transport, persistence, and clock sources are wired through delegates rather than interfaces. The same CRDT or consensus register is tested against a synthetic in-memory transport — including a deterministic interleaving bench that explores message reorderings from a seed — and deployed against a real transport without changes at the call site.
+Transport, persistence, and clock sources are wired through delegates rather than interfaces. The same CRDT or consensus register is tested against a synthetic in-memory transport (including a deterministic interleaving bench that explores message reorderings from a seed) and deployed against a real transport without changes at the call site.
 
 ## Getting started
 
