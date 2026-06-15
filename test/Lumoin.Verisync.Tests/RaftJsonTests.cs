@@ -10,7 +10,8 @@ namespace Lumoin.Verisync.Tests;
 /// <summary>
 /// Round-trips and hostile-input checks for the Raft envelope and node-state JSON codecs, mirroring
 /// <see cref="ConsensusMessageJsonTests"/>: every wire kind survives a serialize/deserialize cycle and every
-/// malformed payload the spec enumerates fails closed with a <see cref="JsonException"/>.
+/// malformed payload the spec enumerates fails closed — on the deserialize path as the uniform
+/// <see cref="MessageDeserializationException"/>, on the serialize path as a <see cref="JsonException"/>.
 /// </summary>
 [TestClass]
 internal sealed class RaftJsonTests
@@ -138,7 +139,7 @@ internal sealed class RaftJsonTests
         //An unrecognized discriminator is a malformed envelope and must fail closed.
         string json = """{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"evil","payload":{}}""";
 
-        Assert.Throws<JsonException>(() => DeserializeEnvelope(json));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope(json));
     }
 
 
@@ -148,7 +149,7 @@ internal sealed class RaftJsonTests
         //A non-hex from field cannot decode to a replica id; reject rather than guess.
         string json = """{"from":"zz","type":"voteReply","payload":{"term":1,"voteGranted":true}}""";
 
-        Assert.Throws<JsonException>(() => DeserializeEnvelope(json));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope(json));
     }
 
 
@@ -158,7 +159,7 @@ internal sealed class RaftJsonTests
         //The from hex must decode to exactly one replica id width; a short id is rejected.
         string json = """{"from":"0102","type":"voteReply","payload":{"term":1,"voteGranted":true}}""";
 
-        Assert.Throws<JsonException>(() => DeserializeEnvelope(json));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope(json));
     }
 
 
@@ -168,7 +169,7 @@ internal sealed class RaftJsonTests
         //Terms are non-negative everywhere on the wire; a negative term is forged.
         string json = """{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"voteReply","payload":{"term":-1,"voteGranted":true}}""";
 
-        Assert.Throws<JsonException>(() => DeserializeEnvelope(json));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope(json));
     }
 
 
@@ -178,7 +179,7 @@ internal sealed class RaftJsonTests
         //A real log entry's term is at least one; term zero is the empty-prefix sentinel, never an entry.
         string json = """{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"appendRequest","payload":{"term":2,"leaderId":"0100000000000000000000000000000000000000000000000000000000000000","prevLogIndex":0,"prevLogTerm":0,"entries":[{"term":0,"command":1}],"leaderCommit":0}}""";
 
-        Assert.Throws<JsonException>(() => DeserializeEnvelope(json));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope(json));
     }
 
 
@@ -188,17 +189,18 @@ internal sealed class RaftJsonTests
         //A match index is a non-negative log position; a negative one is malformed.
         string json = """{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"appendReply","payload":{"term":2,"success":true,"matchIndex":-1}}""";
 
-        Assert.Throws<JsonException>(() => DeserializeEnvelope(json));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope(json));
     }
 
 
     [TestMethod]
     public void TruncatedPayloadIsRejected()
     {
-        //A cut-off document cannot parse; JsonDocument.Parse fails closed with a JsonException subtype.
+        //A cut-off document cannot parse; JsonDocument.Parse throws a JsonReaderException, which the codec
+        //wraps as the uniform MessageDeserializationException.
         string json = """{"from":"0100000000000000000000000000000000000000""";
 
-        Assert.Throws<JsonException>(() => DeserializeEnvelope(json));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope(json));
     }
 
 
@@ -241,6 +243,37 @@ internal sealed class RaftJsonTests
         SerializeMessageDelegate<RaftEnvelope<int>> serialize = RaftJson.CreateEnvelopeSerializer<int>((writer, value) => writer.WriteNumberValue(value));
 
         Assert.Throws<JsonException>(() => serialize(empty, new ArrayBufferWriter<byte>()));
+    }
+
+
+    [TestMethod]
+    public void MissingRequiredFieldsFailClosed()
+    {
+        //A required field absent from an otherwise well-formed object must fail closed as MessageDeserializationException, not
+        //surface the framework's KeyNotFoundException from a raw property accessor. One omission per arm.
+
+        //The envelope's own three fields.
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope("""{"type":"voteReply","payload":{"term":1,"voteGranted":true}}"""));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope("""{"from":"0100000000000000000000000000000000000000000000000000000000000000","payload":{"term":1,"voteGranted":true}}"""));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope("""{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"voteReply"}"""));
+
+        //A vote request missing its candidate id.
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope("""{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"voteRequest","payload":{"term":3,"lastLogIndex":2,"lastLogTerm":1}}"""));
+
+        //A vote reply missing its grant bit.
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope("""{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"voteReply","payload":{"term":1}}"""));
+
+        //An append request missing its entries array, then a log entry missing its command.
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope("""{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"appendRequest","payload":{"term":2,"leaderId":"0100000000000000000000000000000000000000000000000000000000000000","prevLogIndex":0,"prevLogTerm":0,"leaderCommit":0}}"""));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope("""{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"appendRequest","payload":{"term":2,"leaderId":"0100000000000000000000000000000000000000000000000000000000000000","prevLogIndex":0,"prevLogTerm":0,"entries":[{"term":2}],"leaderCommit":0}}"""));
+
+        //An append reply missing its success bit.
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope("""{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"appendReply","payload":{"term":2,"matchIndex":3}}"""));
+
+        //The durable node state's three fields.
+        Assert.Throws<MessageDeserializationException>(() => DeserializeState("""{"votedFor":null,"log":[]}"""));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeState("""{"currentTerm":0,"log":[]}"""));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeState("""{"currentTerm":0,"votedFor":null}"""));
     }
 
 
@@ -292,6 +325,12 @@ internal sealed class RaftJsonTests
     private static RaftEnvelope<int> DeserializeEnvelope(string json)
     {
         return RaftJson.CreateEnvelopeDeserializer<int>(element => element.GetInt32())(new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(json)));
+    }
+
+
+    private static RaftNodeState<int> DeserializeState(string json)
+    {
+        return RaftJson.CreateNodeStateDeserializer<int>(element => element.GetInt32())(new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(json)));
     }
 
 

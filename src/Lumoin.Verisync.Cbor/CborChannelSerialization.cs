@@ -48,11 +48,11 @@ public static class CborChannelSerialization
     {
         ArgumentNullException.ThrowIfNull(decode);
 
-        return payload =>
+        return CborMessageGuard.FailClosed<TMessage>(payload =>
         {
             var cborReader = new CborReader(payload.ToArray(), CborConformanceMode.Canonical);
 
             return decode(cborReader);
-        };
+        });
     }
 }

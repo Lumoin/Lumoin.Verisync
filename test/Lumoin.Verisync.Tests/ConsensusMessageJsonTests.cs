@@ -102,7 +102,7 @@ internal sealed class ConsensusMessageJsonTests
     {
         string json = """{"kind":"evil","ballot":{"round":1,"proposer":null}}""";
 
-        Assert.ThrowsExactly<NotSupportedException>(
+        Assert.ThrowsExactly<MessageDeserializationException>(
             () => Deserialize(json, ConsensusMessageJson.CreateRequestDeserializer(ReadString)));
     }
 
@@ -112,7 +112,7 @@ internal sealed class ConsensusMessageJsonTests
     {
         string json = """{"kind":"evil","ballot":{"round":1,"proposer":null}}""";
 
-        Assert.ThrowsExactly<NotSupportedException>(
+        Assert.ThrowsExactly<MessageDeserializationException>(
             () => Deserialize(json, ConsensusMessageJson.CreateReplyDeserializer(ReadString)));
     }
 
@@ -123,7 +123,7 @@ internal sealed class ConsensusMessageJsonTests
         //The proposer hex flows through ReplicaId.FromSpan, which enforces the fixed identity width.
         string json = """{"kind":"prepare","ballot":{"round":1,"proposer":"0102"}}""";
 
-        Assert.ThrowsExactly<ArgumentException>(
+        Assert.ThrowsExactly<MessageDeserializationException>(
             () => Deserialize(json, ConsensusMessageJson.CreateRequestDeserializer(ReadString)));
     }
 
@@ -133,9 +133,35 @@ internal sealed class ConsensusMessageJsonTests
     {
         string json = """{"kind":"prepare","ballot":{"rou""";
 
-        //JsonDocument.Parse throws the internal JsonReaderException subclass, so match by base type.
-        Assert.Throws<JsonException>(
+        //JsonDocument.Parse throws an internal JsonReaderException, which the codec wraps as the uniform
+        //MessageDeserializationException.
+        Assert.Throws<MessageDeserializationException>(
             () => Deserialize(json, ConsensusMessageJson.CreateRequestDeserializer(ReadString)));
+    }
+
+
+    [TestMethod]
+    public void MissingRequiredFieldsFailClosed()
+    {
+        //A required field absent from an otherwise well-formed object must fail closed as MessageDeserializationException, not
+        //surface the framework's KeyNotFoundException from a raw property accessor. The optional piggybacked
+        //next ballot is exempt and is covered by AcceptRequestWithoutNextDeserializesAsNull.
+
+        //Request: the kind, the ballot, the accept value, and a ballot's two fields.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"ballot":{"round":1,"proposer":null}}""", ConsensusMessageJson.CreateRequestDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"kind":"prepare"}""", ConsensusMessageJson.CreateRequestDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"kind":"accept","ballot":{"round":1,"proposer":null}}""", ConsensusMessageJson.CreateRequestDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"kind":"prepare","ballot":{"proposer":null}}""", ConsensusMessageJson.CreateRequestDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"kind":"prepare","ballot":{"round":1}}""", ConsensusMessageJson.CreateRequestDeserializer(ReadString)));
+
+        //Reply: the kind, then each prepare-reply field and each accept-reply field.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"acceptedBallot":{"round":1,"proposer":null}}""", ConsensusMessageJson.CreateReplyDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"kind":"prepare-reply","promised":true,"acceptedBallot":{"round":1,"proposer":null},"conflictingBallot":{"round":0,"proposer":null}}""", ConsensusMessageJson.CreateReplyDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"kind":"prepare-reply","acceptedValue":null,"acceptedBallot":{"round":1,"proposer":null},"conflictingBallot":{"round":0,"proposer":null}}""", ConsensusMessageJson.CreateReplyDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"kind":"prepare-reply","acceptedValue":null,"promised":true,"conflictingBallot":{"round":0,"proposer":null}}""", ConsensusMessageJson.CreateReplyDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"kind":"prepare-reply","acceptedValue":null,"promised":true,"acceptedBallot":{"round":1,"proposer":null}}""", ConsensusMessageJson.CreateReplyDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"kind":"accept-reply","ballot":{"round":1,"proposer":null}}""", ConsensusMessageJson.CreateReplyDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"kind":"accept-reply","accepted":true}""", ConsensusMessageJson.CreateReplyDeserializer(ReadString)));
     }
 
 

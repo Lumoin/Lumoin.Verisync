@@ -49,15 +49,15 @@ public static class LogCommitmentJson
     /// <returns>A deserialize delegate.</returns>
     public static DeserializeMessageDelegate<LogHead> CreateLogHeadDeserializer()
     {
-        return payload =>
+        return JsonMessageGuard.FailClosed<LogHead>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
-            int treeSize = root.GetProperty("treeSize").GetInt32();
-            ReadOnlyMemory<byte> rootHash = ReadHex(root.GetProperty("root").GetString()!);
+            int treeSize = RequireProperty(root, "treeSize", "A log head").GetInt32();
+            ReadOnlyMemory<byte> rootHash = ReadHex(RequireProperty(root, "root", "A log head").GetString()!);
 
             return Construct(() => new LogHead(treeSize, rootHash));
-        };
+        });
     }
 
 
@@ -81,16 +81,16 @@ public static class LogCommitmentJson
     /// <returns>A deserialize delegate.</returns>
     public static DeserializeMessageDelegate<MerkleInclusionProof> CreateInclusionProofDeserializer()
     {
-        return payload =>
+        return JsonMessageGuard.FailClosed<MerkleInclusionProof>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
-            int leafIndex = root.GetProperty("leafIndex").GetInt32();
-            int treeSize = root.GetProperty("treeSize").GetInt32();
-            ImmutableArray<ReadOnlyMemory<byte>> path = ReadHexArray(root.GetProperty("path"));
+            int leafIndex = RequireProperty(root, "leafIndex", "An inclusion proof").GetInt32();
+            int treeSize = RequireProperty(root, "treeSize", "An inclusion proof").GetInt32();
+            ImmutableArray<ReadOnlyMemory<byte>> path = ReadHexArray(RequireProperty(root, "path", "An inclusion proof"));
 
             return Construct(() => new MerkleInclusionProof(leafIndex, treeSize, path));
-        };
+        });
     }
 
 
@@ -114,16 +114,16 @@ public static class LogCommitmentJson
     /// <returns>A deserialize delegate.</returns>
     public static DeserializeMessageDelegate<MerkleConsistencyProof> CreateConsistencyProofDeserializer()
     {
-        return payload =>
+        return JsonMessageGuard.FailClosed<MerkleConsistencyProof>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
-            int oldTreeSize = root.GetProperty("oldTreeSize").GetInt32();
-            int newTreeSize = root.GetProperty("newTreeSize").GetInt32();
-            ImmutableArray<ReadOnlyMemory<byte>> path = ReadHexArray(root.GetProperty("path"));
+            int oldTreeSize = RequireProperty(root, "oldTreeSize", "A consistency proof").GetInt32();
+            int newTreeSize = RequireProperty(root, "newTreeSize", "A consistency proof").GetInt32();
+            ImmutableArray<ReadOnlyMemory<byte>> path = ReadHexArray(RequireProperty(root, "path", "A consistency proof"));
 
             return Construct(() => new MerkleConsistencyProof(oldTreeSize, newTreeSize, path));
-        };
+        });
     }
 
 
@@ -182,28 +182,28 @@ public static class LogCommitmentJson
         ArgumentNullException.ThrowIfNull(readProof);
         ArgumentNullException.ThrowIfNull(computeDigest);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<SegmentSeal<TProof>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
 
-            ulong firstIndex = root.GetProperty("firstIndex").GetUInt64();
-            ulong lastIndex = root.GetProperty("lastIndex").GetUInt64();
+            ulong firstIndex = RequireProperty(root, "firstIndex", "A segment seal").GetUInt64();
+            ulong lastIndex = RequireProperty(root, "lastIndex", "A segment seal").GetUInt64();
 
             //A genuine null must survive: a conditional that mixes a null literal with a non-nullable
             //ReadOnlyMemory<byte> lifts the null branch to an empty default rather than a null nullable, so the
             //previous digest is read with an explicit branch to keep the first-seal null intact.
-            JsonElement previousElement = root.GetProperty("previousSealDigest");
+            JsonElement previousElement = RequireProperty(root, "previousSealDigest", "A segment seal");
             ReadOnlyMemory<byte>? previousSealDigest = null;
             if(previousElement.ValueKind != JsonValueKind.Null)
             {
                 previousSealDigest = ReadHex(previousElement.GetString()!);
             }
 
-            ReadOnlyMemory<byte> commitment = ReadHex(root.GetProperty("commitment").GetString()!);
-            ReadOnlyMemory<byte> transmittedDigest = ReadHex(root.GetProperty("digest").GetString()!);
+            ReadOnlyMemory<byte> commitment = ReadHex(RequireProperty(root, "commitment", "A segment seal").GetString()!);
+            ReadOnlyMemory<byte> transmittedDigest = ReadHex(RequireProperty(root, "digest", "A segment seal").GetString()!);
 
-            JsonElement proofsElement = root.GetProperty("proofs");
+            JsonElement proofsElement = RequireProperty(root, "proofs", "A segment seal");
             ImmutableArray<TProof>.Builder proofs = ImmutableArray.CreateBuilder<TProof>(proofsElement.GetArrayLength());
             foreach(JsonElement proof in proofsElement.EnumerateArray())
             {
@@ -220,7 +220,7 @@ public static class LogCommitmentJson
             }
 
             return seal.WithProofs(proofs.MoveToImmutable());
-        };
+        });
     }
 
 
@@ -245,6 +245,20 @@ public static class LogCommitmentJson
         }
 
         return hashes.MoveToImmutable();
+    }
+
+
+    private static JsonElement RequireProperty(JsonElement element, string name, string label)
+    {
+        //A required field absent from an object is malformed input, so it fails closed as JsonException
+        //rather than the KeyNotFoundException the raw GetProperty accessor throws. A non-object element still
+        //surfaces InvalidOperationException exactly as GetProperty did, so only the missing-field case changes.
+        if(!element.TryGetProperty(name, out JsonElement property))
+        {
+            throw new JsonException($"{label} must carry a '{name}' field.");
+        }
+
+        return property;
     }
 
 

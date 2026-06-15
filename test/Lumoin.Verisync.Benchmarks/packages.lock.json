@@ -20,6 +20,16 @@
           "System.Management": "9.0.5"
         }
       },
+      "BenchmarkDotNet.Diagnostics.Windows": {
+        "type": "Direct",
+        "requested": "[0.15.8, )",
+        "resolved": "0.15.8",
+        "contentHash": "XI3wyymiXAd/BW8NTmiX7jaT38vQy/q3odiQ6LQnhZSN+qcqXYgeH+xT1bgnhkvWq6f2zHKePqeBHPpi0lx5hw==",
+        "dependencies": {
+          "BenchmarkDotNet": "0.15.8",
+          "Microsoft.Diagnostics.Tracing.TraceEvent": "3.1.21"
+        }
+      },
       "Microsoft.CodeAnalysis.BannedApiAnalyzers": {
         "type": "Direct",
         "requested": "[3.12.0-beta1.25218.8, )",
@@ -271,7 +281,16 @@
         "contentHash": "CJW+x/F6fmRQ7N6K8paasTw9PDZp4t7G76UjGNlSDgoHPF0h08vTzLYbLZpOLEJSg35d5wy2jCXGo84EN05DpQ=="
       },
       "lumoin.verisync.core": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Base": "[0.0.2, )"
+        }
+      },
+      "Lumoin.Base": {
+        "type": "CentralTransitive",
+        "requested": "[0.0.2, )",
+        "resolved": "0.0.2",
+        "contentHash": "mFsXJq9SVg0poCevJ13u40iETZ6/fhNgsY/jFV+47PCqyTLz1KAQcjaM12dwUFba4GVcBqAOeNw2QseqOU6X2g=="
       },
       "System.Security.Cryptography.Xml": {
         "type": "CentralTransitive",

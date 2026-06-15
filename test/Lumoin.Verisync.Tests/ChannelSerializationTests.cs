@@ -90,7 +90,7 @@ internal sealed class ChannelSerializationTests
     {
         //A channel message is never null. The JSON literal "null" deserializes to a null reference, which
         //the deserializer must reject rather than smuggle through the null-forgiving operator.
-        Assert.ThrowsExactly<JsonException>(() => DeserializeJson("null"));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeJson("null"));
     }
 
 
@@ -99,22 +99,22 @@ internal sealed class ChannelSerializationTests
     {
         //A valid message followed by a second value is two tokens; allowing it would let distinct byte
         //sequences decode to the same message, breaking canonical-bytes assumptions. Reading the trailing
-        //token surfaces a JsonReaderException, which derives from JsonException.
-        Assert.Throws<JsonException>(() => DeserializeJson("""{"Sequence":1,"Payload":"one"}{"""));
+        //token surfaces a JsonReaderException, which the codec wraps as the uniform MessageDeserializationException.
+        Assert.Throws<MessageDeserializationException>(() => DeserializeJson("""{"Sequence":1,"Payload":"one"}{"""));
     }
 
 
     [TestMethod]
     public void JsonDeserializerRejectsTrailingNumber()
     {
-        Assert.Throws<JsonException>(() => DeserializeJson("""{"Sequence":1,"Payload":"one"}1"""));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeJson("""{"Sequence":1,"Payload":"one"}1"""));
     }
 
 
     [TestMethod]
     public void JsonDeserializerRejectsTrailingValueAfterWhitespace()
     {
-        Assert.Throws<JsonException>(() => DeserializeJson("""{"Sequence":1,"Payload":"one"}   {}"""));
+        Assert.Throws<MessageDeserializationException>(() => DeserializeJson("""{"Sequence":1,"Payload":"one"}   {}"""));
     }
 
 
@@ -129,11 +129,42 @@ internal sealed class ChannelSerializationTests
     }
 
 
+    [TestMethod]
+    public void CborDeserializerRejectsAWrongMajorTypeAsTheUniformException()
+    {
+        //A bare integer where the decoder expects an array fails closed as the encoding-agnostic
+        //MessageDeserializationException — the same type the JSON path raises — even though the underlying
+        //cause is a CBOR reader exception rather than a JsonException.
+        byte[] integerPayload = [0x00];
+
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeCbor(integerPayload));
+    }
+
+
+    [TestMethod]
+    public void CborDeserializerRejectsAMalformedPayloadAsTheUniformException()
+    {
+        //An array header that declares two items but supplies one and then ends is malformed CBOR; it surfaces
+        //as the same MessageDeserializationException, proving the failure type is uniform across encodings.
+        byte[] truncatedArray = [0x82, 0x01];
+
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeCbor(truncatedArray));
+    }
+
+
     private static SampleMessage DeserializeJson(string json)
     {
         DeserializeMessageDelegate<SampleMessage> deserialize = JsonChannelSerialization.CreateDeserializer(SampleJsonContext.Default.SampleMessage);
 
         return deserialize(new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(json)));
+    }
+
+
+    private static SampleMessage DeserializeCbor(byte[] payload)
+    {
+        DeserializeMessageDelegate<SampleMessage> deserialize = CborChannelSerialization.CreateDeserializer(DecodeSample);
+
+        return deserialize(new ReadOnlySequence<byte>(payload));
     }
 
 

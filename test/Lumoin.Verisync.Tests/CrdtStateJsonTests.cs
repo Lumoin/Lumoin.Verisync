@@ -159,7 +159,7 @@ internal sealed class CrdtStateJsonTests
         //prefer stale values and counter monotonicity would be corrupted.
         string json = $$"""{"entries":[{"replica":"{{HexReplica(1)}}","count":-1}]}""";
 
-        Assert.ThrowsExactly<JsonException>(() => Deserialize(json, CrdtStateJson.CreateVectorClockStateDeserializer()));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize(json, CrdtStateJson.CreateVectorClockStateDeserializer()));
     }
 
 
@@ -168,7 +168,7 @@ internal sealed class CrdtStateJsonTests
     {
         string json = """{"entries":[{"replica":"0102","count":1}]}""";
 
-        Assert.ThrowsExactly<JsonException>(() => Deserialize(json, CrdtStateJson.CreateVectorClockStateDeserializer()));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize(json, CrdtStateJson.CreateVectorClockStateDeserializer()));
     }
 
 
@@ -177,7 +177,7 @@ internal sealed class CrdtStateJsonTests
     {
         string json = """{"entries":[{"replica":"not-hex","count":1}]}""";
 
-        Assert.ThrowsExactly<JsonException>(() => Deserialize(json, CrdtStateJson.CreateVectorClockStateDeserializer()));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize(json, CrdtStateJson.CreateVectorClockStateDeserializer()));
     }
 
 
@@ -187,7 +187,7 @@ internal sealed class CrdtStateJsonTests
         //Dots are minted starting at one; a zero or negative counter is not a value any replica produces.
         string json = $$"""{"context":{"entries":[]},"entries":[{"replica":"{{HexReplica(1)}}","counter":0,"value":"x"}]}""";
 
-        Assert.ThrowsExactly<JsonException>(() => Deserialize(json, CrdtStateJson.CreateDottedVersionVectorSetStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize(json, CrdtStateJson.CreateDottedVersionVectorSetStateDeserializer(ReadString)));
     }
 
 
@@ -204,6 +204,86 @@ internal sealed class CrdtStateJsonTests
         Assert.ThrowsExactly<ArgumentNullException>(() => CrdtStateJson.CreateMvRegisterStateDeserializer<string>(null!));
         Assert.ThrowsExactly<ArgumentNullException>(() => CrdtStateJson.CreateRgaStateSerializer<string>(null!));
         Assert.ThrowsExactly<ArgumentNullException>(() => CrdtStateJson.CreateRgaStateDeserializer<string>(null!));
+    }
+
+
+    [TestMethod]
+    public void MissingFieldsInCounterAndRegisterCodecsFailClosed()
+    {
+        //A required field absent from an otherwise well-formed object must fail closed as MessageDeserializationException, not
+        //surface the framework's KeyNotFoundException from a raw property accessor.
+        string replica = HexReplica(1);
+
+        //ReadReplicaCounterEntries, the shared reader behind the vector clock and the G-counter: the entries
+        //array, then a field of an entry (the count is read before the replica).
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{}""", CrdtStateJson.CreateVectorClockStateDeserializer()));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"entries":[{"replica":"{{{replica}}}"}]}""", CrdtStateJson.CreateVectorClockStateDeserializer()));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"entries":[{"count":1}]}""", CrdtStateJson.CreateVectorClockStateDeserializer()));
+
+        //The PN-counter's two nested counters.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"decrements":{"entries":[]}}""", CrdtStateJson.CreatePNCounterStateDeserializer()));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"increments":{"entries":[]}}""", CrdtStateJson.CreatePNCounterStateDeserializer()));
+
+        //Each of the LWW register's four fields.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"hasValue":false,"utcTicks":0,"writer":null}""", CrdtStateJson.CreateLwwRegisterStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"hasValue":false,"value":null,"utcTicks":0}""", CrdtStateJson.CreateLwwRegisterStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"value":null,"utcTicks":0,"writer":null}""", CrdtStateJson.CreateLwwRegisterStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"hasValue":false,"value":null,"writer":null}""", CrdtStateJson.CreateLwwRegisterStateDeserializer(ReadString)));
+    }
+
+
+    [TestMethod]
+    public void MissingFieldsInDottedSetCodecsFailClosed()
+    {
+        string replica = HexReplica(1);
+
+        //ReadDottedVersionVectorSetState and the dotted entry it reads, exercising ReadDotState and
+        //ReadDotCounter: the entries array, the context, then each field of an entry.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]}}""", CrdtStateJson.CreateDottedVersionVectorSetStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"entries":[]}""", CrdtStateJson.CreateDottedVersionVectorSetStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$"""{"context":{"entries":[]},"entries":[{"counter":1,"value":"x"}]}""", CrdtStateJson.CreateDottedVersionVectorSetStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"entries":[{"replica":"{{{replica}}}","value":"x"}]}""", CrdtStateJson.CreateDottedVersionVectorSetStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"entries":[{"replica":"{{{replica}}}","counter":1}]}""", CrdtStateJson.CreateDottedVersionVectorSetStateDeserializer(ReadString)));
+
+        //The OR-set and MV-register wrappers each require their single nested object.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{}""", CrdtStateJson.CreateOrSetStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{}""", CrdtStateJson.CreateMvRegisterStateDeserializer(ReadString)));
+    }
+
+
+    [TestMethod]
+    public void MissingFieldsInSequenceCodecsFailClosed()
+    {
+        string replica = HexReplica(1);
+
+        //The RGA's three sections, then each field of a vertex (the predecessor is read first).
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"tombstones":[]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"vertices":[]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"vertices":[],"tombstones":[]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"vertices":[{"id":{"replica":"{{{replica}}}","counter":1},"value":"x"}],"tombstones":[]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"vertices":[{"predecessor":null,"value":"x"}],"tombstones":[]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"vertices":[{"predecessor":null,"id":{"replica":"{{{replica}}}","counter":1}}],"tombstones":[]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
+
+        //The run-length RGA's four sections, then a field within a run, a span and a translation.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"tombstoneSpans":[],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"runs":[],"tombstoneSpans":[],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[{"predecessor":null}],"tombstoneSpans":[],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[{"from":1,"to":1}],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[],"translations":[{"target":{"replica":"{{{replica}}}","counter":1}}]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+
+        //The offset-anchored sequence's seven sections, then a vertex's anchor and the anchor's own fields.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[]}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"base":[],"removedBaseOffsets":[],"vertices":[{"id":{"replica":"{{{replica}}}","counter":1},"value":"x"}],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"base":[],"removedBaseOffsets":[],"vertices":[{"id":{"replica":"{{{replica}}}","counter":1},"anchor":{"liveId":null},"value":"x"}],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"base":[],"removedBaseOffsets":[],"vertices":[{"id":{"replica":"{{{replica}}}","counter":1},"anchor":{"baseOffset":-1},"value":"x"}],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
     }
 
 

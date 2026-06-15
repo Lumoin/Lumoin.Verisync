@@ -16,6 +16,153 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Deserialization fails closed under one type across encodings: every `DeserializeMessageDelegate` the
+  JSON and CBOR codecs build now throws a single new `MessageDeserializationException` (in
+  `Lumoin.Verisync.Core`, documented on the delegate), with the encoding-native cause — a `JsonException`,
+  a `CborContentException`, a wrapped argument exception — preserved as its inner exception, so a channel
+  consumer catches one type whether the wire is JSON or CBOR instead of an encoding-specific exception. The
+  conversion is a per-assembly guard wrapping every deserializer factory; serializers are unchanged and
+  still throw their native exceptions, and a factory's argument-null guard stays at construction time. This
+  supersedes the surfaced exception type in the `JsonException` entries below — those now describe the inner
+  cause a handler can still read off `InnerException`.
+
+- The reconciliation decoder peels in near-linear time. The previous decode re-scanned the whole
+  decoded set on every absorbed symbol and re-scanned all cells to a fixpoint on every absorb —
+  Θ(d²) in the difference size, so throughput collapsed as differences grew. It now applies
+  already-decoded items to incoming cells through an incremental cursor heap (mirroring the encoder)
+  and finds newly pure cells through a work-list seeded by each modified cell. The decoded set, the
+  completion point, the soundness rules (peel only pure cells, stall on an already-decoded sum, never
+  un-decode), and the wire format are unchanged — verified against the full law and vector suites and
+  an independent adversarial model. Measured on the throughput soak: a 16,384-item difference that
+  took ~54 s now reconciles in ~0.2 s, and per-symbol throughput rises with the difference instead of
+  falling.
+
+- The encoder and decoder store coded symbols in a single flat, contiguous `ReconciliationCellBuffer`
+  rather than parallel lists of per-cell arrays, so the XOR fold walks contiguous memory and the
+  per-cell allocation is gone; the two duplicated content-keyed-bytes helpers are unified into one
+  `ContentAddress`. `ReconciliationSymbol` gains an additive `ReadOnlySpan<byte>` constructor so a
+  symbol can be snapshotted from a cell in a single copy. Behavior, wire format, and the pinned
+  vectors are unchanged (the full suite is the oracle); the gain is locality and modest decode
+  throughput. Steady-state per-session allocation is unchanged — it is dominated by per-item
+  encoding work, not cell storage — so a pooled cell buffer was measured and deliberately not taken.
+
+- The encoder and decoder reuse their walk cursors instead of reallocating one per fold. The cursors
+  that carry pending item contributions through the produce/peel priority queues were reference-type
+  records cloned with a `with` expression on every re-enqueue — an object per fold, which the
+  allocation soak identified as the dominant per-session allocation. They are now mutable structs
+  stored inline in the queue and advanced in place, and the encoder cursor carries its checksum as a
+  value re-materialized at fold time rather than a copied array. Behavior is byte-identical (the full
+  suite plus an independent adversarial verification confirm the produced symbols, decoded set, and
+  completion point are unchanged); the throughput soak shows steady-state per-session allocation down
+  about 47% (≈287 KB → ≈151 KB) with the live heap still flat.
+
+- The reconciliation encoder, decoder, and `AntiEntropySession` are now `IDisposable` and rent their
+  coded-cell backing from a caller-supplied `MemoryPool<byte>` — a tracked exact-size pool in
+  production — so the kernel's largest scoped buffer is accountable through the pool's rental metrics
+  rather than living in a naked array. New pool-bearing constructor overloads
+  thread the pool and a capacity hint (the session pre-sizes from its projected snapshot); a `null`
+  pool keeps the standalone, untracked heap-backed path, so direct construction is non-breaking. The
+  session disposes the encoder and decoder it owns but never the injected pool. Pooled segments are
+  cleared on rent — a pool does not zero recycled memory — preserving the all-zero-fresh-cell contract
+  the fold relies on, and the paired rent is exception-safe so a failed second rent returns the first
+  rather than leaking it. A `ReconciliationSymbol` stays an owned-copy value: the documented exception
+  for bytes that escape the kernel to callers and the wire. A new accountability test asserts the
+  rental ledger balances to zero after a full session (no leaked rentals), and a soak over two thousand
+  pooled sessions confirms it at scale.
+
+### Security
+
+- The reconciliation envelope JSON deserializer now fails closed as `JsonException` on every
+  present-but-malformed field, closing a contract-stability gap found by an adversarial audit of the
+  tier: a JSON-null hex field (which had leaked `ArgumentNullException` from the hex decode), a
+  wrong-kind value where a string or hex field was expected (`InvalidOperationException`), a
+  fractional or `Int32`-overflowing integer (`FormatException`), and a non-object/non-array carrier
+  where the shape required one. Every `JsonElement` accessor is now kind-guarded before use, so a
+  hostile or buggy peer can no longer drive the verifying deserializer to throw an exception type the
+  contract promises it never will — a handler catching `JsonException` to treat a frame as a protocol
+  fault sees the fault it expects. A structurally missing required property fails closed as well: every
+  per-field read across the JSON codecs (reconciliation, CRDT state, Raft, log commitment, consensus) now
+  goes through a `RequireProperty` guard that throws rather than leaking the framework's
+  `KeyNotFoundException`.
+
+### Added
+
+- Remove-aware (dot-cloud) reconciliation atop the anti-entropy session: an `OrSet` /
+  `DottedVersionVectorSet` reconciles its observed removes as well as its adds, with reconcile-then-apply
+  proven equal to `DottedVersionVectorSet.Merge` while bytes on the wire stay proportional to the
+  divergence. The kernel, encoder, decoder, and symbol stay an unchanged generic digest-set engine;
+  remove-awareness is host-side. The session takes an optional pinned local `VectorClockState`; the
+  initiator projects present `(dot, value)` entries to digests through a new
+  `DottedReconciliationProjection`, decodes the symmetric difference, and classifies each decoded dot
+  against the peer's exchanged causal context by the merge rule — a held dot the peer's context covers is
+  a local drop, an absent dot the initiator's own pre-session context covers is pushed as a drop rather
+  than re-added (the resurrection guard). The genuinely new wire surface is a whole-context exchange
+  (`ReconciliationContext`, shipped whole and never reconciled) and a remove push (`ReconciliationDrop`,
+  dots only); a `null` local context keeps the add-only path byte-identical. Proven against the merge
+  oracle across add-only, remove-only, and mixed divergence including the resurrection case, and end to
+  end over a real localhost socket; the log-plane anti-equivocation seal chain is now proven over a socket
+  as well.
+
+- SIMD acceleration for the reconciliation kernel's hot loops, phase 4 of the anti-entropy tier:
+  the byte-wise XOR folds and neutrality scans behind encoding, peeling, and symbol combination
+  now route through `ReconciliationXor`, a facade over per-width vector backends
+  (`Vector128`/`Vector256`/`Vector512` with a scalar reference) selected by a dispatch that the
+  JIT folds to a direct call. The width tiers are cross-platform — they lower to SSE/AVX2/AVX-512,
+  NEON, and WASM SIMD alike — and the wire contract is provably unchanged: every backend is pinned
+  byte-identical to the scalar reference across edge lengths, and a stream-level agreement test
+  re-derives the encoder's emitted symbols from an independent scalar fold. The benchmarks project
+  gains XOR and encoder throughput benchmarks plus `--reconciliation-overhead`, a seed-pinned
+  measurement of bytes-on-wire against the information-theoretic floor and full-state/hash-list
+  anchor rows (symbols per difference converge to ~1.37x at a thousand-item divergence,
+  three orders of magnitude under either anchor at small differences).
+
+- `AntiEntropySession`, phase 3 of the anti-entropy tier: the host-side runner for one
+  point-to-point reconciliation session, in the `RaftRunner` production shape — all inbound work
+  flows through a single-consumer queue, so every state change and every outbound send happens on
+  one loop and transport writes are serialized by construction. A session pins one set version (the
+  item snapshot is copied and encoded at construction); the initiator decodes against its own
+  lockstep encoder, signals done, and classifies the difference through
+  `ResolveReconciliationDifferenceDelegate` into fetches and pushes; the responder streams batches
+  only on host `TriggerBatchAsync` calls (liveness stays external — no timers, no entropy), serves
+  fetches through `ServeReconciliationFetchDelegate` with exact-coverage verification, and applies
+  elements through `ApplyReconciliationElementsDelegate`. Every protocol violation — mismatched
+  offer, out-of-role frame, stream gap, partial fetch answer — fails the session closed.
+  `ReconciliationEnvelope` gains the same exactly-one-payload dispatch guard as the Raft envelope.
+  Proven in memory and over a real localhost socket: convergence of diverged observed-remove sets,
+  then quiescence on the first symbol of a second session. Element-level reconciliation is add-only at
+  this base tier; remove-aware reconciliation over dot-cloud causal contexts is added separately in this
+  release — see the dot-cloud reconciliation entry above.
+
+- The reconciliation wire layer, phase 2 of the anti-entropy tier: a `RaftEnvelope`-style
+  one-of-five message family (`ReconciliationEnvelope` carrying offer, symbol batch, done, fetch,
+  or elements) and `ReconciliationJson` codecs following the established fail-closed conventions.
+  The deserializer is verifying: it pins the local `ReconciliationContract` and rejects an offer
+  that does not match it — so a contract mismatch throws before any symbol is absorbed — and
+  validates every hex field's width against that contract. The offer never carries key bytes;
+  it carries a key check (a PRF tag over a fixed public input) so peers with differing checksum
+  keys abort up front instead of failing to peel. Proven end to end over a real localhost socket,
+  plain and padded framing: two observed-remove sets pin contracts both ways, stream symbol
+  batches, decode the difference, exchange the missing elements by digest, converge, and a second
+  session completes on its first symbol with nothing decoded.
+
+- The rateless set-reconciliation kernel, phase 1 of the anti-entropy tier: a replica encodes a set
+  of fixed-width items into an unbounded coded-symbol stream (`ReconciliationEncoder`) whose
+  symbol-wise XOR with a peer's stream is the stream of their symmetric difference, recovered by a
+  peeling decoder (`ReconciliationDecoder`) from a prefix proportional to the difference size —
+  neither side ever sizes the divergence, and an equal-set reconciliation completes on the first
+  symbol. The encoding is a group homomorphism from (sets, symmetric difference) to (streams, XOR),
+  property-tested as such alongside history erasure, decode exactness, quiescence, monotone
+  knowledge, and bit-flip soundness; the index walk and SipHash-2-4 checksum primitives are pinned
+  by byte-precise test vectors. `ReconciliationContract` pins what peers must agree on before
+  subtraction is meaningful (item domain, item width, checksum width and key — checksum width
+  bounds the masquerade probability, and a secret key turns a poisoned stream into
+  detected-and-aborted); injectivity enforcement is local-only
+  (`ReconciliationInjectivityEnforcement`), and `ProjectReconciliationItemsDelegate` is the seam
+  that projects a pinned state snapshot to reconcilable items. Wire codecs, the session runner, and
+  SIMD XOR backends are later phases.
+
 ## [0.0.2] - 2026-06-11
 
 ### Changed

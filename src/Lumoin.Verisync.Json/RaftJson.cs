@@ -92,13 +92,13 @@ public static class RaftJson
     {
         ArgumentNullException.ThrowIfNull(readCommand);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<RaftEnvelope<TCommand>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
-            ReplicaId from = ReadReplica(root.GetProperty("from"));
-            string type = root.GetProperty("type").GetString()!;
-            JsonElement payloadElement = root.GetProperty("payload");
+            ReplicaId from = ReadReplica(RequireProperty(root, "from", "A Raft envelope"));
+            string type = RequireProperty(root, "type", "A Raft envelope").GetString()!;
+            JsonElement payloadElement = RequireProperty(root, "payload", "A Raft envelope");
 
             return type switch
             {
@@ -108,7 +108,7 @@ public static class RaftJson
                 "appendReply" => RaftEnvelope<TCommand>.ForAppendReply(from, ReadAppendReply(payloadElement)),
                 _ => throw new JsonException($"Unknown Raft envelope type '{type}'.")
             };
-        };
+        });
     }
 
 
@@ -151,19 +151,19 @@ public static class RaftJson
     {
         ArgumentNullException.ThrowIfNull(readCommand);
 
-        return payload =>
+        return JsonMessageGuard.FailClosed<RaftNodeState<TCommand>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
-            long currentTerm = ReadNonNegativeLong(root.GetProperty("currentTerm"), "A current term");
+            long currentTerm = ReadNonNegativeLong(RequireProperty(root, "currentTerm", "A Raft node state"), "A current term");
 
-            JsonElement votedForElement = root.GetProperty("votedFor");
+            JsonElement votedForElement = RequireProperty(root, "votedFor", "A Raft node state");
             ImmutableArray<byte> votedFor = votedForElement.ValueKind == JsonValueKind.Null
                 ? ImmutableArray<byte>.Empty
                 : ReadReplicaBytes(votedForElement.GetString()!);
 
-            return new RaftNodeState<TCommand>(currentTerm, votedFor, ReadEntries(root.GetProperty("log"), readCommand));
-        };
+            return new RaftNodeState<TCommand>(currentTerm, votedFor, ReadEntries(RequireProperty(root, "log", "A Raft node state"), readCommand));
+        });
     }
 
 
@@ -181,10 +181,10 @@ public static class RaftJson
     private static RequestVoteRequest ReadVoteRequest(JsonElement element)
     {
         return new RequestVoteRequest(
-            ReadNonNegativeLong(element.GetProperty("term"), "A term"),
-            ReadReplica(element.GetProperty("candidateId")),
-            ReadNonNegativeLong(element.GetProperty("lastLogIndex"), "A last log index"),
-            ReadNonNegativeLong(element.GetProperty("lastLogTerm"), "A last log term"));
+            ReadNonNegativeLong(RequireProperty(element, "term", "A vote request"), "A term"),
+            ReadReplica(RequireProperty(element, "candidateId", "A vote request")),
+            ReadNonNegativeLong(RequireProperty(element, "lastLogIndex", "A vote request"), "A last log index"),
+            ReadNonNegativeLong(RequireProperty(element, "lastLogTerm", "A vote request"), "A last log term"));
     }
 
 
@@ -200,8 +200,8 @@ public static class RaftJson
     private static RequestVoteReply ReadVoteReply(JsonElement element)
     {
         return new RequestVoteReply(
-            ReadNonNegativeLong(element.GetProperty("term"), "A term"),
-            element.GetProperty("voteGranted").GetBoolean());
+            ReadNonNegativeLong(RequireProperty(element, "term", "A vote reply"), "A term"),
+            RequireProperty(element, "voteGranted", "A vote reply").GetBoolean());
     }
 
 
@@ -229,12 +229,12 @@ public static class RaftJson
     private static AppendEntriesRequest<TCommand> ReadAppendRequest<TCommand>(JsonElement element, Func<JsonElement, TCommand> readCommand)
     {
         return new AppendEntriesRequest<TCommand>(
-            ReadNonNegativeLong(element.GetProperty("term"), "A term"),
-            ReadReplica(element.GetProperty("leaderId")),
-            ReadNonNegativeLong(element.GetProperty("prevLogIndex"), "A previous log index"),
-            ReadNonNegativeLong(element.GetProperty("prevLogTerm"), "A previous log term"),
-            ReadEntries(element.GetProperty("entries"), readCommand),
-            ReadNonNegativeLong(element.GetProperty("leaderCommit"), "A leader commit index"));
+            ReadNonNegativeLong(RequireProperty(element, "term", "An append request"), "A term"),
+            ReadReplica(RequireProperty(element, "leaderId", "An append request")),
+            ReadNonNegativeLong(RequireProperty(element, "prevLogIndex", "An append request"), "A previous log index"),
+            ReadNonNegativeLong(RequireProperty(element, "prevLogTerm", "An append request"), "A previous log term"),
+            ReadEntries(RequireProperty(element, "entries", "An append request"), readCommand),
+            ReadNonNegativeLong(RequireProperty(element, "leaderCommit", "An append request"), "A leader commit index"));
     }
 
 
@@ -251,9 +251,9 @@ public static class RaftJson
     private static AppendEntriesReply ReadAppendReply(JsonElement element)
     {
         return new AppendEntriesReply(
-            ReadNonNegativeLong(element.GetProperty("term"), "A term"),
-            element.GetProperty("success").GetBoolean(),
-            ReadNonNegativeLong(element.GetProperty("matchIndex"), "A match index"));
+            ReadNonNegativeLong(RequireProperty(element, "term", "An append reply"), "A term"),
+            RequireProperty(element, "success", "An append reply").GetBoolean(),
+            ReadNonNegativeLong(RequireProperty(element, "matchIndex", "An append reply"), "A match index"));
     }
 
 
@@ -287,16 +287,30 @@ public static class RaftJson
         ImmutableArray<RaftLogEntry<TCommand>>.Builder entries = ImmutableArray.CreateBuilder<RaftLogEntry<TCommand>>(element.GetArrayLength());
         foreach(JsonElement entry in element.EnumerateArray())
         {
-            long term = entry.GetProperty("term").GetInt64();
+            long term = RequireProperty(entry, "term", "A log entry").GetInt64();
             if(term < 1)
             {
                 throw new JsonException($"A log entry term is at least one, got {term}.");
             }
 
-            entries.Add(new RaftLogEntry<TCommand>(term, readCommand(entry.GetProperty("command"))));
+            entries.Add(new RaftLogEntry<TCommand>(term, readCommand(RequireProperty(entry, "command", "A log entry"))));
         }
 
         return entries.MoveToImmutable();
+    }
+
+
+    private static JsonElement RequireProperty(JsonElement element, string name, string label)
+    {
+        //A required field absent from an object is malformed input, so it fails closed as JsonException
+        //rather than the KeyNotFoundException the raw GetProperty accessor throws. A non-object element still
+        //surfaces InvalidOperationException exactly as GetProperty did, so only the missing-field case changes.
+        if(!element.TryGetProperty(name, out JsonElement property))
+        {
+            throw new JsonException($"{label} must carry a '{name}' field.");
+        }
+
+        return property;
     }
 
 

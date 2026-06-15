@@ -25,20 +25,8 @@ public static class VerisyncMetrics
 {
     private static Meter Meter { get; } = new(VerisyncTelemetry.MeterName);
 
-    /// <summary>Counter for memory rentals taken from a pool.</summary>
-    public static Counter<long> MemoryRented { get; } = Meter.CreateCounter<long>(VerisyncTelemetry.MemoryRented, "{rental}");
-
-    /// <summary>Counter for memory rentals returned to a pool.</summary>
-    public static Counter<long> MemoryReturned { get; } = Meter.CreateCounter<long>(VerisyncTelemetry.MemoryReturned, "{rental}");
-
-    /// <summary>Up-down counter for the current number of active memory rentals.</summary>
-    public static UpDownCounter<long> MemoryActiveRentals { get; } = Meter.CreateUpDownCounter<long>(VerisyncTelemetry.MemoryActiveRentals, "{rental}");
-
     /// <summary>Histogram for the distribution of allocated buffer sizes in bytes.</summary>
     public static Histogram<long> MemoryAllocatedBytes { get; } = Meter.CreateHistogram<long>(VerisyncTelemetry.MemoryAllocatedBytes, "By");
-
-    /// <summary>Histogram for the distribution of pool rental durations in milliseconds.</summary>
-    public static Histogram<double> MemoryRentalDurationMs { get; } = Meter.CreateHistogram<double>(VerisyncTelemetry.MemoryRentalDurationMs, "ms");
 
     /// <summary>Histogram for the distribution of tagged-memory lifetimes in milliseconds.</summary>
     public static Histogram<double> MemoryLifetimeMs { get; } = Meter.CreateHistogram<double>(VerisyncTelemetry.MemoryLifetimeMs, "ms");
