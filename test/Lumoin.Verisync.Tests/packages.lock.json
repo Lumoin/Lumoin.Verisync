@@ -10,12 +10,12 @@
       },
       "LiquidTestReports.Markdown": {
         "type": "Direct",
-        "requested": "[1.4.3-beta, )",
-        "resolved": "1.4.3-beta",
-        "contentHash": "k45yRvPJnka1tjaTSypMgRmRKYIix2xN/UrQGZwRsxy/dW/tvT5mo9MfiveUYD19kgHNE5vKAVSi/YcBixCbmg==",
+        "requested": "[2.0.0-beta.6, )",
+        "resolved": "2.0.0-beta.6",
+        "contentHash": "nlPxDjU0U7O+Gxrxu/9gbK2MX7IYAzPKTzX7jIsORtVjYcJR92lo/hM+zW+klM6z5hjjBiYwPIjxTMVRH/oc2w==",
         "dependencies": {
-          "LiquidTestReports.Core": "1.4.3-beta",
-          "Microsoft.TestPlatform.ObjectModel": "16.9.1"
+          "LiquidTestReports.Core": "2.0.0-beta.6",
+          "Microsoft.TestPlatform.ObjectModel": "17.11.1"
         }
       },
       "Microsoft.CodeAnalysis.BannedApiAnalyzers": {
@@ -163,16 +163,17 @@
       },
       "DotLiquid": {
         "type": "Transitive",
-        "resolved": "2.1.405",
-        "contentHash": "M8532wvCGiz2qb8N0BInwskNrpHOs9UvmcGuZt3yBdIIIccn+uNPGp6GEs2YUHxy0S7hbslElW1Vpyn70yI93Q=="
+        "resolved": "2.2.692",
+        "contentHash": "99vthJizf3mzMamLonWRhYICnKMCS+Xiz+mPojgSIIxa5ry42LE5P1s3i1OviL0/rtxXiZor8kYq5iZVCZ/RPA=="
       },
       "LiquidTestReports.Core": {
         "type": "Transitive",
-        "resolved": "1.4.3-beta",
-        "contentHash": "zUiLpqoyNemwSRqUgE/7mtlYFuVxmiaLte6dFi9miShAqGVDfU08wAQpks1ovlGr7o1uKUTJCCsiTo82Gg65iQ==",
+        "resolved": "2.0.0-beta.6",
+        "contentHash": "pO9qmgmdFNYTK0pfmTP4I2adOxPCtlJVLWQtZZixpVj/FVXqBr0N+sM+4qiDTTYJcKk2Z/rEnhOIoVXMkDvenA==",
         "dependencies": {
-          "DotLiquid": "2.1.405",
-          "Microsoft.TestPlatform.ObjectModel": "16.9.1",
+          "DotLiquid": "2.2.692",
+          "Microsoft.TestPlatform.ObjectModel": "17.11.1",
+          "NuGet.Frameworks": "6.12.1",
           "System.ComponentModel.Annotations": "5.0.0"
         }
       },
@@ -410,6 +411,11 @@
         "type": "Transitive",
         "resolved": "4.2.3",
         "contentHash": "dxOZt8/LWuiox7rugInJoIa5Mmu3pBmXdfaoZOx/mxx8+sUFFpjBXPlWXQXGeWzpkVPNC3x1Jf7rt2h2Zjyvvg=="
+      },
+      "NuGet.Frameworks": {
+        "type": "Transitive",
+        "resolved": "6.12.1",
+        "contentHash": "kPaRD5RJC0ByUg+yGX6bDz5XHMI7OYmQwP8kbtef+vZ+csj/VDb5Bwas4ChxwhoAbI8lEvwP5/3aViQPpgNBow=="
       },
       "System.CodeDom": {
         "type": "Transitive",
