@@ -1,3 +1,4 @@
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;

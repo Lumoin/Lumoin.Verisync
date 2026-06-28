@@ -59,28 +59,18 @@ public sealed class ReconciliationDecoder: IDisposable
 
 
     /// <summary>
-    /// Initializes a decoder over <paramref name="contract"/>.
-    /// </summary>
-    /// <param name="contract">The contract the difference stream was produced under; both peers must share it.</param>
-    /// <exception cref="ArgumentNullException">Thrown if <paramref name="contract"/> is <see langword="null"/>.</exception>
-    public ReconciliationDecoder(ReconciliationContract contract)
-        : this(contract, pool: null, cellCapacityHint: 0)
-    {
-    }
-
-
-    /// <summary>
     /// Initializes a decoder over <paramref name="contract"/>, renting the absorbed-cell store from
     /// <paramref name="pool"/> and pre-sizing it with <paramref name="cellCapacityHint"/>.
     /// </summary>
     /// <param name="contract">The contract the difference stream was produced under; both peers must share it.</param>
-    /// <param name="pool">The pool the cell store rents from, or <see langword="null"/> for the heap fallback. The decoder never disposes the pool.</param>
+    /// <param name="pool">The pool the cell store rents from. The decoder never disposes the pool.</param>
     /// <param name="cellCapacityHint">A lower bound on the cells the session will touch, pre-sizing the store; must not be negative.</param>
-    /// <exception cref="ArgumentNullException">Thrown if <paramref name="contract"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="contract"/> or <paramref name="pool"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="cellCapacityHint"/> is negative.</exception>
-    public ReconciliationDecoder(ReconciliationContract contract, MemoryPool<byte>? pool, int cellCapacityHint)
+    public ReconciliationDecoder(ReconciliationContract contract, MemoryPool<byte> pool, int cellCapacityHint = 0)
     {
         ArgumentNullException.ThrowIfNull(contract);
+        ArgumentNullException.ThrowIfNull(pool);
 
         Contract = contract;
         Cells = new ReconciliationCellBuffer(contract.ItemWidth, contract.ChecksumWidth, pool, cellCapacityHint);

@@ -59,7 +59,7 @@ internal sealed class DottedReconciliationProjectionTests
             .Add(R3, "delta")
             .ToState();
 
-        DottedReconciliationProjection<string> projection = new(state, ContentHashContract, Sha256Digest, CanonicalizeUtf8);
+        DottedReconciliationProjection<string> projection = new(state, ContentHashContract, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared);
 
         //One item per present entry, each exactly the contract width.
         Assert.AreEqual(state.Entries.Length, projection.Count);
@@ -105,8 +105,8 @@ internal sealed class DottedReconciliationProjectionTests
             .Add(R3, "right-only")
             .ToState();
 
-        DottedReconciliationProjection<string> leftProjection = new(left, ContentHashContract, Sha256Digest, CanonicalizeUtf8);
-        DottedReconciliationProjection<string> rightProjection = new(right, ContentHashContract, Sha256Digest, CanonicalizeUtf8);
+        DottedReconciliationProjection<string> leftProjection = new(left, ContentHashContract, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared);
+        DottedReconciliationProjection<string> rightProjection = new(right, ContentHashContract, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared);
 
         //Locate the item each side produced for the shared dot by resolving back to the (R1, 1, "shared") entry.
         ReadOnlyMemory<byte> leftShared = ItemFor(leftProjection, R1, 1, "shared");
@@ -136,8 +136,8 @@ internal sealed class DottedReconciliationProjectionTests
             .Add(R3, "b-two")
             .ToState();
 
-        DottedReconciliationProjection<string> a = new(stateA, ContentHashContract, Sha256Digest, CanonicalizeUtf8);
-        DottedReconciliationProjection<string> b = new(stateB, ContentHashContract, Sha256Digest, CanonicalizeUtf8);
+        DottedReconciliationProjection<string> a = new(stateA, ContentHashContract, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared);
+        DottedReconciliationProjection<string> b = new(stateB, ContentHashContract, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared);
 
         HashSet<string> itemsA = [.. a.Items.Select(HexOf)];
         HashSet<string> itemsB = [.. b.Items.Select(HexOf)];
@@ -196,7 +196,7 @@ internal sealed class DottedReconciliationProjectionTests
             .Add(R1, "same")
             .ToState();
 
-        DottedReconciliationProjection<string> projection = new(state, ContentHashContract, Sha256Digest, CanonicalizeUtf8);
+        DottedReconciliationProjection<string> projection = new(state, ContentHashContract, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared);
 
         Assert.AreEqual(2, projection.Count);
         HashSet<string> distinct = [.. projection.Items.Select(HexOf)];
@@ -221,7 +221,7 @@ internal sealed class DottedReconciliationProjectionTests
         //already-present item, which violates injectivity and would XOR-cancel two distinct entries silently.
         ComputeDigestDelegate collidingDigest = static _ => new byte[32];
 
-        Assert.ThrowsExactly<ArgumentException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, collidingDigest, CanonicalizeUtf8));
+        Assert.ThrowsExactly<ArgumentException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, collidingDigest, CanonicalizeUtf8, BaseMemoryPool.Shared));
     }
 
 
@@ -233,7 +233,7 @@ internal sealed class DottedReconciliationProjectionTests
             .Add(R2, "beta")
             .ToState();
 
-        DottedReconciliationProjection<string> projection = new(state, ContentHashContract, Sha256Digest, CanonicalizeUtf8);
+        DottedReconciliationProjection<string> projection = new(state, ContentHashContract, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared);
 
         //The context is a passthrough of the same instance the state carries, not a copy.
         Assert.AreSame(state.Context, projection.Context);
@@ -246,10 +246,10 @@ internal sealed class DottedReconciliationProjectionTests
     {
         DottedVersionVectorSetState<string> state = DottedVersionVectorSet<string>.Empty.Add(R1, "alpha").ToState();
 
-        Assert.ThrowsExactly<ArgumentNullException>(() => new DottedReconciliationProjection<string>(null!, ContentHashContract, Sha256Digest, CanonicalizeUtf8));
-        Assert.ThrowsExactly<ArgumentNullException>(() => new DottedReconciliationProjection<string>(state, null!, Sha256Digest, CanonicalizeUtf8));
-        Assert.ThrowsExactly<ArgumentNullException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, null!, CanonicalizeUtf8));
-        Assert.ThrowsExactly<ArgumentNullException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, Sha256Digest, null!));
+        Assert.ThrowsExactly<ArgumentNullException>(() => new DottedReconciliationProjection<string>(null!, ContentHashContract, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared));
+        Assert.ThrowsExactly<ArgumentNullException>(() => new DottedReconciliationProjection<string>(state, null!, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared));
+        Assert.ThrowsExactly<ArgumentNullException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, null!, CanonicalizeUtf8, BaseMemoryPool.Shared));
+        Assert.ThrowsExactly<ArgumentNullException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, Sha256Digest, null!, BaseMemoryPool.Shared));
     }
 
 
@@ -262,7 +262,7 @@ internal sealed class DottedReconciliationProjectionTests
         //of scope, so a structural contract is rejected.
         var structural = new ReconciliationContract(ReconciliationItemDomain.Structural, 32, 8, ReconciliationContract.WellKnownChecksumKeyLow, ReconciliationContract.WellKnownChecksumKeyHigh);
 
-        Assert.ThrowsExactly<ArgumentException>(() => new DottedReconciliationProjection<string>(state, structural, Sha256Digest, CanonicalizeUtf8));
+        Assert.ThrowsExactly<ArgumentException>(() => new DottedReconciliationProjection<string>(state, structural, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared));
     }
 
 
@@ -276,7 +276,7 @@ internal sealed class DottedReconciliationProjectionTests
         var context = new VectorClockState([new ReplicaCounterEntry(shortReplica, 1)]);
         var state = new DottedVersionVectorSetState<string>(context, [new DottedEntry<string>(shortReplica, 1, "alpha")]);
 
-        Assert.ThrowsExactly<ArgumentException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, Sha256Digest, CanonicalizeUtf8));
+        Assert.ThrowsExactly<ArgumentException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared));
     }
 
 
@@ -289,7 +289,7 @@ internal sealed class DottedReconciliationProjectionTests
         var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1)]);
         var state = new DottedVersionVectorSetState<string>(context, [new DottedEntry<string>(Bytes(R1), 0, "alpha")]);
 
-        Assert.ThrowsExactly<ArgumentException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, Sha256Digest, CanonicalizeUtf8));
+        Assert.ThrowsExactly<ArgumentException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared));
     }
 
 
@@ -301,7 +301,7 @@ internal sealed class DottedReconciliationProjectionTests
         //A stub digest returning 16 bytes instead of the contract's 32 violates the contract width.
         ComputeDigestDelegate narrowDigest = static _ => new byte[16];
 
-        Assert.ThrowsExactly<ArgumentException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, narrowDigest, CanonicalizeUtf8));
+        Assert.ThrowsExactly<ArgumentException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, narrowDigest, CanonicalizeUtf8, BaseMemoryPool.Shared));
     }
 
 

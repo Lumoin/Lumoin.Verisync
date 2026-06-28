@@ -47,42 +47,19 @@ public sealed class ReconciliationEncoder: IDisposable
 
 
     /// <summary>
-    /// Initializes an encoder over <paramref name="contract"/> with no injectivity enforcement.
-    /// </summary>
-    /// <param name="contract">The contract pinning item width, checksum width, and checksum key.</param>
-    /// <exception cref="ArgumentNullException">Thrown if <paramref name="contract"/> is <see langword="null"/>.</exception>
-    public ReconciliationEncoder(ReconciliationContract contract)
-        : this(contract, ReconciliationInjectivityEnforcement.None, pool: null, cellCapacityHint: 0)
-    {
-    }
-
-
-    /// <summary>
-    /// Initializes an encoder over <paramref name="contract"/> with the given injectivity enforcement.
-    /// </summary>
-    /// <param name="contract">The contract pinning item width, checksum width, and checksum key.</param>
-    /// <param name="enforcement">How strictly the encoder polices duplicate adds and unmatched removes.</param>
-    /// <exception cref="ArgumentNullException">Thrown if <paramref name="contract"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="enforcement"/> is not a defined value.</exception>
-    public ReconciliationEncoder(ReconciliationContract contract, ReconciliationInjectivityEnforcement enforcement)
-        : this(contract, enforcement, pool: null, cellCapacityHint: 0)
-    {
-    }
-
-
-    /// <summary>
     /// Initializes an encoder over <paramref name="contract"/> with the given injectivity enforcement, renting
     /// the produced-cell store from <paramref name="pool"/> and pre-sizing it with <paramref name="cellCapacityHint"/>.
     /// </summary>
     /// <param name="contract">The contract pinning item width, checksum width, and checksum key.</param>
     /// <param name="enforcement">How strictly the encoder polices duplicate adds and unmatched removes.</param>
-    /// <param name="pool">The pool the cell store rents from, or <see langword="null"/> for the heap fallback. The encoder never disposes the pool.</param>
+    /// <param name="pool">The pool the cell store rents from. The encoder never disposes the pool.</param>
     /// <param name="cellCapacityHint">A lower bound on the cells the session will touch, pre-sizing the store; must not be negative.</param>
-    /// <exception cref="ArgumentNullException">Thrown if <paramref name="contract"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="contract"/> or <paramref name="pool"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="enforcement"/> is not a defined value or <paramref name="cellCapacityHint"/> is negative.</exception>
-    public ReconciliationEncoder(ReconciliationContract contract, ReconciliationInjectivityEnforcement enforcement, MemoryPool<byte>? pool, int cellCapacityHint)
+    public ReconciliationEncoder(ReconciliationContract contract, ReconciliationInjectivityEnforcement enforcement, MemoryPool<byte> pool, int cellCapacityHint = 0)
     {
         ArgumentNullException.ThrowIfNull(contract);
+        ArgumentNullException.ThrowIfNull(pool);
 
         if(enforcement is not (ReconciliationInjectivityEnforcement.None or ReconciliationInjectivityEnforcement.DebugAssert or ReconciliationInjectivityEnforcement.Strict))
         {

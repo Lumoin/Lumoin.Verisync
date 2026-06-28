@@ -1,4 +1,5 @@
 using CsCheck;
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
@@ -53,7 +54,7 @@ internal sealed class ReconciliationLawTests
 
             //Transient items added then removed, net items added by odd repetition (add, remove, add), and
             //ProduceNext calls interleaved at points driven by the case seed.
-            ReconciliationEncoder encoder = new(Contract);
+            ReconciliationEncoder encoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
             byte[] transient = ItemOf(3_000_001L + (input.noise % 1000));
             int produced = 0;
 
@@ -102,7 +103,7 @@ internal sealed class ReconciliationLawTests
             int d = difference.LeftOnly.Length + difference.RightOnly.Length;
             int cap = 100 + (20 * d);
 
-            ReconciliationDecoder decoder = new(Contract);
+            ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
             int absorbed = 0;
             while(!decoder.IsComplete && absorbed < cap)
             {
@@ -135,7 +136,7 @@ internal sealed class ReconciliationLawTests
             ReconciliationEncoder left = Encoder(items);
             ReconciliationEncoder right = Encoder(items);
 
-            ReconciliationDecoder decoder = new(Contract);
+            ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
             decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
 
             Assert.IsTrue(decoder.IsComplete);
@@ -155,7 +156,7 @@ internal sealed class ReconciliationLawTests
             int d = difference.LeftOnly.Length + difference.RightOnly.Length;
             int cap = 100 + (20 * d);
 
-            ReconciliationDecoder decoder = new(Contract);
+            ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
             int absorbed = 0;
             while(!decoder.IsComplete && absorbed < cap)
             {
@@ -198,7 +199,7 @@ internal sealed class ReconciliationLawTests
             int corruptByte = (input.position / cap) % fieldWidth;
             int corruptBit = input.position % 8;
 
-            ReconciliationDecoder decoder = new(Contract);
+            ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
             int absorbed = 0;
             while(!decoder.IsComplete && absorbed < cap)
             {
@@ -286,7 +287,7 @@ internal sealed class ReconciliationLawTests
 
     private static ReconciliationEncoder Encoder(byte[][] items)
     {
-        ReconciliationEncoder encoder = new(Contract);
+        ReconciliationEncoder encoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         foreach(byte[] item in items)
         {
             encoder.Add(item);

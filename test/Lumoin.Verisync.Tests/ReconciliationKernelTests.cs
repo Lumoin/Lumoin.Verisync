@@ -1,3 +1,4 @@
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 using System.Security.Cryptography;
 using System.Text;
@@ -70,7 +71,7 @@ internal sealed class ReconciliationKernelTests
     [TestMethod]
     public void EncoderValidationRejectsWrongWidthsAndOutOfRange()
     {
-        using ReconciliationEncoder encoder = new(StructuralContract);
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         byte[] tooShort = [0x01, 0x02, 0x03];
 
         Assert.ThrowsExactly<ArgumentException>(() => encoder.Add(tooShort));
@@ -87,7 +88,7 @@ internal sealed class ReconciliationKernelTests
     [TestMethod]
     public void StrictEnforcementGuardsMembership()
     {
-        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict);
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict, BaseMemoryPool.Shared);
         encoder.Add(A1);
 
         Assert.ThrowsExactly<InvalidOperationException>(() => encoder.Add(A1));
@@ -97,7 +98,7 @@ internal sealed class ReconciliationKernelTests
         encoder.Remove(A1);
         encoder.Add(A1);
 
-        using ReconciliationEncoder expected = new(StructuralContract);
+        using ReconciliationEncoder expected = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         expected.Add(A1);
 
         AssertSameStream(expected, encoder, 8);
@@ -108,15 +109,15 @@ internal sealed class ReconciliationKernelTests
     public void NoneEnforcementHasSetSemantics()
     {
         //Double-add cancels under XOR: the stream equals the empty-set stream.
-        using ReconciliationEncoder doubleAdd = new(StructuralContract);
+        using ReconciliationEncoder doubleAdd = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         doubleAdd.Add(A1);
         doubleAdd.Add(A1);
 
-        using ReconciliationEncoder empty = new(StructuralContract);
+        using ReconciliationEncoder empty = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         AssertSameStream(empty, doubleAdd, 8);
 
         //Add then remove cancels likewise.
-        using ReconciliationEncoder addRemove = new(StructuralContract);
+        using ReconciliationEncoder addRemove = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         addRemove.Add(A2);
         addRemove.Remove(A2);
 
@@ -127,7 +128,7 @@ internal sealed class ReconciliationKernelTests
     [TestMethod]
     public void IncrementalUpdateTracksTheLiveSet()
     {
-        using ReconciliationEncoder encoder = new(StructuralContract);
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         encoder.Add(A1);
         encoder.Add(A2);
         encoder.Add(A3);
@@ -139,7 +140,7 @@ internal sealed class ReconciliationKernelTests
         encoder.Add(B1);
         encoder.Remove(A2);
 
-        using ReconciliationEncoder fresh = new(StructuralContract);
+        using ReconciliationEncoder fresh = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         fresh.Add(A1);
         fresh.Add(A3);
         fresh.Add(B1);
@@ -154,16 +155,16 @@ internal sealed class ReconciliationKernelTests
     [TestMethod]
     public void DecoderAbsorbValidationAndPostCompletionAbsorb()
     {
-        using ReconciliationDecoder decoder = new(StructuralContract);
+        using ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared);
 
         Assert.ThrowsExactly<ArgumentNullException>(() => decoder.Absorb(null!));
         Assert.ThrowsExactly<ArgumentException>(() => decoder.Absorb(new ReconciliationSymbol(new byte[4], new byte[8])));
         Assert.ThrowsExactly<ArgumentException>(() => decoder.Absorb(new ReconciliationSymbol(new byte[8], new byte[4])));
 
         //Equal-set reconciliation: complete after the first absorbed symbol; a further absorb stays legal.
-        using ReconciliationEncoder left = new(StructuralContract);
+        using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         left.Add(A1);
-        using ReconciliationEncoder right = new(StructuralContract);
+        using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         right.Add(A1);
 
         decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
@@ -205,12 +206,12 @@ internal sealed class ReconciliationKernelTests
 
         //Unkeyed decoder over {x, y} versus empty: difference symbol 0 masquerades as pure and the
         //decoder completes immediately with the single WRONG item x ^ y.
-        using ReconciliationEncoder twoItems = new(toyWellKnown);
+        using ReconciliationEncoder twoItems = new(toyWellKnown, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         twoItems.Add(x);
         twoItems.Add(collidingY);
-        using ReconciliationEncoder emptyWellKnown = new(toyWellKnown);
+        using ReconciliationEncoder emptyWellKnown = new(toyWellKnown, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
 
-        using ReconciliationDecoder unkeyed = new(toyWellKnown);
+        using ReconciliationDecoder unkeyed = new(toyWellKnown, BaseMemoryPool.Shared);
         unkeyed.Absorb(twoItems.ProduceNext().Combine(emptyWellKnown.ProduceNext()));
 
         Assert.IsTrue(unkeyed.IsComplete);
@@ -219,12 +220,12 @@ internal sealed class ReconciliationKernelTests
 
         //The same construction under a secret key refuses the crafted collision: not complete after symbol 0.
         ReconciliationContract toySecret = new(ReconciliationItemDomain.Structural, 8, 1, 0x0123456789ABCDEFUL, 0xFEDCBA9876543210UL);
-        using ReconciliationEncoder twoItemsSecret = new(toySecret);
+        using ReconciliationEncoder twoItemsSecret = new(toySecret, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         twoItemsSecret.Add(x);
         twoItemsSecret.Add(collidingY);
-        using ReconciliationEncoder emptySecret = new(toySecret);
+        using ReconciliationEncoder emptySecret = new(toySecret, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
 
-        using ReconciliationDecoder keyed = new(toySecret);
+        using ReconciliationDecoder keyed = new(toySecret, BaseMemoryPool.Shared);
         keyed.Absorb(twoItemsSecret.ProduceNext().Combine(emptySecret.ProduceNext()));
 
         Assert.IsFalse(keyed.IsComplete);
@@ -267,7 +268,7 @@ internal sealed class ReconciliationKernelTests
 
         using ReconciliationEncoder encoderLeft = LoadEncoder(contract, mergedLeftItems);
         using ReconciliationEncoder encoderRight = LoadEncoder(contract, mergedRightItems);
-        using ReconciliationDecoder decoder = new(contract);
+        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared);
         decoder.Absorb(encoderLeft.ProduceNext().Combine(encoderRight.ProduceNext()));
 
         Assert.IsTrue(decoder.IsComplete);
@@ -279,7 +280,7 @@ internal sealed class ReconciliationKernelTests
     {
         using ReconciliationEncoder left = LoadEncoder(contract, leftItems);
         using ReconciliationEncoder right = LoadEncoder(contract, rightItems);
-        using ReconciliationDecoder decoder = new(contract);
+        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared);
 
         int cap = 100 + (20 * (leftItems.Length + rightItems.Length));
         for(int n = 0; n < cap && !decoder.IsComplete; n++)
@@ -295,7 +296,7 @@ internal sealed class ReconciliationKernelTests
 
     private static ReconciliationEncoder LoadEncoder(ReconciliationContract contract, ReadOnlyMemory<byte>[] items)
     {
-        ReconciliationEncoder encoder = new(contract);
+        ReconciliationEncoder encoder = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         foreach(ReadOnlyMemory<byte> item in items)
         {
             encoder.Add(item.Span);

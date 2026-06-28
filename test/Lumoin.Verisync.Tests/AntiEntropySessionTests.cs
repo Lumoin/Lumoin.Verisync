@@ -1,3 +1,4 @@
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 using System.Collections.Immutable;
 using System.Security.Cryptography;
@@ -57,8 +58,8 @@ internal sealed class AntiEntropySessionTests
         ReadOnlyMemory<byte>[] initiatorItems = ProjectHashes(initiatorSet);
         ReadOnlyMemory<byte>[] responderItems = ProjectHashes(responderSet);
 
-        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorItems);
-        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderItems);
+        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorItems, BaseMemoryPool.Shared);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderItems, BaseMemoryPool.Shared);
 
         Dictionary<string, string> initiatorDirectory = BuildHashDirectory(initiatorSet);
         Dictionary<string, string> responderDirectory = BuildHashDirectory(responderSet);
@@ -136,8 +137,8 @@ internal sealed class AntiEntropySessionTests
         CancellationToken cancellationToken = timeoutSource.Token;
 
         ReadOnlyMemory<byte>[] items = [A1, A2, A3];
-        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, StructuralContract, items);
-        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, items);
+        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, StructuralContract, items, BaseMemoryPool.Shared);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, items, BaseMemoryPool.Shared);
 
         int resolveInvocations = 0;
         int resolveDecodedCount = -1;
@@ -201,8 +202,8 @@ internal sealed class AntiEntropySessionTests
         ReconciliationContract otherContract = new(ReconciliationItemDomain.Structural, 8, 8, 0x0123456789ABCDEFUL, 0xFEDCBA9876543210UL);
 
         ReadOnlyMemory<byte>[] items = [A1, A2];
-        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, StructuralContract, items);
-        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, otherContract, items);
+        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, StructuralContract, items, BaseMemoryPool.Shared);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, otherContract, items, BaseMemoryPool.Shared);
 
         ResolveReconciliationDifferenceDelegate<string> resolve = (_, _) => ReconciliationDifferenceResolution<string>.Empty;
         ServeReconciliationFetchDelegate<string> serve = _ => [];
@@ -225,8 +226,8 @@ internal sealed class AntiEntropySessionTests
         CancellationToken cancellationToken = timeoutSource.Token;
 
         ReadOnlyMemory<byte>[] items = [A1, A2];
-        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, StructuralContract, items);
-        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, items);
+        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, StructuralContract, items, BaseMemoryPool.Shared);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, items, BaseMemoryPool.Shared);
 
         ResolveReconciliationDifferenceDelegate<string> resolve = (_, _) => ReconciliationDifferenceResolution<string>.Empty;
         ServeReconciliationFetchDelegate<string> serve = _ => [];
@@ -251,8 +252,8 @@ internal sealed class AntiEntropySessionTests
         CancellationToken cancellationToken = timeoutSource.Token;
 
         ReadOnlyMemory<byte>[] items = [A1, A2];
-        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, StructuralContract, items);
-        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, items);
+        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, StructuralContract, items, BaseMemoryPool.Shared);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, items, BaseMemoryPool.Shared);
 
         ResolveReconciliationDifferenceDelegate<string> resolve = (_, _) => ReconciliationDifferenceResolution<string>.Empty;
 
@@ -274,16 +275,16 @@ internal sealed class AntiEntropySessionTests
     {
         ReadOnlyMemory<byte>[] items = [A1, A2];
 
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new AntiEntropySession<string>((AntiEntropyRole)0, StructuralContract, items));
-        Assert.ThrowsExactly<ArgumentNullException>(() => new AntiEntropySession<string>(AntiEntropyRole.Initiator, null!, items));
-        Assert.ThrowsExactly<ArgumentNullException>(() => new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, null!));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, items, 0));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new AntiEntropySession<string>((AntiEntropyRole)0, StructuralContract, items, BaseMemoryPool.Shared));
+        Assert.ThrowsExactly<ArgumentNullException>(() => new AntiEntropySession<string>(AntiEntropyRole.Initiator, null!, items, BaseMemoryPool.Shared));
+        Assert.ThrowsExactly<ArgumentNullException>(() => new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, null!, BaseMemoryPool.Shared));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, items, 0, BaseMemoryPool.Shared));
 
         ReadOnlyMemory<byte>[] wrongWidth = [new byte[4]];
-        Assert.ThrowsExactly<ArgumentException>(() => new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, wrongWidth));
+        Assert.ThrowsExactly<ArgumentException>(() => new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, wrongWidth, BaseMemoryPool.Shared));
 
         ReadOnlyMemory<byte>[] duplicates = [A1, A1.ToArray()];
-        Assert.ThrowsExactly<ArgumentException>(() => new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, duplicates));
+        Assert.ThrowsExactly<ArgumentException>(() => new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, duplicates, BaseMemoryPool.Shared));
     }
 
 
@@ -296,15 +297,15 @@ internal sealed class AntiEntropySessionTests
 
         ReadOnlyMemory<byte>[] items = [A1, A2];
 
-        using AntiEntropySession<string> missingResolve = new(AntiEntropyRole.Initiator, StructuralContract, items);
+        using AntiEntropySession<string> missingResolve = new(AntiEntropyRole.Initiator, StructuralContract, items, BaseMemoryPool.Shared);
         await Assert.ThrowsExactlyAsync<ArgumentNullException>(
             () => missingResolve.RunAsync(Discard, null, null, null, cancellationToken: cancellationToken)).ConfigureAwait(false);
 
-        using AntiEntropySession<string> missingServe = new(AntiEntropyRole.Responder, StructuralContract, items);
+        using AntiEntropySession<string> missingServe = new(AntiEntropyRole.Responder, StructuralContract, items, BaseMemoryPool.Shared);
         await Assert.ThrowsExactlyAsync<ArgumentNullException>(
             () => missingServe.RunAsync(Discard, null, null, null, cancellationToken: cancellationToken)).ConfigureAwait(false);
 
-        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, items);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, items, BaseMemoryPool.Shared);
         ServeReconciliationFetchDelegate<string> serve = _ => [];
         Task first = responder.RunAsync(Discard, null, serve, null, cancellationToken: cancellationToken);
 
@@ -330,8 +331,8 @@ internal sealed class AntiEntropySessionTests
         ReadOnlyMemory<byte>[] initiatorItems = ProjectHashes(initiatorSet);
         ReadOnlyMemory<byte>[] responderItems = ProjectHashes(responderSet);
 
-        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorItems);
-        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderItems);
+        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorItems, BaseMemoryPool.Shared);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderItems, BaseMemoryPool.Shared);
 
         //The initiator lacks zeta, so it fetches it; the responder answers with no entries, which fails the
         //coverage check on the responder's run.
@@ -368,8 +369,8 @@ internal sealed class AntiEntropySessionTests
         ReadOnlyMemory<byte>[] initiatorItems = ProjectHashes(initiatorSet);
         ReadOnlyMemory<byte>[] responderItems = ProjectHashes(responderSet);
 
-        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorItems);
-        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderItems);
+        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorItems, BaseMemoryPool.Shared);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderItems, BaseMemoryPool.Shared);
 
         Dictionary<string, string> initiatorDirectory = BuildHashDirectory(initiatorSet);
 
@@ -413,8 +414,8 @@ internal sealed class AntiEntropySessionTests
         ReadOnlyMemory<byte>[] initiatorItems = ProjectHashes(initiatorSet);
         ReadOnlyMemory<byte>[] responderItems = ProjectHashes(responderSet);
 
-        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorItems);
-        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderItems);
+        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorItems, BaseMemoryPool.Shared);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderItems, BaseMemoryPool.Shared);
 
         Dictionary<string, string> responderDirectory = BuildHashDirectory(responderSet);
 
@@ -441,7 +442,7 @@ internal sealed class AntiEntropySessionTests
         }
 
         int absorbedAtResolving = initiator.DecodedItems.Count;
-        using ReconciliationEncoder straggler = new(ContentHashContract);
+        using ReconciliationEncoder straggler = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         foreach(ReadOnlyMemory<byte> item in responderItems)
         {
             straggler.Add(item.Span);
@@ -469,7 +470,7 @@ internal sealed class AntiEntropySessionTests
         CancellationToken cancellationToken = timeoutSource.Token;
 
         ReadOnlyMemory<byte>[] items = [A1, A2];
-        using AntiEntropySession<string> session = new(AntiEntropyRole.Initiator, StructuralContract, items);
+        using AntiEntropySession<string> session = new(AntiEntropyRole.Initiator, StructuralContract, items, BaseMemoryPool.Shared);
 
         ReconciliationEnvelope<string> empty = new(null, null, null, null, null, null, null);
         ReconciliationOffer offer = ReconciliationOffer.FromContract(StructuralContract);
@@ -499,8 +500,8 @@ internal sealed class AntiEntropySessionTests
         List<ReadOnlyMemory<byte>> initiatorBuffers = [.. initiatorArrays.Select(array => (ReadOnlyMemory<byte>)array)];
         List<ReadOnlyMemory<byte>> responderBuffers = [.. responderArrays.Select(array => (ReadOnlyMemory<byte>)array)];
 
-        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorBuffers);
-        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderBuffers);
+        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorBuffers, BaseMemoryPool.Shared);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderBuffers, BaseMemoryPool.Shared);
 
         //Corrupt every backing array and empty both lists; a snapshot that copied its bytes is unaffected.
         foreach(byte[] array in initiatorArrays)

@@ -1,3 +1,4 @@
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
@@ -43,20 +44,20 @@ internal sealed class ReconciliationDecoderScaleTests
 
                 //The encoders are built inline rather than through the Encoder helper so the disposable owner is
                 //a directly-constructed local the dispose analysis recognizes across the nested sweep.
-                using ReconciliationEncoder left = new(Contract);
+                using ReconciliationEncoder left = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
                 foreach(byte[] item in (byte[][])[.. shared, .. leftOnly])
                 {
                     left.Add(item);
                 }
 
-                using ReconciliationEncoder right = new(Contract);
+                using ReconciliationEncoder right = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
                 foreach(byte[] item in (byte[][])[.. shared, .. rightOnly])
                 {
                     right.Add(item);
                 }
 
                 int cap = 100 + (20 * d);
-                using ReconciliationDecoder decoder = new(Contract);
+                using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
                 int absorbed = 0;
                 while(!decoder.IsComplete && absorbed < cap)
                 {
@@ -87,8 +88,8 @@ internal sealed class ReconciliationDecoderScaleTests
         int d = leftOnly.Length + rightOnly.Length;
         int cap = 100 + (20 * d);
 
-        using ReconciliationDecoder decoderOne = new(Contract);
-        using ReconciliationDecoder decoderTwo = new(Contract);
+        using ReconciliationDecoder decoderOne = new(Contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoderTwo = new(Contract, BaseMemoryPool.Shared);
         int absorbed = 0;
         while((!decoderOne.IsComplete || !decoderTwo.IsComplete) && absorbed < cap)
         {
@@ -115,7 +116,7 @@ internal sealed class ReconciliationDecoderScaleTests
         using ReconciliationEncoder left = Encoder(shared);
         using ReconciliationEncoder right = Encoder(shared);
 
-        using ReconciliationDecoder decoder = new(Contract);
+        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
         decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
 
         //An equal set difference is complete on the very first absorbed symbol with nothing decoded, even
@@ -132,7 +133,7 @@ internal sealed class ReconciliationDecoderScaleTests
         using ReconciliationEncoder left = Encoder([A1, A2, A3]);
         using ReconciliationEncoder right = Encoder([A1, B1]);
 
-        using ReconciliationDecoder decoder = new(Contract);
+        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
         int absorbed = 0;
         while(!decoder.IsComplete)
         {
@@ -184,7 +185,7 @@ internal sealed class ReconciliationDecoderScaleTests
 
     private static ReconciliationEncoder Encoder(byte[][] items)
     {
-        ReconciliationEncoder encoder = new(Contract);
+        ReconciliationEncoder encoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         foreach(byte[] item in items)
         {
             encoder.Add(item);

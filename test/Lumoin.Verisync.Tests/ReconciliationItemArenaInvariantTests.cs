@@ -41,7 +41,7 @@ internal sealed class ReconciliationItemArenaInvariantTests
         //A zero hint pins the small initial arena block, so adding a thousand distinct items forces the arena
         //across several block grows. The first item's membership key views the very first block; if any grow
         //relocated that block the re-add below would not be detected as a duplicate.
-        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict, null, cellCapacityHint: 0);
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict, BaseMemoryPool.Shared, cellCapacityHint: 0);
 
         byte[] firstItem = BuildItem(Stride, 0);
         encoder.Add(firstItem);

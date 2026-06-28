@@ -1,6 +1,7 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Diagnosers;
 using BenchmarkDotNet.Engines;
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Benchmarks;
@@ -59,7 +60,7 @@ public class ReconciliationEncoderBenchmarks
     [Benchmark]
     public ReconciliationSymbol Encode()
     {
-        using var encoder = new ReconciliationEncoder(Contract);
+        using var encoder = new ReconciliationEncoder(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         foreach(byte[] item in Items)
         {
             encoder.Add(item);

@@ -47,13 +47,10 @@ public sealed class DottedReconciliationProjection<T>
     /// <param name="contract">The contract whose item width and domain the produced items must satisfy.</param>
     /// <param name="computeDigest">The digest committing a frame's bytes to its item.</param>
     /// <param name="canonicalizeValue">The pure canonicalization of a value into the bytes its frame commits to.</param>
-    /// <param name="pool">
-    /// The pool the framing scratch is rented from, tracking the memory; <see langword="null"/> rents a private
-    /// heap-backed fallback instead, so the projection needs no pool to function.
-    /// </param>
+    /// <param name="pool">The pool the framing scratch is rented from, tracking the memory.</param>
     /// <exception cref="ArgumentNullException">
-    /// Thrown when <paramref name="state"/>, <paramref name="contract"/>, <paramref name="computeDigest"/>, or
-    /// <paramref name="canonicalizeValue"/> is <see langword="null"/>.
+    /// Thrown when <paramref name="state"/>, <paramref name="contract"/>, <paramref name="computeDigest"/>,
+    /// <paramref name="canonicalizeValue"/>, or <paramref name="pool"/> is <see langword="null"/>.
     /// </exception>
     /// <exception cref="ArgumentException">
     /// Thrown when <paramref name="contract"/>'s domain is not <see cref="ReconciliationItemDomain.ContentHash"/>;
@@ -66,12 +63,13 @@ public sealed class DottedReconciliationProjection<T>
         ReconciliationContract contract,
         ComputeDigestDelegate computeDigest,
         CanonicalizeReconciliationValueDelegate<T> canonicalizeValue,
-        MemoryPool<byte>? pool = null)
+        MemoryPool<byte> pool)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(contract);
         ArgumentNullException.ThrowIfNull(computeDigest);
         ArgumentNullException.ThrowIfNull(canonicalizeValue);
+        ArgumentNullException.ThrowIfNull(pool);
 
         if(contract.ItemDomain != ReconciliationItemDomain.ContentHash)
         {
@@ -182,10 +180,10 @@ public sealed class DottedReconciliationProjection<T>
     }
 
 
-    private static IMemoryOwner<byte> Rent(int byteLength, MemoryPool<byte>? pool)
+    private static IMemoryOwner<byte> Rent(int byteLength, MemoryPool<byte> pool)
     {
         //A general pool may return an owner larger than requested; the framing slices only ever within the frame
-        //length, so an over-sized owner is harmless. The heap fallback keeps the projection standalone-usable.
-        return (pool?.Rent(byteLength)) ?? new ReconciliationHeapMemoryOwner(byteLength);
+        //length, so an over-sized owner is harmless.
+        return pool.Rent(byteLength);
     }
 }

@@ -1,3 +1,4 @@
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
@@ -96,7 +97,7 @@ internal sealed class ReconciliationVectorTests
     [TestMethod]
     public void EncoderStreamMatchesTheVector()
     {
-        using ReconciliationEncoder encoder = new(StructuralContract);
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         encoder.Add(W3);
         encoder.Add(A2);
         encoder.Add(A3);
@@ -131,12 +132,12 @@ internal sealed class ReconciliationVectorTests
     [TestMethod]
     public void DifferenceStreamDecodesToTheTrueDifference()
     {
-        using ReconciliationEncoder left = new(StructuralContract);
+        using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         left.Add(W3);
         left.Add(A2);
         left.Add(A3);
 
-        using ReconciliationEncoder right = new(StructuralContract);
+        using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         right.Add(W3);
         right.Add(B1);
 
@@ -152,7 +153,7 @@ internal sealed class ReconciliationVectorTests
             ("0000000000000000", "0000000000000000")
         ];
 
-        using ReconciliationDecoder decoder = new(StructuralContract);
+        using ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared);
         for(int n = 0; n < expected.Length; n++)
         {
             ReconciliationSymbol difference = left.ProduceNext().Combine(right.ProduceNext());
@@ -179,12 +180,12 @@ internal sealed class ReconciliationVectorTests
     [TestMethod]
     public void DifferenceCellZeroIsAnImpureNearMiss()
     {
-        using ReconciliationEncoder left = new(StructuralContract);
+        using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         left.Add(W3);
         left.Add(A2);
         left.Add(A3);
 
-        using ReconciliationEncoder right = new(StructuralContract);
+        using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         right.Add(W3);
         right.Add(B1);
 
@@ -195,7 +196,7 @@ internal sealed class ReconciliationVectorTests
         Assert.IsFalse(cellZero.IsNeutral);
         CollectionAssert.AreEqual(W3, cellZero.Sum.ToArray());
 
-        using ReconciliationDecoder decoder = new(StructuralContract);
+        using ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared);
         decoder.Absorb(cellZero);
 
         Assert.HasCount(0, decoder.DecodedItems);

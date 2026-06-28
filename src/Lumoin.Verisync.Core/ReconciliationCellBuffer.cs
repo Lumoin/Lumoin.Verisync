@@ -12,9 +12,8 @@ namespace Lumoin.Verisync.Core;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The two backings are <see cref="IMemoryOwner{T}"/> rentals: from the injected <see cref="MemoryPool{T}"/>
-/// when one is supplied, so the buffer's memory is tracked and accountable, or from a private heap-backed
-/// fallback when none is, so the kernel stays standalone-usable. The buffer owns its rentals and releases
+/// The two backings are <see cref="IMemoryOwner{T}"/> rentals from the required <see cref="MemoryPool{T}"/>,
+/// so the buffer's memory is pooled, tracked, and cleared on return. The buffer owns its rentals and releases
 /// them on <see cref="Dispose"/>; it never disposes the injected pool. It only ever grows, by renting the
 /// next power-of-two and copying the live bytes across, and is never written beyond <see cref="Count"/>
 /// except through the spans <see cref="SumAt(int)"/> and <see cref="ChecksumAt(int)"/> hand out.
@@ -40,7 +39,7 @@ public sealed class ReconciliationCellBuffer: IDisposable
 
     private IMemoryOwner<byte> SumOwner { get; set; }
     private IMemoryOwner<byte> ChecksumOwner { get; set; }
-    private MemoryPool<byte>? Pool { get; }
+    private MemoryPool<byte> Pool { get; }
     private int Capacity { get; set; }
     private bool disposed;
 
@@ -52,21 +51,21 @@ public sealed class ReconciliationCellBuffer: IDisposable
     /// </summary>
     /// <param name="sumWidth">The sum field width in bytes, in the inclusive range one through 1024.</param>
     /// <param name="checksumWidth">The checksum field width in bytes, in the inclusive range one through eight.</param>
-    /// <param name="pool">
-    /// The pool to rent the backings from, tracking the memory; <see langword="null"/> rents a private
-    /// heap-backed fallback instead, so the buffer needs no pool to function.
-    /// </param>
+    /// <param name="pool">The pool to rent the backings from, tracking the memory. The buffer never disposes it.</param>
     /// <param name="cellCapacityHint">
     /// A lower bound on the cells the session will touch; the initial capacity is the smallest power of two at
     /// or above the larger of this and the minimum, pre-sizing past the doubling churn. Must not be negative.
     /// </param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="pool"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <paramref name="sumWidth"/> is outside one through 1024, when <paramref name="checksumWidth"/>
     /// is outside one through eight, when <paramref name="cellCapacityHint"/> is negative, or when it rounds up
     /// to a capacity whose backing would exceed the maximum array length.
     /// </exception>
-    public ReconciliationCellBuffer(int sumWidth, int checksumWidth, MemoryPool<byte>? pool = null, int cellCapacityHint = 0)
+    public ReconciliationCellBuffer(int sumWidth, int checksumWidth, MemoryPool<byte> pool, int cellCapacityHint = 0)
     {
+        ArgumentNullException.ThrowIfNull(pool);
+
         if(sumWidth is < 1 or > 1024)
         {
             throw new ArgumentOutOfRangeException(nameof(sumWidth), sumWidth, "The sum width must be between one and 1024 bytes.");
@@ -268,7 +267,7 @@ public sealed class ReconciliationCellBuffer: IDisposable
         disposed = true;
 
         //Clear the logical span before releasing so a recycled pool segment carries no stale bytes, then
-        //release the rentals; the fallback owner clears itself too, so this is defence in depth on both paths.
+        //release the rentals; the pool clears returned segments too, so this is defence in depth on both paths.
         SumOwner.Memory.Span[..(Capacity * SumWidth)].Clear();
         ChecksumOwner.Memory.Span[..(Capacity * ChecksumWidth)].Clear();
 
@@ -281,7 +280,7 @@ public sealed class ReconciliationCellBuffer: IDisposable
     {
         //A general pool may return an owner larger than requested; the buffer treats the logical capacity as
         //authoritative and only ever slices within Capacity * width, so an over-sized owner is harmless.
-        return (Pool?.Rent(byteLength)) ?? new ReconciliationHeapMemoryOwner(byteLength);
+        return Pool.Rent(byteLength);
     }
 
 
