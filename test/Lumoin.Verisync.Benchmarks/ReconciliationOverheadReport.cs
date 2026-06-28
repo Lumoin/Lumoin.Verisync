@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Benchmarks;
@@ -67,8 +68,8 @@ internal static class ReconciliationOverheadReport
     {
         long differenceBase = CorpusSize + ((long)seed * CorpusSize);
 
-        using var left = new ReconciliationEncoder(contract);
-        using var right = new ReconciliationEncoder(contract);
+        using var left = new ReconciliationEncoder(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using var right = new ReconciliationEncoder(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
 
         //The shared corpus is common to both sides and cancels in the difference stream.
         for(int i = 0; i < CorpusSize; i++)
@@ -89,7 +90,7 @@ internal static class ReconciliationOverheadReport
             right.Add(BuildItem(differenceBase + (CorpusSize / 2) + i));
         }
 
-        using var decoder = new ReconciliationDecoder(contract);
+        using var decoder = new ReconciliationDecoder(contract, BaseMemoryPool.Shared);
         int index = 0;
         while(true)
         {

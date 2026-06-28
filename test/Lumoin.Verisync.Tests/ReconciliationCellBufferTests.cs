@@ -26,10 +26,10 @@ internal sealed class ReconciliationCellBufferTests
     [TestMethod]
     public void ConstructionRejectsWidthsOutsideTheirRanges()
     {
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCellBuffer(0, 8));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCellBuffer(1025, 8));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCellBuffer(8, 0));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCellBuffer(8, 9));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCellBuffer(0, 8, BaseMemoryPool.Shared));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCellBuffer(1025, 8, BaseMemoryPool.Shared));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCellBuffer(8, 0, BaseMemoryPool.Shared));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCellBuffer(8, 9, BaseMemoryPool.Shared));
     }
 
 
@@ -39,19 +39,19 @@ internal sealed class ReconciliationCellBufferTests
         //A hint near int's range would, in the unguarded power-of-two rounding, double past 2^30 into the sign
         //flip and then to zero and spin forever; the 64-bit rounding instead reaches 2^31 and the widened bound
         //check below rejects it with the hint's own name, allocation-free, proving the rounding can no longer hang.
-        ArgumentOutOfRangeException farPastInt = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCellBuffer(1024, 8, null, cellCapacityHint: int.MaxValue));
+        ArgumentOutOfRangeException farPastInt = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCellBuffer(1024, 8, BaseMemoryPool.Shared, cellCapacityHint: int.MaxValue));
         Assert.AreEqual("cellCapacityHint", farPastInt.ParamName);
 
         //A hint far below int's range is still rejected when its power-of-two capacity times the field width
         //overflows: 2^21 + 1 rounds up to 2^22, and at the maximum sum width of 1024 bytes that backing is 2^32
         //bytes, past the maximum array length. The check uses a widened product, so it fires here at construction
         //rather than wrapping the int rental size to a too-small buffer the later slices would overrun.
-        ArgumentOutOfRangeException widthOverflow = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCellBuffer(1024, 8, null, cellCapacityHint: (1 << 21) + 1));
+        ArgumentOutOfRangeException widthOverflow = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCellBuffer(1024, 8, BaseMemoryPool.Shared, cellCapacityHint: (1 << 21) + 1));
         Assert.AreEqual("cellCapacityHint", widthOverflow.ParamName);
 
         //A modest hint at small widths still constructs and stays empty: the rejection is a ceiling on pathological
         //hints, not a regression of the ordinary pre-sizing path.
-        using ReconciliationCellBuffer ok = new(8, 4, null, cellCapacityHint: 1000);
+        using ReconciliationCellBuffer ok = new(8, 4, BaseMemoryPool.Shared, cellCapacityHint: 1000);
         Assert.AreEqual(0, ok.Count);
     }
 
@@ -59,7 +59,7 @@ internal sealed class ReconciliationCellBufferTests
     [TestMethod]
     public void AppendReturnsConsecutiveIndicesAndYieldsZeroedCells()
     {
-        using ReconciliationCellBuffer buffer = new(8, 4);
+        using ReconciliationCellBuffer buffer = new(8, 4, BaseMemoryPool.Shared);
         Assert.AreEqual(0, buffer.Count);
 
         for(int expected = 0; expected < 5; expected++)
@@ -95,7 +95,7 @@ internal sealed class ReconciliationCellBufferTests
     {
         const int SumWidth = 8;
         const int ChecksumWidth = 4;
-        using ReconciliationCellBuffer buffer = new(SumWidth, ChecksumWidth);
+        using ReconciliationCellBuffer buffer = new(SumWidth, ChecksumWidth, BaseMemoryPool.Shared);
         for(int n = 0; n < 5; n++)
         {
             _ = buffer.Append();
@@ -143,7 +143,7 @@ internal sealed class ReconciliationCellBufferTests
         const int SumWidth = 8;
         const int ChecksumWidth = 4;
         const int Cells = 1000;
-        using ReconciliationCellBuffer buffer = new(SumWidth, ChecksumWidth);
+        using ReconciliationCellBuffer buffer = new(SumWidth, ChecksumWidth, BaseMemoryPool.Shared);
 
         //Append every cell first so that no held span survives an intervening grow.
         for(int k = 0; k < Cells; k++)
@@ -209,7 +209,7 @@ internal sealed class ReconciliationCellBufferTests
     [TestMethod]
     public void DisposalThrowsOnAccessAndIsIdempotent()
     {
-        ReconciliationCellBuffer buffer = new(8, 4);
+        ReconciliationCellBuffer buffer = new(8, 4, BaseMemoryPool.Shared);
         _ = buffer.Append();
 
         buffer.Dispose();

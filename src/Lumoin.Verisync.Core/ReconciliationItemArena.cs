@@ -20,9 +20,8 @@ namespace Lumoin.Verisync.Core;
 /// slice it hands out stays byte-valid for the arena's whole life.
 /// </para>
 /// <para>
-/// Each block is an <see cref="IMemoryOwner{T}"/> rental: from the injected <see cref="MemoryPool{T}"/> when
-/// one is supplied, so the memory is tracked and accountable, or from a private heap-backed fallback when none
-/// is, so the kernel stays standalone-usable. The arena owns its block rentals and releases them on
+/// Each block is an <see cref="IMemoryOwner{T}"/> rental from the required <see cref="MemoryPool{T}"/>, so the
+/// memory is pooled, tracked, and cleared on return. The arena owns its block rentals and releases them on
 /// <see cref="Dispose"/>; it never disposes the injected pool.
 /// </para>
 /// <para>
@@ -42,7 +41,7 @@ public sealed class ReconciliationItemArena: IDisposable
     private const int MinItemsPerBlock = 4;
 
 
-    private MemoryPool<byte>? Pool { get; }
+    private MemoryPool<byte> Pool { get; }
     private int Stride { get; }
     private int HintItems { get; }
     private List<Block> Blocks { get; } = [];
@@ -59,20 +58,20 @@ public sealed class ReconciliationItemArena: IDisposable
     /// appended.
     /// </summary>
     /// <param name="stride">The item width in bytes, in the inclusive range one through 1024; every slice handed out is exactly this long.</param>
-    /// <param name="pool">
-    /// The pool to rent the blocks from, tracking the memory; <see langword="null"/> rents a private
-    /// heap-backed fallback instead, so the arena needs no pool to function.
-    /// </param>
+    /// <param name="pool">The pool to rent the blocks from, tracking the memory. The arena never disposes it.</param>
     /// <param name="itemCapacityHint">
     /// A lower bound on the items the session will append; the first block's capacity is the smallest power of
     /// two at or above the larger of this and the minimum, pre-sizing past the doubling churn. Must not be negative.
     /// </param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="pool"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <paramref name="stride"/> is outside one through 1024, when <paramref name="itemCapacityHint"/>
     /// is negative, or when it rounds up to a first block whose backing would exceed the maximum array length.
     /// </exception>
-    public ReconciliationItemArena(int stride, MemoryPool<byte>? pool = null, int itemCapacityHint = 0)
+    public ReconciliationItemArena(int stride, MemoryPool<byte> pool, int itemCapacityHint = 0)
     {
+        ArgumentNullException.ThrowIfNull(pool);
+
         if(stride is < 1 or > 1024)
         {
             throw new ArgumentOutOfRangeException(nameof(stride), stride, "The item stride must be between one and 1024 bytes.");
@@ -222,7 +221,7 @@ public sealed class ReconciliationItemArena: IDisposable
     {
         //A general pool may return an owner larger than requested; the arena only ever slices within
         //capacity * Stride, so an over-sized owner is harmless.
-        return (Pool?.Rent(byteLength)) ?? new ReconciliationHeapMemoryOwner(byteLength);
+        return Pool.Rent(byteLength);
     }
 
 

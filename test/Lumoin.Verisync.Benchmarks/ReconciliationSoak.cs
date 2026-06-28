@@ -80,7 +80,7 @@ internal static class ReconciliationSoak
         listener.Start();
 
         //Warm the JIT and first-touch paths so the measured runs reflect steady state, not first-call cost.
-        Reconcile(contract, LadderCorpus, 8, 8, seed: 0, measureAllocation: false, pool: null, out _, out _);
+        Reconcile(contract, LadderCorpus, 8, 8, seed: 0, measureAllocation: false, pool: BaseMemoryPool.Shared, out _, out _);
 
         RunThroughputLadder(contract);
         RunChurnSteadyState(contract);
@@ -110,7 +110,7 @@ internal static class ReconciliationSoak
             for(int trial = 0; trial < LadderTrials; trial++)
             {
                 int seed = (1000 * d) + trial;
-                long allocated = Reconcile(contract, LadderCorpus, leftOnly, rightOnly, seed, measureAllocation: true, pool: null, out int symbols, out double ms);
+                long allocated = Reconcile(contract, LadderCorpus, leftOnly, rightOnly, seed, measureAllocation: true, pool: BaseMemoryPool.Shared, out int symbols, out double ms);
                 totalMs += ms;
                 totalSymbols += symbols;
                 totalAllocated += allocated;
@@ -157,7 +157,7 @@ internal static class ReconciliationSoak
     }
 
 
-    private static long Reconcile(ReconciliationContract contract, int corpus, int leftOnly, int rightOnly, int seed, bool measureAllocation, MemoryPool<byte>? pool, out int symbols, out double elapsedMs)
+    private static long Reconcile(ReconciliationContract contract, int corpus, int leftOnly, int rightOnly, int seed, bool measureAllocation, MemoryPool<byte> pool, out int symbols, out double elapsedMs)
     {
         //Disjoint counter ranges: the shared corpus sits low, the one-sided buckets sit far above it and far
         //apart from each other, each shifted per seed, so no item collides within a run regardless of how large

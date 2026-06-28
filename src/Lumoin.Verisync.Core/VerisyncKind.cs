@@ -8,7 +8,7 @@ namespace Lumoin.Verisync.Core;
 /// This is a closed set defined by the protocol. Applications do not extend it;
 /// a separate value-typed dynamic enumeration carries application-defined
 /// operation classifications on a different axis. Applications attaching
-/// additional metadata use other keys within the same <see cref="Tag"/>.
+/// additional metadata use other keys within the same <see cref="Lumoin.Base.Tag"/>.
 /// </para>
 /// </remarks>
 /// <seealso cref="VerisyncTags"/>

@@ -1,6 +1,5 @@
 using System;
 using System.Buffers;
-using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO.Pipelines;
 using System.Runtime.CompilerServices;
@@ -33,8 +32,6 @@ namespace Lumoin.Verisync.Core;
 /// </remarks>
 public sealed class MessageChannelReader<TMessage>
 {
-    private const int FrameHeaderLength = 4;
-
     private PipeReader Reader { get; }
     private DeserializeMessageDelegate<TMessage> Deserialize { get; }
     private int MaxFrameLength { get; }
@@ -79,9 +76,9 @@ public sealed class MessageChannelReader<TMessage>
                 ReadResult result = await Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
                 ReadOnlySequence<byte> buffer = result.Buffer;
 
-                while(TryReadFrame(ref buffer, out ReadOnlySequence<byte> frame))
+                while(FrameReader.TryReadFrame(ref buffer, MaxFrameLength, out ReadOnlySequence<byte> frame))
                 {
-                    yield return Deserialize(Padding is null ? frame : ExtractRealPayload(frame));
+                    yield return Deserialize(FrameReader.RealPayload(frame, Padding));
                 }
 
                 Reader.AdvanceTo(buffer.Start, buffer.End);
@@ -101,57 +98,5 @@ public sealed class MessageChannelReader<TMessage>
         {
             await Reader.CompleteAsync().ConfigureAwait(false);
         }
-    }
-
-
-    private bool TryReadFrame(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> frame)
-    {
-        frame = default;
-        if(buffer.Length < FrameHeaderLength)
-        {
-            return false;
-        }
-
-        Span<byte> header = stackalloc byte[FrameHeaderLength];
-        buffer.Slice(0, FrameHeaderLength).CopyTo(header);
-        uint payloadLength = BinaryPrimitives.ReadUInt32BigEndian(header);
-
-        if(payloadLength > (uint)MaxFrameLength)
-        {
-            throw new InvalidOperationException($"A frame declares a payload of {payloadLength} bytes, above the maximum of {MaxFrameLength}; the peer is faulty, hostile, or speaking another protocol.");
-        }
-
-        if(buffer.Length < FrameHeaderLength + payloadLength)
-        {
-            return false;
-        }
-
-        frame = buffer.Slice(FrameHeaderLength, payloadLength);
-        buffer = buffer.Slice(FrameHeaderLength + payloadLength);
-
-        return true;
-    }
-
-
-    private static ReadOnlySequence<byte> ExtractRealPayload(ReadOnlySequence<byte> frame)
-    {
-        //A padded frame begins with a four-byte real-length prefix. With padding configured every frame
-        //carries it, so a frame too short even for the prefix is a faulty or unpadding peer.
-        if(frame.Length < FrameHeaderLength)
-        {
-            throw new InvalidOperationException("A padded frame is shorter than its inner length prefix; the peer is faulty, hostile, or not padding.");
-        }
-
-        Span<byte> header = stackalloc byte[FrameHeaderLength];
-        frame.Slice(0, FrameHeaderLength).CopyTo(header);
-        uint realLength = BinaryPrimitives.ReadUInt32BigEndian(header);
-
-        //The inner length is attacker-influenced and is never trusted past the frame bounds.
-        if(realLength > frame.Length - FrameHeaderLength)
-        {
-            throw new InvalidOperationException("The inner length exceeds the padded frame; the peer is faulty, hostile, or not padding.");
-        }
-
-        return frame.Slice(FrameHeaderLength, realLength);
     }
 }

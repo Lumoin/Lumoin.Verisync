@@ -1,3 +1,4 @@
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
@@ -35,7 +36,7 @@ internal sealed class RemoveAwareReconciliationHost
     {
         Current = start;
         PinnedContext = start.Context;
-        Projection = new DottedReconciliationProjection<string>(start.ToState(), Contract, Digest, Canonicalize);
+        Projection = new DottedReconciliationProjection<string>(start.ToState(), Contract, Digest, Canonicalize, BaseMemoryPool.Shared);
     }
 
 

@@ -74,39 +74,6 @@ public sealed class AntiEntropySession<TElement>: IDisposable
 
 
     /// <summary>
-    /// Creates a session over <paramref name="items"/> with the default batch size of four, copying the items
-    /// into a pinned snapshot and building the encoder (and, for an initiator, the decoder) over it.
-    /// </summary>
-    /// <param name="role">The fixed role this side plays for the session's lifetime.</param>
-    /// <param name="contract">The contract both sides must agree on before symbols subtract.</param>
-    /// <param name="items">The projected item snapshot this set version reconciles.</param>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="contract"/> or <paramref name="items"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="role"/> is not a defined value.</exception>
-    /// <exception cref="ArgumentException">Thrown when an item's length differs from the contract's item width or two items are byte-equal.</exception>
-    public AntiEntropySession(AntiEntropyRole role, ReconciliationContract contract, IReadOnlyCollection<ReadOnlyMemory<byte>> items)
-        : this(role, contract, items, DefaultBatchSize, pool: null, localContext: null)
-    {
-    }
-
-
-    /// <summary>
-    /// Creates a session over <paramref name="items"/> with the given batch size, copying the items into a
-    /// pinned snapshot and building the encoder (and, for an initiator, the decoder) over it.
-    /// </summary>
-    /// <param name="role">The fixed role this side plays for the session's lifetime.</param>
-    /// <param name="contract">The contract both sides must agree on before symbols subtract.</param>
-    /// <param name="items">The projected item snapshot this set version reconciles.</param>
-    /// <param name="batchSize">The number of symbols a responder produces per host trigger; at least one.</param>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="contract"/> or <paramref name="items"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="role"/> is not a defined value or <paramref name="batchSize"/> is below one.</exception>
-    /// <exception cref="ArgumentException">Thrown when an item's length differs from the contract's item width or two items are byte-equal.</exception>
-    public AntiEntropySession(AntiEntropyRole role, ReconciliationContract contract, IReadOnlyCollection<ReadOnlyMemory<byte>> items, int batchSize)
-        : this(role, contract, items, batchSize, pool: null, localContext: null)
-    {
-    }
-
-
-    /// <summary>
     /// Creates a session over <paramref name="items"/> with the default batch size of four, renting the
     /// encoder's and decoder's cell stores from <paramref name="pool"/> so the session's reconciliation memory
     /// is tracked and accountable.
@@ -114,11 +81,11 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// <param name="role">The fixed role this side plays for the session's lifetime.</param>
     /// <param name="contract">The contract both sides must agree on before symbols subtract.</param>
     /// <param name="items">The projected item snapshot this set version reconciles.</param>
-    /// <param name="pool">The pool the session's encoder and decoder rent from, or <see langword="null"/> for the heap fallback.</param>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="contract"/> or <paramref name="items"/> is <see langword="null"/>.</exception>
+    /// <param name="pool">The pool the session's encoder and decoder rent from. The session never disposes it.</param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="contract"/>, <paramref name="items"/>, or <paramref name="pool"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="role"/> is not a defined value.</exception>
     /// <exception cref="ArgumentException">Thrown when an item's length differs from the contract's item width or two items are byte-equal.</exception>
-    public AntiEntropySession(AntiEntropyRole role, ReconciliationContract contract, IReadOnlyCollection<ReadOnlyMemory<byte>> items, MemoryPool<byte>? pool)
+    public AntiEntropySession(AntiEntropyRole role, ReconciliationContract contract, IReadOnlyCollection<ReadOnlyMemory<byte>> items, MemoryPool<byte> pool)
         : this(role, contract, items, DefaultBatchSize, pool, localContext: null)
     {
     }
@@ -133,17 +100,17 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// <param name="contract">The contract both sides must agree on before symbols subtract.</param>
     /// <param name="items">The projected item snapshot this set version reconciles.</param>
     /// <param name="batchSize">The number of symbols a responder produces per host trigger; at least one.</param>
-    /// <param name="pool">The pool the session's encoder and decoder rent from, or <see langword="null"/> for the heap fallback.</param>
+    /// <param name="pool">The pool the session's encoder and decoder rent from. The session never disposes it.</param>
     /// <param name="localContext">
     /// The local causal context the session exchanges to become remove-aware, typically a dotted projection's
     /// context; <see langword="null"/> for an add-only session, which sends and accepts no context and behaves
     /// byte-for-byte as before. When non-null it is reconstructed with <see cref="VectorClock.FromState"/>, so a
     /// malformed context fails closed at construction exactly as the snapshot does.
     /// </param>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="contract"/> or <paramref name="items"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="contract"/>, <paramref name="items"/>, or <paramref name="pool"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="role"/> is not a defined value or <paramref name="batchSize"/> is below one.</exception>
     /// <exception cref="ArgumentException">Thrown when an item's length differs from the contract's item width, two items are byte-equal, or <paramref name="localContext"/> carries a negative counter.</exception>
-    public AntiEntropySession(AntiEntropyRole role, ReconciliationContract contract, IReadOnlyCollection<ReadOnlyMemory<byte>> items, int batchSize, MemoryPool<byte>? pool, VectorClockState? localContext = null)
+    public AntiEntropySession(AntiEntropyRole role, ReconciliationContract contract, IReadOnlyCollection<ReadOnlyMemory<byte>> items, int batchSize, MemoryPool<byte> pool, VectorClockState? localContext = null)
     {
         if(role is not (AntiEntropyRole.Initiator or AntiEntropyRole.Responder))
         {
@@ -152,6 +119,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
 
         ArgumentNullException.ThrowIfNull(contract);
         ArgumentNullException.ThrowIfNull(items);
+        ArgumentNullException.ThrowIfNull(pool);
 
         if(batchSize < 1)
         {

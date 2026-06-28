@@ -1,3 +1,4 @@
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 using Lumoin.Verisync.Json;
 using System.Diagnostics.CodeAnalysis;
@@ -165,13 +166,13 @@ internal sealed class ReconciliationSocketTests
         Dictionary<string, string> directory = BuildDirectory(set);
         HashSet<string> localHexes = [.. items.Select(item => Hex(item.Span))];
 
-        using ReconciliationEncoder localEncoder = new(Contract);
+        using ReconciliationEncoder localEncoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         foreach(ReadOnlyMemory<byte> item in items)
         {
             localEncoder.Add(item.Span);
         }
 
-        using ReconciliationDecoder decoder = new(Contract);
+        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
 
         await outbound.WriteAsync(ReconciliationEnvelope<string>.ForOffer(ReconciliationOffer.FromContract(Contract)), cancellationToken).ConfigureAwait(false);
 
@@ -295,7 +296,7 @@ internal sealed class ReconciliationSocketTests
         Task doneSignal,
         CancellationToken cancellationToken)
     {
-        using ReconciliationEncoder encoder = new(Contract);
+        using ReconciliationEncoder encoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         foreach(ReadOnlyMemory<byte> item in items)
         {
             encoder.Add(item.Span);

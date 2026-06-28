@@ -1,3 +1,4 @@
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 using Lumoin.Verisync.Json;
 using System.Collections.Immutable;
@@ -112,8 +113,8 @@ internal sealed class AntiEntropySocketTests
             ReadOnlyMemory<byte>[] initiatorItems = ProjectHashes(initiatorSet);
             ReadOnlyMemory<byte>[] responderItems = ProjectHashes(responderSet);
 
-            AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, Contract, initiatorItems);
-            AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, Contract, responderItems);
+            AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, Contract, initiatorItems, BaseMemoryPool.Shared);
+            AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, Contract, responderItems, BaseMemoryPool.Shared);
             initiatorSession = initiator;
             responderSession = responder;
 

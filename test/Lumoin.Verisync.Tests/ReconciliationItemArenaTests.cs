@@ -26,9 +26,9 @@ internal sealed class ReconciliationItemArenaTests
     [TestMethod]
     public void ConstructionRejectsArgumentsOutsideTheirRanges()
     {
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationItemArena(0));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationItemArena(1025));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationItemArena(8, null, -1));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationItemArena(0, BaseMemoryPool.Shared));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationItemArena(1025, BaseMemoryPool.Shared));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationItemArena(8, BaseMemoryPool.Shared, -1));
     }
 
 
@@ -39,18 +39,18 @@ internal sealed class ReconciliationItemArenaTests
         //flip and then to zero and spin forever; the 64-bit rounding instead reaches 2^31 and the widened bound
         //check rejects it with the hint's own name. The arena validates eagerly at construction WITHOUT renting,
         //so the rejection is allocation-free and its lazy-first-block property still holds.
-        ArgumentOutOfRangeException farPastInt = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationItemArena(8, null, itemCapacityHint: int.MaxValue));
+        ArgumentOutOfRangeException farPastInt = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationItemArena(8, BaseMemoryPool.Shared, itemCapacityHint: int.MaxValue));
         Assert.AreEqual("itemCapacityHint", farPastInt.ParamName);
 
         //A hint far below int's range is still rejected when its power-of-two first block times the stride
         //overflows: 2^21 + 1 rounds up to 2^22, and at the maximum stride of 1024 bytes that block is 2^32 bytes,
         //past the maximum array length. The widened product fires here rather than wrapping the int rental size.
-        ArgumentOutOfRangeException widthOverflow = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationItemArena(1024, null, itemCapacityHint: (1 << 21) + 1));
+        ArgumentOutOfRangeException widthOverflow = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationItemArena(1024, BaseMemoryPool.Shared, itemCapacityHint: (1 << 21) + 1));
         Assert.AreEqual("itemCapacityHint", widthOverflow.ParamName);
 
         //A modest hint at a small stride still constructs and stays empty until the first append: the rejection is
         //a ceiling on pathological hints, not a regression of the ordinary pre-sizing path.
-        using ReconciliationItemArena ok = new(8, null, itemCapacityHint: 1000);
+        using ReconciliationItemArena ok = new(8, BaseMemoryPool.Shared, itemCapacityHint: 1000);
         Assert.AreEqual(0, ok.Count);
     }
 
@@ -59,7 +59,7 @@ internal sealed class ReconciliationItemArenaTests
     public void AppendReturnsExactWidthSlicesThatRoundTrip()
     {
         const int Stride = 8;
-        using ReconciliationItemArena arena = new(Stride);
+        using ReconciliationItemArena arena = new(Stride, BaseMemoryPool.Shared);
         Assert.AreEqual(0, arena.Count);
 
         for(int n = 0; n < 5; n++)
@@ -98,7 +98,7 @@ internal sealed class ReconciliationItemArenaTests
         //A zero hint pins the smallest first block at four items, so a thousand appends force several block
         //grows; if any grow relocated stored bytes the held early slices below would read moved-or-recycled
         //bytes.
-        using ReconciliationItemArena arena = new(Stride, null, itemCapacityHint: 0);
+        using ReconciliationItemArena arena = new(Stride, BaseMemoryPool.Shared, itemCapacityHint: 0);
 
         //Capture the live slices and an independent copy of the expected bytes for a spread of early indices
         //BEFORE the grows that come with the later appends.
@@ -157,7 +157,7 @@ internal sealed class ReconciliationItemArenaTests
     [TestMethod]
     public void DisposalClearsAndThrowsAndIsIdempotent()
     {
-        ReconciliationItemArena arena = new(8);
+        ReconciliationItemArena arena = new(8, BaseMemoryPool.Shared);
         _ = arena.Append(new byte[8]);
 
         arena.Dispose();

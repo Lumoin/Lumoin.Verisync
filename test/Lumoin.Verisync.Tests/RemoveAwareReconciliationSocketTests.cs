@@ -1,3 +1,4 @@
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 using Lumoin.Verisync.Json;
 using System.Collections.Immutable;
@@ -129,8 +130,8 @@ internal sealed class RemoveAwareReconciliationSocketTests
 
             //Both sessions are remove-aware: the optional local context pins each replica's causal frontier so the
             //session ships it after the offer and the host can classify decoded dots against the peer's.
-            AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, Contract, initiatorHost.Items, BatchSize, null, localContext: initiatorHost.LocalContext);
-            AntiEntropySession<DottedEntry<string>> responder = new(AntiEntropyRole.Responder, Contract, responderHost.Items, BatchSize, null, localContext: responderHost.LocalContext);
+            AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, Contract, initiatorHost.Items, BatchSize, BaseMemoryPool.Shared, localContext: initiatorHost.LocalContext);
+            AntiEntropySession<DottedEntry<string>> responder = new(AntiEntropyRole.Responder, Contract, responderHost.Items, BatchSize, BaseMemoryPool.Shared, localContext: responderHost.LocalContext);
             initiatorSession = initiator;
             responderSession = responder;
 

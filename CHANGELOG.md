@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Changed
 
+- Verisync's tagging and pooled-memory primitives now come from `Lumoin.Base` rather than being maintained in
+  `Lumoin.Verisync.Core`. `VerisyncTags` and `TaggedMemory` build on and expose `Lumoin.Base.Tag` — the typed
+  `Create<T>`/`With<T>`/`Get<T>` API with content-based, order-independent equality — in place of the former
+  bespoke `Tag` record. The reconciliation cell buffer, item arena, dotted projection, encoder, decoder, and
+  anti-entropy session now **require** an injected `MemoryPool<byte>`: the pool parameter is non-null and the
+  former pool-less convenience constructors and the private heap-backed fallback owner are gone, so every
+  backing is explicitly pooled, tracked, and cleared on return with no implicit default. Wire formats and
+  reconciliation behavior are unchanged — verified against the full suite including the pooled-memory
+  accountability gate. Requires `Lumoin.Base` 0.0.4.
+
 - Deserialization fails closed under one type across encodings: every `DeserializeMessageDelegate` the
   JSON and CBOR codecs build now throws a single new `MessageDeserializationException` (in
   `Lumoin.Verisync.Core`, documented on the delegate), with the encoding-native cause — a `JsonException`,
@@ -61,9 +71,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 - The reconciliation encoder, decoder, and `AntiEntropySession` are now `IDisposable` and rent their
   coded-cell backing from a caller-supplied `MemoryPool<byte>` — a tracked exact-size pool in
   production — so the kernel's largest scoped buffer is accountable through the pool's rental metrics
-  rather than living in a naked array. New pool-bearing constructor overloads
-  thread the pool and a capacity hint (the session pre-sizes from its projected snapshot); a `null`
-  pool keeps the standalone, untracked heap-backed path, so direct construction is non-breaking. The
+  rather than living in a naked array. The constructors thread the required pool and a capacity hint
+  (the session pre-sizes from its projected snapshot). The
   session disposes the encoder and decoder it owns but never the injected pool. Pooled segments are
   cleared on rent — a pool does not zero recycled memory — preserving the all-zero-fresh-cell contract
   the fold relies on, and the paired rent is exception-safe so a failed second rent returns the first
@@ -71,6 +80,20 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   for bytes that escape the kernel to callers and the wire. A new accountability test asserts the
   rental ledger balances to zero after a full session (no leaked rentals), and a soak over two thousand
   pooled sessions confirms it at scale.
+
+### Removed
+
+- The bespoke `Lumoin.Verisync.Core.Tag` type, superseded by `Lumoin.Base.Tag` (which now carries the type's
+  unit tests). **Breaking** for any consumer that referenced `Lumoin.Verisync.Core.Tag` directly: the type
+  moves to the `Lumoin.Base` namespace and drops the `(Type, object)` tuple factories, the `Data` property, and
+  the `Type` indexer in favor of the typed `Create<T>`/`With<T>`/`Get<T>`/`TryGet<T>`/`Contains<T>` API. The
+  internal heap-backed reconciliation fallback owner (`ReconciliationHeapMemoryOwner`) is removed in the same
+  move.
+
+- The pool-less and nullable-pool constructors on `ReconciliationCellBuffer`, `ReconciliationItemArena`,
+  `DottedReconciliationProjection`, `ReconciliationEncoder`, `ReconciliationDecoder`, and `AntiEntropySession`.
+  **Breaking**: these types now take a required, non-null `MemoryPool<byte>`, so a caller that previously
+  omitted the pool (or passed `null`) must now name one explicitly — for example `BaseMemoryPool.Shared`.
 
 ### Security
 
@@ -88,6 +111,24 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   `KeyNotFoundException`.
 
 ### Added
+
+- Pool-aware and item-stream wire deserialization, the read-side companions to the message channel
+  (backlog #27). `OwnedMessageChannelReader<TMessage>` deserializes each framed message into an owned,
+  disposable value whose bytes are rented from a required, injected `MemoryPool<byte>` through the new
+  `DeserializeOwnedMessageDelegate<TMessage>` rather than copied to the GC heap — the "one framed blob in, one
+  owned payload out" shape (a sketch image, any borrowed-then-kept byte payload); ownership of each yielded
+  value transfers to the consumer, which disposes it. `ItemStreamChannelReader<TItem>` reads a length-prefixed
+  flow of one structured type and drives a per-item handler (`DecodeItemDelegate<TItem>` plus the synchronous
+  `ItemHandlerDelegate<TItem>`) materialising no collection: each item is borrowed for exactly one handler call
+  and the pooled backing the decoder rented for it is released the moment the call returns, so the reconcile
+  keys and content triples bind to it with their term bytes sourced from the engine pool instead of a per-term
+  `byte[]`. Both readers reuse the existing channel's framing, padding, and hostile-frame bounds — now
+  centralised in one internal `FrameReader` so the outer-length cap, the padded inner real-length check, the
+  up-front item-count bound (the declared count times the minimum item width against the bytes present), and
+  the no-trailing-bytes rule are enforced identically on every read path. The plain
+  `MessageChannelReader<TMessage>` (refactored onto the shared framing) and the entire write side are
+  unchanged, and the new pooled rentals are held to the same rent/return ledger balance the reconciliation
+  tier's accountability gate enforces.
 
 - Remove-aware (dot-cloud) reconciliation atop the anti-entropy session: an `OrSet` /
   `DottedVersionVectorSet` reconciles its observed removes as well as its adds, with reconcile-then-apply

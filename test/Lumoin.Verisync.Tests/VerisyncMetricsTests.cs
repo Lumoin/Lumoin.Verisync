@@ -1,3 +1,4 @@
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using System.Buffers;

@@ -1,3 +1,5 @@
+using Lumoin.Base;
+
 namespace Lumoin.Verisync.Core;
 
 /// <summary>
@@ -17,23 +19,23 @@ namespace Lumoin.Verisync.Core;
 public static class VerisyncTags
 {
     /// <summary>Tag carrying <see cref="VerisyncKind.ReplicaId"/>.</summary>
-    public static Tag ReplicaId { get; } = Tag.Create((typeof(VerisyncKind), VerisyncKind.ReplicaId));
+    public static Tag ReplicaId { get; } = Tag.Create(VerisyncKind.ReplicaId);
 
     /// <summary>Tag carrying <see cref="VerisyncKind.OperationId"/>.</summary>
-    public static Tag OperationId { get; } = Tag.Create((typeof(VerisyncKind), VerisyncKind.OperationId));
+    public static Tag OperationId { get; } = Tag.Create(VerisyncKind.OperationId);
 
     /// <summary>Tag carrying <see cref="VerisyncKind.BallotEncoding"/>.</summary>
-    public static Tag BallotEncoding { get; } = Tag.Create((typeof(VerisyncKind), VerisyncKind.BallotEncoding));
+    public static Tag BallotEncoding { get; } = Tag.Create(VerisyncKind.BallotEncoding);
 
     /// <summary>Tag carrying <see cref="VerisyncKind.SerializedDelta"/>.</summary>
-    public static Tag SerializedDelta { get; } = Tag.Create((typeof(VerisyncKind), VerisyncKind.SerializedDelta));
+    public static Tag SerializedDelta { get; } = Tag.Create(VerisyncKind.SerializedDelta);
 
     /// <summary>Tag carrying <see cref="VerisyncKind.AuthorizationWitness"/>.</summary>
-    public static Tag AuthorizationWitness { get; } = Tag.Create((typeof(VerisyncKind), VerisyncKind.AuthorizationWitness));
+    public static Tag AuthorizationWitness { get; } = Tag.Create(VerisyncKind.AuthorizationWitness);
 
     /// <summary>Tag carrying <see cref="VerisyncKind.RegisterValueBytes"/>.</summary>
-    public static Tag RegisterValueBytes { get; } = Tag.Create((typeof(VerisyncKind), VerisyncKind.RegisterValueBytes));
+    public static Tag RegisterValueBytes { get; } = Tag.Create(VerisyncKind.RegisterValueBytes);
 
     /// <summary>Tag carrying <see cref="VerisyncKind.GossipDigest"/>.</summary>
-    public static Tag GossipDigest { get; } = Tag.Create((typeof(VerisyncKind), VerisyncKind.GossipDigest));
+    public static Tag GossipDigest { get; } = Tag.Create(VerisyncKind.GossipDigest);
 }

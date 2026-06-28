@@ -161,8 +161,8 @@ internal sealed class RemoveAwareReconciliationLawTests
         RemoveAwareReconciliationHost initiatorHost = new(snapshot);
         RemoveAwareReconciliationHost responderHost = new(snapshot);
 
-        using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorHost.Items, DefaultBatchSize, null, localContext: initiatorHost.LocalContext);
-        using AntiEntropySession<DottedEntry<string>> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderHost.Items, DefaultBatchSize, null, localContext: responderHost.LocalContext);
+        using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: initiatorHost.LocalContext);
+        using AntiEntropySession<DottedEntry<string>> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: responderHost.LocalContext);
 
         FrameCensus toResponder = new();
         FrameCensus toInitiator = new();
@@ -223,8 +223,8 @@ internal sealed class RemoveAwareReconciliationLawTests
         ReadOnlyMemory<byte>[] initiatorItems = ProjectHashes(initiatorSet);
         ReadOnlyMemory<byte>[] responderItems = ProjectHashes(responderSet);
 
-        using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorItems);
-        using AntiEntropySession<DottedEntry<string>> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderItems);
+        using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorItems, BaseMemoryPool.Shared);
+        using AntiEntropySession<DottedEntry<string>> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderItems, BaseMemoryPool.Shared);
 
         Dictionary<string, DottedEntry<string>> initiatorDirectory = BuildEntryDirectory(initiatorSet);
         Dictionary<string, DottedEntry<string>> responderDirectory = BuildEntryDirectory(responderSet);
@@ -372,8 +372,8 @@ internal sealed class RemoveAwareReconciliationLawTests
         RemoveAwareReconciliationHost initiatorHost = new(initiatorStart);
         RemoveAwareReconciliationHost responderHost = new(responderStart);
 
-        using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorHost.Items, DefaultBatchSize, null, localContext: initiatorHost.LocalContext);
-        using AntiEntropySession<DottedEntry<string>> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderHost.Items, DefaultBatchSize, null, localContext: responderHost.LocalContext);
+        using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: initiatorHost.LocalContext);
+        using AntiEntropySession<DottedEntry<string>> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: responderHost.LocalContext);
 
         Task initiatorRun = initiator.RunAsync(
             Forward(responder),

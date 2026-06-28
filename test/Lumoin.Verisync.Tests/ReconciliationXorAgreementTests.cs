@@ -1,3 +1,4 @@
+using Lumoin.Base;
 using Lumoin.Verisync.Core;
 
 namespace Lumoin.Verisync.Tests;
@@ -208,7 +209,7 @@ internal sealed class ReconciliationXorAgreementTests
         }
 
         //The encoder dispatches its folds through the facade; its emitted symbols must equal the reference.
-        using ReconciliationEncoder encoder = new(StructuralContract);
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         encoder.Add(A1);
         encoder.Add(A2);
         encoder.Add(A3);
