@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Changed
 
+- The public `ReconciliationContract` constructor now enforces a checksum-width production floor of four bytes
+  (`MinimumProductionChecksumWidth`). Below four bytes the per-decode masquerade union bound — roughly
+  `d·ln d · 2^(−8·width)` for a difference of `d` items — becomes material at realistic difference sizes, so a
+  width of one, two, or three is now rejected by the constructor and constructible only through the new internal
+  `ForAdversarialTesting` factory, which the masquerade probes use to provoke a collision deliberately.
+  **Breaking** for a caller constructing a width-one-through-three contract through the public constructor: move
+  to a width of four or more (eight for a difference past the tens of thousands). The per-decode union-bound
+  documentation on the decoder and on `ReconciliationContract.ChecksumWidth` is expanded to state that scaling
+  explicitly and to point at the decoder's new count and bound members as its runtime surface.
+
 - Verisync's tagging and pooled-memory primitives now come from `Lumoin.Base` rather than being maintained in
   `Lumoin.Verisync.Core`. `VerisyncTags` and `TaggedMemory` build on and expose `Lumoin.Base.Tag` — the typed
   `Create<T>`/`With<T>`/`Get<T>` API with content-based, order-independent equality — in place of the former
@@ -111,6 +121,23 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   `KeyNotFoundException`.
 
 ### Added
+
+- `AntiEntropySession<TElement>.IsConverged`: the convergence surface distinct from the wound-down terminal
+  state. A session driven to `AntiEntropySessionState.Completed` reached that state either by reconciling or by
+  being wound down through `Complete`, and the state alone cannot tell the two apart. `IsConverged` is set only
+  on the reconciliation path — for an initiator when the decoder recovered the whole symmetric difference and
+  the resolution finished (the push sent, any fetch answered), for a responder when the peer's done signal
+  attested a complete decode against this session's snapshot — and stays false for a session merely terminated.
+  It is written only by the consumer loop and read with a volatile-safe read, so a host may poll it from another
+  thread alongside `State` to assert the sets actually converged.
+
+- The reconciliation decoder's per-decode false-peel bound is now observable. `ReconciliationDecoder.PurityCheckCount`
+  counts every non-neutral purity evaluation a decode runs — the masquerade opportunities, each accepting a
+  mixed cell as pure with probability `2^(−8·ChecksumWidth)` — and `FalseDecodeProbabilityBound` is that count
+  times the per-cell bound, clamped to one: the operative union-bound figure over the whole decode, as distinct
+  from the per-cell probability. A consumer acting on a decode, such as a repair path, should require the bound
+  far below one before trusting the recovered difference; the bound is against random corruption, an adversary
+  holding the checksum key being covered by the contract's key discipline.
 
 - Pool-aware and item-stream wire deserialization, the read-side companions to the message channel
   (backlog #27). `OwnedMessageChannelReader<TMessage>` deserializes each framed message into an owned,

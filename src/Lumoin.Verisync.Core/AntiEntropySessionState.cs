@@ -19,6 +19,6 @@ public enum AntiEntropySessionState
     /// <summary>Initiator: done sent and a fetch answer is outstanding. Responder: done received, serving the fetch or applying elements.</summary>
     Resolving = 3,
 
-    /// <summary>Terminal: the session has finished and the consumer loop has returned.</summary>
+    /// <summary>Terminal: the session has finished and the consumer loop has returned. Terminal is not converged — a wound-down session lands here too; <see cref="AntiEntropySession{TElement}.IsConverged"/> is the convergence surface.</summary>
     Completed = 4,
 }

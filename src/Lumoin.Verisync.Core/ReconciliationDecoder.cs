@@ -20,6 +20,18 @@ namespace Lumoin.Verisync.Core;
 /// a poisoned reconciliation is detected and aborted rather than silently accepted.
 /// </para>
 /// <para>
+/// The masquerade bound is PER PURITY CHECK, and a whole decode compounds it: recovering a difference of
+/// <c>d</c> items runs on the order of <c>d·ln d</c> purity checks (each item's walk revisits cells the
+/// worklist re-examines), so the per-decode false-peel probability is bounded by roughly
+/// <c>d·ln d · 2^(−8·ChecksumWidth)</c> — a union bound, since any single false-pure acceptance corrupts the
+/// decode. At the eight-byte width the union term stays negligible for any realistic difference (a
+/// million-item difference is still below 2^−39); at four bytes it grows material as differences reach the
+/// tens of thousands. Size the contract's width against the expected difference, not the per-cell figure —
+/// see <see cref="ReconciliationContract.ChecksumWidth"/> for the sizing rule. The running count of purity
+/// checks and the bound it implies are the runtime surface of this union bound, exposed as
+/// <see cref="PurityCheckCount"/> and <see cref="FalseDecodeProbabilityBound"/>.
+/// </para>
+/// <para>
 /// Absorbing after completion is legal and changes nothing: decoded knowledge is monotone. Cross-implementation
 /// the order of <see cref="DecodedItems"/> is unspecified, but the set is determined by the absorbed prefix
 /// because peeling is confluent. Which side actually holds a decoded item is the caller's to resolve through a
@@ -54,6 +66,8 @@ public sealed class ReconciliationDecoder: IDisposable
 
     //Cell indices that may have become pure: the newly absorbed cell and every cell a peel just modified.
     private Queue<int> Worklist { get; } = new();
+
+    private const int BitsPerByte = 8;
 
     private bool disposed;
 
@@ -119,6 +133,24 @@ public sealed class ReconciliationDecoder: IDisposable
             return items;
         }
     }
+
+    /// <summary>
+    /// The number of masquerade opportunities this decode has run: each non-neutral purity evaluation accepts a
+    /// mixed cell as pure with probability <c>2^(−8·ChecksumWidth)</c>, so this count is the union-bound
+    /// multiplier over the whole decode. A neutral cell carries no single readable item and so is no masquerade
+    /// opportunity; it is not counted.
+    /// </summary>
+    public long PurityCheckCount { get; private set; }
+
+    /// <summary>
+    /// The operative per-decode false-peel probability bound — the union over every purity check actually
+    /// performed, <c>PurityCheckCount · 2^(−8·ChecksumWidth)</c> — as distinct from the per-cell bound, clamped
+    /// to one. At one it is vacuous and the decode's exactness claim carries no weight; a consumer acting on a
+    /// decode, a repair path for one, should require this far below one before trusting the recovered
+    /// difference. The bound is against random corruption, not an adversary holding the checksum key — the
+    /// contract's key discipline covers that adversary.
+    /// </summary>
+    public double FalseDecodeProbabilityBound => Math.Min(1.0, Math.ScaleB((double)PurityCheckCount, -BitsPerByte * Contract.ChecksumWidth));
 
 
     /// <summary>
@@ -264,6 +296,10 @@ public sealed class ReconciliationDecoder: IDisposable
         {
             return false;
         }
+
+        //Reaching the checksum comparison is exactly one masquerade opportunity: a mixed cell can pass it with
+        //probability 2^(−8·ChecksumWidth). The class is single-threaded, so a plain increment is the count.
+        PurityCheckCount++;
 
         Span<byte> expected = stackalloc byte[Contract.ChecksumWidth];
         ulong value = ReconciliationChecksum.Compute(Contract.ChecksumKeyLow, Contract.ChecksumKeyHigh, Cells.SumAt(index));

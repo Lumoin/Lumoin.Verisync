@@ -58,6 +58,11 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     //of AntiEntropySessionState behind Volatile.Read/Write so a host's cross-thread read is never torn.
     private int stateValue;
 
+    //Whether the session converged through the reconciliation path, as opposed to being wound down. Written
+    //only by the consumer loop; a naked int behind Volatile.Read/Write (not a property) because the volatile
+    //ref semantics require a field, mirroring stateValue.
+    private int convergedValue;
+
     //Guards single entry into RunAsync. The encoder, decoder, and state machine assume exactly one consumer.
     private int started;
 
@@ -165,7 +170,25 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// volatile-safe read, so a host may poll it from another thread to pace its triggers without tearing; it
     /// is advisory because it may lag the loop's true position by one dispatched item.
     /// </summary>
+    /// <remarks>
+    /// <see cref="AntiEntropySessionState.Completed"/> alone does NOT attest convergence: a session wound
+    /// down through <see cref="Complete"/> reaches the same terminal state as one that reconciled. A host
+    /// asserting the sets converged must read <see cref="IsConverged"/> alongside the state.
+    /// </remarks>
     public AntiEntropySessionState State => (AntiEntropySessionState)Volatile.Read(ref stateValue);
+
+    /// <summary>
+    /// Whether the session converged through the reconciliation path, as distinct from merely terminating.
+    /// For an initiator it is set when the decoder recovered the whole symmetric difference AND the resolution
+    /// finished (the push sent and any fetch answered); for a responder it is set when the peer's done signal
+    /// attested a complete decode against this session's snapshot — the strongest convergence evidence a
+    /// responder receives. It stays <see langword="false"/> for a session wound down by <see cref="Complete"/>
+    /// before that point, which is exactly the case <see cref="State"/> being
+    /// <see cref="AntiEntropySessionState.Completed"/> cannot distinguish. Written only by the consumer loop
+    /// and read with a volatile-safe read, so a host may read it from another thread; a converged session's
+    /// difference is exact within the contract's masquerade bound (see <see cref="ReconciliationDecoder"/>).
+    /// </summary>
+    public bool IsConverged => Volatile.Read(ref convergedValue) != 0;
 
     /// <summary>
     /// The items the initiator decoded as the symmetric difference, forwarding the decoder's list; an empty
@@ -323,6 +346,9 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// Completes the work channel: no further work is accepted, and <see cref="RunAsync"/> drains the queued
     /// items, sets <see cref="State"/> to <see cref="AntiEntropySessionState.Completed"/>, and returns. The
     /// host calls this to wind the transport down, because a responder cannot know a fetch is not still coming.
+    /// Winding down does NOT converge the session: <see cref="IsConverged"/> stays <see langword="false"/>
+    /// unless the reconciliation path already set it, so an incomplete decode wound down here is
+    /// distinguishable from a reconciled one.
     /// </summary>
     public void Complete()
     {
@@ -606,6 +632,8 @@ public sealed class AntiEntropySession<TElement>: IDisposable
                 await MergePeerContextAsync(mergeContext!, cancellationToken).ConfigureAwait(false);
             }
 
+            //Converged: the decode recovered the whole difference and every resolution send has landed.
+            MarkConverged();
             SetState(AntiEntropySessionState.Completed);
 
             return;
@@ -627,6 +655,10 @@ public sealed class AntiEntropySession<TElement>: IDisposable
             throw new InvalidOperationException("A done signal is legal only while reconciling.");
         }
 
+        //The done signal attests the initiator's decoder recovered the whole symmetric difference against this
+        //session's snapshot — the strongest convergence evidence a responder receives, so it converges here
+        //even though it keeps resolving fetches until the host winds the channel down.
+        MarkConverged();
         SetState(AntiEntropySessionState.Resolving);
     }
 
@@ -701,6 +733,8 @@ public sealed class AntiEntropySession<TElement>: IDisposable
                 await MergePeerContextAsync(mergeContext!, cancellationToken).ConfigureAwait(false);
             }
 
+            //Converged: the decode recovered the whole difference and the outstanding fetch is now answered.
+            MarkConverged();
             SetState(AntiEntropySessionState.Completed);
         }
     }
@@ -801,6 +835,12 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     private void SetState(AntiEntropySessionState state)
     {
         Volatile.Write(ref stateValue, (int)state);
+    }
+
+
+    private void MarkConverged()
+    {
+        Volatile.Write(ref convergedValue, 1);
     }
 
 
