@@ -39,6 +39,17 @@ internal sealed class ReconciliationKernelTests
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationContract(ReconciliationItemDomain.ContentHash, 32, 0, 0, 0));
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationContract(ReconciliationItemDomain.ContentHash, 32, 9, 0, 0));
 
+        //The public constructor enforces the production floor: a width below MinimumProductionChecksumWidth is
+        //rejected, so a below-floor width is constructible only through the adversarial-test factory.
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationContract(ReconciliationItemDomain.ContentHash, 32, 3, 0, 0));
+
+        //The factory lifts the floor to admit narrow widths for masquerade probes but still rejects zero and
+        //widths above eight.
+        ReconciliationContract narrow = ReconciliationContract.ForAdversarialTesting(ReconciliationItemDomain.Structural, 8, 1, 0, 0);
+        Assert.AreEqual(1, narrow.ChecksumWidth);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => ReconciliationContract.ForAdversarialTesting(ReconciliationItemDomain.Structural, 8, 0, 0, 0));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => ReconciliationContract.ForAdversarialTesting(ReconciliationItemDomain.Structural, 8, 9, 0, 0));
+
         ReconciliationContract contract = ReconciliationContract.ContentHashDefault;
         Assert.AreEqual(ReconciliationItemDomain.ContentHash, contract.ItemDomain);
         Assert.AreEqual(32, contract.ItemWidth);
@@ -182,7 +193,7 @@ internal sealed class ReconciliationKernelTests
     {
         //Toy width-1 checksum over the well-known key: brute-force a y whose width-1 checksum XORs
         //linearly with x's, so a degree-2 cell masquerades as pure.
-        ReconciliationContract toyWellKnown = new(ReconciliationItemDomain.Structural, 8, 1, ReconciliationContract.WellKnownChecksumKeyLow, ReconciliationContract.WellKnownChecksumKeyHigh);
+        ReconciliationContract toyWellKnown = ReconciliationContract.ForAdversarialTesting(ReconciliationItemDomain.Structural, 8, 1, ReconciliationContract.WellKnownChecksumKeyLow, ReconciliationContract.WellKnownChecksumKeyHigh);
         byte[] x = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7];
 
         byte checksumX = Checksum1(toyWellKnown, x);
@@ -219,7 +230,7 @@ internal sealed class ReconciliationKernelTests
         CollectionAssert.AreEqual(Xor(x, collidingY), unkeyed.DecodedItems[0].ToArray());
 
         //The same construction under a secret key refuses the crafted collision: not complete after symbol 0.
-        ReconciliationContract toySecret = new(ReconciliationItemDomain.Structural, 8, 1, 0x0123456789ABCDEFUL, 0xFEDCBA9876543210UL);
+        ReconciliationContract toySecret = ReconciliationContract.ForAdversarialTesting(ReconciliationItemDomain.Structural, 8, 1, 0x0123456789ABCDEFUL, 0xFEDCBA9876543210UL);
         using ReconciliationEncoder twoItemsSecret = new(toySecret, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
         twoItemsSecret.Add(x);
         twoItemsSecret.Add(collidingY);
