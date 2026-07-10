@@ -89,8 +89,13 @@ public sealed class RaftRunner<TCommand>
     /// A throwing <paramref name="send"/>, <paramref name="persistState"/>, or <paramref name="applyCommitted"/>
     /// propagates out of this method and ends the loop — the fail-closed posture, since a node whose transport,
     /// durable store, or state machine has failed cannot keep serving. A faulted proposal (proposing on a
-    /// non-leader) only faults its own <see cref="Task"/> and never ends the loop. On cancellation, every
-    /// proposal still waiting in the queue is cancelled before the exception leaves this method.
+    /// non-leader) only faults its own <see cref="Task"/> and never ends the loop. Whenever the loop ends
+    /// early, every proposal not yet completed — the queued ones and the one being dispatched — is completed
+    /// before the exception leaves this method: cancelled on cancellation, faulted with an
+    /// <see cref="InvalidOperationException"/> carrying the loop failure as its inner exception otherwise. The
+    /// work channel is completed at the same time, so a later <see cref="ProposeAsync"/>,
+    /// <see cref="SubmitAsync"/>, or trigger fails fast with <see cref="ChannelClosedException"/> instead of
+    /// enqueuing into a loop that no longer runs.
     /// </remarks>
     public async Task RunAsync(
         SendRaftEnvelopeDelegate<TCommand> send,
@@ -105,16 +110,27 @@ public sealed class RaftRunner<TCommand>
             throw new InvalidOperationException("RunAsync may only be called once per runner.");
         }
 
+        //The proposal being dispatched has already left the channel, so the drain below cannot see it; track
+        //it here so an early loop exit completes it along with the queued ones instead of orphaning it.
+        ProposeItem? inFlight = null;
         try
         {
             await foreach(WorkItem item in work.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
+                inFlight = item as ProposeItem;
                 await DispatchAsync(item, send, persistState, applyCommitted, cancellationToken).ConfigureAwait(false);
+                inFlight = null;
             }
         }
         catch(OperationCanceledException)
         {
-            DrainAndCancelPendingProposals();
+            AbandonPendingProposals(inFlight, fault: null);
+
+            throw;
+        }
+        catch(Exception exception)
+        {
+            AbandonPendingProposals(inFlight, new InvalidOperationException("The runner loop ended before the proposal completed; the inner exception is the loop failure.", exception));
 
             throw;
         }
@@ -129,6 +145,7 @@ public sealed class RaftRunner<TCommand>
     /// <returns>A task that completes once the envelope is enqueued.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="envelope"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">Thrown if <paramref name="envelope"/> does not carry exactly one payload.</exception>
+    /// <exception cref="ChannelClosedException">Thrown through the returned task when no further work is accepted after <see cref="Complete"/> or after the runner loop has ended.</exception>
     public ValueTask SubmitAsync(RaftEnvelope<TCommand> envelope, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(envelope);
@@ -145,12 +162,20 @@ public sealed class RaftRunner<TCommand>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>
     /// A task that completes with the command's 1-based log index once the leader has appended it, or faults
-    /// with <see cref="InvalidOperationException"/> when this node is not the leader.
+    /// with <see cref="InvalidOperationException"/> when this node is not the leader or when the runner loop
+    /// ends before the proposal completes (the inner exception then carries the loop failure). The task is
+    /// cancelled when the runner is cancelled before the proposal completes.
     /// </returns>
     /// <remarks>
     /// The returned task reflects the leader's local append, not cluster commitment; commitment is observed
     /// through the apply hook as the entry crosses the commit threshold. Proposing on a non-leader faults this
-    /// task alone and never disturbs the runner loop.
+    /// task alone and never disturbs the runner loop. A faulted or cancelled proposal means the proposal did
+    /// not COMPLETE, not that the command is absent: the append and the persist precede the task's completion,
+    /// so a proposal abandoned mid-dispatch may already sit in the leader's durable log and may later commit.
+    /// A host that retries on fault or cancellation must therefore tolerate or deduplicate a possible
+    /// duplicate command. A proposal issued after the runner has stopped accepting
+    /// work — <see cref="Complete"/> was called or the loop has ended — faults with
+    /// <see cref="ChannelClosedException"/> instead of hanging on a loop that will never dispatch it.
     /// </remarks>
     public Task<long> ProposeAsync(TCommand command, CancellationToken cancellationToken = default)
     {
@@ -171,6 +196,7 @@ public sealed class RaftRunner<TCommand>
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A task that completes once the trigger is enqueued.</returns>
+    /// <exception cref="ChannelClosedException">Thrown through the returned task when no further work is accepted after <see cref="Complete"/> or after the runner loop has ended.</exception>
     public ValueTask TriggerElectionAsync(CancellationToken cancellationToken = default)
     {
         return work.Writer.WriteAsync(ElectionItem.Instance, cancellationToken);
@@ -183,6 +209,7 @@ public sealed class RaftRunner<TCommand>
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A task that completes once the trigger is enqueued.</returns>
+    /// <exception cref="ChannelClosedException">Thrown through the returned task when no further work is accepted after <see cref="Complete"/> or after the runner loop has ended.</exception>
     public ValueTask TriggerHeartbeatAsync(CancellationToken cancellationToken = default)
     {
         return work.Writer.WriteAsync(HeartbeatItem.Instance, cancellationToken);
@@ -191,7 +218,9 @@ public sealed class RaftRunner<TCommand>
 
     /// <summary>
     /// Completes the work channel: no further work is accepted, and <see cref="RunAsync"/> returns once the
-    /// already-queued items are drained.
+    /// already-queued items are drained. After this call a <see cref="SubmitAsync"/>, <see cref="ProposeAsync"/>,
+    /// <see cref="TriggerElectionAsync"/>, or <see cref="TriggerHeartbeatAsync"/> faults its returned task with
+    /// <see cref="ChannelClosedException"/>.
     /// </summary>
     public void Complete()
     {
@@ -402,16 +431,37 @@ public sealed class RaftRunner<TCommand>
     }
 
 
-    private void DrainAndCancelPendingProposals()
+    private void AbandonPendingProposals(ProposeItem? inFlight, Exception? fault)
     {
+        //Completing the writer first makes a later ProposeAsync fail fast with ChannelClosedException, and
+        //guarantees the drain below observes every write that succeeded before the completion.
         work.Writer.TryComplete();
+
+        if(inFlight is not null)
+        {
+            AbandonProposal(inFlight, fault);
+        }
 
         while(work.Reader.TryRead(out WorkItem? item))
         {
             if(item is ProposeItem proposeItem)
             {
-                proposeItem.Source.TrySetCanceled();
+                AbandonProposal(proposeItem, fault);
             }
+        }
+    }
+
+
+    private static void AbandonProposal(ProposeItem proposeItem, Exception? fault)
+    {
+        //TrySet* keeps this a no-op for a proposal whose dispatch already set its result or non-leader fault.
+        if(fault is null)
+        {
+            proposeItem.Source.TrySetCanceled();
+        }
+        else
+        {
+            proposeItem.Source.TrySetException(fault);
         }
     }
 
