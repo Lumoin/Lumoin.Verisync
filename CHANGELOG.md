@@ -129,6 +129,17 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   of the responder silently classifying later applies against the empty clock and completing as if the
   remove-aware exchange had happened. `SubmitAsync` and `TriggerBatchAsync` also document the
   `ChannelClosedException` their returned tasks fault with after `Complete()`.
+- `RaftRunner` no longer strands proposals when its loop ends. A non-cancellation hook failure — the
+  documented fail-closed path for a broken transport, durable store, or state machine — used to complete
+  nothing: every queued, in-flight, and later-issued `ProposeAsync` task hung forever; cancellation
+  likewise orphaned the proposal being dispatched between its dequeue and its result. On every early exit
+  the runner now completes the work channel first and then cancels (on cancellation) or faults (on any
+  other failure, with an `InvalidOperationException` carrying the loop failure as its inner exception)
+  every pending and in-flight proposal, so a later `ProposeAsync`, `SubmitAsync`, or trigger fails fast
+  with the now-documented `ChannelClosedException` instead of enqueuing into a loop that no longer runs.
+  The `ProposeAsync` contract also states plainly that a faulted or cancelled proposal may already be
+  appended and persisted — and may later commit — so a host that retries must tolerate or deduplicate a
+  possible duplicate command.
 
 ### Security
 

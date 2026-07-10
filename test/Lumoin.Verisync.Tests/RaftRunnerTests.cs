@@ -2,6 +2,7 @@ using Lumoin.Verisync.Core;
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -16,7 +17,8 @@ namespace Lumoin.Verisync.Tests;
 /// captured — because the cluster-wide protocol (election safety, replication, commit, Figure 8) is proven
 /// deterministically against the synchronous core in <c>RaftNodeTests</c>; here the subject is the runner's
 /// own contract: single-consumer ordering, persist-before-send, the in-order apply seam, proposal fault
-/// isolation, and restart-from-persisted-state.
+/// isolation, restart-from-persisted-state, the abandonment of pending and in-flight proposals when the loop
+/// faults or is cancelled, and the fail-fast producer contract after <see cref="RaftRunner{TCommand}.Complete"/>.
 /// </summary>
 [TestClass]
 internal sealed class RaftRunnerTests
@@ -26,6 +28,8 @@ internal sealed class RaftRunnerTests
     private static ReplicaId N3 { get; } = Replica(3);
 
     private static ImmutableArray<ReplicaId> Members { get; } = [N1, N2, N3];
+
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
 
     public TestContext TestContext { get; set; } = null!;
 
@@ -177,6 +181,139 @@ internal sealed class RaftRunnerTests
 
             CollectionAssert.AreEqual(expected, restarted.Applied.ToArray());
         }
+    }
+
+
+    [TestMethod]
+    public async Task AFaultingHookFaultsThePendingAndInFlightProposalsAndLaterProposalsFailFast()
+    {
+        //A persist hook that throws (the documented fail-closed path for a broken durable store) ends the
+        //loop; the in-flight proposal and every queued one must fault instead of hanging forever, and a
+        //proposal issued after the fault must fail fast on the completed channel. Every await on a proposal
+        //task is bounded through WaitAsync so a regression to the orphaning behaviour fails instead of
+        //hanging the suite. This scenario drives a raw runner because it needs a bespoke persist hook the
+        //shared harness does not expose.
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        CancellationToken cancellationToken = timeoutSource.Token;
+
+        RaftNode<string> node = new(N1, [N1]);
+        RaftRunner<string> runner = new(node);
+
+        //The election persists once before any proposal, so the gate arms on the second persist — the first
+        //proposal's — and the trigger/propose FIFO order makes the sequence deterministic without polling.
+        int persistCalls = 0;
+        TaskCompletionSource persistEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource persistGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        PersistRaftStateDelegate<string> persist = async (_, _) =>
+        {
+            if(Interlocked.Increment(ref persistCalls) == 1)
+            {
+                return;
+            }
+
+            persistEntered.TrySetResult();
+            await persistGate.Task.ConfigureAwait(false);
+
+            throw new IOException("The durable store failed.");
+        };
+
+        Task run = runner.RunAsync(DiscardSend, persist, null, cancellationToken);
+
+        //A lone node is its own majority, so the triggered election makes it leader before the proposals.
+        await runner.TriggerElectionAsync(cancellationToken).ConfigureAwait(false);
+
+        Task<long> inFlight = runner.ProposeAsync("first", cancellationToken);
+        await persistEntered.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        //The loop is parked inside the first proposal's persist, so the second proposal stays queued.
+        Task<long> queued = runner.ProposeAsync("second", cancellationToken);
+        Assert.IsFalse(inFlight.IsCompleted);
+        Assert.IsFalse(queued.IsCompleted);
+
+        persistGate.SetResult();
+
+        //The loop surfaces the store failure, and both proposals fault with the abandonment exception that
+        //carries the same loop failure as its inner exception.
+        IOException loopFault = await Assert.ThrowsExactlyAsync<IOException>(() => run.WaitAsync(cancellationToken)).ConfigureAwait(false);
+        InvalidOperationException inFlightFault = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => inFlight.WaitAsync(cancellationToken)).ConfigureAwait(false);
+        InvalidOperationException queuedFault = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => queued.WaitAsync(cancellationToken)).ConfigureAwait(false);
+        Assert.AreSame(loopFault, inFlightFault.InnerException);
+        Assert.AreSame(loopFault, queuedFault.InnerException);
+
+        await Assert.ThrowsExactlyAsync<ChannelClosedException>(
+            () => runner.ProposeAsync("third", cancellationToken).WaitAsync(cancellationToken)).ConfigureAwait(false);
+    }
+
+
+    [TestMethod]
+    public async Task CancellationMidDispatchCancelsTheInFlightAndQueuedProposals()
+    {
+        //Cancellation that lands between a proposal's dequeue and its result — here inside its persist hook —
+        //must cancel that in-flight proposal along with the queued ones, not leave it forever pending with
+        //neither a result nor a cancellation. The timeout source bounds every await through WaitAsync so a
+        //regression to the orphaning behaviour fails instead of hanging the suite; a timeout also surfaces as
+        //TaskCanceledException, so the IsCanceled asserts on the proposal tasks are the discriminating check.
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        using CancellationTokenSource stopSource = CancellationTokenSource.CreateLinkedTokenSource(timeoutSource.Token);
+
+        RaftNode<string> node = new(N1, [N1]);
+        RaftRunner<string> runner = new(node);
+
+        int persistCalls = 0;
+        TaskCompletionSource persistEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        PersistRaftStateDelegate<string> persist = async (_, persistToken) =>
+        {
+            if(Interlocked.Increment(ref persistCalls) == 1)
+            {
+                return;
+            }
+
+            persistEntered.TrySetResult();
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, persistToken).ConfigureAwait(false);
+        };
+
+        Task run = runner.RunAsync(DiscardSend, persist, null, stopSource.Token);
+
+        await runner.TriggerElectionAsync(stopSource.Token).ConfigureAwait(false);
+
+        Task<long> inFlight = runner.ProposeAsync("hangs", stopSource.Token);
+        await persistEntered.Task.WaitAsync(timeoutSource.Token).ConfigureAwait(false);
+        Task<long> queued = runner.ProposeAsync("waits", stopSource.Token);
+
+        await stopSource.CancelAsync().ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => run.WaitAsync(timeoutSource.Token)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => inFlight.WaitAsync(timeoutSource.Token)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => queued.WaitAsync(timeoutSource.Token)).ConfigureAwait(false);
+        Assert.IsTrue(inFlight.IsCanceled);
+        Assert.IsTrue(queued.IsCanceled);
+    }
+
+
+    [TestMethod]
+    public async Task ProposalsAndTriggersFailFastAfterComplete()
+    {
+        //Complete() is the documented wind-down; afterwards the producers fault with ChannelClosedException —
+        //the documented fail-fast — rather than enqueuing work no loop will ever dispatch.
+        RaftNode<string> node = new(N1, [N1]);
+        RaftRunner<string> runner = new(node);
+        Task run = runner.RunAsync(DiscardSend, null, null, TestContext.CancellationToken);
+
+        runner.Complete();
+        await run.ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<ChannelClosedException>(
+            () => runner.ProposeAsync("late", TestContext.CancellationToken)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<ChannelClosedException>(
+            () => runner.TriggerHeartbeatAsync(TestContext.CancellationToken).AsTask()).ConfigureAwait(false);
+    }
+
+
+    private static ValueTask DiscardSend(ReplicaId to, RaftEnvelope<string> envelope, CancellationToken cancellationToken)
+    {
+        return ValueTask.CompletedTask;
     }
 
 
