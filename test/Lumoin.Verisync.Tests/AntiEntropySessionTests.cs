@@ -12,7 +12,9 @@ namespace Lumoin.Verisync.Tests;
 /// the responder's <see cref="AntiEntropySession{TElement}.TriggerBatchAsync"/> until the initiator reports
 /// <see cref="AntiEntropySessionState.Completed"/>. Covers convergence, quiescence, offer mismatch, role and
 /// gap violations, constructor and run validation, fetch-coverage enforcement, missing-apply faults, straggler
-/// tolerance, the submit shape guard, snapshot pinning, and the resolution record's validation and equality.
+/// tolerance, the submit shape guard, snapshot pinning, the resolution record's validation and equality, the
+/// <see cref="AntiEntropySessionState.Interrupted"/> wind-down report, and the add-only rejection of the
+/// remove-aware context and drop frames.
 /// </summary>
 [TestClass]
 internal sealed class AntiEntropySessionTests
@@ -608,6 +610,65 @@ internal sealed class AntiEntropySessionTests
         ReconciliationDifferenceResolution<string> second = new([right], []);
         Assert.AreEqual(first, second);
         Assert.AreEqual(first.GetHashCode(), second.GetHashCode());
+    }
+
+
+    [TestMethod]
+    public async Task AWindDownBeforeTheExchangeFinishesReportsInterrupted()
+    {
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        CancellationToken cancellationToken = timeoutSource.Token;
+
+        //An initiator whose peer never answers and a responder that never receives an offer are wound down by
+        //the host: both loops return normally, and the terminal state distinguishes the abandoned exchange
+        //from a completed one instead of reporting Completed for both.
+        ReadOnlyMemory<byte>[] items = [A1, A2];
+
+        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, StructuralContract, items);
+        ResolveReconciliationDifferenceDelegate<string> resolve = (_, _) => ReconciliationDifferenceResolution<string>.Empty;
+        Task initiatorRun = initiator.RunAsync(Discard, resolve, null, null, cancellationToken: cancellationToken);
+        initiator.Complete();
+        await initiatorRun.ConfigureAwait(false);
+
+        Assert.AreEqual(AntiEntropySessionState.Interrupted, initiator.State);
+
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, items);
+        ServeReconciliationFetchDelegate<string> serve = _ => [];
+        Task responderRun = responder.RunAsync(Discard, null, serve, null, cancellationToken: cancellationToken);
+        responder.Complete();
+        await responderRun.ConfigureAwait(false);
+
+        Assert.AreEqual(AntiEntropySessionState.Interrupted, responder.State);
+    }
+
+
+    [TestMethod]
+    public async Task AddOnlySessionsRejectContextAndDropFrames()
+    {
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        CancellationToken cancellationToken = timeoutSource.Token;
+
+        //The remove-aware dispatch arms are gated on the session's own mode: an add-only session facing a
+        //remove-aware peer must fail closed on the context and drop frames rather than fold or drop anything.
+        ReadOnlyMemory<byte>[] items = [A1, A2];
+        ServeReconciliationFetchDelegate<string> serve = _ => [];
+
+        using AntiEntropySession<string> contextTarget = new(AntiEntropyRole.Responder, StructuralContract, items);
+        Task contextRun = contextTarget.RunAsync(Discard, null, serve, null, cancellationToken: cancellationToken);
+        ReconciliationContext context = new(VectorClock.Empty.ToState());
+        await contextTarget.SubmitAsync(ReconciliationEnvelope<string>.ForContext(context), cancellationToken).ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => contextRun).ConfigureAwait(false);
+
+        using AntiEntropySession<string> dropTarget = new(AntiEntropyRole.Responder, StructuralContract, items);
+        Task dropRun = dropTarget.RunAsync(Discard, null, serve, null, cancellationToken: cancellationToken);
+        ImmutableArray<byte> replica = [.. new byte[ReplicaId.Size]];
+        ReconciliationDrop drop = new([new DotState(replica, 1)]);
+        await dropTarget.SubmitAsync(ReconciliationEnvelope<string>.ForDrop(drop), cancellationToken).ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => dropRun).ConfigureAwait(false);
     }
 
 

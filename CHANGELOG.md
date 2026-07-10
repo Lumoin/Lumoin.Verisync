@@ -72,6 +72,28 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   rental ledger balances to zero after a full session (no leaked rentals), and a soak over two thousand
   pooled sessions confirms it at scale.
 
+### Fixed
+
+- A remove-aware anti-entropy session can no longer poison its causal context on an interrupted
+  exchange. The drain path used to fold the peer's context whenever the host wound the session down with
+  `Complete()` and no apply had folded — but an initiator only reaches that drain on an unfinished
+  exchange, and a responder can never verify the initiator's trailing frames all arrived, so the fold
+  could cover the dots of entries never transferred and the NEXT session would classify those entries
+  observed-and-removed: a permanent, cluster-wide false drop of live data. The drain now folds nothing on
+  either role; a remove-aware initiator additionally defers its local drops while its fetch is
+  outstanding (the drop applier folds the full peer context, which is sound only once every decoded dot
+  is held, pushed, fetched, or dropped), and a drop dispatched on a running initiator fails closed as an
+  order violation. A wind-down before the exchange finishes is now observable as the new terminal
+  `AntiEntropySessionState.Interrupted` — previously indistinguishable from `Completed` — and an
+  interrupted session has folded no peer context at all. Deliberate consequence: after a no-transfer
+  exchange the responder's context does not advance to the merged context; contexts converge across
+  alternating session directions, which the rewritten context law proves.
+- A remove-aware responder now fails closed when the peer never ships its causal context: a done signal
+  without a prior context faults the run — mirroring the initiator's decode-completion guard — instead
+  of the responder silently classifying later applies against the empty clock and completing as if the
+  remove-aware exchange had happened. `SubmitAsync` and `TriggerBatchAsync` also document the
+  `ChannelClosedException` their returned tasks fault with after `Complete()`.
+
 ### Security
 
 - The reconciliation envelope JSON deserializer now fails closed as `JsonException` on every
