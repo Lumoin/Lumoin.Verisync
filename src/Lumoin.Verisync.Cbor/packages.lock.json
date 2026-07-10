@@ -126,14 +126,14 @@
       "lumoin.verisync.core": {
         "type": "Project",
         "dependencies": {
-          "Lumoin.Base": "[0.0.2, )"
+          "Lumoin.Base": "[0.0.5, )"
         }
       },
       "Lumoin.Base": {
         "type": "CentralTransitive",
-        "requested": "[0.0.2, )",
-        "resolved": "0.0.2",
-        "contentHash": "mFsXJq9SVg0poCevJ13u40iETZ6/fhNgsY/jFV+47PCqyTLz1KAQcjaM12dwUFba4GVcBqAOeNw2QseqOU6X2g=="
+        "requested": "[0.0.5, )",
+        "resolved": "0.0.5",
+        "contentHash": "f+3/RJPIgheAL6ARpPds5iI5MLvM54AJ7pkrlq712H+dc8xe09EOJaIQUYc8QlRL+OXMqvvk0q5mG5yzd9lv8w=="
       },
       "System.Security.Cryptography.Xml": {
         "type": "CentralTransitive",
