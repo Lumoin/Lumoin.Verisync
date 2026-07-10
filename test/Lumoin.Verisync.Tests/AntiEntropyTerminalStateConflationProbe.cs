@@ -7,12 +7,13 @@ namespace Lumoin.Verisync.Tests;
 
 /// <summary>
 /// Pins the convergence surface <see cref="AntiEntropySession{TElement}.IsConverged"/> against the terminal
-/// state it disambiguates: <see cref="AntiEntropySessionState.Completed"/> alone conflates a genuinely
-/// converged decode with a decode wound down while still incomplete (State, DecodedItems, and the run's
-/// <see cref="Task.IsCompletedSuccessfully"/> are byte-for-byte identical across the two — the conflation
-/// assertions retained below prove the surface is necessary), and <c>IsConverged</c> is the one public
-/// signal that separates them: <see langword="true"/> only through the reconciliation path, never through
-/// a wind-down.
+/// state. A decode wound down while still incomplete now lands <see cref="AntiEntropySessionState.Interrupted"/>,
+/// distinct from the <see cref="AntiEntropySessionState.Completed"/> a genuinely converged decode reaches, so the
+/// terminal state itself separates the two — and <c>IsConverged</c> agrees with that split (<see langword="true"/>
+/// only through the reconciliation path, never through a wind-down) while additionally reading pre-terminally.
+/// The legacy surfaces that still conflate the two — <see cref="AntiEntropySession{TElement}.DecodedItems"/> and
+/// the run's <see cref="Task.IsCompletedSuccessfully"/>, both identical across the cases — are asserted below to
+/// show why the terminal-state split and <c>IsConverged</c> are the signals a host must read.
 /// </summary>
 [TestClass]
 internal sealed class AntiEntropyTerminalStateConflationProbe
@@ -27,13 +28,14 @@ internal sealed class AntiEntropyTerminalStateConflationProbe
 
 
     /// <summary>
-    /// Case A (equal sets, honest convergence) and Case B (a real non-empty difference wound down before a
-    /// single symbol is absorbed) both leave the initiator at exactly <see cref="AntiEntropySessionState.Completed"/>
-    /// with an empty <see cref="AntiEntropySession{TElement}.DecodedItems"/> and a successfully-completed run —
-    /// yet in Case A the sets are equal and in Case B the entire difference {gamma, delta, epsilon} was
-    /// dropped by the wind-down. <see cref="AntiEntropySession{TElement}.IsConverged"/> is the one public
-    /// signal that separates them: <see langword="true"/> for the reconciled Case A (on both roles),
-    /// <see langword="false"/> for the wound-down Case B.
+    /// Case A (equal sets, honest convergence) leaves the initiator at <see cref="AntiEntropySessionState.Completed"/>;
+    /// Case B (a real non-empty difference wound down before a single symbol is absorbed) leaves it at
+    /// <see cref="AntiEntropySessionState.Interrupted"/>. Both leave an empty
+    /// <see cref="AntiEntropySession{TElement}.DecodedItems"/> and a successfully-completed run — yet in Case A the
+    /// sets are equal and in Case B the entire difference {gamma, delta, epsilon} was dropped by the wind-down. The
+    /// terminal state now separates the two, and <see cref="AntiEntropySession{TElement}.IsConverged"/> agrees with
+    /// it: <see langword="true"/> for the reconciled Case A (on both roles), <see langword="false"/> for the
+    /// wound-down Case B.
     /// </summary>
     [TestMethod]
     public async Task IsConvergedSeparatesConvergedEqualSetsFromWoundDownRealDifference()
@@ -83,10 +85,10 @@ internal sealed class AntiEntropyTerminalStateConflationProbe
         int woundDecodedCount = woundInitiator.DecodedItems.Count;
         bool woundRanToSuccess = woundInitiatorRun.IsCompletedSuccessfully;
 
-        //Every legacy surface is IDENTICAL across the two cases — the conflation IsConverged exists to break.
+        //The terminal state now separates the two cases, while DecodedItems and the run outcome still conflate them.
         Assert.AreEqual(AntiEntropySessionState.Completed, convergedState, "Case A must reach Completed.");
-        Assert.AreEqual(AntiEntropySessionState.Completed, woundState, "Case B must also reach Completed.");
-        Assert.AreEqual(convergedState, woundState, "The terminal State conflates the two outcomes.");
+        Assert.AreEqual(AntiEntropySessionState.Interrupted, woundState, "Case B now lands Interrupted, not Completed.");
+        Assert.AreNotEqual(convergedState, woundState, "The terminal State now separates the two outcomes: Completed against Interrupted.");
         Assert.AreEqual(0, convergedDecodedCount, "Case A decodes nothing (equal sets).");
         Assert.AreEqual(0, woundDecodedCount, "Case B decodes nothing (wound down before any symbol).");
         Assert.AreEqual(convergedDecodedCount, woundDecodedCount, "DecodedItems.Count conflates the two outcomes.");
@@ -103,7 +105,7 @@ internal sealed class AntiEntropyTerminalStateConflationProbe
 
     /// <summary>
     /// A large real difference paced with too few symbols and then wound down: the initiator reaches
-    /// <see cref="AntiEntropySessionState.Completed"/> with strictly fewer decoded items than the true
+    /// <see cref="AntiEntropySessionState.Interrupted"/> with strictly fewer decoded items than the true
     /// difference and its run completes successfully — and <see cref="AntiEntropySession{TElement}.IsConverged"/>
     /// stays <see langword="false"/>, the negative signal the wind-down previously lacked. The count bound is
     /// information-theoretic (a handful of absorbed cells cannot recover eighteen distinct items), so the
@@ -146,9 +148,9 @@ internal sealed class AntiEntropyTerminalStateConflationProbe
         await initiatorRun.ConfigureAwait(false);
         await SwallowAsync(responderRun).ConfigureAwait(false);
 
-        Assert.AreEqual(AntiEntropySessionState.Completed, initiator.State, "The wound-down initiator reaches Completed.");
+        Assert.AreEqual(AntiEntropySessionState.Interrupted, initiator.State, "The wound-down initiator reaches Interrupted.");
         Assert.IsTrue(initiatorRun.IsCompletedSuccessfully, "The wound-down run completes successfully — no fault surfaces.");
-        Assert.IsLessThan(trueDifference, initiator.DecodedItems.Count, "Fewer than the true difference decoded, yet the session reports Completed.");
+        Assert.IsLessThan(trueDifference, initiator.DecodedItems.Count, "Fewer than the true difference decoded, and the session reports Interrupted.");
         Assert.IsFalse(initiator.IsConverged, "An incomplete decode wound down mid-stream must NOT report convergence.");
     }
 
