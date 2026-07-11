@@ -1,6 +1,7 @@
 using Lumoin.Verisync.Core;
 using Lumoin.Verisync.Json;
 using System.Buffers;
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json;
 
@@ -138,15 +139,22 @@ internal sealed class CrdtStateJsonTests
         (Rga<string> array, Dot first) = Rga<string>.Empty.InsertAtHead("a", R1);
         (array, Dot second) = array.InsertAfter(first, "b", R1);
         (array, _) = array.InsertAfter(second, "c", R1);
-        array = array.Remove(second);
+        array = array.Remove(second, R1);
+
+        //Combine the dotted tombstone the remove minted with a legacy (empty remove-dots) orphan tombstone,
+        //so the round-trip exercises both tombstone-entry shapes.
+        RgaState<string> dotted = array.ToState();
+        RgaTombstoneEntry legacy = new(new DotState(Bytes(R2), 5), []);
+        RgaState<string> withBoth = new(dotted.Context, dotted.Vertices, [.. dotted.Tombstones, legacy]);
+        Rga<string> source = Rga<string>.FromState(withBoth);
 
         RgaState<string> reloaded = RoundTrip(
-            array.ToState(),
+            source.ToState(),
             CrdtStateJson.CreateRgaStateSerializer<string>(WriteString),
             CrdtStateJson.CreateRgaStateDeserializer(ReadString));
         Rga<string> back = Rga<string>.FromState(reloaded);
 
-        Assert.AreEqual(array, back);
+        Assert.AreEqual(source, back);
         string[] expected = ["a", "c"];
         CollectionAssert.AreEqual(expected, back.Values.ToArray());
     }
@@ -264,6 +272,11 @@ internal sealed class CrdtStateJsonTests
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"vertices":[{"predecessor":null,"value":"x"}],"tombstones":[]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"vertices":[{"predecessor":null,"id":{"replica":"{{{replica}}}","counter":1}}],"tombstones":[]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
 
+        //An RGA tombstone entry's two fields, then its remove-dot's counter bound.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"vertices":[],"tombstones":[{"removeDots":[]}]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"vertices":[],"tombstones":[{"target":{"replica":"{{{replica}}}","counter":1}}]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"vertices":[],"tombstones":[{"target":{"replica":"{{{replica}}}","counter":1},"removeDots":[{"replica":"{{{replica}}}","counter":0}]}]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
+
         //The run-length RGA's four sections, then a field within a run, a span and a translation.
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"tombstoneSpans":[],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
@@ -315,6 +328,9 @@ internal sealed class CrdtStateJsonTests
 
 
     private static string ReadString(JsonElement element) => element.GetString()!;
+
+
+    private static ImmutableArray<byte> Bytes(ReplicaId replica) => ImmutableArray.Create(replica.AsSpan());
 
 
     private static ReplicaId Replica(byte id)

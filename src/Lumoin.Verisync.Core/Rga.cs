@@ -23,12 +23,13 @@ namespace Lumoin.Verisync.Core;
 /// largest counter the inserting replica has observed — so a fresh insert dominates every sibling it
 /// knows of and lands immediately after its predecessor, the intention-preservation rule of RGA.
 /// Because vertices and tombstones are grow-only, <see cref="Merge(Rga{TValue})"/> is a
-/// union and the derived order is identical on all replicas.
+/// union and the derived order is identical on all replicas; concurrent tombstones of the same element
+/// union their remove-dots per target.
 /// </para>
 /// <para>
 /// It is an immutable value; every operation returns a new array. <see cref="InsertAfter(Dot, TValue, ReplicaId)"/>
 /// returns the new array together with the identity assigned to the inserted element, which the caller
-/// uses as the predecessor of a following insert or as the target of a <see cref="Remove(Dot)"/>.
+/// uses as the predecessor of a following insert or as the target of a <see cref="Remove(Dot, ReplicaId)"/>.
 /// </para>
 /// </remarks>
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
@@ -36,15 +37,19 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
 {
     private VectorClock Context { get; }
     private FrozenDictionary<Dot, Vertex> Vertices { get; }
-    private FrozenSet<Dot> Tombstones { get; }
+
+    //A tombstone maps a removed element's insert-dot to the dotted remove events that hide it. A non-empty
+    //set carries genuine remove-dots the frontier can certify; an empty set is a legacy (v1-loaded)
+    //tombstone whose remove predates dotting, so it can never be certified and is retained forever.
+    private FrozenDictionary<Dot, FrozenSet<Dot>> Tombstones { get; }
 
     //Dropped dots map to their nearest retained ancestor at drop time, so anchors expressed against a dot
-    //that compaction removed can still be served. The rga.v1 strategy never populates this — only the
-    //compactable rga-rle.v1 strategy does — so nothing changes for the existing strategy.
+    //that compaction removed can still be served. The rga.v2 strategy never populates this — only the
+    //compactable rga-rle.v2 strategy does — so nothing changes for the flat strategy.
     private FrozenDictionary<Dot, Dot> CompactedPredecessors { get; }
 
 
-    private Rga(VectorClock context, FrozenDictionary<Dot, Vertex> vertices, FrozenSet<Dot> tombstones, FrozenDictionary<Dot, Dot> compactedPredecessors)
+    private Rga(VectorClock context, FrozenDictionary<Dot, Vertex> vertices, FrozenDictionary<Dot, FrozenSet<Dot>> tombstones, FrozenDictionary<Dot, Dot> compactedPredecessors)
     {
         Context = context;
         Vertices = vertices;
@@ -54,7 +59,7 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
 
 
     /// <summary>An empty array.</summary>
-    public static Rga<TValue> Empty { get; } = new(VectorClock.Empty, FrozenDictionary<Dot, Vertex>.Empty, FrozenSet<Dot>.Empty, FrozenDictionary<Dot, Dot>.Empty);
+    public static Rga<TValue> Empty { get; } = new(VectorClock.Empty, FrozenDictionary<Dot, Vertex>.Empty, FrozenDictionary<Dot, FrozenSet<Dot>>.Empty, FrozenDictionary<Dot, Dot>.Empty);
 
 
     /// <summary>The visible (non-tombstoned) values in sequence order.</summary>
@@ -66,7 +71,7 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
             var result = new List<TValue>(order.Count);
             foreach(Dot id in order)
             {
-                if(!Tombstones.Contains(id))
+                if(!Tombstones.ContainsKey(id))
                 {
                     result.Add(Vertices[id].Value);
                 }
@@ -85,7 +90,7 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
             int count = 0;
             foreach(KeyValuePair<Dot, Vertex> entry in Vertices)
             {
-                if(!Tombstones.Contains(entry.Key))
+                if(!Tombstones.ContainsKey(entry.Key))
                 {
                     count++;
                 }
@@ -94,6 +99,20 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
             return count;
         }
     }
+
+
+    /// <summary>
+    /// The causal context of this array, for gossip digests and stability frontiers. Advertise it with
+    /// <c>new GossipDigest(origin, rga.CausalContext)</c>; the frontier folded from a group's digests then
+    /// certifies removes group-wide.
+    /// </summary>
+    /// <remarks>
+    /// The context is carried unchanged through <see cref="Compact"/>, so a compacted member still reports
+    /// full causal knowledge and pins the frontier correctly. This is the gossip path, distinct from the
+    /// serialization path: use <see cref="ToState"/> or <see cref="ToRunState"/> to persist or transfer the
+    /// array.
+    /// </remarks>
+    public VectorClock CausalContext => Context;
 
 
     /// <summary>
@@ -131,43 +150,93 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
 
 
     /// <summary>
-    /// Returns a new array with the element identified by <paramref name="id"/> tombstoned. The element
-    /// is retained for ordering but no longer visible.
+    /// Returns a new array with the element identified by <paramref name="id"/> tombstoned by a fresh
+    /// dotted remove event minted on <paramref name="replica"/>'s axis. The element is retained for
+    /// ordering but no longer visible, and the remove is a first-class event a stability frontier can
+    /// certify.
     /// </summary>
     /// <param name="id">The identity of the element to remove.</param>
+    /// <param name="replica">The replica performing the removal.</param>
     /// <returns>A new <see cref="Rga{TValue}"/>, or this array if the element was already tombstoned.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="id"/> is <see langword="null"/>.</exception>
-    public Rga<TValue> Remove(Dot id)
+    /// <exception cref="OverflowException">Thrown when advancing <paramref name="replica"/>'s counter would overflow, propagated from <see cref="VectorClock.Increment(ReplicaId)"/>; this array is not modified when the throw occurs.</exception>
+    /// <remarks>
+    /// <para>
+    /// The remove-dot is minted with <see cref="VectorClock.Increment(ReplicaId)"/>, not
+    /// <see cref="VectorClock.IncrementPastAll(ReplicaId)"/>: a remove-dot needs uniqueness, monotonicity,
+    /// and stability-trackability, but not Lamport dominance, so the gentler tick is used. Removal is
+    /// idempotent by target — re-removing an already-tombstoned element (dotted or legacy) mints no new dot
+    /// and returns this array; two remove-dots for one target arise only through <see cref="Merge(Rga{TValue})"/>
+    /// of genuinely concurrent removes. The target need not be a vertex here: a remove can be serialized and
+    /// merged separately from the insert it hides, so an orphan remove is legal.
+    /// </para>
+    /// <para>
+    /// The remove and inserts share one counter plane. A remove tick raises the replica's own axis, so its
+    /// next insert — assigned Lamport-style past the observed maximum — can outrank a concurrent sibling it
+    /// would otherwise have tied with, flipping the descending (counter, replica) tie-break between those
+    /// concurrent inserts. Convergence and intention preservation are unaffected; only the relative order of
+    /// concurrent siblings can move.
+    /// </para>
+    /// </remarks>
+    public Rga<TValue> Remove(Dot id, ReplicaId replica)
     {
         ArgumentNullException.ThrowIfNull(id);
-        if(Tombstones.Contains(id))
+        if(Tombstones.ContainsKey(id))
         {
             return this;
         }
 
-        var updated = new HashSet<Dot>(Tombstones) { id };
+        VectorClock advanced = Context.Increment(replica);
+        var removeDot = new Dot(replica, advanced[replica]);
 
-        return new Rga<TValue>(Context, Vertices, updated.ToFrozenSet(), CompactedPredecessors);
+        var updated = new Dictionary<Dot, FrozenSet<Dot>>(Tombstones.Count + 1);
+        foreach(KeyValuePair<Dot, FrozenSet<Dot>> entry in Tombstones)
+        {
+            updated[entry.Key] = entry.Value;
+        }
+
+        updated[id] = FrozenSet.ToFrozenSet([removeDot]);
+
+        return new Rga<TValue>(advanced, Vertices, updated.ToFrozenDictionary(), CompactedPredecessors);
     }
 
 
     /// <summary>
-    /// Returns the merge of this array and <paramref name="other"/>: the union of their vertices and
-    /// tombstones.
+    /// Returns the merge of this array and <paramref name="other"/>: the union of their vertices, the
+    /// per-target union of their tombstones' remove-dots, and the deterministic resolution of their
+    /// translation maps.
     /// </summary>
     /// <param name="other">The array to merge with.</param>
     /// <returns>A new <see cref="Rga{TValue}"/>; neither operand is modified.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="other"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when an operand is a stale pre-remove state: it presents an element live — untombstoned on
+    /// both sides — that the other operand's lineage compacted away after the element's remove was observed
+    /// group-wide, witnessed permanently by that operand's translation map. A replica rejoining after
+    /// eviction, restore, or replay must adopt a current state wholesale — the quorum-read rejoin contract,
+    /// a host concern that lands with the container seal — rather than merge; merging a stale pre-remove
+    /// state would resurrect the element, so it fails closed. Also thrown on a forged input whose
+    /// translation maps are mutually inconsistent — a candidate resolving to neither a merged vertex nor a
+    /// further translation, or a dropped dot with no resolvable target.
+    /// </exception>
     /// <remarks>
-    /// The compaction translation map is unioned too — <paramref name="other"/> wins on a key collision, but
-    /// collisions only arise for identically derived entries (a dropped dot resolves to the same nearest
-    /// retained ancestor on every member), so the choice is immaterial. Merging an uncompacted laggard back
-    /// into a compacted state unions the dropped tombstone straight back in, which is converged-correct: a
-    /// later compaction at the same frontier drops it again, and lookups always check the vertices first.
+    /// Tombstones union their remove-dots per target: a legacy empty set unioned with a dotted set yields
+    /// the dotted set, so a v1-loaded tombstone is upgraded by any peer that holds the dotted remove. The
+    /// translation map merges by the max-counter resolution over the edge union of both maps — every
+    /// dropped dot resolves to the maximum-counter merged vertex reachable through the union, the nearest
+    /// retained ancestor and identical on every member — so the merge is commutative, associative, and
+    /// idempotent. A laggard that observed the remove re-enters the ghost vertex together with its
+    /// tombstone, converged-correct because the drop gate certifies the remove before dropping.
     /// </remarks>
     public Rga<TValue> Merge(Rga<TValue> other)
     {
         ArgumentNullException.ThrowIfNull(other);
+
+        //Fail closed on a stale pre-remove operand in either orientation before building anything: an
+        //element live here but compacted away there (with no tombstone masking it on either side) is a
+        //replay of state from before a universally-observed remove.
+        ThrowOnStaleReplay(this, other);
+        ThrowOnStaleReplay(other, this);
 
         var mergedVertices = new Dictionary<Dot, Vertex>(Vertices.Count + other.Vertices.Count);
         foreach(KeyValuePair<Dot, Vertex> entry in Vertices)
@@ -180,21 +249,127 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
             mergedVertices[entry.Key] = entry.Value;
         }
 
-        var mergedTombstones = new HashSet<Dot>(Tombstones);
-        mergedTombstones.UnionWith(other.Tombstones);
-
-        var mergedPredecessors = new Dictionary<Dot, Dot>(CompactedPredecessors.Count + other.CompactedPredecessors.Count);
-        foreach(KeyValuePair<Dot, Dot> entry in CompactedPredecessors)
+        var mergedTombstones = new Dictionary<Dot, FrozenSet<Dot>>(Tombstones.Count + other.Tombstones.Count);
+        foreach(KeyValuePair<Dot, FrozenSet<Dot>> entry in Tombstones)
         {
-            mergedPredecessors[entry.Key] = entry.Value;
+            mergedTombstones[entry.Key] = entry.Value;
         }
 
-        foreach(KeyValuePair<Dot, Dot> entry in other.CompactedPredecessors)
+        foreach(KeyValuePair<Dot, FrozenSet<Dot>> entry in other.Tombstones)
         {
-            mergedPredecessors[entry.Key] = entry.Value;
+            if(mergedTombstones.TryGetValue(entry.Key, out FrozenSet<Dot>? existing))
+            {
+                var union = new HashSet<Dot>(existing);
+                union.UnionWith(entry.Value);
+                mergedTombstones[entry.Key] = union.ToFrozenSet();
+            }
+            else
+            {
+                mergedTombstones[entry.Key] = entry.Value;
+            }
         }
 
-        return new Rga<TValue>(Context.Merge(other.Context), mergedVertices.ToFrozenDictionary(), mergedTombstones.ToFrozenSet(), mergedPredecessors.ToFrozenDictionary());
+        Dictionary<Dot, Dot> mergedPredecessors = ResolveTranslations(mergedVertices, other);
+
+        return new Rga<TValue>(Context.Merge(other.Context), mergedVertices.ToFrozenDictionary(), mergedTombstones.ToFrozenDictionary(), mergedPredecessors.ToFrozenDictionary());
+    }
+
+
+    private static void ThrowOnStaleReplay(Rga<TValue> holder, Rga<TValue> witnesser)
+    {
+        foreach(Dot dropped in witnesser.CompactedPredecessors.Keys)
+        {
+            if(holder.Vertices.ContainsKey(dropped)
+                && !holder.Tombstones.ContainsKey(dropped)
+                && !witnesser.Vertices.ContainsKey(dropped)
+                && !witnesser.Tombstones.ContainsKey(dropped))
+            {
+                throw new InvalidOperationException("A merge operand presents an element live that the other operand's lineage compacted after its remove was universally observed; the operand is a stale pre-remove state. A replica rejoining after eviction, restore, or replay must adopt a current state wholesale instead of merging.");
+            }
+        }
+    }
+
+
+    private Dictionary<Dot, Dot> ResolveTranslations(Dictionary<Dot, Vertex> mergedVertices, Rga<TValue> other)
+    {
+        //Union of edges from both operands, a multimap dropped-dot -> candidate targets, deduplicating
+        //identical (key, value) pairs.
+        var edges = new Dictionary<Dot, List<Dot>>();
+        AddEdges(edges, CompactedPredecessors);
+        AddEdges(edges, other.CompactedPredecessors);
+
+        var mergedPredecessors = new Dictionary<Dot, Dot>(edges.Count);
+        foreach(Dot droppedDot in edges.Keys)
+        {
+            //Resolve every candidate transitively through the edge union until it lands on a merged vertex;
+            //counters strictly decrease along any predecessor chain (a child is minted past its observed
+            //predecessor), so resolution terminates and the maximum-counter resolved candidate is the
+            //nearest retained ancestor in the merge. The visited set fails closed on a forged cycle.
+            var resolved = new List<Dot>();
+            var pending = new Stack<Dot>(edges[droppedDot]);
+            var visited = new HashSet<Dot>();
+            while(pending.Count > 0)
+            {
+                Dot candidate = pending.Pop();
+                if(!visited.Add(candidate))
+                {
+                    continue;
+                }
+
+                if(mergedVertices.ContainsKey(candidate))
+                {
+                    resolved.Add(candidate);
+                }
+                else if(edges.TryGetValue(candidate, out List<Dot>? onward))
+                {
+                    foreach(Dot next in onward)
+                    {
+                        pending.Push(next);
+                    }
+                }
+                else
+                {
+                    throw new InvalidOperationException("A translation candidate resolves to neither a merged vertex nor a further translation; the operands' translation maps are inconsistent.");
+                }
+            }
+
+            if(resolved.Count == 0)
+            {
+                throw new InvalidOperationException("A dropped dot has no resolvable translation target in the merge.");
+            }
+
+            Dot best = resolved[0];
+            for(int i = 1; i < resolved.Count; i++)
+            {
+                if(CompareDots(resolved[i], best) > 0)
+                {
+                    best = resolved[i];
+                }
+            }
+
+            mergedPredecessors[droppedDot] = best;
+        }
+
+        return mergedPredecessors;
+    }
+
+
+    private static void AddEdges(Dictionary<Dot, List<Dot>> edges, FrozenDictionary<Dot, Dot> map)
+    {
+        foreach(KeyValuePair<Dot, Dot> entry in map)
+        {
+            if(edges.TryGetValue(entry.Key, out List<Dot>? candidates))
+            {
+                if(!candidates.Contains(entry.Value))
+                {
+                    candidates.Add(entry.Value);
+                }
+            }
+            else
+            {
+                edges[entry.Key] = [entry.Value];
+            }
+        }
     }
 
 
@@ -224,10 +399,22 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
             vertexBuilder.Add(new RgaVertexEntry<TValue>(id, predecessor, entry.Value.Value));
         }
 
-        ImmutableArray<DotState>.Builder tombstoneBuilder = ImmutableArray.CreateBuilder<DotState>(Tombstones.Count);
-        foreach(Dot tombstone in Tombstones)
+        //Deterministic output: entries by target (replica, counter), remove-dots within an entry the same
+        //way, so equal arrays serialize to equal records regardless of operation order.
+        var orderedTargets = new List<Dot>(Tombstones.Keys);
+        orderedTargets.Sort(CompareDotsByReplica);
+        ImmutableArray<RgaTombstoneEntry>.Builder tombstoneBuilder = ImmutableArray.CreateBuilder<RgaTombstoneEntry>(Tombstones.Count);
+        foreach(Dot target in orderedTargets)
         {
-            tombstoneBuilder.Add(new DotState(ImmutableArray.Create(tombstone.Replica.AsSpan()), tombstone.Counter));
+            var orderedRemoveDots = new List<Dot>(Tombstones[target]);
+            orderedRemoveDots.Sort(CompareDotsByReplica);
+            ImmutableArray<DotState>.Builder removeDotBuilder = ImmutableArray.CreateBuilder<DotState>(orderedRemoveDots.Count);
+            foreach(Dot removeDot in orderedRemoveDots)
+            {
+                removeDotBuilder.Add(ToDotState(removeDot));
+            }
+
+            tombstoneBuilder.Add(new RgaTombstoneEntry(ToDotState(target), removeDotBuilder.ToImmutable()));
         }
 
         return new RgaState<TValue>(Context.ToState(), vertexBuilder.ToImmutable(), tombstoneBuilder.ToImmutable());
@@ -253,71 +440,157 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
     /// <returns>The reconstructed array.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
-    /// Thrown if a vertex's predecessor is not itself a vertex, or if the predecessor graph contains a
-    /// cycle. Every non-head insert records an existing predecessor and predecessors only ever point at
-    /// earlier elements, so a missing predecessor or a cycle never occurs in an honest history; admitting one
-    /// would silently drop the orphaned or cyclic vertices from <see cref="Values"/> (the order traversal
-    /// never reaches them) while <see cref="Count"/> still counts them, leaving the two inconsistent.
+    /// Thrown, failing closed, if any of the following holds: the vertex, tombstone, or per-tombstone
+    /// remove-dot array is default — an absent field on a deserialization path that leaves unset members
+    /// default, which is not the same statement as an explicitly empty array — or a vertex id, a tombstone
+    /// target, or a
+    /// remove-dot has a non-positive counter; a vertex id appears more than once; a vertex's predecessor is
+    /// not itself a vertex, or the predecessor graph contains a cycle; a tombstone target appears in more
+    /// than one entry; a remove-dot appears more than once within an entry, or in more than one entry; a
+    /// vertex dot or a remove-dot is not covered by the context (invariant context-covers-dots); or a
+    /// remove-dot equals a vertex id (insert- and remove-dots are provably disjoint on an honest history).
+    /// No honest history produces any of these, and admitting one would silently desynchronize
+    /// <see cref="Values"/> from <see cref="Count"/> or forge a certifiable remove, so each fails closed.
     /// </exception>
     /// <remarks>
-    /// A tombstone referencing a dot that is not a vertex is accepted and harmless: a remove can be
-    /// serialized and merged separately from the insert it tombstones, so its target may legitimately be
-    /// absent here. Such a tombstone simply matches no vertex and affects neither <see cref="Values"/> nor
-    /// <see cref="Count"/>.
+    /// A tombstone whose target is not a vertex is accepted and harmless: a remove can be serialized and
+    /// merged separately from the insert it hides, so the target may legitimately be absent here. Such an
+    /// orphan target's own coverage by the context is not required — the insert may not have arrived — but
+    /// its remove-dots must still be covered, because those are events this state itself witnesses.
     /// </remarks>
     public static Rga<TValue> FromState(RgaState<TValue> state)
     {
         ArgumentNullException.ThrowIfNull(state);
+
+        //Default (uninitialized) arrays arrive from deserializers that leave an absent member unset, such
+        //as the source-generated System.Text.Json path. An absent array is not the same statement as an
+        //explicitly empty one — a legacy tombstone declares an EMPTY remove-dot list — so it fails closed
+        //here rather than being silently reinterpreted (or crashing on a Length read).
+        if(state.Vertices.IsDefault || state.Tombstones.IsDefault)
+        {
+            throw new ArgumentException("The vertex and tombstone arrays are required; a default array marks an absent field.", nameof(state));
+        }
 
         VectorClock context = VectorClock.FromState(state.Context);
         var vertices = new Dictionary<Dot, Vertex>(state.Vertices.Length);
         foreach(RgaVertexEntry<TValue> entry in state.Vertices)
         {
             var id = new Dot(ReplicaId.FromSpan(entry.Id.Replica.AsSpan()), entry.Id.Counter);
+            if(id.Counter < 1)
+            {
+                throw new ArgumentException("A vertex counter must be positive.", nameof(state));
+            }
+
             Dot? predecessor = entry.Predecessor is null
                 ? null
                 : new Dot(ReplicaId.FromSpan(entry.Predecessor.Replica.AsSpan()), entry.Predecessor.Counter);
-            vertices[id] = new Vertex(predecessor, entry.Value);
+            if(!vertices.TryAdd(id, new Vertex(predecessor, entry.Value)))
+            {
+                throw new ArgumentException("A vertex id appears more than once.", nameof(state));
+            }
         }
 
         ValidatePredecessors(vertices);
 
-        var tombstones = new HashSet<Dot>(state.Tombstones.Length);
-        foreach(DotState tombstone in state.Tombstones)
+        //Invariant context-covers-dots for the vertices; orphan tombstone targets are exempt (their insert
+        //may not have arrived) but their remove-dots are not, and are covered in the tombstone loop below.
+        foreach(Dot id in vertices.Keys)
         {
-            tombstones.Add(new Dot(ReplicaId.FromSpan(tombstone.Replica.AsSpan()), tombstone.Counter));
+            if(context[id.Replica] < id.Counter)
+            {
+                throw new ArgumentException("A vertex dot is not covered by the context.", nameof(state));
+            }
         }
 
-        return new Rga<TValue>(context, vertices.ToFrozenDictionary(), tombstones.ToFrozenSet(), FrozenDictionary<Dot, Dot>.Empty);
+        var tombstones = new Dictionary<Dot, FrozenSet<Dot>>(state.Tombstones.Length);
+        var allRemoveDots = new HashSet<Dot>();
+        foreach(RgaTombstoneEntry entry in state.Tombstones)
+        {
+            Dot target = FromDotState(entry.Target);
+            if(target.Counter < 1)
+            {
+                throw new ArgumentException("A tombstone target counter must be positive.", nameof(state));
+            }
+
+            if(entry.RemoveDots.IsDefault)
+            {
+                throw new ArgumentException("A tombstone's remove-dot array is required; a default array marks an absent field, while a legacy tombstone declares an explicitly empty one.", nameof(state));
+            }
+
+            var removeDots = new HashSet<Dot>(entry.RemoveDots.Length);
+            foreach(DotState removeDotState in entry.RemoveDots)
+            {
+                Dot removeDot = FromDotState(removeDotState);
+                if(removeDot.Counter < 1)
+                {
+                    throw new ArgumentException("A remove dot counter must be positive.", nameof(state));
+                }
+
+                if(!removeDots.Add(removeDot))
+                {
+                    throw new ArgumentException("A remove dot appears more than once in a tombstone.", nameof(state));
+                }
+
+                if(vertices.ContainsKey(removeDot))
+                {
+                    throw new ArgumentException("A remove dot equals a vertex id.", nameof(state));
+                }
+
+                if(context[removeDot.Replica] < removeDot.Counter)
+                {
+                    throw new ArgumentException("A remove dot is not covered by the context.", nameof(state));
+                }
+
+                if(!allRemoveDots.Add(removeDot))
+                {
+                    throw new ArgumentException("A remove dot appears in more than one tombstone.", nameof(state));
+                }
+            }
+
+            if(!tombstones.TryAdd(target, removeDots.ToFrozenSet()))
+            {
+                throw new ArgumentException("A tombstone target appears more than once.", nameof(state));
+            }
+        }
+
+        return new Rga<TValue>(context, vertices.ToFrozenDictionary(), tombstones.ToFrozenDictionary(), FrozenDictionary<Dot, Dot>.Empty);
     }
 
 
     /// <summary>
-    /// Compacts the waterline: stable tombstones that have no retained descendant collapse out of the
-    /// vertex and tombstone sets, and the dots they leave behind are served from a translation map. Visible
-    /// vertices never move, so the visible order — and every visible value — is unchanged.
+    /// Compacts the waterline: stable tombstones whose remove is certified at the frontier and that have no
+    /// retained descendant collapse out of the vertex and tombstone sets, and the dots they leave behind
+    /// are served from a translation map. Visible vertices never move, so the visible order — and every
+    /// visible value — is unchanged.
     /// </summary>
     /// <param name="stabilityFrontier">
     /// The group stability frontier. A dot is stable when the frontier's counter for its replica is at least
     /// the dot's counter; stable state can never again be referenced by any member, so it is safe to collapse.
     /// </param>
-    /// <param name="checkpoint">The agreed checkpoint content: the visible order filtered to stable dots.</param>
+    /// <param name="checkpoint">
+    /// The agreed checkpoint content: the certified projection at the frontier — the visible order filtered
+    /// to stable insert-dots, excluding elements whose remove is certified at the frontier.
+    /// </param>
     /// <returns>The compacted array; this array is never modified, and is returned unchanged when nothing drops.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="stabilityFrontier"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">Thrown if <paramref name="checkpoint"/> is default.</exception>
     /// <exception cref="InvalidOperationException">
-    /// Thrown when the stable visible values do not equal <paramref name="checkpoint"/> element-wise. The
+    /// Thrown when the certified projection does not equal <paramref name="checkpoint"/> element-wise. The
     /// agreed checkpoint is the content line; a mismatch means the (frontier, checkpoint) pair is misaligned.
     /// The check runs before any result is constructed — this fails closed rather than guessing, because a
     /// wrong checkpoint would silently fork the group's generations.
     /// </exception>
     /// <remarks>
     /// <para>
-    /// A vertex is <em>retained</em> when it is unstable, or visible, or head-anchored (a head-anchored
-    /// tombstone has no element to translate to, so it can never drop), or any of its children is retained,
-    /// recursively. A dropped vertex therefore has only dropped children and no retained vertex ever has a
-    /// dropped predecessor — the retained set's predecessor closure is intact and no vertex is ever
-    /// re-parented. <see cref="Context"/> is unchanged: compaction reclaims storage, not causal knowledge.
+    /// A vertex is <em>retained</em> when it is unstable, or visible, or tombstoned with a remove that is
+    /// not yet certified at the frontier (a legacy tombstone loaded from pre-dotted state carries no
+    /// remove-dot, so it can never be certified and is retained forever), or head-anchored (a head-anchored
+    /// tombstone has no element to translate to, so it can never drop), or any of its children is retained.
+    /// A dropped vertex therefore has only dropped children and no retained vertex ever has a dropped
+    /// predecessor — the retained set's predecessor closure is intact and no vertex is ever re-parented.
+    /// <see cref="Context"/> is unchanged: compaction reclaims storage, not causal knowledge, and it still
+    /// covers every dropped remove-dot, which keeps the remove certified forever after the tombstone bytes
+    /// are gone.
     /// </para>
     /// <para>
     /// Each dropped dot maps to the first retained vertex on its recorded predecessor chain. Prior map
@@ -333,36 +606,41 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
             throw new ArgumentException("The checkpoint content is required.", nameof(checkpoint));
         }
 
-        //Retention is memoized over the dot: retained iff unstable, visible, head-anchored, or any child is
-        //retained (recursively). Tombstone entries with no corresponding vertex are outside retention
-        //entirely and are carried unchanged; under state-based merging a stable orphan tombstone cannot occur.
+        //Retention over the drop gate, computed by an iterative post-order walk (no recursion): a vertex is
+        //retained when it is unstable, visible, tombstoned with an uncertified remove, head-anchored, or has
+        //any retained child. Tombstone entries with no corresponding vertex are outside retention entirely
+        //and are carried unchanged.
         Dictionary<Dot, List<Dot>> childrenByParent = BuildChildrenByParent();
-        var retention = new Dictionary<Dot, bool>(Vertices.Count);
-        foreach(Dot dot in Vertices.Keys)
-        {
-            ComputeRetention(dot, stabilityFrontier, childrenByParent, retention);
-        }
+        Dictionary<Dot, bool> retention = ComputeRetention(stabilityFrontier, childrenByParent);
 
-        //Checkpoint check before any result construction: the visible order filtered to stable dots must
-        //equal the agreed content element-wise, otherwise the (frontier, checkpoint) pair is misaligned.
+        //Checkpoint check before any result construction: the certified projection — the visible order
+        //filtered to stable insert-dots, excluding elements whose remove is certified — must equal the
+        //agreed content element-wise, otherwise the (frontier, checkpoint) pair is misaligned.
         List<Dot> order = ComputeOrder();
-        var stableVisible = new List<TValue>(order.Count);
+        var certifiedVisible = new List<TValue>(order.Count);
         foreach(Dot dot in order)
         {
-            if(!Tombstones.Contains(dot) && IsStable(dot, stabilityFrontier))
+            if(!IsStable(dot, stabilityFrontier))
             {
-                stableVisible.Add(Vertices[dot].Value);
+                continue;
             }
+
+            if(Tombstones.TryGetValue(dot, out FrozenSet<Dot>? removeDots) && HasCertifiedRemove(removeDots, stabilityFrontier))
+            {
+                continue;
+            }
+
+            certifiedVisible.Add(Vertices[dot].Value);
         }
 
-        if(stableVisible.Count != checkpoint.Length)
+        if(certifiedVisible.Count != checkpoint.Length)
         {
             throw new InvalidOperationException("The stable visible content does not match the agreed checkpoint; the (frontier, checkpoint) pair is misaligned.");
         }
 
-        for(int i = 0; i < stableVisible.Count; i++)
+        for(int i = 0; i < certifiedVisible.Count; i++)
         {
-            if(!EqualityComparer<TValue>.Default.Equals(stableVisible[i], checkpoint[i]))
+            if(!EqualityComparer<TValue>.Default.Equals(certifiedVisible[i], checkpoint[i]))
             {
                 throw new InvalidOperationException("The stable visible content does not match the agreed checkpoint; the (frontier, checkpoint) pair is misaligned.");
             }
@@ -395,14 +673,14 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
             }
         }
 
-        var newTombstones = new HashSet<Dot>(Tombstones.Count);
-        foreach(Dot tombstone in Tombstones)
+        var newTombstones = new Dictionary<Dot, FrozenSet<Dot>>(Tombstones.Count);
+        foreach(KeyValuePair<Dot, FrozenSet<Dot>> entry in Tombstones)
         {
             //Orphan tombstones (no corresponding vertex) are untouched; a tombstone of a retained vertex
-            //stays; a tombstone of a dropped vertex leaves with the vertex.
-            if(!Vertices.ContainsKey(tombstone) || newVertices.ContainsKey(tombstone))
+            //stays; a tombstone of a dropped vertex leaves with the vertex, remove-dot set and all.
+            if(!Vertices.ContainsKey(entry.Key) || newVertices.ContainsKey(entry.Key))
             {
-                newTombstones.Add(tombstone);
+                newTombstones[entry.Key] = entry.Value;
             }
         }
 
@@ -429,7 +707,7 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
                 : entry.Value;
         }
 
-        return new Rga<TValue>(Context, newVertices.ToFrozenDictionary(), newTombstones.ToFrozenSet(), newPredecessors.ToFrozenDictionary());
+        return new Rga<TValue>(Context, newVertices.ToFrozenDictionary(), newTombstones.ToFrozenDictionary(), newPredecessors.ToFrozenDictionary());
     }
 
 
@@ -465,6 +743,12 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
     /// a round-trip with its anchor servability intact.
     /// </summary>
     /// <returns>The array's run-length state.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when any tombstone carries a dotted remove event. The v1 run shape has no slot for remove-dots,
+    /// so a state that certifies its removes cannot round-trip through it — fail closed. A state whose
+    /// tombstones are all legacy (or absent) still serializes; run-length persistence of dotted state
+    /// resumes with the rga-rle.v2 run shape in the container slice.
+    /// </exception>
     /// <remarks>
     /// Consecutive same-replica vertices that form a predecessor chain coalesce into one
     /// <see cref="RgaRunEntry{TValue}"/> and per-replica consecutive tombstones coalesce into one
@@ -473,6 +757,14 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
     /// </remarks>
     public RgaRunState<TValue> ToRunState()
     {
+        foreach(FrozenSet<Dot> removeDots in Tombstones.Values)
+        {
+            if(removeDots.Count > 0)
+            {
+                throw new InvalidOperationException("This array carries dotted removes that the v1 run-length shape cannot represent; the rga-rle.v2 run shape lands with the container slice.");
+            }
+        }
+
         ImmutableArray<RgaRunEntry<TValue>> runs = BuildRuns();
         ImmutableArray<RgaTombstoneSpan> spans = BuildTombstoneSpans();
 
@@ -495,15 +787,22 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
     /// <returns>The reconstructed array.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
-    /// Thrown if a run's values are empty, a counter is not positive, a span has <c>FromCounter &lt; 1</c> or
-    /// <c>ToCounter &lt; FromCounter</c>, a dot appears in more than one run, an expanded vertex's predecessor
-    /// is not itself a vertex (or the predecessor graph contains a cycle), or a translation target is not a
-    /// vertex of the state. A dangling target would leave the dropped dot unservable, so it fails closed.
+    /// Thrown, failing closed, if a run's values are empty, a counter is not positive, a span has
+    /// <c>FromCounter &lt; 1</c> or <c>ToCounter &lt; FromCounter</c>, a dot appears in more than one run, a
+    /// tombstone target appears in more than one span, an expanded vertex's predecessor is not itself a
+    /// vertex (or the predecessor graph contains a cycle), a vertex dot is not covered by the context, a
+    /// translation target is not a vertex of the state (a dangling target would leave the dropped dot
+    /// unservable), or a translation's dropped dot is a live untombstoned vertex of the state (the
+    /// stale-replay W-shape).
     /// </exception>
     /// <remarks>
-    /// A translation's <see cref="RgaTranslationEntry.Dropped"/> dot is not required to be absent from the
-    /// vertices: a laggard merge can resurrect a dropped tombstone while the map entry remains, which is
-    /// harmless because <see cref="TranslateAnchor"/> consults the vertices first.
+    /// The v1 run shape carries no remove-dots, so every expanded tombstone is legacy: an empty remove-dot
+    /// set the drop gate can never certify, retained forever. A translation's
+    /// <see cref="RgaTranslationEntry.Dropped"/> dot may still be present in the vertices when it also carries
+    /// a tombstone: a laggard merge can resurrect a dropped tombstone while the map entry remains — the
+    /// ghost-plus-witness shape — which is harmless because <see cref="TranslateAnchor"/> consults the
+    /// vertices first. A dropped dot present as a live vertex WITHOUT a tombstone is rejected: it is the
+    /// permanent witness of a stale pre-remove state, not an honest ghost.
     /// </remarks>
     public static Rga<TValue> FromRunState(RgaRunState<TValue> state)
     {
@@ -539,7 +838,16 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
 
         ValidatePredecessors(vertices);
 
-        var tombstones = new HashSet<Dot>();
+        //Invariant context-covers-dots for every vertex; the v1 run path carries no remove-dots to cover.
+        foreach(Dot id in vertices.Keys)
+        {
+            if(context[id.Replica] < id.Counter)
+            {
+                throw new ArgumentException("A vertex dot is not covered by the context.", nameof(state));
+            }
+        }
+
+        var tombstones = new Dictionary<Dot, FrozenSet<Dot>>();
         foreach(RgaTombstoneSpan span in state.TombstoneSpans)
         {
             if(span.FromCounter < 1 || span.ToCounter < span.FromCounter)
@@ -550,7 +858,12 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
             ReplicaId replica = ReplicaId.FromSpan(span.Replica.AsSpan());
             for(int counter = span.FromCounter; counter <= span.ToCounter; counter++)
             {
-                tombstones.Add(new Dot(replica, counter));
+                //Every expanded tombstone is legacy: an empty remove-dot set, retained forever. Overlapping
+                //spans that name a target twice are the throw-on-duplicate posture, not a silent dedup.
+                if(!tombstones.TryAdd(new Dot(replica, counter), FrozenSet<Dot>.Empty))
+                {
+                    throw new ArgumentException("A tombstone target appears in more than one span.", nameof(state));
+                }
             }
         }
 
@@ -563,10 +876,18 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
                 throw new ArgumentException("A translation target is not a vertex of the state.", nameof(state));
             }
 
-            compactedPredecessors[FromDotState(translation.Dropped)] = target;
+            //A dropped dot that is a live vertex with no tombstone is the permanent witness of a stale
+            //pre-remove state; the tombstoned ghost-plus-witness shape stays legal.
+            Dot dropped = FromDotState(translation.Dropped);
+            if(vertices.ContainsKey(dropped) && !tombstones.ContainsKey(dropped))
+            {
+                throw new ArgumentException("A translation's dropped dot is a live vertex of the state.", nameof(state));
+            }
+
+            compactedPredecessors[dropped] = target;
         }
 
-        return new Rga<TValue>(context, vertices.ToFrozenDictionary(), tombstones.ToFrozenSet(), compactedPredecessors.ToFrozenDictionary());
+        return new Rga<TValue>(context, vertices.ToFrozenDictionary(), tombstones.ToFrozenDictionary(), compactedPredecessors.ToFrozenDictionary());
     }
 
 
@@ -595,37 +916,81 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
     }
 
 
-    //A vertex is retained when it is unstable, visible, head-anchored, or has any retained child
-    //(recursively). Memoized over the dot so each vertex's subtree is classified at most once.
-    private bool ComputeRetention(Dot dot, VectorClock frontier, Dictionary<Dot, List<Dot>> childrenByParent, Dictionary<Dot, bool> retention)
+    //Classifies every vertex's retention against the frontier without recursion: a post-order walk over the
+    //predecessor forest (one predecessor per vertex, acyclic by deserialization), then one pass classifying
+    //children before parents. A vertex is retained when its base gate holds or any child is already retained.
+    private Dictionary<Dot, bool> ComputeRetention(VectorClock frontier, Dictionary<Dot, List<Dot>> childrenByParent)
     {
-        if(retention.TryGetValue(dot, out bool cached))
+        var postOrder = new List<Dot>(Vertices.Count);
+        var stack = new Stack<(Dot Dot, bool ChildrenPushed)>();
+        foreach(KeyValuePair<Dot, Vertex> entry in Vertices)
         {
-            return cached;
-        }
-
-        if(!IsStable(dot, frontier) || !Tombstones.Contains(dot) || Vertices[dot].Predecessor is null)
-        {
-            retention[dot] = true;
-
-            return true;
-        }
-
-        bool retained = false;
-        if(childrenByParent.TryGetValue(dot, out List<Dot>? children))
-        {
-            foreach(Dot child in children)
+            if(entry.Value.Predecessor is null)
             {
-                if(ComputeRetention(child, frontier, childrenByParent, retention))
+                stack.Push((entry.Key, false));
+            }
+        }
+
+        while(stack.Count > 0)
+        {
+            (Dot dot, bool childrenPushed) = stack.Pop();
+            if(childrenPushed)
+            {
+                postOrder.Add(dot);
+
+                continue;
+            }
+
+            stack.Push((dot, true));
+            if(childrenByParent.TryGetValue(dot, out List<Dot>? children))
+            {
+                foreach(Dot child in children)
                 {
-                    retained = true;
+                    stack.Push((child, false));
                 }
             }
         }
 
-        retention[dot] = retained;
+        var retention = new Dictionary<Dot, bool>(Vertices.Count);
+        foreach(Dot dot in postOrder)
+        {
+            bool retained = BaseRetained(dot, frontier);
+            if(!retained && childrenByParent.TryGetValue(dot, out List<Dot>? children))
+            {
+                foreach(Dot child in children)
+                {
+                    if(retention[child])
+                    {
+                        retained = true;
 
-        return retained;
+                        break;
+                    }
+                }
+            }
+
+            retention[dot] = retained;
+        }
+
+        return retention;
+    }
+
+
+    //The base retention gate, before any child is considered: a vertex is retained on its own account when
+    //it is unstable, visible, head-anchored, or tombstoned with a remove that is not certified at the
+    //frontier (a legacy empty set is never certified, so it lands here forever).
+    private bool BaseRetained(Dot dot, VectorClock frontier)
+    {
+        if(!IsStable(dot, frontier) || Vertices[dot].Predecessor is null)
+        {
+            return true;
+        }
+
+        if(!Tombstones.TryGetValue(dot, out FrozenSet<Dot>? removeDots))
+        {
+            return true;
+        }
+
+        return !HasCertifiedRemove(removeDots, frontier);
     }
 
 
@@ -703,7 +1068,7 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
             return [];
         }
 
-        var sorted = new List<Dot>(Tombstones);
+        var sorted = new List<Dot>(Tombstones.Keys);
         sorted.Sort(CompareDotsByReplica);
 
         var spans = new List<RgaTombstoneSpan>();
@@ -813,7 +1178,7 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
             return true;
         }
 
-        if(!Context.Equals(other.Context) || Vertices.Count != other.Vertices.Count || !Tombstones.SetEquals(other.Tombstones) || CompactedPredecessors.Count != other.CompactedPredecessors.Count)
+        if(!Context.Equals(other.Context) || Vertices.Count != other.Vertices.Count || Tombstones.Count != other.Tombstones.Count || CompactedPredecessors.Count != other.CompactedPredecessors.Count)
         {
             return false;
         }
@@ -821,6 +1186,15 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
         foreach(KeyValuePair<Dot, Vertex> entry in Vertices)
         {
             if(!other.Vertices.TryGetValue(entry.Key, out Vertex? otherVertex) || !entry.Value.Equals(otherVertex))
+            {
+                return false;
+            }
+        }
+
+        foreach(KeyValuePair<Dot, FrozenSet<Dot>> entry in Tombstones)
+        {
+            //Per-target set equality: a legacy empty set equals only an empty set.
+            if(!other.Tombstones.TryGetValue(entry.Key, out FrozenSet<Dot>? otherSet) || !entry.Value.SetEquals(otherSet))
             {
                 return false;
             }
@@ -852,9 +1226,15 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
         }
 
         int tombstonesHash = 0;
-        foreach(Dot tombstone in Tombstones)
+        foreach(KeyValuePair<Dot, FrozenSet<Dot>> entry in Tombstones)
         {
-            tombstonesHash ^= tombstone.GetHashCode();
+            int removeDotsFold = 0;
+            foreach(Dot removeDot in entry.Value)
+            {
+                removeDotsFold ^= removeDot.GetHashCode();
+            }
+
+            tombstonesHash ^= HashCode.Combine(entry.Key, removeDotsFold);
         }
 
         int compactedHash = 0;
@@ -956,6 +1336,22 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
     private static bool IsStable(Dot dot, VectorClock frontier)
     {
         return frontier[dot.Replica] >= dot.Counter;
+    }
+
+
+    //A remove is certified at the frontier when at least one of its dots has been observed group-wide.
+    //The empty set (a v1-legacy tombstone) is never certified: those tombstones are retained forever.
+    private static bool HasCertifiedRemove(FrozenSet<Dot> removeDots, VectorClock frontier)
+    {
+        foreach(Dot removeDot in removeDots)
+        {
+            if(IsStable(removeDot, frontier))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
 

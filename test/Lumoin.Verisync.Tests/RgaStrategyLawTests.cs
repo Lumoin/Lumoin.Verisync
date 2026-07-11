@@ -6,7 +6,7 @@ using System.Diagnostics.CodeAnalysis;
 namespace Lumoin.Verisync.Tests;
 
 /// <summary>
-/// Registers the <see cref="WellKnownSequenceStrategies.RgaV1"/> strategy with the shared law harness.
+/// Registers the <see cref="WellKnownSequenceStrategies.RgaV2"/> strategy with the shared law harness.
 /// The laws are exercised through the context delegates — the same surface
 /// <see cref="CheckpointedSequence{TSequence, TValue, TAnchor}"/> uses — complementing the type-level
 /// property tests in <see cref="RgaPropertyTests"/>.

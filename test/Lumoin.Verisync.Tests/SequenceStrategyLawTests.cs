@@ -255,7 +255,7 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
             int targetIndex = input.pick % before.Count;
             TAnchor target = AnchorOfVisibleElement(input.sequence, targetIndex);
 
-            TSequence removed = Context.Remove(input.sequence, target);
+            TSequence removed = Context.Remove(input.sequence, target, Replica(3));
 
             IReadOnlyList<TValue> after = Context.Values(removed);
             Assert.HasCount(before.Count - 1, after);

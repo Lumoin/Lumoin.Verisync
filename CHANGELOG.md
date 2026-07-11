@@ -18,6 +18,24 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Changed
 
+- The RGA strategy identifiers are replaced: `verisync.sequence.rga.v2` and
+  `verisync.sequence.rga-rle.v2` supersede the v1 identifiers, which are deleted — the dotted-remove
+  semantics change both strategies' replication contracts, and published identifiers never change
+  meaning. `SequenceRemoveDelegate` and `CheckpointedSequence.Remove` grow the removing `ReplicaId`;
+  the offset strategy discards it and its documentation now states plainly that `offset.v1` removes
+  remain causally invisible (certified base-offset removal is a follow-on design). The flat
+  `RgaState` tombstones become `RgaTombstoneEntry` records (`target` plus `removeDots`, empty for
+  legacy) with the JSON arm updated fail-closed; both deserializers now throw on duplicate identities,
+  validate that the context covers every vertex and remove-dot, and reject a default (absent) array —
+  deserialization paths that leave unset members default can no longer smuggle an absent field past
+  the model boundary. `ToRunState` fails closed on a
+  state carrying dotted removes — the v1 run-length shape has no slot for remove-dots, and the
+  rga-rle.v2 run shape lands with the container work — while legacy-only states still round-trip.
+  The translation-map merge is no longer last-writer-wins: a dropped dot resolves to the
+  maximum-counter merged vertex reachable through the union of both maps, making the merge
+  commutative across states compacted at different frontiers. Retention classification is now an
+  explicit-stack post-order walk, so long stable deleted runs compact without call-stack growth.
+
 - The public `ReconciliationContract` constructor now enforces a checksum-width production floor of four bytes
   (`MinimumProductionChecksumWidth`). Below four bytes the per-decode masquerade union bound — roughly
   `d·ln d · 2^(−8·width)` for a difference of `d` items — becomes material at realistic difference sizes, so a
@@ -157,6 +175,24 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   `KeyNotFoundException`.
 
 ### Added
+
+- Sequence removes are dotted events the group can certify. `Rga<TValue>.Remove` now takes the
+  removing `ReplicaId`, ticks the causal context, and records the minted remove-dot in a tombstone
+  map (`target -> remove-dots`), so a remove enters the gossip digest and the stability frontier like
+  any other event. Waterline compaction's drop gate additionally requires at least one remove-dot at
+  or below the frontier — a laggard that never observed a remove pins the frontier below it, so a
+  tombstone can no longer be dropped (and later resurrected by that laggard's merge) before every
+  member has seen the removal. The compaction checkpoint is now the certified projection — the
+  visible order filtered to stable insert-dots, excluding only elements whose remove is certified at
+  the frontier — which makes the checkpoint a pure function of the frontier and identical on every
+  honest member. `Merge` fails closed, in both argument orders, when an operand presents an element
+  live that the other operand's lineage compacted after a universally observed remove (the witness is
+  the permanent translation entry): such a state is a stale pre-remove replay — a rejoining evicted
+  member, a restored backup — and must adopt a current state wholesale rather than merge. A new
+  `CausalContext` accessor on `Rga<TValue>` (with a `SequenceCausalContextDelegate` seam on the
+  strategy context and `CheckpointedSequence`) serves the digest path, which `ToState` could not on a
+  compacted array. Tombstones loaded from pre-dotted state carry no remove-dot and are retained
+  forever — never certified, never fabricated.
 
 - `AntiEntropySession<TElement>.IsConverged`: the convergence attestation distinct from the terminal state
   alone. A wind-down before the exchange finishes now lands `AntiEntropySessionState.Interrupted` rather than
