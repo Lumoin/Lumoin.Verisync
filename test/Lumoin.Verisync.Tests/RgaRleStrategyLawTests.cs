@@ -54,7 +54,7 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     }
 
 
-    protected override Gen<(Rga<int> Sequence, VectorClock Frontier, ImmutableArray<int> Checkpoint)>? GenCompactionCase
+    protected override Gen<(Rga<int> Sequence, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)>? GenCompactionCase
     {
         get
         {
@@ -63,7 +63,7 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     }
 
 
-    protected override Gen<(Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<int> Checkpoint)>? GenCommutationCase => GenCase;
+    protected override Gen<(Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)>? GenCommutationCase => GenCase;
 
 
     //The shared-prefix ops, the frontier cut, and the two divergent insert-and-remove suffixes all come from
@@ -71,7 +71,7 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     //case actually drops a vertex when the merged operands compact at the shared frontier — unfiltered random
     //histories reach the drop region only a few percent of the time, leaving the compaction laws asserting
     //on no-op compactions.
-    private static Gen<(Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<int> Checkpoint)> GenCase { get; } =
+    private static Gen<(Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)> GenCase { get; } =
         Gen.Select(
             Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 6],
             Gen.Int[0, 6],
@@ -81,7 +81,7 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
         .Where(static input => MergedCompactionDrops(input.A, input.B, input.Frontier, input.Checkpoint));
 
 
-    private static (Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<int> Checkpoint) BuildCase((int Replica, int Seed)[] ops, int cut, int[] suffixA, int[] suffixB)
+    private static (Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint) BuildCase((int Replica, int Seed)[] ops, int cut, int[] suffixA, int[] suffixB)
     {
         //Shared prefix on an empty Rga: the common knowledge every derived operand starts from. The state at
         //the cut is snapshotted to supply the frontier and the certified checkpoint. Removes are dotted, so
@@ -126,10 +126,11 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
         //honest "every member observed exactly the prefix" frontier.
         VectorClock frontier = prefixAtCut.CausalContext;
 
-        //Checkpoint: the prefix state's visible values at the cut. This IS the certified projection of every
-        //derived operand at that frontier — an element is certified-projected iff it was inserted and not yet
-        //removed within the cut, exactly the cut state's visible content, and RGA order is superset-stable.
-        ImmutableArray<int> checkpoint = [.. prefixAtCut.Values];
+        //Checkpoint: the prefix state's DOTTED certified projection at the cut. This IS the certified
+        //projection of every derived operand at that frontier — an element is certified-projected iff it was
+        //inserted and not yet removed within the cut, exactly the cut state's visible content, and RGA order
+        //is superset-stable, so the shared prefix's dots and values carry across every operand unchanged.
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = prefixAtCut.CertifiedProjection(frontier);
 
         //Divergent suffixes now insert AND remove: an above-frontier divergent remove is not yet certified, so
         //both operands still derive the same checkpoint at the shared frontier.
@@ -207,7 +208,7 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     }
 
 
-    private static bool MergedCompactionDrops(Rga<int> a, Rga<int> b, VectorClock frontier, ImmutableArray<int> checkpoint)
+    private static bool MergedCompactionDrops(Rga<int> a, Rga<int> b, VectorClock frontier, ImmutableArray<SequenceCheckpointEntry<int>> checkpoint)
     {
         Rga<int> merged = a.Merge(b);
         Rga<int> compacted = merged.Compact(frontier, checkpoint);

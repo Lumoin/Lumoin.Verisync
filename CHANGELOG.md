@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Changed
 
+- `CheckpointedSequence.Promote` and the container's standalone `Compact` are removed: a frontier-less
+  full-snapshot commitment cannot participate in the seal chain's refusal rule, promote-then-compact
+  only ever aligned under undocumented full quiescence, and a register mixing commitment kinds would
+  fork the checkpoint line. `Seal` is the sole compaction entry point, which also means consensus
+  checkpointing now requires a certification-capable strategy — deliberate: an anchor that certifies
+  nothing was the footgun. `CheckpointCommitment` carries its frontier; `CompactSequenceDelegate` and
+  `CanonicalizeCheckpointDelegate` take the dotted checkpoint (the offset strategy's wiring projects
+  values out and is otherwise untouched — its removes remain uncertified until its own follow-on).
+  The compactable RGA run state serializes dotted removes: tombstone spans carry two aligned counter
+  ranges so a contiguous single-replica deletion pass still coalesces to one span, irregular
+  tombstones (concurrent removes, legacy empties) fall back to explicit entries, and the permanent
+  translation map coalesces into spans under a pinned predicate that never covers a dot currently
+  present as a vertex — a resurrected ghost's witness entry always survives verbatim. A
+  type-delete-type fragmentation regression pins the shared-counter-plane cost the design accepted.
+
 - The RGA strategy identifiers are replaced: `verisync.sequence.rga.v2` and
   `verisync.sequence.rga-rle.v2` supersede the v1 identifiers, which are deleted — the dotted-remove
   semantics change both strategies' replication contracts, and published identifiers never change
@@ -193,6 +208,22 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   strategy context and `CheckpointedSequence`) serves the digest path, which `ToState` could not on a
   compacted array. Tombstones loaded from pre-dotted state carry no remove-dot and are retained
   forever — never certified, never fabricated.
+
+- Waterline compaction is driven by a consensus seal. `CheckpointedSequence.Seal` computes the
+  certified projection at a caller-supplied stability frontier through a new strategy seam
+  (`CertifySequenceProjectionDelegate`; `Rga<TValue>.CertifiedProjection` shares one core with the
+  compaction integrity check so the two can never drift), proposes a frontier-carrying commitment
+  through the CASPaxos register with a monotone change function — the proposal replaces the recovered
+  commitment only when it is the first seal, strictly dominates the recovered frontier, or repeats it
+  byte-identically; anything behind, concurrent, or equal-with-a-divergent-digest re-proposes the
+  recovered value unchanged — and compacts only when its own proposal was chosen (`Sealed`), returning
+  the container unchanged otherwise so a losing sealer retries above the winner. Committed frontiers
+  therefore form a strictly ascending chain. Non-sealers converge through `ApplyCommittedSeal`, which
+  verifies the member's own certified projection against the committed digest (a distinct diagnostic
+  tells a lagging member to catch up first) and compacts on match; its digest check doubles as the
+  verification step of the documented rejoin-by-adoption recipe. Checkpoints are dotted
+  (`SequenceCheckpointEntry` pairs each value with its element identity), so a commitment is
+  unambiguous under repeated values.
 
 - `AntiEntropySession<TElement>.IsConverged`: the convergence attestation distinct from the terminal state
   alone. A wind-down before the exchange finishes now lands `AntiEntropySessionState.Interrupted` rather than

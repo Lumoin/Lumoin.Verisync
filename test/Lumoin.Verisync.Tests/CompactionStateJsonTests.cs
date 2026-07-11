@@ -18,6 +18,7 @@ internal sealed class CompactionStateJsonTests
 {
     private static ReplicaId R1 { get; } = Replica(1);
     private static ReplicaId R2 { get; } = Replica(2);
+    private static ReplicaId R3 { get; } = Replica(3);
 
     private static ImmutableArray<int> BaseValues { get; } = [10, 20, 30];
 
@@ -56,18 +57,16 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //An uncompacted RGA round-trips through the run-state JSON codec and FromRunState. The fixture is rebuilt
-    //through FromState with a LEGACY tombstone (empty remove-dots) so ToRunState — which refuses dotted
-    //removes in slice 1 — still serializes it.
+    //A dotted-remove RGA round-trips through the run-state JSON codec and FromRunState, exercising a two-range
+    //tombstone span (R2 removing a contiguous R1 range in one pass).
     [TestMethod]
-    public void UncompactedRgaRunStateRoundTripsThroughTheJsonCodec()
+    public void DottedRgaRunStateRoundTripsThroughTheJsonCodec()
     {
-        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 3)]);
-        RgaVertexEntry<int> vertexA = new(DotStateOf(new Dot(R1, 1)), null, 1);
-        RgaVertexEntry<int> vertexB = new(DotStateOf(new Dot(R1, 2)), DotStateOf(new Dot(R1, 1)), 2);
-        RgaVertexEntry<int> vertexC = new(DotStateOf(new Dot(R1, 3)), DotStateOf(new Dot(R1, 2)), 3);
-        RgaTombstoneEntry legacyB = new(DotStateOf(new Dot(R1, 2)), []);
-        Rga<int> array = Rga<int>.FromState(new RgaState<int>(context, [vertexA, vertexB, vertexC], [legacyB]));
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
+        (Rga<int> withC, Dot idC) = withB.InsertAfter(idB, 3, R1);
+        (Rga<int> withD, _) = withC.InsertAfter(idC, 4, R1);
+        Rga<int> array = withD.Remove(idB, R2).Remove(idC, R2);
 
         RgaRunState<int> reloaded = RoundTrip(
             array.ToRunState(),
@@ -79,18 +78,38 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //A compacted RGA carrying a translation map round-trips through the run-state JSON codec. The compacted
-    //shape (a dropped dot served by a translation, no tombstones) is hand-built as an RgaRunState record so no
-    //dotted state reaches ToRunState; certified round-trips of a Compact-built instance land with slice 2.
+    //A two-dot concurrent-remove tombstone serializes as an irregular entry and round-trips through the JSON
+    //codec.
+    [TestMethod]
+    public void IrregularRgaRunStateRoundTripsThroughTheJsonCodec()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        Rga<int> array = withA.Remove(idA, R2).Merge(withA.Remove(idA, R3));
+
+        RgaRunState<int> reloaded = RoundTrip(
+            array.ToRunState(),
+            CrdtStateJson.CreateRgaRunStateSerializer<int>(WriteInt),
+            CrdtStateJson.CreateRgaRunStateDeserializer(ReadInt));
+        Rga<int> back = Rga<int>.FromRunState(reloaded);
+
+        Assert.AreEqual(array, back);
+    }
+
+
+    //A compacted RGA carrying a translation SPAN (two contiguous dropped dots served by one retained ancestor)
+    //round-trips through the run-state JSON codec with its servability intact — the certified compaction is
+    //now built through Compact rather than a hand-authored record.
     [TestMethod]
     public void CompactedRgaRunStateRoundTripsThroughTheJsonCodec()
     {
-        Dot idA = new(R1, 1);
-        Dot idB = new(R1, 2);
-        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 3)]);
-        RgaRunEntry<int> runA = new(DotStateOf(idA), null, [1]);
-        RgaTranslationEntry translation = new(DotStateOf(idB), DotStateOf(idA));
-        Rga<int> compacted = Rga<int>.FromRunState(new RgaRunState<int>(context, [runA], [], [translation]));
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
+        (Rga<int> withC, Dot idC) = withB.InsertAfter(idB, 3, R1);
+        Rga<int> removed = withC.Remove(idB, R2).Remove(idC, R2);
+
+        VectorClock frontier = removed.CausalContext;
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
+        Rga<int> compacted = removed.Compact(frontier, checkpoint);
 
         RgaRunState<int> reloaded = RoundTrip(
             compacted.ToRunState(),
@@ -100,6 +119,7 @@ internal sealed class CompactionStateJsonTests
 
         Assert.AreEqual(compacted, back);
         Assert.AreEqual(idA, back.TranslateAnchor(idB));
+        Assert.AreEqual(idA, back.TranslateAnchor(idC));
     }
 
 
@@ -181,13 +201,15 @@ internal sealed class CompactionStateJsonTests
     [TestMethod]
     public void RunStateDeserializerRejectsAnInvalidTombstoneSpan()
     {
-        //A span whose "to" is below its "from" is invalid bounds.
+        //A two-range span whose "targetTo" is below its "targetFrom" is invalid bounds.
         string json = $$"""
         {
           "context":{"entries":[]},
           "runs":[{"first":{"replica":"{{Hex(R1)}}","counter":1},"predecessor":null,"values":[1]}],
-          "tombstoneSpans":[{"replica":"{{Hex(R1)}}","from":3,"to":2}],
-          "translations":[]
+          "tombstoneSpans":[{"targetReplica":"{{Hex(R1)}}","targetFrom":3,"targetTo":2,"removeReplica":"{{Hex(R2)}}","removeFrom":1}],
+          "irregularTombstones":[],
+          "translations":[],
+          "translationSpans":[]
         }
         """;
 
@@ -202,8 +224,10 @@ internal sealed class CompactionStateJsonTests
         {
           "context":{"entries":[]},
           "runs":[{"first":{"replica":"{{Hex(R1)}}","counter":1},"predecessor":null,"values":[1]}],
-          "tombstoneSpans":[{"replica":"{{Hex(R1)}}","from":0,"to":1}],
-          "translations":[]
+          "tombstoneSpans":[{"targetReplica":"{{Hex(R1)}}","targetFrom":0,"targetTo":1,"removeReplica":"{{Hex(R2)}}","removeFrom":1}],
+          "irregularTombstones":[],
+          "translations":[],
+          "translationSpans":[]
         }
         """;
 
@@ -219,11 +243,78 @@ internal sealed class CompactionStateJsonTests
           "context":{"entries":[]},
           "runs":[{"first":{"replica":"{{Hex(R1)}}","counter":1},"predecessor":null,"values":[]}],
           "tombstoneSpans":[],
-          "translations":[]
+          "irregularTombstones":[],
+          "translations":[],
+          "translationSpans":[]
         }
         """;
 
         Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeRunState(json));
+    }
+
+
+    [TestMethod]
+    public void RunStateDeserializerRejectsAnInvalidTranslationSpan()
+    {
+        //A translation span whose "to" is below its "from" is invalid bounds. The triple-dollar form
+        //allows the nested JSON object's consecutive closing braces as content.
+        string json = $$$"""
+        {
+          "context":{"entries":[]},
+          "runs":[{"first":{"replica":"{{{Hex(R1)}}}","counter":1},"predecessor":null,"values":[1]}],
+          "tombstoneSpans":[],
+          "irregularTombstones":[],
+          "translations":[],
+          "translationSpans":[{"replica":"{{{Hex(R1)}}}","from":3,"to":2,"target":{"replica":"{{{Hex(R1)}}}","counter":1}}]
+        }
+        """;
+
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeRunState(json));
+    }
+
+
+    [TestMethod]
+    public void RunStateDeserializerRejectsMissingV2Fields()
+    {
+        //A tombstone span missing its removeReplica.
+        string missingRemoveReplica = $$"""
+        {
+          "context":{"entries":[]},
+          "runs":[],
+          "tombstoneSpans":[{"targetReplica":"{{Hex(R1)}}","targetFrom":1,"targetTo":1,"removeFrom":1}],
+          "irregularTombstones":[],
+          "translations":[],
+          "translationSpans":[]
+        }
+        """;
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeRunState(missingRemoveReplica));
+
+        //An irregular tombstone missing its removeDots. The triple-dollar form allows the nested JSON
+        //object's consecutive closing braces as content, matching the offset arm's precedent above.
+        string missingRemoveDots = $$$"""
+        {
+          "context":{"entries":[]},
+          "runs":[],
+          "tombstoneSpans":[],
+          "irregularTombstones":[{"target":{"replica":"{{{Hex(R1)}}}","counter":1}}],
+          "translations":[],
+          "translationSpans":[]
+        }
+        """;
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeRunState(missingRemoveDots));
+
+        //A translation span missing its target.
+        string missingTranslationSpanTarget = $$"""
+        {
+          "context":{"entries":[]},
+          "runs":[],
+          "tombstoneSpans":[],
+          "irregularTombstones":[],
+          "translations":[],
+          "translationSpans":[{"replica":"{{Hex(R1)}}","from":1,"to":2}]
+        }
+        """;
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeRunState(missingTranslationSpanTarget));
     }
 
 
@@ -301,12 +392,6 @@ internal sealed class CompactionStateJsonTests
 
 
     private static string Hex(ReplicaId replica) => Convert.ToHexStringLower(replica.AsSpan());
-
-
-    private static ImmutableArray<byte> Bytes(ReplicaId replica) => ImmutableArray.Create(replica.AsSpan());
-
-
-    private static DotState DotStateOf(Dot dot) => new(Bytes(dot.Replica), dot.Counter);
 
 
     private static void WriteInt(Utf8JsonWriter writer, int value) => writer.WriteNumberValue(value);

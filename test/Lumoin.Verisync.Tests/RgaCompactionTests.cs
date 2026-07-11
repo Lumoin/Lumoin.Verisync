@@ -7,18 +7,20 @@ namespace Lumoin.Verisync.Tests;
 
 /// <summary>
 /// Deterministic, hand-built coverage of <see cref="Rga{TValue}"/> waterline compaction under dotted
-/// removes: certified-remove retention, dropped-tombstone translation, run-length state round-trips over
-/// legacy tombstones, and the fail-closed guards. A drop now requires a certified remove-dot, so drop-site
-/// frontiers are the removed state's own <see cref="Rga{TValue}.CausalContext"/> (which covers the
-/// remove-dots); partial dot-derived frontiers stay only where the test deliberately leaves state above the
-/// line. Checkpoints are the certified projection at the frontier, which includes a locally tombstoned
-/// element whose remove is not yet certified.
+/// removes: certified-remove retention, dropped-tombstone translation, and the rga-rle.v2 run state
+/// round-trips (two-range tombstone spans, irregular-tombstone fallback, pinned translation-span coalescing)
+/// together with the fail-closed guards. A drop now requires a certified remove-dot, so drop-site frontiers
+/// are the removed state's own <see cref="Rga{TValue}.CausalContext"/> (which covers the remove-dots), and
+/// checkpoints are the dotted certified projection at the frontier, derived through
+/// <see cref="Rga{TValue}.CertifiedProjection"/> rather than hand-built value arrays. The certified
+/// projection includes a locally tombstoned element whose remove is not yet certified.
 /// </summary>
 [TestClass]
 internal sealed class RgaCompactionTests
 {
     private static ReplicaId R1 { get; } = Replica(1);
     private static ReplicaId R2 { get; } = Replica(2);
+    private static ReplicaId R3 { get; } = Replica(3);
 
 
     //A stable, childless, non-head-anchored tombstone whose remove is certified drops; values stay; its dot
@@ -32,7 +34,7 @@ internal sealed class RgaCompactionTests
 
         //The removed state's context covers the remove-dot, so the frontier certifies the remove.
         VectorClock frontier = removed.CausalContext;
-        ImmutableArray<int> checkpoint = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
         Rga<int> compacted = removed.Compact(frontier, checkpoint);
 
         int[] expectedValues = [1];
@@ -59,7 +61,7 @@ internal sealed class RgaCompactionTests
         //The parent is stable and tombstoned; the child stays above this partial frontier and keeps it alive.
         //The parent's remove is not certified here, so the certified projection includes the parent's value.
         VectorClock frontier = FrontierCovering(idA, idParent);
-        ImmutableArray<int> checkpoint = [1, 2];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
         Rga<int> compacted = removed.Compact(frontier, checkpoint);
 
         int[] expectedValues = [1, 3];
@@ -81,7 +83,7 @@ internal sealed class RgaCompactionTests
 
         //The frontier certifies the remove, yet the head-anchored clause still retains the tombstone.
         VectorClock frontier = removed.CausalContext;
-        ImmutableArray<int> checkpoint = [];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
         Rga<int> compacted = removed.Compact(frontier, checkpoint);
 
         //The tombstone survives: it still maps to itself and still anchors a direct insert.
@@ -104,7 +106,7 @@ internal sealed class RgaCompactionTests
         Rga<int> removed = withT2.Remove(idT1, R1).Remove(idT2, R1);
 
         VectorClock frontier = removed.CausalContext;
-        ImmutableArray<int> checkpoint = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
         Rga<int> compacted = removed.Compact(frontier, checkpoint);
 
         int[] expectedValues = [1];
@@ -122,7 +124,9 @@ internal sealed class RgaCompactionTests
         (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
 
         VectorClock frontier = FrontierCovering(idA, idB);
-        ImmutableArray<int> wrongCheckpoint = [1];
+
+        //The certified projection at this frontier is [a, b]; a single-entry checkpoint disagrees.
+        ImmutableArray<SequenceCheckpointEntry<int>> wrongCheckpoint = [new SequenceCheckpointEntry<int>(DotStateOf(new Dot(R1, 1)), 1)];
 
         Assert.ThrowsExactly<InvalidOperationException>(() => withB.Compact(frontier, wrongCheckpoint));
     }
@@ -137,7 +141,7 @@ internal sealed class RgaCompactionTests
         Rga<int> removed = withB.Remove(idB, R1);
 
         VectorClock frontier = removed.CausalContext;
-        ImmutableArray<int> checkpoint = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
         Rga<int> once = removed.Compact(frontier, checkpoint);
 
         Rga<int> twice = once.Compact(frontier, checkpoint);
@@ -160,13 +164,13 @@ internal sealed class RgaCompactionTests
         //First compaction certifies idB's remove and folds the childless stable tombstone; idC is minted
         //after the remove, so idB's remove-dot sits below idC's insert and idC stays above the frontier.
         VectorClock firstFrontier = removedB.CausalContext;
-        ImmutableArray<int> firstCheckpoint = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> firstCheckpoint = withC.CertifiedProjection(firstFrontier);
         Rga<int> first = withC.Compact(firstFrontier, firstCheckpoint);
 
         //Second compaction at a strictly higher frontier certifies idC's remove and folds it too.
         Rga<int> secondInput = first.Remove(idC, R1);
         VectorClock secondFrontier = secondInput.CausalContext;
-        ImmutableArray<int> secondCheckpoint = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> secondCheckpoint = secondInput.CertifiedProjection(secondFrontier);
         Rga<int> second = secondInput.Compact(secondFrontier, secondCheckpoint);
 
         //The dot folded away in the first generation is still translatable after the second.
@@ -184,7 +188,7 @@ internal sealed class RgaCompactionTests
         Rga<int> laggard = withB.Remove(idB, R1);
 
         VectorClock frontier = laggard.CausalContext;
-        ImmutableArray<int> checkpoint = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = laggard.CertifiedProjection(frontier);
         Rga<int> compacted = laggard.Compact(frontier, checkpoint);
 
         //The laggard still carries the dropped vertex AND its dotted tombstone, so the merge re-enters the
@@ -202,22 +206,16 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //A typed chained run coalesces into a single RgaRunEntry and a per-replica removal range into a single
-    //RgaTombstoneSpan. The fixture is rebuilt through FromState with LEGACY tombstones (empty remove-dots) so
-    //ToRunState — which refuses dotted removes in slice 1 — still serializes it.
+    //A typed chained run coalesces into a single RgaRunEntry, and a one-replica contiguous deletion pass
+    //(R2 removing the middle two elements) coalesces into a single two-range RgaTombstoneSpan.
     [TestMethod]
     public void RunStateCoalescesRunsAndSpans()
     {
-        //Four consecutive same-replica chained inserts, with the middle two tombstoned as legacy entries.
-        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 4)]);
-        RgaVertexEntry<int> vertexA = new(DotStateOf(new Dot(R1, 1)), null, 1);
-        RgaVertexEntry<int> vertexB = new(DotStateOf(new Dot(R1, 2)), DotStateOf(new Dot(R1, 1)), 2);
-        RgaVertexEntry<int> vertexC = new(DotStateOf(new Dot(R1, 3)), DotStateOf(new Dot(R1, 2)), 3);
-        RgaVertexEntry<int> vertexD = new(DotStateOf(new Dot(R1, 4)), DotStateOf(new Dot(R1, 3)), 4);
-        RgaTombstoneEntry legacyB = new(DotStateOf(new Dot(R1, 2)), []);
-        RgaTombstoneEntry legacyC = new(DotStateOf(new Dot(R1, 3)), []);
-        RgaState<int> state = new(context, [vertexA, vertexB, vertexC, vertexD], [legacyB, legacyC]);
-        Rga<int> removed = Rga<int>.FromState(state);
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
+        (Rga<int> withC, Dot idC) = withB.InsertAfter(idB, 3, R1);
+        (Rga<int> withD, _) = withC.InsertAfter(idC, 4, R1);
+        Rga<int> removed = withD.Remove(idB, R2).Remove(idC, R2);
 
         RgaRunState<int> runState = removed.ToRunState();
         Assert.HasCount(1, runState.Runs);
@@ -225,22 +223,226 @@ internal sealed class RgaCompactionTests
         CollectionAssert.AreEqual(expectedRunValues, runState.Runs[0].Values.ToArray());
         Assert.IsNull(runState.Runs[0].Predecessor);
         Assert.HasCount(1, runState.TombstoneSpans);
-        Assert.AreEqual(2, runState.TombstoneSpans[0].FromCounter);
-        Assert.AreEqual(3, runState.TombstoneSpans[0].ToCounter);
+        RgaTombstoneSpan span = runState.TombstoneSpans[0];
+        Assert.AreEqual(2, span.TargetFrom);
+        Assert.AreEqual(3, span.TargetTo);
+        Assert.AreEqual(1, span.RemoveFrom);
+        Assert.IsTrue(span.TargetReplica.AsSpan().SequenceEqual(R1.AsSpan()));
+        Assert.IsTrue(span.RemoveReplica.AsSpan().SequenceEqual(R2.AsSpan()));
+        Assert.HasCount(0, runState.IrregularTombstones);
         Assert.AreEqual(removed, Rga<int>.FromRunState(runState));
     }
 
 
-    //ToRunState fails closed on a state carrying dotted removes: the v1 run shape cannot represent them, and
-    //the rga-rle.v2 run shape lands with the container slice.
+    //(a) A dotted-remove state round-trips through the run shape, with a contiguous single-replica deletion
+    //pass asserted as one two-range span. T6: R1 inserts 1..5 chained; R2 removes 2,3,4 minting
+    //(R2,1),(R2,2),(R2,3), so ToRunState emits ONE span (TargetReplica R1, 2, 4, RemoveReplica R2, 1).
     [TestMethod]
-    public void ToRunStateFailsClosedOnDottedRemoves()
+    public void ADottedRemoveStateRoundTripsWithATwoRangeSpan()
     {
         (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
         (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
-        Rga<int> removed = withB.Remove(idB, R1);
+        (Rga<int> withC, Dot idC) = withB.InsertAfter(idB, 3, R1);
+        (Rga<int> withD, Dot idD) = withC.InsertAfter(idC, 4, R1);
+        (Rga<int> withE, _) = withD.InsertAfter(idD, 5, R1);
+        Rga<int> x = withE.Remove(idB, R2).Remove(idC, R2).Remove(idD, R2);
 
-        Assert.ThrowsExactly<InvalidOperationException>(() => removed.ToRunState());
+        RgaRunState<int> runState = x.ToRunState();
+        Assert.HasCount(1, runState.TombstoneSpans);
+        RgaTombstoneSpan span = runState.TombstoneSpans[0];
+        Assert.AreEqual(2, span.TargetFrom);
+        Assert.AreEqual(4, span.TargetTo);
+        Assert.AreEqual(1, span.RemoveFrom);
+        Assert.IsTrue(span.TargetReplica.AsSpan().SequenceEqual(R1.AsSpan()));
+        Assert.IsTrue(span.RemoveReplica.AsSpan().SequenceEqual(R2.AsSpan()));
+        Assert.HasCount(0, runState.IrregularTombstones);
+        Assert.HasCount(0, runState.Translations);
+        Assert.HasCount(0, runState.TranslationSpans);
+        Assert.AreEqual(x, Rga<int>.FromRunState(runState));
+    }
+
+
+    //(b) A compacted state carrying a translation AND a retained dotted tombstone round-trips through the run
+    //shape with its servability intact — the slice-1-deferred serialization half of the C-killer. R2 removes
+    //the head a (retained head ghost) and the childless b (dropped, translated onto a).
+    [TestMethod]
+    public void ACompactedStateRoundTripsThroughTheRunShape()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
+        Rga<int> removed = withB.Remove(idA, R2).Remove(idB, R2);
+
+        VectorClock frontier = removed.CausalContext;
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
+        Rga<int> compacted = removed.Compact(frontier, checkpoint);
+        Assert.AreEqual(idA, compacted.TranslateAnchor(idB));
+
+        RgaRunState<int> runState = compacted.ToRunState();
+        Assert.HasCount(1, runState.Translations);
+        Assert.HasCount(0, runState.TranslationSpans);
+
+        Rga<int> back = Rga<int>.FromRunState(runState);
+        Assert.AreEqual(compacted, back);
+        Assert.AreEqual(idA, back.TranslateAnchor(idB));
+    }
+
+
+    //(c) A legacy tombstone (empty remove-dots) cannot become a span, so it serializes as an irregular entry
+    //and round-trips, carrying the retain-forever v1 load.
+    [TestMethod]
+    public void ALegacyTombstoneRoundTripsThroughAnIrregularEntry()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 2)]);
+        RgaVertexEntry<int> vertexA = new(DotStateOf(new Dot(R1, 1)), null, 1);
+        RgaVertexEntry<int> vertexB = new(DotStateOf(new Dot(R1, 2)), DotStateOf(new Dot(R1, 1)), 2);
+        RgaTombstoneEntry legacyB = new(DotStateOf(new Dot(R1, 2)), []);
+        Rga<int> x = Rga<int>.FromState(new RgaState<int>(context, [vertexA, vertexB], [legacyB]));
+
+        RgaRunState<int> runState = x.ToRunState();
+        Assert.HasCount(0, runState.TombstoneSpans);
+        Assert.HasCount(1, runState.IrregularTombstones);
+        Assert.HasCount(0, runState.IrregularTombstones[0].RemoveDots);
+        Assert.AreEqual(x, Rga<int>.FromRunState(runState));
+    }
+
+
+    //(d) Two concurrent removes of one target union into a two-dot tombstone that no span can express, so it
+    //serializes irregularly and round-trips.
+    [TestMethod]
+    public void AConcurrentRemoveRoundTripsThroughAnIrregularEntry()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        Rga<int> byR2 = withA.Remove(idA, R2);
+        Rga<int> byR3 = withA.Remove(idA, R3);
+        Rga<int> x = byR2.Merge(byR3);
+
+        RgaRunState<int> runState = x.ToRunState();
+        Assert.HasCount(0, runState.TombstoneSpans);
+        Assert.HasCount(1, runState.IrregularTombstones);
+        Assert.HasCount(2, runState.IrregularTombstones[0].RemoveDots);
+        Assert.AreEqual(x, Rga<int>.FromRunState(runState));
+    }
+
+
+    //(e) A laggard merge resurrects a dropped tombstone while its translation entry remains: the dropped dot
+    //is a current (tombstoned) vertex, so its witness serializes as a SINGLETON translation entry, never
+    //inside a span, and the ghost-plus-witness shape round-trips.
+    [TestMethod]
+    public void AResurrectedGhostWithWitnessRoundTripsWithASingletonTranslation()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
+        Rga<int> laggard = withB.Remove(idB, R1);
+
+        VectorClock frontier = laggard.CausalContext;
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = laggard.CertifiedProjection(frontier);
+        Rga<int> compacted = laggard.Compact(frontier, checkpoint);
+        Rga<int> resurrected = compacted.Merge(laggard);
+
+        RgaRunState<int> runState = resurrected.ToRunState();
+        Assert.HasCount(1, runState.Translations);
+        Assert.HasCount(0, runState.TranslationSpans);
+        Assert.AreEqual(resurrected, Rga<int>.FromRunState(runState));
+    }
+
+
+    //(f) FromRunState fails closed on the v2-shape violations: overlapping span targets, a span/irregular
+    //duplicate target, a translation span landing on a vertex, translation-span bounds, and remove-dot
+    //arithmetic overflow.
+    [TestMethod]
+    public void FromRunStateFailsClosedOnV2ShapeViolations()
+    {
+        VectorClockState oneAxis = new([new ReplicaCounterEntry(Bytes(R1), 2)]);
+        RgaRunEntry<int> chain = new(DotStateOf(new Dot(R1, 1)), null, [1, 2]);
+
+        //Overlapping span targets: two two-range spans that both name target (R1,2).
+        VectorClockState spanContext = new([new ReplicaCounterEntry(Bytes(R1), 3), new ReplicaCounterEntry(Bytes(R2), 10)]);
+        RgaTombstoneSpan spanOne = new(Bytes(R1), 1, 2, Bytes(R2), 1);
+        RgaTombstoneSpan spanTwo = new(Bytes(R1), 2, 3, Bytes(R2), 5);
+        RgaRunState<int> overlappingSpans = new(spanContext, [], [spanOne, spanTwo], [], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(overlappingSpans));
+
+        //A span target that also appears in an irregular tombstone.
+        RgaTombstoneSpan span = new(Bytes(R1), 1, 1, Bytes(R2), 1);
+        RgaConcurrentTombstone irregular = new(DotStateOf(new Dot(R1, 1)), [DotStateOf(new Dot(R2, 2))]);
+        VectorClockState dupContext = new([new ReplicaCounterEntry(Bytes(R1), 1), new ReplicaCounterEntry(Bytes(R2), 2)]);
+        RgaRunState<int> spanIrregularDuplicate = new(dupContext, [], [span], [irregular], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(spanIrregularDuplicate));
+
+        //A translation span whose expanded dropped dots land on existing vertices.
+        RgaTranslationSpan landsOnVertex = new(Bytes(R1), 1, 2, DotStateOf(new Dot(R1, 1)));
+        RgaRunState<int> translationSpanOnVertex = new(oneAxis, [chain], [], [], [], [landsOnVertex]);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(translationSpanOnVertex));
+
+        //A translation span with ToCounter below FromCounter is invalid bounds.
+        RgaTranslationSpan invalidBounds = new(Bytes(R2), 3, 2, DotStateOf(new Dot(R1, 1)));
+        RgaRunState<int> translationSpanBounds = new(oneAxis, [chain], [], [], [], [invalidBounds]);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(translationSpanBounds));
+
+        //A two-range span whose remove-dot arithmetic overflows int. The context COVERS the remove axis up
+        //to int.MaxValue, so the coverage check cannot mask the overflow guard: without the guard the
+        //wrapped negative counters would sail past coverage and be admitted.
+        VectorClockState wideContext = new([new ReplicaCounterEntry(Bytes(R1), 3), new ReplicaCounterEntry(Bytes(R2), int.MaxValue)]);
+        RgaTombstoneSpan overflowSpan = new(Bytes(R1), 1, 2, Bytes(R2), int.MaxValue);
+        RgaRunState<int> removeDotOverflow = new(wideContext, [], [overflowSpan], [], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(removeDotOverflow));
+
+        //The single-element companion at the same bound does not overflow and loads: the guard rejects
+        //arithmetic, not magnitude.
+        RgaTombstoneSpan atTheBound = new(Bytes(R1), 1, 1, Bytes(R2), int.MaxValue);
+        RgaRunState<int> loadable = new(wideContext, [], [atTheBound], [], [], []);
+        Assert.AreEqual(0, Rga<int>.FromRunState(loadable).Count);
+
+        //A run whose expanded vertex counters would overflow is rejected the same way — the wrapped
+        //negative counter would otherwise slip past both the positivity and coverage checks.
+        VectorClockState runContext = new([new ReplicaCounterEntry(Bytes(R1), int.MaxValue)]);
+        RgaRunEntry<int> overflowRun = new(DotStateOf(new Dot(R1, int.MaxValue)), null, [1, 2]);
+        RgaRunState<int> runOverflow = new(runContext, [overflowRun], [], [], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(runOverflow));
+    }
+
+
+    //The gate-1 shared-counter-plane cost, pinned empirically: a type-delete-type workload fragments the
+    //insert runs exactly as the plane-sharing arithmetic predicts. Each round types PerRound chained inserts
+    //then removes the last; the remove tick opens a one-counter gap on the shared axis, so the next round's
+    //inserts start past it and cannot extend the previous run — one run and one length-one span per round.
+    [TestMethod]
+    public void ATypeDeleteTypeWorkloadFragmentsInsertRunsAsThePlaneSharingPredicts()
+    {
+        const int PerRound = 3;
+        const int Rounds = 4;
+        (Rga<int> typed, Dot last) = Rga<int>.Empty.InsertAtHead(0, R1);
+        int value = 1;
+        for(int round = 0; round < Rounds; round++)
+        {
+            while(value < (round + 1) * PerRound)
+            {
+                (typed, last) = typed.InsertAfter(last, value, R1);
+                value++;
+            }
+
+            typed = typed.Remove(last, R1);
+        }
+
+        RgaRunState<int> runState = typed.ToRunState();
+        Assert.HasCount(Rounds, runState.Runs);
+        Assert.HasCount(PerRound, runState.Runs[0].Values);
+        Assert.HasCount(Rounds, runState.TombstoneSpans);
+        Assert.HasCount(0, runState.IrregularTombstones);
+        Assert.HasCount(0, runState.Translations);
+
+        //The contrast: the same count of inserts with NO interleaved removes keeps the counter plane
+        //contiguous, so every insert coalesces into a single run and no span is emitted.
+        (Rga<int> contiguous, Dot tail) = Rga<int>.Empty.InsertAtHead(0, R1);
+        for(int i = 1; i < PerRound * Rounds; i++)
+        {
+            (contiguous, tail) = contiguous.InsertAfter(tail, i, R1);
+        }
+
+        RgaRunState<int> contrastRunState = contiguous.ToRunState();
+        Assert.HasCount(1, contrastRunState.Runs);
+        Assert.HasCount(PerRound * Rounds, contrastRunState.Runs[0].Values);
+        Assert.HasCount(0, contrastRunState.TombstoneSpans);
     }
 
 
@@ -253,7 +455,7 @@ internal sealed class RgaCompactionTests
         Rga<int> removed = withB.Remove(idB, R1);
 
         VectorClock frontier = removed.CausalContext;
-        ImmutableArray<int> checkpoint = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
         Rga<int> compacted = removed.Compact(frontier, checkpoint);
 
         Assert.ThrowsExactly<InvalidOperationException>(() => compacted.ToState());
@@ -272,7 +474,7 @@ internal sealed class RgaCompactionTests
         Rga<int> removed = withB.Remove(idB, R1);
 
         VectorClock frontier = removed.CausalContext;
-        ImmutableArray<int> checkpoint = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
         Rga<int> compacted = removed.Compact(frontier, checkpoint);
         Dot unknown = new(R2, 99);
 
@@ -282,9 +484,9 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //FromRunState validation: a dangling translation target, an invalid span, empty run values, duplicate
-    //dots across runs, a W-shape translation (dropped dot is a live untombstoned vertex), and an
-    //overlapping-span duplicate target each fail closed.
+    //FromRunState validation of the shared model postures: a dangling translation target, an empty run, a
+    //duplicate dot across runs, and a W-shape translation (a dropped dot that is a live untombstoned vertex)
+    //each fail closed. The v2-shape span/translation-span violations live in the (f) case above.
     [TestMethod]
     public void FromRunStateValidatesItsInput()
     {
@@ -293,24 +495,16 @@ internal sealed class RgaCompactionTests
 
         //A translation whose target is not a vertex breaks servability.
         RgaTranslationEntry danglingTranslation = new(DotStateOf(new Dot(R1, 5)), DotStateOf(new Dot(R2, 7)));
-        RgaRunState<int> danglingTarget = new(context, [headRun], [], [danglingTranslation]);
+        RgaRunState<int> danglingTarget = new(context, [headRun], [], [], [danglingTranslation], []);
         Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(danglingTarget));
 
-        //A span with ToCounter below FromCounter is invalid.
-        RgaRunState<int> invalidSpan = new(context, [headRun], [new RgaTombstoneSpan(Bytes(R1), 3, 2)], []);
-        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(invalidSpan));
-
-        //A span with FromCounter below one is invalid.
-        RgaRunState<int> belowOneSpan = new(context, [headRun], [new RgaTombstoneSpan(Bytes(R1), 0, 1)], []);
-        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(belowOneSpan));
-
         //An empty run cannot expand into any vertex.
-        RgaRunState<int> emptyRun = new(context, [new RgaRunEntry<int>(DotStateOf(new Dot(R1, 1)), null, [])], [], []);
+        RgaRunState<int> emptyRun = new(context, [new RgaRunEntry<int>(DotStateOf(new Dot(R1, 1)), null, [])], [], [], [], []);
         Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(emptyRun));
 
         //Two runs minting the same dot collide.
         RgaRunEntry<int> duplicateRun = new(DotStateOf(new Dot(R1, 1)), null, [2]);
-        RgaRunState<int> duplicateDots = new(context, [headRun, duplicateRun], [], []);
+        RgaRunState<int> duplicateDots = new(context, [headRun, duplicateRun], [], [], [], []);
         Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(duplicateDots));
 
         //A translation whose dropped dot is a live vertex (present and NOT a tombstone target) is a W-shape
@@ -318,14 +512,8 @@ internal sealed class RgaCompactionTests
         VectorClockState twoContext = new([new ReplicaCounterEntry(Bytes(R1), 2)]);
         RgaRunEntry<int> twoRun = new(DotStateOf(new Dot(R1, 1)), null, [1, 2]);
         RgaTranslationEntry wShape = new(DotStateOf(new Dot(R1, 2)), DotStateOf(new Dot(R1, 1)));
-        RgaRunState<int> wShapeState = new(twoContext, [twoRun], [], [wShape]);
+        RgaRunState<int> wShapeState = new(twoContext, [twoRun], [], [], [wShape], []);
         Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(wShapeState));
-
-        //Two overlapping spans present the same tombstone target twice.
-        RgaTombstoneSpan spanOne = new(Bytes(R1), 1, 2);
-        RgaTombstoneSpan spanTwo = new(Bytes(R1), 2, 3);
-        RgaRunState<int> overlappingSpans = new(context, [headRun], [spanOne, spanTwo], []);
-        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(overlappingSpans));
     }
 
 

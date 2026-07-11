@@ -44,8 +44,8 @@ internal sealed class RgaRemoveCertificationLawTests
         VectorClock f1 = FrontierOf(postRemove, postRemove, preRemove);
 
         //b is not dropped: still a vertex, no translation, and its value is in the certified projection even
-        //though the operand's own Values already hides it locally.
-        ImmutableArray<int> certifiedAtF1 = [1, 2];
+        //though the operand's own Values already hides it locally. The dotted checkpoint is that projection.
+        ImmutableArray<SequenceCheckpointEntry<int>> certifiedAtF1 = withRemove.CertifiedProjection(f1);
         Rga<int> notDropped = withRemove.Compact(f1, certifiedAtF1);
         Assert.AreEqual(idB, notDropped.TranslateAnchor(idB));
         int[] hiddenLocally = [1];
@@ -53,7 +53,7 @@ internal sealed class RgaRemoveCertificationLawTests
 
         //The laggard now observes the remove; every member advertises the post-remove context and the drop fires.
         VectorClock f2 = FrontierOf(postRemove, postRemove, postRemove);
-        ImmutableArray<int> certifiedAtF2 = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> certifiedAtF2 = withRemove.CertifiedProjection(f2);
         Rga<int> dropped = withRemove.Compact(f2, certifiedAtF2);
         int[] afterDrop = [1];
         CollectionAssert.AreEqual(afterDrop, dropped.Values.ToArray());
@@ -134,11 +134,11 @@ internal sealed class RgaRemoveCertificationLawTests
         VectorClock f2 = FrontierOf(withBothRemoved.CausalContext, withBothRemoved.CausalContext);
 
         //A drops D only (P is a tombstoned ghost whose remove is not yet certified at F1).
-        ImmutableArray<int> checkpointA = [1, 2];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpointA = withBothRemoved.CertifiedProjection(f1);
         Rga<int> a = withBothRemoved.Compact(f1, checkpointA);
 
         //B drops D and P.
-        ImmutableArray<int> checkpointB = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpointB = withBothRemoved.CertifiedProjection(f2);
         Rga<int> b = withBothRemoved.Compact(f2, checkpointB);
 
         Rga<int> forward = a.Merge(b);
@@ -195,7 +195,7 @@ internal sealed class RgaRemoveCertificationLawTests
 
         //Peer P compacted childless-x at the honest frontier (which certifies x's remove) before c existed.
         VectorClock frontier = observed.CausalContext;
-        ImmutableArray<int> checkpoint = [1, 3];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = observed.CertifiedProjection(frontier);
         Rga<int> peer = observed.Compact(frontier, checkpoint);
 
         //The reference is the compaction of the merged uncompacted state; x stays a ghost, so c holds its
@@ -223,7 +223,7 @@ internal sealed class RgaRemoveCertificationLawTests
             }
 
             VectorClock frontier = FrontierFromContexts(contexts);
-            ImmutableArray<int> checkpoint = [.. input.PrefixAtCut.Values];
+            ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = input.Full.CertifiedProjection(frontier);
             Rga<int> compacted = input.Full.Compact(frontier, checkpoint);
 
             foreach(RgaVertexEntry<int> vertex in input.Full.ToState().Vertices)
@@ -257,7 +257,7 @@ internal sealed class RgaRemoveCertificationLawTests
         (Rga<int> laggard, _) = observed.InsertAfter(idX, 4, R3);
 
         VectorClock frontier = observed.CausalContext;
-        ImmutableArray<int> checkpoint = [1, 3];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = observed.CertifiedProjection(frontier);
         Rga<int> peer = observed.Compact(frontier, checkpoint);
 
         Rga<int> forward = peer.Merge(laggard);
@@ -296,7 +296,7 @@ internal sealed class RgaRemoveCertificationLawTests
         Rga<int> sequence = Rga<int>.FromState(new RgaState<int>(context, vertices.ToImmutable(), tombstones.ToImmutable()));
 
         VectorClock frontier = sequence.CausalContext;
-        ImmutableArray<int> checkpoint = [0];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = sequence.CertifiedProjection(frontier);
         Rga<int> compacted = sequence.Compact(frontier, checkpoint);
 
         int[] expected = [0];
@@ -328,7 +328,7 @@ internal sealed class RgaRemoveCertificationLawTests
         Rga<int> ghostHolder = withB.Remove(idB, R1);
 
         VectorClock frontier = ghostHolder.CausalContext;
-        ImmutableArray<int> checkpoint = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = ghostHolder.CertifiedProjection(frontier);
         Rga<int> compacted = ghostHolder.Compact(frontier, checkpoint);
 
         //idB is now only a translation key, so this mints an orphan tombstone with a fresh R2 remove-dot.
@@ -336,7 +336,7 @@ internal sealed class RgaRemoveCertificationLawTests
 
         //A further compaction keeps the orphan (orphans are outside retention).
         VectorClock orphanFrontier = afterOrphanRemove.CausalContext;
-        ImmutableArray<int> orphanCheckpoint = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> orphanCheckpoint = afterOrphanRemove.CertifiedProjection(orphanFrontier);
         Rga<int> compactedAgain = afterOrphanRemove.Compact(orphanFrontier, orphanCheckpoint);
 
         //The orphan masks an honest ghost re-add: merging the ghost-holder keeps b hidden in both orders.
@@ -374,7 +374,71 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    private readonly record struct RemoveScenario(Rga<int> Compacted, Rga<int> GhostHolder, Rga<int> StalePreRemove, VectorClock Frontier, ImmutableArray<int> Checkpoint);
+    //LAW-OT: an orphan tombstone — a remove of a dot the remover never held — hides its target the instant
+    //the insert arrives. R2 removes the winner-inserted head dot it learned out of band; merging the
+    //insert-holder in either order hides the element immediately and the orders converge, and because the
+    //target is head-anchored the ghost is retained through a certifying compaction — the orphan survives.
+    [TestMethod]
+    public void AnOrphanTombstoneHidesItsTargetTheMomentTheInsertArrives()
+    {
+        //The insert lives in a sibling state; the orphan-holder removes the same dot it never held.
+        (Rga<int> insertHolder, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        Rga<int> orphanHolder = Rga<int>.Empty.Remove(idA, R2);
+
+        Rga<int> forward = orphanHolder.Merge(insertHolder);
+        Rga<int> backward = insertHolder.Merge(orphanHolder);
+
+        //The target is hidden the moment the insert arrives, in both orders, and the orders converge.
+        Assert.HasCount(0, forward.Values);
+        Assert.HasCount(0, backward.Values);
+        Assert.AreEqual(0, forward.Count);
+        Assert.AreEqual(forward, backward);
+
+        //The remove is certified at the merged context, yet the head-anchored ghost is retained, so the orphan
+        //survives the compaction and keeps masking its target.
+        VectorClock frontier = forward.CausalContext;
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = forward.CertifiedProjection(frontier);
+        Assert.HasCount(0, checkpoint);
+        Rga<int> compacted = forward.Compact(frontier, checkpoint);
+        Assert.HasCount(0, compacted.Values);
+        Assert.AreEqual(idA, compacted.TranslateAnchor(idA));
+    }
+
+
+    //G5: a silent member (an empty summary) folds the frontier to empty, so a compaction there drops nothing
+    //and returns this; a partially-silent member pins exactly one axis, and a remove certified on another axis
+    //still cannot drop an element whose insert sits on the pinned axis. Deterministic, real StabilityFrontier.
+    [TestMethod]
+    public void ASilentMemberPinsTheFrontierAndForbidsEveryDrop()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
+        Rga<int> removed = withB.Remove(idB, R1);
+
+        //One member is silent (VectorClock.Empty), so the min-fold floors every axis at zero: the frontier is
+        //empty, its projection is empty, and the compaction drops nothing.
+        VectorClock silentFrontier = FrontierOf(removed.CausalContext, VectorClock.Empty);
+        ImmutableArray<SequenceCheckpointEntry<int>> silentCheckpoint = removed.CertifiedProjection(silentFrontier);
+        Assert.HasCount(0, silentCheckpoint);
+        Rga<int> underSilence = removed.Compact(silentFrontier, silentCheckpoint);
+        Assert.AreEqual(removed, underSilence);
+        Assert.AreEqual(idB, underSilence.TranslateAnchor(idB));
+
+        //A remove whose INSERT sits on the pinned axis cannot drop: R2 removes an R1-inserted element, and a
+        //member behind on the R1 axis pins it below the insert, so the certified R2 remove still cannot fold it.
+        (Rga<int> withC, Dot idC) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withD, Dot idD) = withC.InsertAfter(idC, 2, R1);
+        Rga<int> removedByR2 = withD.Remove(idD, R2);
+        VectorClock behindOnR1 = VectorClock.Empty.Increment(R1).Increment(R2);
+        VectorClock partialFrontier = FrontierOf(removedByR2.CausalContext, behindOnR1);
+        ImmutableArray<SequenceCheckpointEntry<int>> partialCheckpoint = removedByR2.CertifiedProjection(partialFrontier);
+        Rga<int> underPartialSilence = removedByR2.Compact(partialFrontier, partialCheckpoint);
+        Assert.AreEqual(removedByR2, underPartialSilence);
+        Assert.AreEqual(idD, underPartialSilence.TranslateAnchor(idD));
+    }
+
+
+    private readonly record struct RemoveScenario(Rga<int> Compacted, Rga<int> GhostHolder, Rga<int> StalePreRemove, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint);
 
 
     private static RemoveScenario BuildRemoveScenario()
@@ -386,7 +450,7 @@ internal sealed class RgaRemoveCertificationLawTests
 
         VectorClock postRemove = ghostHolder.CausalContext;
         VectorClock frontier = FrontierOf(postRemove, postRemove, postRemove);
-        ImmutableArray<int> checkpoint = [1];
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = ghostHolder.CertifiedProjection(frontier);
         Rga<int> compacted = ghostHolder.Compact(frontier, checkpoint);
 
         return new RemoveScenario(compacted, ghostHolder, stalePreRemove, frontier, checkpoint);
@@ -434,9 +498,9 @@ internal sealed class RgaRemoveCertificationLawTests
             Rga<int> prefixHi = SnapshotAt(snapshots, Math.Max(cut1, cut2));
 
             //Two honest historical frontiers: each operand is the full state compacted at a prefix cut, so the
-            //checkpoint is that prefix's certified projection (its visible values).
-            Rga<int> a = full.Compact(prefixLo.CausalContext, [.. prefixLo.Values]);
-            Rga<int> b = full.Compact(prefixHi.CausalContext, [.. prefixHi.Values]);
+            //checkpoint is that prefix's dotted certified projection.
+            Rga<int> a = full.Compact(prefixLo.CausalContext, full.CertifiedProjection(prefixLo.CausalContext));
+            Rga<int> b = full.Compact(prefixHi.CausalContext, full.CertifiedProjection(prefixHi.CausalContext));
 
             var keys = new List<Dot>();
             var seen = new HashSet<Dot>();
@@ -522,7 +586,7 @@ internal sealed class RgaRemoveCertificationLawTests
     //every other member), so the predicate compacts at exactly the frontier the law will use.
     private static bool AnyVertexDrops(Rga<int> full, Rga<int> prefixAtCut)
     {
-        Rga<int> compacted = full.Compact(prefixAtCut.CausalContext, [.. prefixAtCut.Values]);
+        Rga<int> compacted = full.Compact(prefixAtCut.CausalContext, full.CertifiedProjection(prefixAtCut.CausalContext));
         foreach(RgaVertexEntry<int> vertex in full.ToState().Vertices)
         {
             if(IsDropped(compacted, DotOf(vertex.Id)))

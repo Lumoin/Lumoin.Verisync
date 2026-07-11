@@ -56,7 +56,7 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
     /// the first compacting strategy registers, with an operand generator constrained to at-or-above
     /// the frontier.
     /// </summary>
-    protected virtual Gen<(TSequence Sequence, VectorClock Frontier, ImmutableArray<TValue> Checkpoint)>? GenCompactionCase => null;
+    protected virtual Gen<(TSequence Sequence, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<TValue>> Checkpoint)>? GenCompactionCase => null;
 
 
     /// <summary>
@@ -65,7 +65,7 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
     /// compaction delegate; <see langword="null"/> otherwise. The operands are generation-aligned so the
     /// merge of their compactions stays a legal same-generation merge.
     /// </summary>
-    protected virtual Gen<(TSequence A, TSequence B, VectorClock Frontier, ImmutableArray<TValue> Checkpoint)>? GenCommutationCase => null;
+    protected virtual Gen<(TSequence A, TSequence B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<TValue>> Checkpoint)>? GenCommutationCase => null;
 
 
     [TestMethod]

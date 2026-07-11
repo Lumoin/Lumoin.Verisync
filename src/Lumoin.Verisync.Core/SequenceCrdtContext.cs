@@ -73,4 +73,10 @@ public sealed class SequenceCrdtContext<TSequence, TValue, TAnchor>
     /// <see langword="null"/> when the strategy does not expose a remove-aware causal context.
     /// </summary>
     public SequenceCausalContextDelegate<TSequence>? CausalContext { get; init; }
+
+    /// <summary>
+    /// Produces the certified dotted projection at a frontier — the checkpoint a container seals — or
+    /// <see langword="null"/> when the strategy cannot certify a projection and therefore cannot be sealed.
+    /// </summary>
+    public CertifySequenceProjectionDelegate<TSequence, TValue>? CertifyProjection { get; init; }
 }
