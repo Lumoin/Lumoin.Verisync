@@ -67,4 +67,10 @@ public sealed class SequenceCrdtContext<TSequence, TValue, TAnchor>
     /// strategy's anchors survive compaction unchanged.
     /// </summary>
     public TranslateAnchorDelegate<TSequence, TAnchor>? TranslateAnchor { get; init; }
+
+    /// <summary>
+    /// Reads the sequence's causal context for gossip digests and stability frontiers, or
+    /// <see langword="null"/> when the strategy does not expose a remove-aware causal context.
+    /// </summary>
+    public SequenceCausalContextDelegate<TSequence>? CausalContext { get; init; }
 }

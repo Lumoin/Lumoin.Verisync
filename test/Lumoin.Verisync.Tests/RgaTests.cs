@@ -54,17 +54,21 @@ internal sealed class RgaTests
     public void RemoveTombstonesElement()
     {
         (Rga<string> withA, Dot idA) = Rga<string>.Empty.InsertAtHead("A", R1);
-        Rga<string> removed = withA.Remove(idA);
+        Rga<string> removed = withA.Remove(idA, R1);
 
         Assert.HasCount(0, removed.Values);
         Assert.AreEqual(0, removed.Count);
+
+        //The remove is a dotted event: it ticks R1's axis, so the context advances by one and the
+        //remove-dot becomes stability-trackable.
+        Assert.AreEqual(withA.CausalContext[R1] + 1, removed.CausalContext[R1]);
     }
 
 
     [TestMethod]
     public void RemoveRejectsNullId()
     {
-        Assert.ThrowsExactly<ArgumentNullException>(() => Rga<string>.Empty.Remove(null!));
+        Assert.ThrowsExactly<ArgumentNullException>(() => Rga<string>.Empty.Remove(null!, R1));
     }
 
 
@@ -82,7 +86,7 @@ internal sealed class RgaTests
     public void RemoveDoesNotMutateOriginal()
     {
         (Rga<string> withA, Dot idA) = Rga<string>.Empty.InsertAtHead("A", R1);
-        _ = withA.Remove(idA);
+        _ = withA.Remove(idA, R1);
 
         string[] expected = ["A"];
         CollectionAssert.AreEqual(expected, withA.Values.ToArray());
@@ -138,7 +142,7 @@ internal sealed class RgaTests
         (Rga<string> withA, Dot idA) = Rga<string>.Empty.InsertAtHead("A", R1);
         (Rga<string> withB, Dot idB) = withA.InsertAfter(idA, "B", R1);
         (Rga<string> withC, _) = withB.InsertAfter(idB, "C", R1);
-        Rga<string> removed = withC.Remove(idB);
+        Rga<string> removed = withC.Remove(idB, R1);
         (Rga<string> withD, _) = removed.InsertAfter(idB, "D", R1);
 
         //B is hidden but retained for ordering; D inserts after it with the higher counter.
@@ -185,17 +189,158 @@ internal sealed class RgaTests
     [TestMethod]
     public void FromStateAcceptsUnknownTombstoneHarmlessly()
     {
-        //A remove can be serialized separately from its vertex, so a tombstone for an absent dot is accepted
-        //and affects neither Values nor Count.
-        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        //A remove can be serialized separately from its vertex, so a tombstone whose TARGET is absent is
+        //accepted (the orphan target is exempt from context-covers) as long as its remove-dot is covered by
+        //the context. It affects neither Values nor Count.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1), new ReplicaCounterEntry(Bytes(R2), 9)]);
         var vertex = new RgaVertexEntry<string>(Dot(R1, 1), null, "A");
-        var state = new RgaState<string>(context, [vertex], [Dot(R2, 7)]);
+        var tombstone = new RgaTombstoneEntry(Dot(R2, 7), [Dot(R2, 9)]);
+        var state = new RgaState<string>(context, [vertex], [tombstone]);
 
         Rga<string> reconstructed = Rga<string>.FromState(state);
 
         Assert.AreEqual(1, reconstructed.Count);
         string[] expected = ["A"];
         CollectionAssert.AreEqual(expected, reconstructed.Values.ToArray());
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsDuplicateVertexId()
+    {
+        //Two vertices minting the same dot is a forged state: the last-wins indexer would silently drop one.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 2)]);
+        var first = new RgaVertexEntry<string>(Dot(R1, 1), null, "A");
+        var second = new RgaVertexEntry<string>(Dot(R1, 1), null, "B");
+        var state = new RgaState<string>(context, [first, second], []);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsDuplicateTombstoneTarget()
+    {
+        //Two tombstone entries for the same target cannot be merged into one map entry unambiguously.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 3)]);
+        var vertex = new RgaVertexEntry<string>(Dot(R1, 1), null, "A");
+        var first = new RgaTombstoneEntry(Dot(R1, 1), [Dot(R1, 2)]);
+        var second = new RgaTombstoneEntry(Dot(R1, 1), [Dot(R1, 3)]);
+        var state = new RgaState<string>(context, [vertex], [first, second]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsDuplicateRemoveDotInAnEntry()
+    {
+        //A remove event mints one dot; the same dot appearing twice in one entry is forged.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 2)]);
+        var vertex = new RgaVertexEntry<string>(Dot(R1, 1), null, "A");
+        var tombstone = new RgaTombstoneEntry(Dot(R1, 1), [Dot(R1, 2), Dot(R1, 2)]);
+        var state = new RgaState<string>(context, [vertex], [tombstone]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsUncoveredVertexDot()
+    {
+        //Invariant CC: the context must cover every vertex insert-dot.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        var vertex = new RgaVertexEntry<string>(Dot(R1, 5), null, "A");
+        var state = new RgaState<string>(context, [vertex], []);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsUncoveredRemoveDot()
+    {
+        //Invariant CC: a remove-dot is never exempt from context-covers even when its target is present.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        var vertex = new RgaVertexEntry<string>(Dot(R1, 1), null, "A");
+        var tombstone = new RgaTombstoneEntry(Dot(R1, 1), [Dot(R1, 9)]);
+        var state = new RgaState<string>(context, [vertex], [tombstone]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsRemoveDotCollidingWithAVertexId()
+    {
+        //Insert- and remove-dots are provably disjoint on an honest history; a remove-dot equal to a vertex
+        //id is forged.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 2)]);
+        var first = new RgaVertexEntry<string>(Dot(R1, 1), null, "A");
+        var second = new RgaVertexEntry<string>(Dot(R1, 2), Dot(R1, 1), "B");
+        var tombstone = new RgaTombstoneEntry(Dot(R1, 1), [Dot(R1, 2)]);
+        var state = new RgaState<string>(context, [first, second], [tombstone]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsNonPositiveCounters()
+    {
+        //Dots are minted from one; a zero or negative counter is not a value any replica produces.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        var zeroVertex = new RgaVertexEntry<string>(Dot(R1, 0), null, "A");
+        var zeroVertexState = new RgaState<string>(context, [zeroVertex], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(zeroVertexState));
+
+        var vertex = new RgaVertexEntry<string>(Dot(R1, 1), null, "A");
+        var zeroRemoveDot = new RgaTombstoneEntry(Dot(R1, 1), [Dot(R1, 0)]);
+        var zeroRemoveDotState = new RgaState<string>(context, [vertex], [zeroRemoveDot]);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(zeroRemoveDotState));
+
+        var zeroTarget = new RgaTombstoneEntry(Dot(R1, 0), [Dot(R2, 1)]);
+        var zeroTargetContext = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1), new ReplicaCounterEntry(Bytes(R2), 1)]);
+        var zeroTargetState = new RgaState<string>(zeroTargetContext, [vertex], [zeroTarget]);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(zeroTargetState));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsARemoveDotSharedByTwoTombstones()
+    {
+        //One remove event mints one dot for one target; the same dot hiding two distinct targets is forged.
+        //This reaches the cross-entry guard, which the within-entry duplicate test cannot.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 2), new ReplicaCounterEntry(Bytes(R2), 5)]);
+        var first = new RgaVertexEntry<string>(Dot(R1, 1), null, "A");
+        var second = new RgaVertexEntry<string>(Dot(R1, 2), Dot(R1, 1), "B");
+        var tombstoneA = new RgaTombstoneEntry(Dot(R1, 1), [Dot(R2, 5)]);
+        var tombstoneB = new RgaTombstoneEntry(Dot(R1, 2), [Dot(R2, 5)]);
+        var state = new RgaState<string>(context, [first, second], [tombstoneA, tombstoneB]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsDefaultArraysAsAbsentFields()
+    {
+        //A deserializer that leaves an unset member default (the source-generated System.Text.Json path)
+        //hands FromState default arrays for absent fields. An absent array is not the same statement as an
+        //explicitly empty one — a legacy tombstone declares an EMPTY remove-dot list — so each fails closed
+        //instead of being reinterpreted or crashing on a Length read.
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 2)]);
+        var vertex = new RgaVertexEntry<string>(Dot(R1, 1), null, "A");
+
+        var defaultRemoveDots = new RgaTombstoneEntry(Dot(R1, 1), default);
+        var defaultRemoveDotsState = new RgaState<string>(context, [vertex], [defaultRemoveDots]);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(defaultRemoveDotsState));
+
+        var defaultTombstonesState = new RgaState<string>(context, [vertex], default);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(defaultTombstonesState));
+
+        var defaultVerticesState = new RgaState<string>(context, default, []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(defaultVerticesState));
     }
 
 

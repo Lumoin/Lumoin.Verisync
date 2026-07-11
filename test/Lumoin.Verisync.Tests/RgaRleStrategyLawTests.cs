@@ -7,11 +7,13 @@ using System.Diagnostics.CodeAnalysis;
 namespace Lumoin.Verisync.Tests;
 
 /// <summary>
-/// Registers the <see cref="WellKnownSequenceStrategies.RgaRleV1"/> strategy with the shared law
+/// Registers the <see cref="WellKnownSequenceStrategies.RgaRleV2"/> strategy with the shared law
 /// harness, exercising the four compaction laws on top of the join-semilattice and intention laws. The
 /// generated operands share one multi-replica prefix built on an empty <see cref="Rga{TValue}"/> and
-/// diverge only by insert-only suffixes — a same-generation merge for which <see cref="Rga{TValue}"/>
-/// has no generation gate, so the compact/merge commutation law holds without alignment caveats.
+/// diverge by suffixes that both insert and remove: under the certified projection an above-frontier
+/// divergent remove is simply not yet certified, so both operands derive the SAME checkpoint at the
+/// shared frontier — the frontier is the shared-prefix state's context at the cut, and the checkpoint is
+/// that prefix state's visible values.
 /// </summary>
 [TestClass]
 internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>, int, Dot>
@@ -64,79 +66,73 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     protected override Gen<(Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<int> Checkpoint)>? GenCommutationCase => GenCase;
 
 
-    //The shared-prefix ops, the frontier cut, and the two insert-only divergent suffixes all come from
-    //CsCheck seeds, so the whole case is deterministic and reproduces on shrink.
+    //The shared-prefix ops, the frontier cut, and the two divergent insert-and-remove suffixes all come from
+    //CsCheck seeds, so the whole case is deterministic and reproduces on shrink. Filtered so every sampled
+    //case actually drops a vertex when the merged operands compact at the shared frontier — unfiltered random
+    //histories reach the drop region only a few percent of the time, leaving the compaction laws asserting
+    //on no-op compactions.
     private static Gen<(Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<int> Checkpoint)> GenCase { get; } =
         Gen.Select(
             Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 6],
             Gen.Int[0, 6],
             Gen.Int[0, 100].Array[0, 4],
             Gen.Int[0, 100].Array[0, 4],
-            static (ops, cut, suffixA, suffixB) => BuildCase(ops, cut, suffixA, suffixB));
+            static (ops, cut, suffixA, suffixB) => BuildCase(ops, cut, suffixA, suffixB))
+        .Where(static input => MergedCompactionDrops(input.A, input.B, input.Frontier, input.Checkpoint));
 
 
     private static (Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<int> Checkpoint) BuildCase((int Replica, int Seed)[] ops, int cut, int[] suffixA, int[] suffixB)
     {
-        //Shared prefix on an empty Rga: one sequence modelling common knowledge, with the dot each insert
-        //minted recorded in op order (a remove op records no dot, marked by a null sentinel).
+        //Shared prefix on an empty Rga: the common knowledge every derived operand starts from. The state at
+        //the cut is snapshotted to supply the frontier and the certified checkpoint. Removes are dotted, so
+        //the cut context covers the prefix's remove-dots as well as its insert-dots.
+        int boundedCut = Math.Min(cut, ops.Length);
         Rga<int> shared = Rga<int>.Empty;
         var insertedDots = new List<Dot>();
-        var dotsByOp = new List<Dot?>(ops.Length);
+        Rga<int> prefixAtCut = Rga<int>.Empty;
         for(int opIndex = 0; opIndex < ops.Length; opIndex++)
         {
             (int replica, int seed) = ops[opIndex];
             int visibleCount = shared.Values.Count;
-            if(seed % 4 == 0 && visibleCount > 0)
+            if(seed % 3 == 0 && visibleCount > 0)
             {
-                int visibleValue = shared.Values[seed % visibleCount];
-                Dot removeTarget = DotOfValue(shared, visibleValue);
-                shared = shared.Remove(removeTarget);
-                dotsByOp.Add(null);
-
-                continue;
-            }
-
-            Dot inserted;
-            if(insertedDots.Count == 0)
-            {
-                (shared, inserted) = shared.InsertAtHead((100 * replica) + opIndex, Replicas[replica]);
+                //Biased to the most recently inserted still-visible element: a recent insert is most likely
+                //childless, the only kind of tombstone the drop gate can fold, so cases actually reach it.
+                shared = shared.Remove(MostRecentVisibleDot(shared, insertedDots), Replicas[replica]);
             }
             else
             {
-                (shared, inserted) = shared.InsertAfter(insertedDots[seed % insertedDots.Count], (100 * replica) + opIndex, Replicas[replica]);
+                Dot inserted;
+                if(insertedDots.Count == 0)
+                {
+                    (shared, inserted) = shared.InsertAtHead((100 * replica) + opIndex, Replicas[replica]);
+                }
+                else
+                {
+                    (shared, inserted) = shared.InsertAfter(insertedDots[seed % insertedDots.Count], (100 * replica) + opIndex, Replicas[replica]);
+                }
+
+                insertedDots.Add(inserted);
             }
 
-            insertedDots.Add(inserted);
-            dotsByOp.Add(inserted);
-        }
-
-        //Frontier: a cut over the op count; the per-replica maximum counter over the dots the first cut ops
-        //inserted. Counters are Lamport-monotone over the sequential prefix, so this is a clean prefix frontier.
-        int boundedCut = Math.Min(cut, dotsByOp.Count);
-        VectorClock frontier = VectorClock.Empty;
-        for(int opIndex = 0; opIndex < boundedCut; opIndex++)
-        {
-            if(dotsByOp[opIndex] is { } dot)
+            if(opIndex + 1 == boundedCut)
             {
-                frontier = RaiseTo(frontier, dot);
+                prefixAtCut = shared;
             }
         }
 
-        //Checkpoint: the shared sequence's visible values filtered to stable dots, in order.
-        ImmutableArray<int>.Builder checkpointBuilder = ImmutableArray.CreateBuilder<int>();
-        foreach(int value in shared.Values)
-        {
-            Dot dot = DotOfValue(shared, value);
-            if(IsStable(frontier, dot))
-            {
-                checkpointBuilder.Add(value);
-            }
-        }
+        //Frontier: the prefix state's context at the cut. Counters advance monotonically over the sequential
+        //prefix, so this cleanly covers every dot minted at or below the cut and none minted after it — an
+        //honest "every member observed exactly the prefix" frontier.
+        VectorClock frontier = prefixAtCut.CausalContext;
 
-        ImmutableArray<int> checkpoint = checkpointBuilder.ToImmutable();
+        //Checkpoint: the prefix state's visible values at the cut. This IS the certified projection of every
+        //derived operand at that frontier — an element is certified-projected iff it was inserted and not yet
+        //removed within the cut, exactly the cut state's visible content, and RGA order is superset-stable.
+        ImmutableArray<int> checkpoint = [.. prefixAtCut.Values];
 
-        //Insert-only divergent suffixes: removals above the frontier on stable elements would make A and B
-        //derive different checkpoints, which the composition forbids, so the generator only inserts.
+        //Divergent suffixes now insert AND remove: an above-frontier divergent remove is not yet certified, so
+        //both operands still derive the same checkpoint at the shared frontier.
         Rga<int> a = ApplySuffix(shared, Replicas[0], suffixA, 1000);
         Rga<int> b = ApplySuffix(shared, Replicas[1], suffixB, 2000);
 
@@ -147,26 +143,29 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     private static Rga<int> ApplySuffix(Rga<int> start, ReplicaId replica, int[] seeds, int valueBase)
     {
         Rga<int> sequence = start;
-        var targets = new List<Dot>();
-        foreach(int value in sequence.Values)
-        {
-            targets.Add(DotOfValue(sequence, value));
-        }
-
         int next = valueBase;
         foreach(int seed in seeds)
         {
-            Dot inserted;
-            if(targets.Count == 0)
+            int visibleCount = sequence.Values.Count;
+            if(seed % 4 == 0 && visibleCount > 0)
             {
-                (sequence, inserted) = sequence.InsertAtHead(next, replica);
+                //A divergent above-frontier remove on a visible element, mirroring the prefix style.
+                int visibleValue = sequence.Values[seed % visibleCount];
+                sequence = sequence.Remove(DotOfValue(sequence, visibleValue), replica);
+
+                continue;
+            }
+
+            if(visibleCount == 0)
+            {
+                (sequence, _) = sequence.InsertAtHead(next, replica);
             }
             else
             {
-                (sequence, inserted) = sequence.InsertAfter(targets[seed % targets.Count], next, replica);
+                Dot target = DotOfValue(sequence, sequence.Values[seed % visibleCount]);
+                (sequence, _) = sequence.InsertAfter(target, next, replica);
             }
 
-            targets.Add(inserted);
             next++;
         }
 
@@ -188,21 +187,41 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     }
 
 
-    private static bool IsStable(VectorClock frontier, Dot dot)
+    private static Dot MostRecentVisibleDot(Rga<int> sequence, List<Dot> insertedDots)
     {
-        return frontier[dot.Replica] >= dot.Counter;
+        var hidden = new HashSet<Dot>();
+        foreach(RgaTombstoneEntry tombstone in sequence.ToState().Tombstones)
+        {
+            hidden.Add(new Dot(ReplicaId.FromSpan(tombstone.Target.Replica.AsSpan()), tombstone.Target.Counter));
+        }
+
+        for(int i = insertedDots.Count - 1; i >= 0; i--)
+        {
+            if(!hidden.Contains(insertedDots[i]))
+            {
+                return insertedDots[i];
+            }
+        }
+
+        throw new InvalidOperationException("No visible element remains to remove.");
     }
 
 
-    private static VectorClock RaiseTo(VectorClock frontier, Dot dot)
+    private static bool MergedCompactionDrops(Rga<int> a, Rga<int> b, VectorClock frontier, ImmutableArray<int> checkpoint)
     {
-        VectorClock raised = frontier;
-        while(raised[dot.Replica] < dot.Counter)
+        Rga<int> merged = a.Merge(b);
+        Rga<int> compacted = merged.Compact(frontier, checkpoint);
+        foreach(RgaVertexEntry<int> vertex in merged.ToState().Vertices)
         {
-            raised = raised.Increment(dot.Replica);
+            var dot = new Dot(ReplicaId.FromSpan(vertex.Id.Replica.AsSpan()), vertex.Id.Counter);
+            Dot? translated = compacted.TranslateAnchor(dot);
+            if(translated is not null && !translated.Equals(dot))
+            {
+                return true;
+            }
         }
 
-        return raised;
+        return false;
     }
 
 

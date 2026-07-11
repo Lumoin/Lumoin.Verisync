@@ -22,7 +22,7 @@ internal sealed class CheckpointedSequenceTests
         Assert.HasCount(0, sequence.Values);
         Assert.HasCount(0, sequence.Checkpoint);
         Assert.IsNull(sequence.CheckpointBallot);
-        Assert.AreEqual(WellKnownSequenceStrategies.RgaV1, sequence.StrategyId);
+        Assert.AreEqual(WellKnownSequenceStrategies.RgaV2, sequence.StrategyId);
     }
 
 
@@ -42,7 +42,7 @@ internal sealed class CheckpointedSequenceTests
     {
         //The identifier is part of the replication contract: changing it is a protocol break, so it is
         //pinned literally here, not referenced through the constant it must equal.
-        Assert.AreEqual("verisync.sequence.rga.v1", WellKnownSequenceStrategies.CreateRga<string>().StrategyId);
+        Assert.AreEqual("verisync.sequence.rga.v2", WellKnownSequenceStrategies.CreateRga<string>().StrategyId);
     }
 
 
@@ -63,9 +63,26 @@ internal sealed class CheckpointedSequenceTests
     {
         (CheckpointedSequence<Rga<string>, string, Dot> withA, Dot idA) = NewSequence().InsertAtHead("A", R1);
 
-        CheckpointedSequence<Rga<string>, string, Dot> removed = withA.Remove(idA);
+        CheckpointedSequence<Rga<string>, string, Dot> removed = withA.Remove(idA, R1);
 
         Assert.HasCount(0, removed.Values);
+    }
+
+
+    [TestMethod]
+    public void CausalContextIsTheLiveClockForRgaAndNullWithoutTheDelegate()
+    {
+        //The rga strategy wires the causal-context accessor, so the container advertises the live sequence's
+        //clock; after one head insert on R1 the clock reads one on R1's axis.
+        (CheckpointedSequence<Rga<string>, string, Dot> withA, _) = NewSequence().InsertAtHead("A", R1);
+        Assert.IsNotNull(withA.CausalContext);
+        Assert.AreEqual(1, withA.CausalContext![R1]);
+
+        //The offset strategy exposes no remove-aware causal context (gate 5), so the accessor is null.
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> offset =
+            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Create(
+                WellKnownSequenceStrategies.CreateOffset<string>(), Canonicalize, Sha256);
+        Assert.IsNull(offset.CausalContext);
     }
 
 

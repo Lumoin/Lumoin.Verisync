@@ -325,9 +325,19 @@ public static class CrdtStateJson
             writer.WriteEndArray();
 
             writer.WriteStartArray("tombstones");
-            foreach(DotState tombstone in state.Tombstones)
+            foreach(RgaTombstoneEntry tombstone in state.Tombstones)
             {
-                WriteDotState(writer, tombstone);
+                writer.WriteStartObject();
+                writer.WritePropertyName("target");
+                WriteDotState(writer, tombstone.Target);
+                writer.WriteStartArray("removeDots");
+                foreach(DotState removeDot in tombstone.RemoveDots)
+                {
+                    WriteDotState(writer, removeDot);
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
             }
 
             writer.WriteEndArray();
@@ -362,10 +372,19 @@ public static class CrdtStateJson
             }
 
             JsonElement tombstonesElement = RequireProperty(root, "tombstones", "An RGA");
-            ImmutableArray<DotState>.Builder tombstones = ImmutableArray.CreateBuilder<DotState>(tombstonesElement.GetArrayLength());
+            ImmutableArray<RgaTombstoneEntry>.Builder tombstones = ImmutableArray.CreateBuilder<RgaTombstoneEntry>(tombstonesElement.GetArrayLength());
             foreach(JsonElement tombstone in tombstonesElement.EnumerateArray())
             {
-                tombstones.Add(ReadDotState(tombstone));
+                JsonElement removeDotsElement = RequireProperty(tombstone, "removeDots", "An RGA tombstone");
+                ImmutableArray<DotState>.Builder removeDots = ImmutableArray.CreateBuilder<DotState>(removeDotsElement.GetArrayLength());
+                foreach(JsonElement removeDot in removeDotsElement.EnumerateArray())
+                {
+                    removeDots.Add(ReadDotState(removeDot));
+                }
+
+                tombstones.Add(new RgaTombstoneEntry(
+                    ReadDotState(RequireProperty(tombstone, "target", "An RGA tombstone")),
+                    removeDots.ToImmutable()));
             }
 
             return new RgaState<TValue>(

@@ -56,14 +56,18 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //An uncompacted RGA round-trips through the run-state JSON codec and FromRunState.
+    //An uncompacted RGA round-trips through the run-state JSON codec and FromRunState. The fixture is rebuilt
+    //through FromState with a LEGACY tombstone (empty remove-dots) so ToRunState — which refuses dotted
+    //removes in slice 1 — still serializes it.
     [TestMethod]
     public void UncompactedRgaRunStateRoundTripsThroughTheJsonCodec()
     {
-        (Rga<int> array, Dot first) = Rga<int>.Empty.InsertAtHead(1, R1);
-        (array, Dot second) = array.InsertAfter(first, 2, R1);
-        (array, _) = array.InsertAfter(second, 3, R1);
-        array = array.Remove(second);
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 3)]);
+        RgaVertexEntry<int> vertexA = new(DotStateOf(new Dot(R1, 1)), null, 1);
+        RgaVertexEntry<int> vertexB = new(DotStateOf(new Dot(R1, 2)), DotStateOf(new Dot(R1, 1)), 2);
+        RgaVertexEntry<int> vertexC = new(DotStateOf(new Dot(R1, 3)), DotStateOf(new Dot(R1, 2)), 3);
+        RgaTombstoneEntry legacyB = new(DotStateOf(new Dot(R1, 2)), []);
+        Rga<int> array = Rga<int>.FromState(new RgaState<int>(context, [vertexA, vertexB, vertexC], [legacyB]));
 
         RgaRunState<int> reloaded = RoundTrip(
             array.ToRunState(),
@@ -75,17 +79,18 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //A compacted RGA carrying a translation map round-trips through the run-state JSON codec.
+    //A compacted RGA carrying a translation map round-trips through the run-state JSON codec. The compacted
+    //shape (a dropped dot served by a translation, no tombstones) is hand-built as an RgaRunState record so no
+    //dotted state reaches ToRunState; certified round-trips of a Compact-built instance land with slice 2.
     [TestMethod]
     public void CompactedRgaRunStateRoundTripsThroughTheJsonCodec()
     {
-        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
-        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
-        Rga<int> removed = withB.Remove(idB);
-
-        VectorClock frontier = FrontierCovering(idA, idB);
-        ImmutableArray<int> checkpoint = [1];
-        Rga<int> compacted = removed.Compact(frontier, checkpoint);
+        Dot idA = new(R1, 1);
+        Dot idB = new(R1, 2);
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 3)]);
+        RgaRunEntry<int> runA = new(DotStateOf(idA), null, [1]);
+        RgaTranslationEntry translation = new(DotStateOf(idB), DotStateOf(idA));
+        Rga<int> compacted = Rga<int>.FromRunState(new RgaRunState<int>(context, [runA], [], [translation]));
 
         RgaRunState<int> reloaded = RoundTrip(
             compacted.ToRunState(),
@@ -296,6 +301,12 @@ internal sealed class CompactionStateJsonTests
 
 
     private static string Hex(ReplicaId replica) => Convert.ToHexStringLower(replica.AsSpan());
+
+
+    private static ImmutableArray<byte> Bytes(ReplicaId replica) => ImmutableArray.Create(replica.AsSpan());
+
+
+    private static DotState DotStateOf(Dot dot) => new(Bytes(dot.Replica), dot.Counter);
 
 
     private static void WriteInt(Utf8JsonWriter writer, int value) => writer.WriteNumberValue(value);

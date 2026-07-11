@@ -98,6 +98,9 @@ public sealed class CheckpointedSequence<TSequence, TValue, TAnchor>: IEquatable
     /// <summary>The visible values of the live sequence, in sequence order.</summary>
     public IReadOnlyList<TValue> Values => Context.Values(Live);
 
+    /// <summary>The causal context the host advertises for this document as a gossip digest, or <see langword="null"/> when the strategy exposes none.</summary>
+    public VectorClock? CausalContext => Context.CausalContext?.Invoke(Live);
+
 
     /// <summary>
     /// Creates an empty container operating under <paramref name="context"/>: the strategy's empty
@@ -148,10 +151,11 @@ public sealed class CheckpointedSequence<TSequence, TValue, TAnchor>: IEquatable
 
     /// <summary>Removes the element anchored by <paramref name="anchor"/> from the live sequence.</summary>
     /// <param name="anchor">The anchor of the element to remove.</param>
+    /// <param name="replica">The replica performing the edit.</param>
     /// <returns>The new container.</returns>
-    public CheckpointedSequence<TSequence, TValue, TAnchor> Remove(TAnchor anchor)
+    public CheckpointedSequence<TSequence, TValue, TAnchor> Remove(TAnchor anchor, ReplicaId replica)
     {
-        return WithLive(Context.Remove(Live, anchor));
+        return WithLive(Context.Remove(Live, anchor, replica));
     }
 
 

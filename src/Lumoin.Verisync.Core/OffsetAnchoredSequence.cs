@@ -29,6 +29,13 @@ namespace Lumoin.Verisync.Core;
 /// and lands immediately after its anchor, the same intention-preservation rule as the RGA strategy.
 /// </para>
 /// <para>
+/// Removes here leave no causal footprint: neither a base-offset removal nor a live tombstone mints a
+/// dotted event, so no stability frontier can certify a remove was observed group-wide and waterline
+/// compaction can resurrect a remove a member never observed. This is a known defect of the strategy,
+/// fixed by a follow-on design with its own certification for base-offset removal; until then prefer the
+/// compactable RGA strategy where certified removal matters.
+/// </para>
+/// <para>
 /// It is an immutable value; every operation returns a new sequence.
 /// </para>
 /// </remarks>
