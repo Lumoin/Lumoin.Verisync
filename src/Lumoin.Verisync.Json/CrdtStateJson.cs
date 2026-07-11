@@ -602,9 +602,29 @@ public static class CrdtStateJson
             foreach(RgaTombstoneSpan span in state.TombstoneSpans)
             {
                 writer.WriteStartObject();
-                writer.WriteString("replica", Convert.ToHexStringLower(span.Replica.AsSpan()));
-                writer.WriteNumber("from", span.FromCounter);
-                writer.WriteNumber("to", span.ToCounter);
+                writer.WriteString("targetReplica", Convert.ToHexStringLower(span.TargetReplica.AsSpan()));
+                writer.WriteNumber("targetFrom", span.TargetFrom);
+                writer.WriteNumber("targetTo", span.TargetTo);
+                writer.WriteString("removeReplica", Convert.ToHexStringLower(span.RemoveReplica.AsSpan()));
+                writer.WriteNumber("removeFrom", span.RemoveFrom);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("irregularTombstones");
+            foreach(RgaConcurrentTombstone tombstone in state.IrregularTombstones)
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("target");
+                WriteDotState(writer, tombstone.Target);
+                writer.WriteStartArray("removeDots");
+                foreach(DotState removeDot in tombstone.RemoveDots)
+                {
+                    WriteDotState(writer, removeDot);
+                }
+
+                writer.WriteEndArray();
                 writer.WriteEndObject();
             }
 
@@ -618,6 +638,20 @@ public static class CrdtStateJson
                 WriteDotState(writer, translation.Dropped);
                 writer.WritePropertyName("target");
                 WriteDotState(writer, translation.Target);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("translationSpans");
+            foreach(RgaTranslationSpan span in state.TranslationSpans)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("replica", Convert.ToHexStringLower(span.DroppedReplica.AsSpan()));
+                writer.WriteNumber("from", span.FromCounter);
+                writer.WriteNumber("to", span.ToCounter);
+                writer.WritePropertyName("target");
+                WriteDotState(writer, span.Target);
                 writer.WriteEndObject();
             }
 
@@ -668,14 +702,36 @@ public static class CrdtStateJson
             ImmutableArray<RgaTombstoneSpan>.Builder spans = ImmutableArray.CreateBuilder<RgaTombstoneSpan>(spansElement.GetArrayLength());
             foreach(JsonElement span in spansElement.EnumerateArray())
             {
-                int from = RequireProperty(span, "from", "A tombstone span").GetInt32();
-                int to = RequireProperty(span, "to", "A tombstone span").GetInt32();
-                if(from < 1 || to < from)
+                int targetFrom = RequireProperty(span, "targetFrom", "A tombstone span").GetInt32();
+                int targetTo = RequireProperty(span, "targetTo", "A tombstone span").GetInt32();
+                int removeFrom = RequireProperty(span, "removeFrom", "A tombstone span").GetInt32();
+                if(targetFrom < 1 || targetTo < targetFrom || removeFrom < 1)
                 {
-                    throw new JsonException($"A tombstone span must satisfy 1 <= from <= to, got from {from}, to {to}.");
+                    throw new JsonException($"A tombstone span must satisfy 1 <= targetFrom <= targetTo and removeFrom >= 1, got targetFrom {targetFrom}, targetTo {targetTo}, removeFrom {removeFrom}.");
                 }
 
-                spans.Add(new RgaTombstoneSpan(ReadReplicaBytes(RequireProperty(span, "replica", "A tombstone span").GetString()!), from, to));
+                spans.Add(new RgaTombstoneSpan(
+                    ReadReplicaBytes(RequireProperty(span, "targetReplica", "A tombstone span").GetString()!),
+                    targetFrom,
+                    targetTo,
+                    ReadReplicaBytes(RequireProperty(span, "removeReplica", "A tombstone span").GetString()!),
+                    removeFrom));
+            }
+
+            JsonElement irregularsElement = RequireProperty(root, "irregularTombstones", "An RGA run state");
+            ImmutableArray<RgaConcurrentTombstone>.Builder irregulars = ImmutableArray.CreateBuilder<RgaConcurrentTombstone>(irregularsElement.GetArrayLength());
+            foreach(JsonElement tombstone in irregularsElement.EnumerateArray())
+            {
+                JsonElement removeDotsElement = RequireProperty(tombstone, "removeDots", "An irregular tombstone");
+                ImmutableArray<DotState>.Builder removeDots = ImmutableArray.CreateBuilder<DotState>(removeDotsElement.GetArrayLength());
+                foreach(JsonElement removeDot in removeDotsElement.EnumerateArray())
+                {
+                    removeDots.Add(ReadDotState(removeDot));
+                }
+
+                irregulars.Add(new RgaConcurrentTombstone(
+                    ReadDotState(RequireProperty(tombstone, "target", "An irregular tombstone")),
+                    removeDots.ToImmutable()));
             }
 
             JsonElement translationsElement = RequireProperty(root, "translations", "An RGA run state");
@@ -687,11 +743,31 @@ public static class CrdtStateJson
                     ReadDotState(RequireProperty(translation, "target", "A translation"))));
             }
 
+            JsonElement translationSpansElement = RequireProperty(root, "translationSpans", "An RGA run state");
+            ImmutableArray<RgaTranslationSpan>.Builder translationSpans = ImmutableArray.CreateBuilder<RgaTranslationSpan>(translationSpansElement.GetArrayLength());
+            foreach(JsonElement span in translationSpansElement.EnumerateArray())
+            {
+                int from = RequireProperty(span, "from", "A translation span").GetInt32();
+                int to = RequireProperty(span, "to", "A translation span").GetInt32();
+                if(from < 1 || to < from)
+                {
+                    throw new JsonException($"A translation span must satisfy 1 <= from <= to, got from {from}, to {to}.");
+                }
+
+                translationSpans.Add(new RgaTranslationSpan(
+                    ReadReplicaBytes(RequireProperty(span, "replica", "A translation span").GetString()!),
+                    from,
+                    to,
+                    ReadDotState(RequireProperty(span, "target", "A translation span"))));
+            }
+
             return new RgaRunState<TValue>(
                 ReadVectorClockState(RequireProperty(root, "context", "An RGA run state")),
                 runs.ToImmutable(),
                 spans.ToImmutable(),
-                translations.ToImmutable());
+                irregulars.ToImmutable(),
+                translations.ToImmutable(),
+                translationSpans.ToImmutable());
         });
     }
 

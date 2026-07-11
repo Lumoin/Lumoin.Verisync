@@ -42,7 +42,7 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     }
 
 
-    protected override Gen<(OffsetAnchoredSequence<int> Sequence, VectorClock Frontier, ImmutableArray<int> Checkpoint)>? GenCompactionCase
+    protected override Gen<(OffsetAnchoredSequence<int> Sequence, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)>? GenCompactionCase
     {
         get
         {
@@ -51,12 +51,12 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     }
 
 
-    protected override Gen<(OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<int> Checkpoint)>? GenCommutationCase => GenCase;
+    protected override Gen<(OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)>? GenCommutationCase => GenCase;
 
 
     //The shared-prefix ops, the frontier cut, and the two insert-only divergent suffixes all come from
     //CsCheck seeds, so the whole case is deterministic and reproduces on shrink.
-    private static Gen<(OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<int> Checkpoint)> GenCase { get; } =
+    private static Gen<(OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)> GenCase { get; } =
         Gen.Select(
             Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 6],
             Gen.Int[0, 6],
@@ -65,7 +65,7 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
             static (ops, cut, suffixA, suffixB) => BuildCase(ops, cut, suffixA, suffixB));
 
 
-    private static (OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<int> Checkpoint) BuildCase((int Replica, int Seed)[] ops, int cut, int[] suffixA, int[] suffixB)
+    private static (OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint) BuildCase((int Replica, int Seed)[] ops, int cut, int[] suffixA, int[] suffixB)
     {
         //Shared prefix on the common base: one sequence modelling common knowledge, with the dot each
         //insert minted recorded in op order (a remove op records no dot, marked by a null sentinel).
@@ -109,17 +109,28 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
             }
         }
 
-        //Checkpoint: from the final shared sequence, base entries plus stable live entries, in order.
-        ImmutableArray<int>.Builder checkpointBuilder = ImmutableArray.CreateBuilder<int>();
+        //Checkpoint: from the final shared sequence, base entries plus stable live entries, in order. Each
+        //entry gains a dot: a live element carries its real vertex dot, recoverable by value; a base element
+        //carries a SYNTHESIZED placeholder dot. The §3.4 offset adapter projects values out and discards every
+        //dot before offset's value-typed integrity check, so the placeholder is never certified against a real
+        //vertex — real offset dot certification is the slice-3 parity work.
+        ImmutableArray<SequenceCheckpointEntry<int>>.Builder checkpointBuilder = ImmutableArray.CreateBuilder<SequenceCheckpointEntry<int>>();
         foreach((OffsetAnchor anchor, int value) in shared.VisibleElements)
         {
-            if(anchor.LiveId is not { } liveId || IsStable(frontier, liveId))
+            if(anchor.LiveId is { } liveId)
             {
-                checkpointBuilder.Add(value);
+                if(IsStable(frontier, liveId))
+                {
+                    checkpointBuilder.Add(new SequenceCheckpointEntry<int>(DotStateOf(liveId), value));
+                }
+
+                continue;
             }
+
+            checkpointBuilder.Add(new SequenceCheckpointEntry<int>(PlaceholderDot(anchor.BaseOffset), value));
         }
 
-        ImmutableArray<int> checkpoint = checkpointBuilder.ToImmutable();
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = checkpointBuilder.ToImmutable();
 
         //Insert-only divergent suffixes: removals above the frontier on stable elements would make A and
         //B derive different checkpoints, which the composition forbids, so the generator only inserts.
@@ -192,6 +203,21 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
         }
 
         return sequence;
+    }
+
+
+    private static DotState DotStateOf(Dot dot) => new(ImmutableArray.Create(dot.Replica.AsSpan()), dot.Counter);
+
+
+    //A base element has no natural dot, so a reserved replica (first byte 254, outside every generator's
+    //range) with counter = base slot + 1 stands in as a deterministic, non-colliding placeholder the offset
+    //adapter discards before its value-typed integrity check.
+    private static DotState PlaceholderDot(int baseOffset)
+    {
+        Span<byte> reserved = stackalloc byte[ReplicaId.Size];
+        reserved[0] = 254;
+
+        return new DotState(ImmutableArray.Create(ReplicaId.FromSpan(reserved).AsSpan()), baseOffset + 1);
     }
 
 

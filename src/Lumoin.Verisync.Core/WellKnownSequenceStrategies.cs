@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace Lumoin.Verisync.Core;
 
 /// <summary>
@@ -83,7 +85,8 @@ public static class WellKnownSequenceStrategies
             Values = static sequence => sequence.Values,
             Compact = static (sequence, frontier, checkpoint) => sequence.Compact(frontier, checkpoint),
             TranslateAnchor = static (sequence, anchor) => sequence.TranslateAnchor(anchor),
-            CausalContext = static sequence => sequence.CausalContext
+            CausalContext = static sequence => sequence.CausalContext,
+            CertifyProjection = static (sequence, frontier) => sequence.CertifiedProjection(frontier)
         };
     }
 
@@ -93,6 +96,13 @@ public static class WellKnownSequenceStrategies
     /// </summary>
     /// <typeparam name="TValue">The element type.</typeparam>
     /// <returns>A context carrying <see cref="OffsetV1"/> and the offset-anchored operations.</returns>
+    /// <remarks>
+    /// The offset strategy does not certify a projection — its removes leave no causal footprint — so its
+    /// <see cref="SequenceCrdtContext{TSequence, TValue, TAnchor}.CertifyProjection"/> stays null and an
+    /// offset container cannot be sealed. Its compaction wiring projects the dotted checkpoint down to values
+    /// for the byte-identical <see cref="OffsetAnchoredSequence{TValue}.Compact"/>, deliberately discarding the
+    /// dots: real offset dot certification is the slice-3 parity work.
+    /// </remarks>
     public static SequenceCrdtContext<OffsetAnchoredSequence<TValue>, TValue, OffsetAnchor> CreateOffset<TValue>()
     {
         return new SequenceCrdtContext<OffsetAnchoredSequence<TValue>, TValue, OffsetAnchor>
@@ -104,8 +114,22 @@ public static class WellKnownSequenceStrategies
             Remove = static (sequence, anchor, replica) => sequence.Remove(anchor),
             Merge = static (left, right) => left.Merge(right),
             Values = static sequence => sequence.Values,
-            Compact = static (sequence, frontier, checkpoint) => sequence.Compact(frontier, checkpoint),
+            Compact = static (sequence, frontier, checkpoint) => sequence.Compact(frontier, ProjectValues(checkpoint)),
             TranslateAnchor = static (sequence, anchor) => sequence.TranslateAnchor(anchor)
         };
+    }
+
+
+    private static ImmutableArray<TValue> ProjectValues<TValue>(ImmutableArray<SequenceCheckpointEntry<TValue>> checkpoint)
+    {
+        //The offset strategy's integrity check is value-typed, so the dotted checkpoint's dots are dropped here;
+        //the slice-3 parity work owns offset dot certification.
+        var values = new TValue[checkpoint.Length];
+        for(int i = 0; i < checkpoint.Length; i++)
+        {
+            values[i] = checkpoint[i].Value;
+        }
+
+        return ImmutableArray.Create(values);
     }
 }

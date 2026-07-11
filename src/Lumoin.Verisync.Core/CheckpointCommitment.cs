@@ -5,31 +5,46 @@ using System.Diagnostics.CodeAnalysis;
 namespace Lumoin.Verisync.Core;
 
 /// <summary>
-/// The consensus-grade anchor for a promoted checkpoint: the digest of the snapshot's canonical bytes.
-/// This — never the snapshot itself — is what rides the CASPaxos register, keeping consensus payloads
-/// metadata-sized regardless of sequence length; the content travels the CRDT plane and is verifiable
-/// against the commitment.
+/// The consensus-grade anchor of a SEALED checkpoint: the stability frontier the checkpoint was sealed at,
+/// paired with the digest of the certified dotted projection's canonical bytes at exactly that frontier. This
+/// pair — never the snapshot itself — is what rides the CASPaxos register, keeping consensus payloads
+/// metadata-sized regardless of sequence length; the content travels the CRDT plane and is verifiable against
+/// the digest.
 /// </summary>
+/// <remarks>
+/// The committed line is a CHAIN: each committed frontier strictly dominates its predecessor in the
+/// happens-before partial order, or repeats it byte-identically (an idempotent re-seal). The frontier is what
+/// the container's monotone refusal rule compares — see
+/// <see cref="CheckpointedSequence{TSequence, TValue, TAnchor}.Seal"/> — so a competing seal can never regress
+/// the committed checkpoint.
+/// </remarks>
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
 public sealed class CheckpointCommitment: IEquatable<CheckpointCommitment>
 {
     /// <summary>
     /// Initializes a new commitment.
     /// </summary>
-    /// <param name="digest">The digest of the checkpoint's canonical bytes. Never empty.</param>
+    /// <param name="frontier">The stability frontier the checkpoint was sealed at.</param>
+    /// <param name="digest">The digest of the certified dotted projection's canonical bytes at <paramref name="frontier"/>. Never empty.</param>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="frontier"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">Thrown if <paramref name="digest"/> is empty.</exception>
-    public CheckpointCommitment(ReadOnlyMemory<byte> digest)
+    public CheckpointCommitment(VectorClock frontier, ReadOnlyMemory<byte> digest)
     {
+        ArgumentNullException.ThrowIfNull(frontier);
         if(digest.IsEmpty)
         {
             throw new ArgumentException("A checkpoint commitment digest cannot be empty.", nameof(digest));
         }
 
+        Frontier = frontier;
         Digest = digest;
     }
 
 
-    /// <summary>The digest of the checkpoint's canonical bytes.</summary>
+    /// <summary>The stability frontier the checkpoint was sealed at.</summary>
+    public VectorClock Frontier { get; }
+
+    /// <summary>The digest of the certified dotted projection's canonical bytes at <see cref="Frontier"/>.</summary>
     public ReadOnlyMemory<byte> Digest { get; }
 
 
@@ -46,7 +61,7 @@ public sealed class CheckpointCommitment: IEquatable<CheckpointCommitment>
             return true;
         }
 
-        return Digest.Span.SequenceEqual(other.Digest.Span);
+        return Frontier.Equals(other.Frontier) && Digest.Span.SequenceEqual(other.Digest.Span);
     }
 
 
@@ -58,11 +73,12 @@ public sealed class CheckpointCommitment: IEquatable<CheckpointCommitment>
     public override int GetHashCode()
     {
         HashCode hash = new();
+        hash.Add(Frontier);
         hash.AddBytes(Digest.Span);
 
         return hash.ToHashCode();
     }
 
 
-    private string DebuggerDisplay => $"CheckpointCommitment: {Digest.Length} bytes";
+    private string DebuggerDisplay => $"CheckpointCommitment: {Digest.Length} bytes @ frontier";
 }
