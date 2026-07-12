@@ -311,6 +311,145 @@ internal sealed class RaftRunnerTests
     }
 
 
+    [TestMethod]
+    public async Task RunAsyncWithANullSendFailsClosedInsteadOfHangingAPendingProposal()
+    {
+        //A proposal enqueued before the runner starts would hang forever if RunAsync(null) threw its argument
+        //validation without completing the writer. The fix fails closed exactly as an early loop exit does, so
+        //the pending proposal faults and a later proposal fails fast. Every await is bounded through WaitAsync
+        //so a regression to the hanging behaviour fails instead of stalling the suite.
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        CancellationToken cancellationToken = timeoutSource.Token;
+
+        RaftNode<string> node = new(N1, [N1]);
+        RaftRunner<string> runner = new(node);
+
+        Task<long> pending = runner.ProposeAsync("orphan", cancellationToken);
+
+        ArgumentNullException validation = await Assert.ThrowsExactlyAsync<ArgumentNullException>(
+            () => runner.RunAsync(null!, null, null, cancellationToken)).ConfigureAwait(false);
+
+        //The pending proposal faults with the abandonment exception carrying the validation failure as its inner.
+        InvalidOperationException pendingFault = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => pending.WaitAsync(cancellationToken)).ConfigureAwait(false);
+        Assert.AreSame(validation, pendingFault.InnerException);
+
+        //The writer is completed, so a proposal issued afterwards fails fast rather than hanging on a dead runner.
+        await Assert.ThrowsExactlyAsync<ChannelClosedException>(
+            () => runner.ProposeAsync("late", cancellationToken).WaitAsync(cancellationToken)).ConfigureAwait(false);
+    }
+
+
+    [TestMethod]
+    public async Task CancellationAttributesTheRunnerTokenToTheCancelledProposals()
+    {
+        //When the runner's own token cancels the loop mid-dispatch, the cancelled in-flight and queued proposals
+        //must carry that token as their cancellation cause rather than a token-less cancellation that loses the
+        //attribution. The timeout source bounds every await so a regression fails instead of hanging the suite.
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        using CancellationTokenSource stopSource = CancellationTokenSource.CreateLinkedTokenSource(timeoutSource.Token);
+
+        RaftNode<string> node = new(N1, [N1]);
+        RaftRunner<string> runner = new(node);
+
+        int persistCalls = 0;
+        TaskCompletionSource persistEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        PersistRaftStateDelegate<string> persist = async (_, persistToken) =>
+        {
+            if(Interlocked.Increment(ref persistCalls) == 1)
+            {
+                return;
+            }
+
+            persistEntered.TrySetResult();
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, persistToken).ConfigureAwait(false);
+        };
+
+        Task run = runner.RunAsync(DiscardSend, persist, null, stopSource.Token);
+
+        await runner.TriggerElectionAsync(stopSource.Token).ConfigureAwait(false);
+
+        Task<long> inFlight = runner.ProposeAsync("hangs", stopSource.Token);
+        await persistEntered.Task.WaitAsync(timeoutSource.Token).ConfigureAwait(false);
+        Task<long> queued = runner.ProposeAsync("waits", stopSource.Token);
+
+        await stopSource.CancelAsync().ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => run.WaitAsync(timeoutSource.Token)).ConfigureAwait(false);
+        TaskCanceledException inFlightCancel = await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => inFlight.WaitAsync(timeoutSource.Token)).ConfigureAwait(false);
+        TaskCanceledException queuedCancel = await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => queued.WaitAsync(timeoutSource.Token)).ConfigureAwait(false);
+        Assert.AreEqual(stopSource.Token, inFlightCancel.CancellationToken);
+        Assert.AreEqual(stopSource.Token, queuedCancel.CancellationToken);
+    }
+
+
+    [TestMethod]
+    public async Task AHookCancellationUnrelatedToTheRunnerTokenFaultsTheProposalsInsteadOfCancelling()
+    {
+        //A hook that throws OperationCanceledException for its own reasons — carrying a token unrelated to the
+        //runner's, while the runner token is never signalled — is a hook failure, not a clean stop, so the loop
+        //must FAULT the pending proposals rather than cancel them. That is the misclassification the narrowed
+        //catch filter closes. Every await is bounded through WaitAsync.
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        CancellationToken cancellationToken = timeoutSource.Token;
+
+        RaftNode<string> node = new(N1, [N1]);
+        RaftRunner<string> runner = new(node);
+
+        using CancellationTokenSource hookSource = new();
+        OperationCanceledException hookFailure = new(hookSource.Token);
+        int persistCalls = 0;
+        TaskCompletionSource persistEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource persistGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        PersistRaftStateDelegate<string> persist = async (_, _) =>
+        {
+            if(Interlocked.Increment(ref persistCalls) == 1)
+            {
+                return;
+            }
+
+            persistEntered.TrySetResult();
+            await persistGate.Task.ConfigureAwait(false);
+            await hookSource.CancelAsync().ConfigureAwait(false);
+
+            throw hookFailure;
+        };
+
+        Task run = runner.RunAsync(DiscardSend, persist, null, cancellationToken);
+
+        await runner.TriggerElectionAsync(cancellationToken).ConfigureAwait(false);
+
+        Task<long> inFlight = runner.ProposeAsync("first", cancellationToken);
+        await persistEntered.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Task<long> queued = runner.ProposeAsync("second", cancellationToken);
+
+        persistGate.SetResult();
+
+        //The hook's OperationCanceledException ends the loop and surfaces on the run task as a cancellation; how
+        //it surfaces there is not the subject, so it is swallowed bounded. The proposals are the subject.
+        try
+        {
+            await run.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch(OperationCanceledException)
+        {
+            //Expected: the loop re-throws the hook's OCE, cancelling the run task.
+        }
+
+        //Because the runner token was never signalled, the proposals FAULT with the wrapping exception carrying
+        //the hook's OCE as its inner, rather than cancelling on a token that was not the runner's.
+        InvalidOperationException inFlightFault = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => inFlight.WaitAsync(cancellationToken)).ConfigureAwait(false);
+        InvalidOperationException queuedFault = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => queued.WaitAsync(cancellationToken)).ConfigureAwait(false);
+        Assert.AreSame(hookFailure, inFlightFault.InnerException);
+        Assert.AreSame(hookFailure, queuedFault.InnerException);
+        Assert.IsFalse(inFlight.IsCanceled);
+        Assert.IsFalse(queued.IsCanceled);
+    }
+
+
     private static ValueTask DiscardSend(ReplicaId to, RaftEnvelope<string> envelope, CancellationToken cancellationToken)
     {
         return ValueTask.CompletedTask;

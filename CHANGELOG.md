@@ -173,6 +173,24 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   The `ProposeAsync` contract also states plainly that a faulted or cancelled proposal may already be
   appended and persisted — and may later commit — so a host that retries must tolerate or deduplicate a
   possible duplicate command.
+- `RaftRunner.RunAsync` given a null `send` delegate now fails closed instead of hanging pre-enqueued
+  proposals. The argument validation threw before the loop started and left the work channel writer open,
+  so a proposal already queued on a runner that would never run hung forever; the null-send path now
+  completes the writer and faults every enqueued proposal — with the validation failure as the inner
+  exception — exactly as an early loop exit does, so the misuse is loud rather than a silent hang.
+- A `RaftRunner` proposal cancelled when the runner token ends the loop now carries that token as its
+  cancellation cause. The abandonment used a token-less `TrySetCanceled`, so the resulting
+  `TaskCanceledException` lost the attribution; it now passes the runner's cancellation token.
+- `RaftRunner` no longer misreads a hook's own cancellation as a clean stop. The loop's
+  `catch(OperationCanceledException)` is narrowed with `when(cancellationToken.IsCancellationRequested)`, so
+  an `OperationCanceledException` a persist, send, or apply hook throws for its own reasons — while the
+  runner token is not signalled — flows to the fault path and FAULTS the pending proposals (the loop died
+  on a hook failure) rather than cancelling them as if the runner had stopped cleanly.
+- An add-only `AntiEntropySession` handed local drops by its difference resolver now fails closed with
+  `InvalidOperationException` instead of dereferencing a missing drop applier. An add-only session wires no
+  drop path, so a resolution carrying local drops used to `NullReferenceException` on the null-forgiving
+  apply; it is now rejected at decode completion — the earliest honest point, since the drops arrive at
+  resolution time — mirroring the add-only rejection of the remove-aware context and drop frames.
 
 ### Security
 

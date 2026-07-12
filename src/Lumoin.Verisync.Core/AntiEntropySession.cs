@@ -638,7 +638,16 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         //entries the peer removed simply stay put and re-classify in the next session.
         if(!resolution.LocalDrops.IsEmpty)
         {
-            if(LocalContext is not null && !resolution.Fetch.IsEmpty)
+            //An add-only session carries no drop path: it accepts no local context, wires no drop applier, and
+            //its terminal merge folds nothing. A resolver that hands it local drops is misuse, so fail closed
+            //here — the earliest honest point, since the drops arrive at dispatch time, not construction — rather
+            //than dereference the null applier, mirroring the add-only rejection of the context and drop frames.
+            if(LocalContext is null)
+            {
+                throw new InvalidOperationException("An add-only session carries no drop path; a difference resolver must not return local drops for it.");
+            }
+
+            if(!resolution.Fetch.IsEmpty)
             {
                 deferredLocalDrops = resolution.LocalDrops;
             }

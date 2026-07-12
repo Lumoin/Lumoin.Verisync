@@ -14,8 +14,8 @@ namespace Lumoin.Verisync.Tests;
 /// <see cref="AntiEntropySessionState.Completed"/>. Covers convergence, quiescence, offer mismatch, role and
 /// gap violations, constructor and run validation, fetch-coverage enforcement, missing-apply faults, straggler
 /// tolerance, the submit shape guard, snapshot pinning, the resolution record's validation and equality, the
-/// <see cref="AntiEntropySessionState.Interrupted"/> wind-down report, and the add-only rejection of the
-/// remove-aware context and drop frames.
+/// <see cref="AntiEntropySessionState.Interrupted"/> wind-down report, the add-only rejection of the
+/// remove-aware context and drop frames, and the add-only fail-closed on resolver-supplied local drops.
 /// </summary>
 [TestClass]
 internal sealed class AntiEntropySessionTests
@@ -670,6 +670,45 @@ internal sealed class AntiEntropySessionTests
         await dropTarget.SubmitAsync(ReconciliationEnvelope<string>.ForDrop(drop), cancellationToken).ConfigureAwait(false);
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => dropRun).ConfigureAwait(false);
+    }
+
+
+    [TestMethod]
+    public async Task AnAddOnlySessionHandedLocalDropsFailsClosedInsteadOfDereferencingAMissingDropPath()
+    {
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        CancellationToken cancellationToken = timeoutSource.Token;
+
+        OrSet<string> ancestor = OrSet<string>.Empty.Add("alpha", R1).Add("beta", R1);
+        OrSet<string> initiatorSet = ancestor;
+        OrSet<string> responderSet = ancestor.Add("zeta", R3);
+
+        ReadOnlyMemory<byte>[] initiatorItems = ProjectHashes(initiatorSet);
+        ReadOnlyMemory<byte>[] responderItems = ProjectHashes(responderSet);
+
+        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorItems, BaseMemoryPool.Shared);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderItems, BaseMemoryPool.Shared);
+
+        //An add-only session carries no local context, no drop applier, and no terminal merge, so a resolver that
+        //hands it local drops has no honest path to apply them. On decode completion it must fail closed with
+        //InvalidOperationException at that dispatch — the earliest honest point, since the drops arrive at
+        //resolution time — rather than dereference the null applier, mirroring the add-only frame rejections above.
+        ImmutableArray<byte> replica = [.. new byte[ReplicaId.Size]];
+        ReconciliationDifferenceResolution<string> withDrops = new([], [], [new DotState(replica, 1)]);
+        ResolveReconciliationDifferenceDelegate<string> resolve = (_, _) => withDrops;
+
+        ServeReconciliationFetchDelegate<string> serve = _ => [];
+
+        Task initiatorRun = initiator.RunAsync(Forward(responder), resolve, null, null, cancellationToken: cancellationToken);
+        Task responderRun = responder.RunAsync(Forward(initiator), null, serve, null, cancellationToken: cancellationToken);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => PaceFaultAsync(initiatorRun, initiator, responder, cancellationToken)).ConfigureAwait(false);
+
+        //The initiator sent its done signal before failing closed, so the responder converged and winds down clean.
+        responder.Complete();
+        await SwallowAsync(responderRun).ConfigureAwait(false);
     }
 
 

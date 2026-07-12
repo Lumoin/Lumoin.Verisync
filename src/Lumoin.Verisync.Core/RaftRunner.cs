@@ -95,7 +95,9 @@ public sealed class RaftRunner<TCommand>
     /// <see cref="InvalidOperationException"/> carrying the loop failure as its inner exception otherwise. The
     /// work channel is completed at the same time, so a later <see cref="ProposeAsync"/>,
     /// <see cref="SubmitAsync"/>, or trigger fails fast with <see cref="ChannelClosedException"/> instead of
-    /// enqueuing into a loop that no longer runs.
+    /// enqueuing into a loop that no longer runs. A null <paramref name="send"/> fails the same way before the
+    /// loop even starts: the writer is completed and every already-enqueued proposal is faulted, so the misuse
+    /// cannot leave a proposal waiting on a runner that will never run.
     /// </remarks>
     public async Task RunAsync(
         SendRaftEnvelopeDelegate<TCommand> send,
@@ -103,7 +105,21 @@ public sealed class RaftRunner<TCommand>
         ApplyCommittedDelegate<TCommand>? applyCommitted = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(send);
+        if(send is null)
+        {
+            //Argument validation fails before the loop can run, and a runner started with a null transport
+            //will never dispatch. Fail closed exactly as an early loop exit does — complete the writer and
+            //fault every already-enqueued proposal — so a pre-enqueued or later proposal surfaces the misuse
+            //loudly instead of hanging forever. The fault only runs when this call would have owned the run,
+            //so a concurrent healthy run keeps its channel; that run then poisons this second entry below.
+            ArgumentNullException validation = new(nameof(send));
+            if(Interlocked.Exchange(ref started, 1) == 0)
+            {
+                AbandonPendingProposals(null, new InvalidOperationException("The runner loop was started with a null send delegate and will never run; the inner exception is the validation failure.", validation), cancellationToken);
+            }
+
+            throw validation;
+        }
 
         if(Interlocked.Exchange(ref started, 1) != 0)
         {
@@ -122,15 +138,19 @@ public sealed class RaftRunner<TCommand>
                 inFlight = null;
             }
         }
-        catch(OperationCanceledException)
+        catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested)
         {
-            AbandonPendingProposals(inFlight, fault: null);
+            //The runner's own token cancelled the loop, so the pending proposals cancel under it and carry
+            //that token as their cancellation cause. A hook's internal cancellation — an OperationCanceledException
+            //thrown for the hook's own reasons while the runner token is NOT signalled — fails this filter and
+            //flows to the fault path below, where it faults the proposals rather than masquerading as a clean stop.
+            AbandonPendingProposals(inFlight, fault: null, cancellationToken);
 
             throw;
         }
         catch(Exception exception)
         {
-            AbandonPendingProposals(inFlight, new InvalidOperationException("The runner loop ended before the proposal completed; the inner exception is the loop failure.", exception));
+            AbandonPendingProposals(inFlight, new InvalidOperationException("The runner loop ended before the proposal completed; the inner exception is the loop failure.", exception), cancellationToken);
 
             throw;
         }
@@ -431,7 +451,7 @@ public sealed class RaftRunner<TCommand>
     }
 
 
-    private void AbandonPendingProposals(ProposeItem? inFlight, Exception? fault)
+    private void AbandonPendingProposals(ProposeItem? inFlight, Exception? fault, CancellationToken cancellationToken)
     {
         //Completing the writer first makes a later ProposeAsync fail fast with ChannelClosedException, and
         //guarantees the drain below observes every write that succeeded before the completion.
@@ -439,25 +459,27 @@ public sealed class RaftRunner<TCommand>
 
         if(inFlight is not null)
         {
-            AbandonProposal(inFlight, fault);
+            AbandonProposal(inFlight, fault, cancellationToken);
         }
 
         while(work.Reader.TryRead(out WorkItem? item))
         {
             if(item is ProposeItem proposeItem)
             {
-                AbandonProposal(proposeItem, fault);
+                AbandonProposal(proposeItem, fault, cancellationToken);
             }
         }
     }
 
 
-    private static void AbandonProposal(ProposeItem proposeItem, Exception? fault)
+    private static void AbandonProposal(ProposeItem proposeItem, Exception? fault, CancellationToken cancellationToken)
     {
         //TrySet* keeps this a no-op for a proposal whose dispatch already set its result or non-leader fault.
+        //A cancellation carries the runner token so the cancelled proposal task attributes its cancellation
+        //to that token; a loop failure faults it with the wrapping exception instead, where the token is unused.
         if(fault is null)
         {
-            proposeItem.Source.TrySetCanceled();
+            proposeItem.Source.TrySetCanceled(cancellationToken);
         }
         else
         {
