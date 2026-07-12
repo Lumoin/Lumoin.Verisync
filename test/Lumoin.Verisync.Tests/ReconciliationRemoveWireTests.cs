@@ -8,14 +8,17 @@ using System.Text.Json;
 namespace Lumoin.Verisync.Tests;
 
 /// <summary>
-/// Envelope-factory and JSON-codec coverage for the two new remove-aware wire payloads: the causal-context
-/// exchange (<see cref="ReconciliationContext"/>) and the remove push (<see cref="ReconciliationDrop"/>). The
-/// factories must each set exactly one slot and leave the other six null, mirroring the five landed payloads.
-/// The codec round-trips both: a context is compared by reconstructing its <see cref="VectorClock"/> with
-/// <see cref="VectorClock.FromState"/> (value equality), not by record reference equality, and a drop is
-/// compared by its dots as a set, because the underlying <see cref="ImmutableArray{T}"/> members compare by
-/// reference under synthesized record equality. Malformed context and drop frames fail closed as
-/// <see cref="MessageDeserializationException"/>, mirroring the existing codec strictness vectors.
+/// Envelope-factory and JSON-codec coverage for the remove-aware wire payloads: the causal-context exchange
+/// (<see cref="ReconciliationContext"/>), the remove push (<see cref="ReconciliationDrop"/>), and the session
+/// completion frame (<see cref="ReconciliationCompletion"/>). The factories must each set exactly one slot and
+/// leave the other seven null, mirroring the landed payloads — the context and drop slot tests now also assert
+/// the completion slot stays null, so a new slot cannot slip past their census. The codec round-trips each: a
+/// context is compared by reconstructing its <see cref="VectorClock"/> with <see cref="VectorClock.FromState"/>
+/// (value equality), not by record reference equality; a drop is compared by its dots as a set, because the
+/// underlying <see cref="ImmutableArray{T}"/> members compare by reference under synthesized record equality;
+/// and a completion round-trips its transfer count by record value equality. Malformed context, drop, and
+/// completion frames fail closed as <see cref="MessageDeserializationException"/>, and a negative transfer
+/// count is rejected at construction, mirroring the existing codec strictness vectors.
 /// </summary>
 [TestClass]
 internal sealed class ReconciliationRemoveWireTests
@@ -40,6 +43,7 @@ internal sealed class ReconciliationRemoveWireTests
         Assert.IsNull(envelope.Fetch);
         Assert.IsNull(envelope.Elements);
         Assert.IsNull(envelope.Drop);
+        Assert.IsNull(envelope.Completion);
     }
 
 
@@ -58,6 +62,26 @@ internal sealed class ReconciliationRemoveWireTests
         Assert.IsNull(envelope.Fetch);
         Assert.IsNull(envelope.Elements);
         Assert.IsNull(envelope.Context);
+        Assert.IsNull(envelope.Completion);
+    }
+
+
+    [TestMethod]
+    public void ForCompletionSetsOnlyTheCompletionSlot()
+    {
+        ReconciliationCompletion completion = new(2);
+
+        ReconciliationEnvelope<string> envelope = ReconciliationEnvelope<string>.ForCompletion(completion);
+
+        Assert.AreEqual(completion, envelope.Completion);
+        Assert.IsNotNull(envelope.Completion);
+        Assert.IsNull(envelope.Offer);
+        Assert.IsNull(envelope.Symbols);
+        Assert.IsNull(envelope.Done);
+        Assert.IsNull(envelope.Fetch);
+        Assert.IsNull(envelope.Elements);
+        Assert.IsNull(envelope.Context);
+        Assert.IsNull(envelope.Drop);
     }
 
 
@@ -137,6 +161,50 @@ internal sealed class ReconciliationRemoveWireTests
 
         //A drop document cut off mid-frame cannot parse; the reader exception is wrapped as MessageDeserializationException.
         Assert.Throws<MessageDeserializationException>(() => Deserialize("""{"type":"drop","payload":{"dots":["""));
+    }
+
+
+    [TestMethod]
+    public void CompletionEnvelopeRoundTripsItsTransferCount()
+    {
+        //A transfer count survives the wire as its exact value; the record compares by value, so the decoded
+        //completion equals the original.
+        ReconciliationCompletion completion = new(2);
+        ReconciliationEnvelope<string> back = RoundTrip(ReconciliationEnvelope<string>.ForCompletion(completion));
+
+        Assert.IsNotNull(back.Completion);
+        Assert.AreEqual(completion, back.Completion);
+        Assert.AreEqual(2, back.Completion.TransferCount);
+    }
+
+
+    [TestMethod]
+    public void QuiescentCompletionEnvelopeRoundTripsTheZeroTransferCount()
+    {
+        //Zero is the quiescent-exchange cardinality and is legal and meaningful; it must survive the wire.
+        ReconciliationEnvelope<string> back = RoundTrip(ReconciliationEnvelope<string>.ForCompletion(new ReconciliationCompletion(0)));
+
+        Assert.IsNotNull(back.Completion);
+        Assert.AreEqual(0, back.Completion.TransferCount);
+    }
+
+
+    [TestMethod]
+    public void MalformedCompletionFrameFailsClosed()
+    {
+        //A completion payload that is not an object cannot carry a transfer count and fails closed before any field is read.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"completion","payload":42}"""));
+
+        //A completion document cut off mid-frame cannot parse; the reader exception is wrapped as MessageDeserializationException.
+        Assert.Throws<MessageDeserializationException>(() => Deserialize("""{"type":"completion","payload":{"transferCount":"""));
+    }
+
+
+    [TestMethod]
+    public void ANegativeTransferCountIsRejectedAtConstruction()
+    {
+        //A negative transfer count is never a legal cardinality; construction fails closed, as the done count does.
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationCompletion(-1));
     }
 
 

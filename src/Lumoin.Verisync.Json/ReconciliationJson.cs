@@ -8,7 +8,7 @@ namespace Lumoin.Verisync.Json;
 /// <summary>
 /// Builds JSON <see cref="SerializeMessageDelegate{TMessage}"/> and
 /// <see cref="DeserializeMessageDelegate{TMessage}"/> implementations for the reconciliation wire envelope, so
-/// the five session messages can cross a Verisync message channel (in-memory pipe or socket).
+/// the session messages can cross a Verisync message channel (in-memory pipe or socket).
 /// </summary>
 /// <remarks>
 /// The encoding mirrors <see cref="RaftJson"/> and <see cref="LogCommitmentJson"/>: hand-written and explicit
@@ -30,6 +30,7 @@ public static class ReconciliationJson
     private const string ElementsType = "elements";
     private const string ContextType = "context";
     private const string DropType = "drop";
+    private const string CompletionType = "completion";
 
     private const string ContentHashDomain = "contentHash";
     private const string StructuralDomain = "structural";
@@ -56,7 +57,8 @@ public static class ReconciliationJson
                 + (envelope.Fetch is null ? 0 : 1)
                 + (envelope.Elements is null ? 0 : 1)
                 + (envelope.Context is null ? 0 : 1)
-                + (envelope.Drop is null ? 0 : 1);
+                + (envelope.Drop is null ? 0 : 1)
+                + (envelope.Completion is null ? 0 : 1);
             if(payloadCount != 1)
             {
                 throw new ArgumentException($"A reconciliation envelope must carry exactly one payload, but it carries {payloadCount}.", nameof(envelope));
@@ -100,6 +102,12 @@ public static class ReconciliationJson
                 writer.WriteString("type", ContextType);
                 writer.WritePropertyName("payload");
                 WriteContext(writer, context);
+            }
+            else if(envelope.Completion is { } completion)
+            {
+                writer.WriteString("type", CompletionType);
+                writer.WritePropertyName("payload");
+                WriteCompletion(writer, completion);
             }
             else
             {
@@ -145,6 +153,7 @@ public static class ReconciliationJson
                 ElementsType => ReconciliationEnvelope<TElement>.ForElements(ReadElements(payloadElement, contract, readElement)),
                 ContextType => ReconciliationEnvelope<TElement>.ForContext(ReadContext(payloadElement)),
                 DropType => ReconciliationEnvelope<TElement>.ForDrop(ReadDrop(payloadElement)),
+                CompletionType => ReconciliationEnvelope<TElement>.ForCompletion(ReadCompletion(payloadElement)),
                 _ => throw new JsonException($"Unknown reconciliation envelope type '{type}'.")
             };
         });
@@ -420,6 +429,22 @@ public static class ReconciliationJson
         ImmutableArray<DotState> built = dots.MoveToImmutable();
 
         return Construct(() => new ReconciliationDrop(built));
+    }
+
+
+    private static void WriteCompletion(Utf8JsonWriter writer, ReconciliationCompletion completion)
+    {
+        writer.WriteStartObject();
+        writer.WriteNumber("transferCount", completion.TransferCount);
+        writer.WriteEndObject();
+    }
+
+
+    private static ReconciliationCompletion ReadCompletion(JsonElement element)
+    {
+        int transferCount = ReadNonNegativeInt(RequireProperty(element, "transferCount", "A completion"), "A transfer count");
+
+        return Construct(() => new ReconciliationCompletion(transferCount));
     }
 
 

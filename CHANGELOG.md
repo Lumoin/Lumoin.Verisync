@@ -209,6 +209,23 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Added
 
+- The anti-entropy session closes its one-directional context gap with a wire-level completion
+  frame. A remove-aware initiator whose exchange work completed — never one wound down early —
+  sends `ReconciliationCompletion` as its final frame, carrying the count of transfer envelopes it
+  sent; the responder, protected by add-only/role/phase guards and a count check that fails closed
+  on any transfer-count drift — a lost, truncated, or duplicated transfer envelope (count-preserving
+  defects are covered by the transport's exactly-once ordered contract, not the count) — runs its
+  one TERMINAL fold of the initiator's exchanged context and reaches `Completed` — so ONE session
+  now converges BOTH members' contexts, where
+  convergence previously required a second, reverse-direction session. The fold rides the
+  transport's exactly-once ordered delivery (the same contract every session frame already rests
+  on): the frame is by construction the last thing an initiator sends, so every element and drop it
+  ever sent has been applied before the fold runs. An interrupted exchange emits no frame and keeps
+  the landed semantics verbatim — `Interrupted`, zero folds, not converged — and the host's
+  wind-down preserves a completion-earned `Completed`. Remove-aware mode only, so the wire addition
+  ships under the standing embargo; a 0.0.5 peer receiving the unknown frame tears down loudly
+  through the uniform fail-closed deserialization contract.
+
 - Sealing is group-quiescent-aware and its diagnostics are actionable. The offset strategy exposes an
   insert-quiescence probe — `OffsetAnchoredSequence.UnstableInserts(frontier)` returns the vertex
   insert-dots the frontier does not cover, in deterministic `(Replica, Counter)` order, running the

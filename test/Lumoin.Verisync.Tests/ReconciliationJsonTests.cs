@@ -57,6 +57,10 @@ internal sealed class ReconciliationJsonTests
         ReconciliationElements<string> elements = new([new ReconciliationElementEntry<string>(ItemOne, "zeta"), new ReconciliationElementEntry<string>(ItemTwo, "eta")]);
         ReconciliationEnvelope<string> elementsBack = RoundTrip(ReconciliationEnvelope<string>.ForElements(elements));
         Assert.AreEqual(elements, elementsBack.Elements);
+
+        ReconciliationCompletion completion = new(2);
+        ReconciliationEnvelope<string> completionBack = RoundTrip(ReconciliationEnvelope<string>.ForCompletion(completion));
+        Assert.AreEqual(completion, completionBack.Completion);
     }
 
 
@@ -132,6 +136,19 @@ internal sealed class ReconciliationJsonTests
 
 
     [TestMethod]
+    public void CompletionStrictnessRejectsNegativeTransferCountAndAcceptsZero()
+    {
+        //A negative transfer count is forged; no completion ever sent fewer than zero transfer envelopes.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"completion","payload":{"transferCount":-1}}"""));
+
+        //Zero is the quiescent-exchange cardinality and deserializes cleanly.
+        ReconciliationEnvelope<string> back = Deserialize("""{"type":"completion","payload":{"transferCount":0}}""");
+        Assert.IsNotNull(back.Completion);
+        Assert.AreEqual(0, back.Completion.TransferCount);
+    }
+
+
+    [TestMethod]
     public void FetchAndElementsStrictnessRejectBadArraysWidthsAndDuplicates()
     {
         //Empty arrays carry nothing to fetch or resolve.
@@ -184,6 +201,13 @@ internal sealed class ReconciliationJsonTests
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"done","payload":{"absorbedCount":1.5}}"""));
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"symbols","payload":{"startIndex":"0","symbols":[{"sum":"3132333435363738","checksum":"a57a71e920bf57a9"}]}}"""));
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"offer","payload":{"itemDomain":"structural","itemWidth":"8","checksumWidth":8,"keyCheck":"630c7d8175160642"}}"""));
+
+        //A completion transfer count that is null, fractional, Int32-overflowing, or a string where an integer
+        //is expected must fail closed rather than surface a raw accessor exception.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"completion","payload":{"transferCount":null}}"""));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"completion","payload":{"transferCount":9999999999}}"""));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"completion","payload":{"transferCount":1.5}}"""));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"completion","payload":{"transferCount":"0"}}"""));
     }
 
 
@@ -201,6 +225,7 @@ internal sealed class ReconciliationJsonTests
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"symbols","payload":{"startIndex":0,"symbols":null}}"""));
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"fetch","payload":{"items":42}}"""));
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"elements","payload":{"entries":{}}}"""));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"completion","payload":42}"""));
 
         //A non-object array element where an object is expected must fail closed.
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"symbols","payload":{"startIndex":0,"symbols":[null]}}"""));
@@ -252,6 +277,9 @@ internal sealed class ReconciliationJsonTests
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"drop","payload":{}}"""));
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"drop","payload":{"dots":[{"counter":1}]}}"""));
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"type":"drop","payload":{"dots":[{"replica":"{{{replica}}}"}]}}"""));
+
+        //The completion arm omits its only field.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"type":"completion","payload":{}}"""));
     }
 
 
@@ -262,12 +290,17 @@ internal sealed class ReconciliationJsonTests
             ReconciliationJson.CreateEnvelopeSerializer<string>((writer, value) => writer.WriteStringValue(value));
 
         //Zero payloads has no wire shape.
-        ReconciliationEnvelope<string> empty = new(null, null, null, null, null, null, null);
+        ReconciliationEnvelope<string> empty = new(null, null, null, null, null, null, null, null);
         Assert.ThrowsExactly<ArgumentException>(() => serialize(empty, new ArrayBufferWriter<byte>()));
 
         //Two payloads is ambiguous on the wire and refused.
-        ReconciliationEnvelope<string> two = new(ReconciliationOffer.FromContract(LocalContract), null, new ReconciliationDone(6), null, null, null, null);
+        ReconciliationEnvelope<string> two = new(ReconciliationOffer.FromContract(LocalContract), null, new ReconciliationDone(6), null, null, null, null, null);
         Assert.ThrowsExactly<ArgumentException>(() => serialize(two, new ArrayBufferWriter<byte>()));
+
+        //Two payloads including the completion slot is equally ambiguous and refused, so the serializer's payload
+        //count covers the new slot.
+        ReconciliationEnvelope<string> completionAndDone = new(null, null, new ReconciliationDone(6), null, null, null, null, new ReconciliationCompletion(1));
+        Assert.ThrowsExactly<ArgumentException>(() => serialize(completionAndDone, new ArrayBufferWriter<byte>()));
 
         //A null envelope is a programming error surfaced as ArgumentNullException.
         Assert.ThrowsExactly<ArgumentNullException>(() => serialize(null!, new ArrayBufferWriter<byte>()));

@@ -21,11 +21,12 @@ public enum AntiEntropySessionState
     Resolving = 3,
 
     /// <summary>
-    /// Terminal: the exchange finished and the consumer loop has returned. For a responder this means the
-    /// peer's done signal had arrived before the wind-down; whether the initiator's trailing element and drop
-    /// frames all arrived is not verifiable from the responder's side. A terminal
-    /// <see cref="AntiEntropySession{TElement}.IsConverged"/> agrees with this state — it reads
-    /// <see langword="true"/> here and <see langword="false"/> at <see cref="Interrupted"/>.
+    /// Terminal: the exchange finished and the consumer loop has returned. A responder reaches it either through
+    /// a wind-down after the peer's done signal — where whether the initiator's trailing element and drop frames
+    /// all arrived is not verifiable from the responder's side — or, in a remove-aware session, on the
+    /// initiator's completion frame, which attests every transfer preceded it and licenses the responder's one
+    /// terminal fold. A terminal <see cref="AntiEntropySession{TElement}.IsConverged"/> agrees with this state —
+    /// it reads <see langword="true"/> here and <see langword="false"/> at <see cref="Interrupted"/>.
     /// </summary>
     Completed = 4,
 

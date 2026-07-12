@@ -18,12 +18,14 @@ namespace Lumoin.Verisync.Tests;
 /// <see cref="RemoveAwareReconciliationLawTests"/> (which proves the merge law in-process with direct
 /// <see cref="AntiEntropySession{TElement}.SubmitAsync"/>, never serializing). Two diverged
 /// <see cref="DottedVersionVectorSet{T}"/> snapshots reconcile through the full phase-3 session over a duplex
-/// TCP connection, so the new causal-context and drop frames — and the per-entry <see cref="DottedEntry{T}"/>
-/// element payload — all cross the <see cref="ReconciliationJson"/> codec and the framed transport. Both
-/// replicas must reach <see cref="DottedVersionVectorSet{T}.Merge(DottedVersionVectorSet{T})"/>, including the
-/// resurrection guard: an entry the initiator observed-and-removed while the responder still holds it must not
-/// come back. A frame census on the send delegates asserts the context and drop frames actually crossed the
-/// wire, so the proof cannot pass through the add-only degeneracy. The classification host is the shared
+/// TCP connection, so the new causal-context, drop, and session completion frames — and the per-entry
+/// <see cref="DottedEntry{T}"/> element payload — all cross the <see cref="ReconciliationJson"/> codec and the
+/// framed transport. Both replicas must reach <see cref="DottedVersionVectorSet{T}.Merge(DottedVersionVectorSet{T})"/>,
+/// including the resurrection guard: an entry the initiator observed-and-removed while the responder still holds
+/// it must not come back — and both must reach the merged causal context in this single session, since the
+/// completion frame lets the responder fold the initiator's exchanged context. A frame census on the send
+/// delegates asserts the context, drop, and completion frames actually crossed the wire, so the proof cannot
+/// pass through the add-only degeneracy. The classification host is the shared
 /// <see cref="RemoveAwareReconciliationHost"/>, identical to the law tests; the difference under test here is
 /// the serializing transport.
 /// </summary>
@@ -78,10 +80,19 @@ internal sealed class RemoveAwareReconciliationSocketTests
         Assert.DoesNotContain(ResurrectionProbe, outcome.Initiator.Values);
         Assert.DoesNotContain(ResurrectionProbe, outcome.Responder.Values);
 
+        //One session converges BOTH contexts over the wire. On this mixed shape the responder's apply-coupled
+        //folds already reach the merged context, so this asserts end-state convergence and the frame census
+        //below asserts the completion crossed; the fold DIRECTION (only the frame can move a responder that
+        //applied nothing) is pinned in-process by the ContextLaw one-session convergence law.
+        Assert.AreEqual(expected.Context, outcome.Initiator.Context);
+        Assert.AreEqual(expected.Context, outcome.Responder.Context);
+
         //The remove-aware frames really crossed the serialized socket — this did not collapse to the add-only
-        //path: both sides shipped their causal context, and at least one drop frame carried a removed dot.
+        //path: both sides shipped their causal context, at least one drop frame carried a removed dot, and the
+        //initiator's completion frame crossed to close the session.
         Assert.IsGreaterThan(0, outcome.ContextFramesCrossed, "No causal-context frame crossed; the session ran add-only.");
         Assert.IsGreaterThan(0, outcome.DropFramesCrossed, "No drop frame crossed; the observed remove never propagated over the wire.");
+        Assert.IsGreaterThan(0, outcome.CompletionFramesCrossed, "No completion frame crossed; the responder never received the initiator's verified-complete signal.");
     }
 
 
@@ -174,7 +185,7 @@ internal sealed class RemoveAwareReconciliationSocketTests
 
             await initiatorReader.ConfigureAwait(false);
 
-            return new RoundOutcome(initiatorHost.Current, responderHost.Current, census.ContextFrames, census.DropFrames);
+            return new RoundOutcome(initiatorHost.Current, responderHost.Current, census.ContextFrames, census.DropFrames, census.CompletionFrames);
         }
         finally
         {
@@ -272,7 +283,7 @@ internal sealed class RemoveAwareReconciliationSocketTests
     }
 
 
-    private readonly record struct RoundOutcome(DottedVersionVectorSet<string> Initiator, DottedVersionVectorSet<string> Responder, int ContextFramesCrossed, int DropFramesCrossed);
+    private readonly record struct RoundOutcome(DottedVersionVectorSet<string> Initiator, DottedVersionVectorSet<string> Responder, int ContextFramesCrossed, int DropFramesCrossed, int CompletionFramesCrossed);
 
 
     //Counts the causal-context and drop frames a wrapped send delegate carries before forwarding to the
@@ -283,11 +294,14 @@ internal sealed class RemoveAwareReconciliationSocketTests
     {
         private int contextFrames;
         private int dropFrames;
+        private int completionFrames;
 
 
         public int ContextFrames => Volatile.Read(ref contextFrames);
 
         public int DropFrames => Volatile.Read(ref dropFrames);
+
+        public int CompletionFrames => Volatile.Read(ref completionFrames);
 
 
         public SendReconciliationEnvelopeDelegate<DottedEntry<string>> Wrap(MessageChannelWriter<ReconciliationEnvelope<DottedEntry<string>>> writer)
@@ -302,6 +316,11 @@ internal sealed class RemoveAwareReconciliationSocketTests
                 if(envelope.Drop is not null)
                 {
                     Interlocked.Increment(ref dropFrames);
+                }
+
+                if(envelope.Completion is not null)
+                {
+                    Interlocked.Increment(ref completionFrames);
                 }
 
                 return writer.WriteAsync(envelope, cancellationToken);

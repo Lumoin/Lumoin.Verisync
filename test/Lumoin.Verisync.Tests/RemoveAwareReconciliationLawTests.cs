@@ -22,10 +22,13 @@ namespace Lumoin.Verisync.Tests;
 /// master law is that reconcile-then-apply equals
 /// <see cref="DottedVersionVectorSet{T}.Merge(DottedVersionVectorSet{T})"/>, including the resurrection case
 /// the design critique caught — an entry the initiator observed-and-removed but the responder still holds
-/// must not come back. The companion laws cover the direction-bound context fold on the quiescent path and
-/// its reverse-session convergence, the interrupted wind-down folding nothing (the false-drop guard, on both
-/// a responder and an initiator whose local drops defer while its fetch is outstanding),
-/// the responder failing closed on a missing peer context, idempotence across a
+/// must not come back. The companion laws cover one-session bidirectional context convergence — the responder
+/// now folds the initiator's exchanged context on the completion frame, so a single session converges both
+/// contexts, with a reverse session only confirming quiescence — the completion frame surviving a wind-down as
+/// a preserved Completed with the folded context intact, an interrupted initiator emitting no completion frame,
+/// no false drop in a follow-up session on the completed path, the interrupted wind-down folding nothing (the
+/// false-drop guard, on both a responder and an initiator whose local drops defer while its fetch is
+/// outstanding), the responder failing closed on a missing peer context, idempotence across a
 /// second back-to-back session, frame-level quiescence on equal snapshots, the add-only degeneracy with a
 /// <see langword="null"/> local context, and the pooled rental ledger balancing end to end.
 /// </summary>
@@ -146,37 +149,242 @@ internal sealed class RemoveAwareReconciliationLawTests
 
 
     [TestMethod]
-    public async Task ContextLawTheInitiatorEndsAtTheMergedContextAndTheResponderConvergesOnTheReverseSession()
+    public async Task ContextLawACompletedExchangeConvergesBothContextsInOneSession()
     {
         using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
         timeoutSource.CancelAfter(Timeout);
         CancellationToken cancellationToken = timeoutSource.Token;
 
         //Equal entry sets but divergent contexts: both replicas hold the same dots, yet each has observed (and
-        //removed) an element the other never saw, so their causal contexts differ while their values do not.
+        //removed) an element the other never saw, so their causal contexts differ while their values do not. The
+        //completion frame closes the gap the reverse session used to fill — the responder folds the initiator's
+        //exchanged context on a verified-complete exchange, so ONE session converges both contexts.
         DottedVersionVectorSet<string> shared = DvvSet().Add(R1, "alpha").Add(R1, "beta");
         DottedVersionVectorSet<string> initiatorStart = shared.Add(R2, "initiatorGhost").RemoveValue("initiatorGhost");
         DottedVersionVectorSet<string> responderStart = shared.Add(R3, "responderGhost").RemoveValue("responderGhost");
 
         VectorClock expectedContext = initiatorStart.Context.Merge(responderStart.Context);
+        DottedVersionVectorSet<string> expectedValue = initiatorStart.Merge(responderStart);
 
         (RemoveAwareReconciliationHost initiatorHost, RemoveAwareReconciliationHost responderHost) = await ReconcileOnceAsync(initiatorStart, responderStart, cancellationToken).ConfigureAwait(false);
 
-        //Nothing crossed, so only the initiator — whose completed decode proves the exchange finished — folds
-        //terminally. The responder cannot verify the initiator's trailing frames all arrived, so it keeps its
-        //own context rather than risk covering entries it never received.
+        //The initiator folds terminally on its completed decode, and the responder folds on the completion frame:
+        //both end at the merged context in a single session, and both values match the oracle.
         Assert.AreEqual(expectedContext, initiatorHost.Current.Context);
-        Assert.AreEqual(responderStart.Context, responderHost.Current.Context);
-        Assert.AreEqual(initiatorStart.Merge(responderStart), initiatorHost.Current);
+        Assert.AreEqual(expectedContext, responderHost.Current.Context);
+        Assert.AreEqual(expectedValue, initiatorHost.Current);
+        Assert.AreEqual(expectedValue, responderHost.Current);
 
-        //The reverse-direction session lets the stale side decode the (empty) difference itself and fold to
-        //the merged context; the already-merged side stays put, and both replicas now agree with the oracle.
-        (RemoveAwareReconciliationHost reverseInitiator, RemoveAwareReconciliationHost reverseResponder) = await ReconcileOnceAsync(responderHost.Current, initiatorHost.Current, cancellationToken).ConfigureAwait(false);
+        //The quiescence strengthening: a reverse session between the now-converged states transfers nothing —
+        //equal snapshots leave the symmetric difference empty, so no fetch, elements, or drop frame crosses in
+        //either direction — and both replicas stay at the merge, confirming the one-session fold was complete.
+        (RemoveAwareReconciliationHost reverseInitiator, RemoveAwareReconciliationHost reverseResponder, FrameCensus reverseToResponder, FrameCensus reverseToInitiator) =
+            await ReconcileOnceWithCensusAsync(responderHost.Current, initiatorHost.Current, cancellationToken).ConfigureAwait(false);
 
+        Assert.AreEqual(0, reverseToResponder.FetchOrElementsOrDrop);
+        Assert.AreEqual(0, reverseToInitiator.FetchOrElementsOrDrop);
         Assert.AreEqual(expectedContext, reverseInitiator.Current.Context);
         Assert.AreEqual(expectedContext, reverseResponder.Current.Context);
-        Assert.AreEqual(initiatorStart.Merge(responderStart), reverseInitiator.Current);
-        Assert.AreEqual(initiatorStart.Merge(responderStart), reverseResponder.Current);
+        Assert.AreEqual(expectedValue, reverseInitiator.Current);
+        Assert.AreEqual(expectedValue, reverseResponder.Current);
+    }
+
+
+    [TestMethod]
+    public async Task AWindDownAfterTheCompletionFrameStaysCompletedAndConverged()
+    {
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        CancellationToken cancellationToken = timeoutSource.Token;
+
+        //The drain-preservation pin: the responder reaches Completed on the completion frame with the initiator's
+        //context folded, THEN the host winds it down with Complete(). The drain must keep the frame-earned
+        //Completed and the folded context rather than overwrite them with Interrupted. Divergent contexts over
+        //equal entry sets isolate the fold — nothing transfers, so only the completion frame can advance the
+        //responder's context.
+        DottedVersionVectorSet<string> shared = DvvSet().Add(R1, "alpha").Add(R1, "beta");
+        DottedVersionVectorSet<string> initiatorStart = shared.Add(R2, "initiatorGhost").RemoveValue("initiatorGhost");
+        DottedVersionVectorSet<string> responderStart = shared.Add(R3, "responderGhost").RemoveValue("responderGhost");
+
+        VectorClock expectedContext = initiatorStart.Context.Merge(responderStart.Context);
+        DottedVersionVectorSet<string> expectedValue = initiatorStart.Merge(responderStart);
+
+        RemoveAwareReconciliationHost initiatorHost = new(initiatorStart);
+        RemoveAwareReconciliationHost responderHost = new(responderStart);
+
+        using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: initiatorHost.LocalContext);
+        using AntiEntropySession<DottedEntry<string>> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: responderHost.LocalContext);
+
+        Task initiatorRun = initiator.RunAsync(
+            Forward(responder),
+            initiatorHost.ResolveDifference,
+            null,
+            initiatorHost.ApplyElements,
+            applyDrops: initiatorHost.ApplyDrops,
+            mergeContext: initiatorHost.MergeContext,
+            cancellationToken: cancellationToken);
+
+        Task responderRun = responder.RunAsync(
+            Forward(initiator),
+            null,
+            responderHost.ServeFetch,
+            responderHost.ApplyElements,
+            applyDrops: responderHost.ApplyDrops,
+            mergeContext: responderHost.MergeContext,
+            cancellationToken: cancellationToken);
+
+        await PaceUntilInitiatorCompletesAsync(initiator, responder, cancellationToken).ConfigureAwait(false);
+
+        responder.Complete();
+        await Task.WhenAll(initiatorRun, responderRun).ConfigureAwait(false);
+
+        //The responder stayed Completed through the wind-down, still attests convergence, and kept the folded
+        //context — the merged context, reachable on this quiescent exchange only through the completion frame.
+        Assert.AreEqual(AntiEntropySessionState.Completed, responder.State);
+        Assert.IsTrue(responder.IsConverged, "A responder that folded on the completion frame attests convergence.");
+        Assert.AreEqual(expectedContext, responderHost.Current.Context);
+        Assert.AreEqual(expectedValue, responderHost.Current);
+        Assert.AreEqual(AntiEntropySessionState.Completed, initiator.State);
+    }
+
+
+    [TestMethod]
+    public async Task AnInterruptedInitiatorNeverEmitsACompletionFrame()
+    {
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        CancellationToken cancellationToken = timeoutSource.Token;
+
+        //TC-1 census: the completion frame is emitted only at the initiator's two Completed transitions, both
+        //structurally unreachable from a drain. An initiator wound down before completing must emit none, at every
+        //pre-Completed phase.
+        DottedVersionVectorSet<string> shared = DvvSet().Add(R1, "alpha");
+        DottedVersionVectorSet<string> responderStart = shared.Add(R3, "unicorn");
+
+        //Phase A: interrupted before the decode completes — only the offer and the context ever went out.
+        {
+            RemoveAwareReconciliationHost initiatorHost = new(shared);
+            using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: initiatorHost.LocalContext);
+
+            int completions = 0;
+            SendReconciliationEnvelopeDelegate<DottedEntry<string>> countingVoid = (envelope, token) =>
+            {
+                if(envelope.Completion is not null)
+                {
+                    completions++;
+                }
+
+                return ValueTask.CompletedTask;
+            };
+
+            Task initiatorRun = initiator.RunAsync(
+                countingVoid,
+                initiatorHost.ResolveDifference,
+                null,
+                initiatorHost.ApplyElements,
+                applyDrops: initiatorHost.ApplyDrops,
+                mergeContext: initiatorHost.MergeContext,
+                cancellationToken: cancellationToken);
+
+            initiator.Complete();
+            await initiatorRun.ConfigureAwait(false);
+
+            Assert.AreEqual(AntiEntropySessionState.Interrupted, initiator.State);
+            Assert.AreEqual(0, completions);
+        }
+
+        //Phase B: interrupted at Resolving with a fetch outstanding — driven there by a scratch encoder over the
+        //peer's items, then wound down before any answer arrives.
+        {
+            RemoveAwareReconciliationHost initiatorHost = new(shared);
+            RemoveAwareReconciliationHost responderHost = new(responderStart);
+            using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: initiatorHost.LocalContext);
+
+            int completions = 0;
+            SendReconciliationEnvelopeDelegate<DottedEntry<string>> countingVoid = (envelope, token) =>
+            {
+                if(envelope.Completion is not null)
+                {
+                    completions++;
+                }
+
+                return ValueTask.CompletedTask;
+            };
+
+            Task initiatorRun = initiator.RunAsync(
+                countingVoid,
+                initiatorHost.ResolveDifference,
+                null,
+                initiatorHost.ApplyElements,
+                applyDrops: initiatorHost.ApplyDrops,
+                mergeContext: initiatorHost.MergeContext,
+                cancellationToken: cancellationToken);
+
+            await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForOffer(ReconciliationOffer.FromContract(ContentHashContract)), cancellationToken).ConfigureAwait(false);
+            await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForContext(new ReconciliationContext(responderHost.LocalContext)), cancellationToken).ConfigureAwait(false);
+
+            using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+            foreach(ReadOnlyMemory<byte> item in responderHost.Items)
+            {
+                remote.Add(item.Span);
+            }
+
+            int submissions = 0;
+            while(initiator.State != AntiEntropySessionState.Resolving)
+            {
+                int startIndex = remote.ProducedCount;
+                ReconciliationSymbol symbol = remote.ProduceNext();
+                await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForSymbols(new ReconciliationSymbolBatch(startIndex, [symbol])), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+                submissions++;
+                Assert.IsLessThan(TriggerCap, submissions, "The initiator never reached Resolving within the submission cap.");
+            }
+
+            initiator.Complete();
+            await initiatorRun.ConfigureAwait(false);
+
+            Assert.AreEqual(AntiEntropySessionState.Interrupted, initiator.State);
+            Assert.AreEqual(0, completions);
+        }
+    }
+
+
+    [TestMethod]
+    public async Task ACompletedPathFollowUpSessionDropsNothingFalsely()
+    {
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        CancellationToken cancellationToken = timeoutSource.Token;
+
+        //The no-false-drop probe on the completed/folded path: after one-session convergence (the responder folded
+        //the initiator's context on the completion frame), a follow-up session between the same peers must be
+        //quiescent and drop no live entry — the fold rode a completed exchange, so no context covers a dot whose
+        //entry was never transferred.
+        (DottedVersionVectorSet<string> initiatorStart, DottedVersionVectorSet<string> responderStart) = BuildDivergence(DivergenceShape.Mixed);
+        DottedVersionVectorSet<string> expected = initiatorStart.Merge(responderStart);
+
+        (RemoveAwareReconciliationHost initiatorHost, RemoveAwareReconciliationHost responderHost) = await ReconcileOnceAsync(initiatorStart, responderStart, cancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(expected, initiatorHost.Current);
+        Assert.AreEqual(expected, responderHost.Current);
+
+        //The follow-up session over the converged states transfers nothing and keeps every live entry, with the
+        //removed probe still absent — no legitimate entry is falsely dropped.
+        (RemoveAwareReconciliationHost followUpInitiator, RemoveAwareReconciliationHost followUpResponder, FrameCensus toResponder, FrameCensus toInitiator) =
+            await ReconcileOnceWithCensusAsync(initiatorHost.Current, responderHost.Current, cancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(0, toResponder.FetchOrElementsOrDrop);
+        Assert.AreEqual(0, toInitiator.FetchOrElementsOrDrop);
+        Assert.AreEqual(expected, followUpInitiator.Current);
+        Assert.AreEqual(expected, followUpResponder.Current);
+        foreach(string value in expected.Values)
+        {
+            Assert.Contains(value, followUpInitiator.Current.Values);
+            Assert.Contains(value, followUpResponder.Current.Values);
+        }
+
+        Assert.DoesNotContain(ResurrectionProbe, followUpInitiator.Current.Values);
+        Assert.DoesNotContain(ResurrectionProbe, followUpResponder.Current.Values);
     }
 
 
@@ -465,9 +673,15 @@ internal sealed class RemoveAwareReconciliationLawTests
         Assert.AreEqual(AntiEntropySessionState.Completed, initiator.State);
         Assert.AreEqual(AntiEntropySessionState.Completed, responder.State);
 
-        //No fetch, elements, or drop frame crosses in either direction; only offer, context, and done do.
+        //No fetch, elements, or drop frame crosses in either direction; only offer, context, done, and the new
+        //completion frame do.
         Assert.AreEqual(0, toResponder.FetchOrElementsOrDrop);
         Assert.AreEqual(0, toInitiator.FetchOrElementsOrDrop);
+
+        //The completion frame is the one crossing this census now accounts for: the initiator sends exactly one to
+        //the responder (carrying zero transfers on this quiescent path), and the responder sends none.
+        Assert.AreEqual(1, toResponder.Completion);
+        Assert.AreEqual(0, toInitiator.Completion);
 
         //The initiator's terminal merge still fires on this quiescent path; the responder folds nothing, and
         //with equal snapshots the merged context equals each side's own, so both hosts report it regardless.
@@ -674,6 +888,50 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
+    //Runs one remove-aware session like ReconcileOnceAsync but wraps each side's send in a FrameCensus, so a
+    //caller can assert which payloads crossed — used where the proof is quiescence (no fetch/elements/drop) rather
+    //than only the converged values.
+    private static async Task<(RemoveAwareReconciliationHost Initiator, RemoveAwareReconciliationHost Responder, FrameCensus ToResponder, FrameCensus ToInitiator)> ReconcileOnceWithCensusAsync(
+        DottedVersionVectorSet<string> initiatorStart,
+        DottedVersionVectorSet<string> responderStart,
+        CancellationToken cancellationToken)
+    {
+        RemoveAwareReconciliationHost initiatorHost = new(initiatorStart);
+        RemoveAwareReconciliationHost responderHost = new(responderStart);
+
+        using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: initiatorHost.LocalContext);
+        using AntiEntropySession<DottedEntry<string>> responder = new(AntiEntropyRole.Responder, ContentHashContract, responderHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: responderHost.LocalContext);
+
+        FrameCensus toResponder = new();
+        FrameCensus toInitiator = new();
+
+        Task initiatorRun = initiator.RunAsync(
+            toResponder.Wrap(responder),
+            initiatorHost.ResolveDifference,
+            null,
+            initiatorHost.ApplyElements,
+            applyDrops: initiatorHost.ApplyDrops,
+            mergeContext: initiatorHost.MergeContext,
+            cancellationToken: cancellationToken);
+
+        Task responderRun = responder.RunAsync(
+            toInitiator.Wrap(initiator),
+            null,
+            responderHost.ServeFetch,
+            responderHost.ApplyElements,
+            applyDrops: responderHost.ApplyDrops,
+            mergeContext: responderHost.MergeContext,
+            cancellationToken: cancellationToken);
+
+        await PaceUntilInitiatorCompletesAsync(initiator, responder, cancellationToken).ConfigureAwait(false);
+
+        responder.Complete();
+        await Task.WhenAll(initiatorRun, responderRun).ConfigureAwait(false);
+
+        return (initiatorHost, responderHost, toResponder, toInitiator);
+    }
+
+
     //Builds a known divergence with the merge known by construction. A shared ancestor seeds both sides; the
     //shapes layer per-side adds and an observed remove on top, including the resurrection probe — a dot the
     //initiator observed and removed while the responder still holds it.
@@ -828,6 +1086,8 @@ internal sealed class RemoveAwareReconciliationLawTests
 
         public int ContextOrDrop { get; private set; }
 
+        public int Completion { get; private set; }
+
 
         public SendReconciliationEnvelopeDelegate<DottedEntry<string>> Wrap(AntiEntropySession<DottedEntry<string>> peer)
         {
@@ -841,6 +1101,11 @@ internal sealed class RemoveAwareReconciliationLawTests
                 if(envelope.Context is not null || envelope.Drop is not null)
                 {
                     ContextOrDrop++;
+                }
+
+                if(envelope.Completion is not null)
+                {
+                    Completion++;
                 }
 
                 return ForwardTo(peer, envelope, cancellationToken);
