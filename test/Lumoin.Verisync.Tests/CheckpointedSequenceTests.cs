@@ -45,6 +45,15 @@ internal sealed class CheckpointedSequenceTests
 
 
     [TestMethod]
+    public void TheOffsetStrategyIdentifierIsPinned()
+    {
+        //offset.v2 certifies both removal kinds; the v1 identifier's semantics no longer exist in code,
+        //and published identifiers never change meaning.
+        Assert.AreEqual("verisync.sequence.offset.v2", WellKnownSequenceStrategies.CreateOffset<string>().StrategyId);
+    }
+
+
+    [TestMethod]
     public void EditsAccumulateInLive()
     {
         (CheckpointedSequence<Rga<string>, string, Dot> withA, Dot idA) = NewSequence().InsertAtHead("A", R1);
@@ -76,11 +85,31 @@ internal sealed class CheckpointedSequenceTests
         Assert.IsNotNull(withA.CausalContext);
         Assert.AreEqual(1, withA.CausalContext![R1]);
 
-        //The offset strategy exposes no remove-aware causal context (gate 5), so the accessor is null.
+        //offset.v2 advertises a live causal context too, and its dotted removes tick it through the
+        //container wiring: one insert plus one remove reads two on R1's axis.
         CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> offset =
             CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Create(
                 WellKnownSequenceStrategies.CreateOffset<string>(), Canonicalize, Sha256);
-        Assert.IsNull(offset.CausalContext);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withOffsetA, OffsetAnchor offsetAnchor) = offset.InsertAtHead("A", R1);
+        Assert.IsNotNull(withOffsetA.CausalContext);
+        Assert.AreEqual(1, withOffsetA.CausalContext![R1]);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> offsetRemoved = withOffsetA.Remove(offsetAnchor, R1);
+        Assert.AreEqual(2, offsetRemoved.CausalContext![R1]);
+
+        //A context built WITHOUT the delegate advertises none.
+        SequenceCrdtContext<OffsetAnchoredSequence<string>, string, OffsetAnchor> wired = WellKnownSequenceStrategies.CreateOffset<string>();
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> bare =
+            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Create(new SequenceCrdtContext<OffsetAnchoredSequence<string>, string, OffsetAnchor>
+            {
+                StrategyId = wired.StrategyId,
+                Empty = wired.Empty,
+                InsertAtHead = wired.InsertAtHead,
+                InsertAfter = wired.InsertAfter,
+                Remove = wired.Remove,
+                Merge = wired.Merge,
+                Values = wired.Values
+            }, Canonicalize, Sha256);
+        Assert.IsNull(bare.CausalContext);
     }
 
 

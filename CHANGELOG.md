@@ -24,8 +24,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   fork the checkpoint line. `Seal` is the sole compaction entry point, which also means consensus
   checkpointing now requires a certification-capable strategy — deliberate: an anchor that certifies
   nothing was the footgun. `CheckpointCommitment` carries its frontier; `CompactSequenceDelegate` and
-  `CanonicalizeCheckpointDelegate` take the dotted checkpoint (the offset strategy's wiring projects
-  values out and is otherwise untouched — its removes remain uncertified until its own follow-on).
+  `CanonicalizeCheckpointDelegate` take the dotted checkpoint, which the compacting strategies wire
+  directly (the offset strategy's certifying wiring lands in the offset entry above).
   The compactable RGA run state serializes dotted removes: tombstone spans carry two aligned counter
   ranges so a contiguous single-replica deletion pass still coalesces to one span, irregular
   tombstones (concurrent removes, legacy empties) fall back to explicit entries, and the permanent
@@ -36,9 +36,9 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 - The RGA strategy identifiers are replaced: `verisync.sequence.rga.v2` and
   `verisync.sequence.rga-rle.v2` supersede the v1 identifiers, which are deleted — the dotted-remove
   semantics change both strategies' replication contracts, and published identifiers never change
-  meaning. `SequenceRemoveDelegate` and `CheckpointedSequence.Remove` grow the removing `ReplicaId`;
-  the offset strategy discards it and its documentation now states plainly that `offset.v1` removes
-  remain causally invisible (certified base-offset removal is a follow-on design). The flat
+  meaning. `SequenceRemoveDelegate` and `CheckpointedSequence.Remove` grow the removing `ReplicaId`,
+  which the offset strategy now threads to certify both of its removal axes (see the offset entry
+  above); the superseded `offset.v1` identifier is deleted. The flat
   `RgaState` tombstones become `RgaTombstoneEntry` records (`target` plus `removeDots`, empty for
   legacy) with the JSON arm updated fail-closed; both deserializers now throw on duplicate identities,
   validate that the context covers every vertex and remove-dot, and reject a default (absent) array —
@@ -190,6 +190,31 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   `KeyNotFoundException`.
 
 ### Added
+
+- The offset-anchored sequence strategy certifies removals on both of its axes, closing the same
+  causal-invisibility defect the RGA strategies closed: `offset.v2` removes are dotted events that
+  tick the context — live-tombstone removals exactly as the RGA mechanism, and base-offset removals
+  through a per-offset remove-dot map — so gossip digests see remove divergence, the stability
+  frontier certifies removals group-wide, and the strategy exposes the causal context and certified
+  projection that make an offset container sealable. Compaction follows the four-way taxonomy: a
+  stable tombstoned element whose remove is not yet certified converts into the new base as a
+  pending-removed entry (never ghost-retained — members that disagree on an uncertified remove must
+  still materialize the identical base), carrying its remove-dots onto its new offset. The base
+  carries a generation identity — the frontier the generation was materialized at, stamped only by
+  base-changing compactions — and merges are fenced on it, because certified reclamation would let
+  base value arrays repeat across genuinely different generations. Removed base entries themselves
+  are certified but NOT yet reclaimed: integration proved a frontier-local reclamation cannot be
+  simultaneously frontier-pure and order-preserving (gating on retained descendants forks the
+  reclamation set between honest members; reclaiming unconditionally re-anchors survivors into
+  foreign sibling sets and reorders the visible sequence), so removed slots stay as hidden ordering
+  placeholders and reclamation awaits a follow-on that carries a consensus-agreed reclamation set
+  through the seal. Compaction — and therefore sealing an offset container — requires an
+  insert-quiescent frontier that covers every vertex's insert-dot: the base-materializing model
+  materializes only a fully-stable line, so an unstable vertex fails closed (enforced fail-closed)
+  rather than let a base conversion reorder the visible sequence or fork honest members' bases at one
+  generation identity. Deserialization gains full parity validation, including one cross-axis dot pool —
+  a forged dot aliased between the live and base axes could otherwise turn an honest live
+  certification into the reclamation of an unremoved base slot.
 
 - Sequence removes are dotted events the group can certify. `Rga<TValue>.Remove` now takes the
   removing `ReplicaId`, ticks the causal context, and records the minted remove-dot in a tombstone

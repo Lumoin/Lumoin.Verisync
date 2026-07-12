@@ -293,6 +293,12 @@ public sealed class CheckpointedSequence<TSequence, TValue, TAnchor>: IEquatable
         }
 
         ImmutableArray<SequenceCheckpointEntry<TValue>> projection = Context.CertifyProjection(Live, stabilityFrontier);
+
+        //Compact BEFORE proposing: a strategy's compaction guard (the base-materializing strategy requires an
+        //insert-quiescent frontier) must fail the seal before any consensus round, or a durable register
+        //could choose a commitment no member can compact against. The result is pure and is used only when
+        //this sealer's own proposal wins.
+        TSequence compactedLive = Context.Compact(Live, stabilityFrontier, projection);
         var proposal = new CheckpointCommitment(stabilityFrontier, ComputeDigest(CanonicalizeCheckpoint(projection)));
 
         (CasPaxosRegister<CheckpointCommitment> nextRegister, ChangeOutcome<CheckpointCommitment> outcome) =
@@ -327,7 +333,7 @@ public sealed class CheckpointedSequence<TSequence, TValue, TAnchor>: IEquatable
             Context,
             CanonicalizeCheckpoint,
             ComputeDigest,
-            Context.Compact(Live, stabilityFrontier, projection),
+            compactedLive,
             projection,
             proposal,
             ballot);

@@ -2,14 +2,19 @@ using CsCheck;
 using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Collections.Immutable;
-using System.Diagnostics.CodeAnalysis;
 
 namespace Lumoin.Verisync.Tests;
 
 /// <summary>
-/// Registers the <see cref="WellKnownSequenceStrategies.OffsetV1"/> strategy with the shared law
+/// Registers the <see cref="WellKnownSequenceStrategies.OffsetV2"/> strategy with the shared law
 /// harness. All generated operands share one base generation — cross-generation merging fails closed
-/// by design and is exercised in the focused tests instead.
+/// by design and is exercised in the focused tests instead. Compaction requires an insert-quiescent
+/// frontier (offset.v2 §17), so every generated case takes the shared prefix's OWN full context as the
+/// frontier — every insert is certified — and confines divergence to REMOVES-ONLY suffixes: an
+/// above-frontier remove keeps every vertex stable, so both operands stay quiescent and, by the
+/// determinism inclusion, derive the SAME checkpoint at the shared frontier, while a suffix insert would
+/// raise an unstable vertex and Compact would fail closed. Checkpoints are the prefix's certified
+/// projection: real vertex dots for live elements, the full-32-byte sentinel identity for base slots.
 /// </summary>
 [TestClass]
 internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnchoredSequence<int>, int, OffsetAnchor>
@@ -54,21 +59,26 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     protected override Gen<(OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)>? GenCommutationCase => GenCase;
 
 
-    //The shared-prefix ops, the frontier cut, and the two insert-only divergent suffixes all come from
-    //CsCheck seeds, so the whole case is deterministic and reproduces on shrink.
+    //The shared-prefix ops and the two divergent remove-only suffixes all come from CsCheck seeds, so
+    //the whole case is deterministic and reproduces on shrink. Filtered so EVERY sampled case enters the
+    //compaction region — something converts or drops at the frontier — the slice-1 lesson that unfiltered
+    //histories rarely reach the region the laws exist to test.
     private static Gen<(OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)> GenCase { get; } =
         Gen.Select(
             Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 6],
-            Gen.Int[0, 6],
             Gen.Int[0, 100].Array[0, 4],
             Gen.Int[0, 100].Array[0, 4],
-            static (ops, cut, suffixA, suffixB) => BuildCase(ops, cut, suffixA, suffixB));
+            static (ops, suffixA, suffixB) => BuildCase(ops, suffixA, suffixB))
+        .Where(static input => CompactionChangesTheMergedState(input));
 
 
-    private static (OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint) BuildCase((int Replica, int Seed)[] ops, int cut, int[] suffixA, int[] suffixB)
+    private static (OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint) BuildCase((int Replica, int Seed)[] ops, int[] suffixA, int[] suffixB)
     {
-        //Shared prefix on the common base: one sequence modelling common knowledge, with the dot each
-        //insert minted recorded in op order (a remove op records no dot, marked by a null sentinel).
+        //Shared prefix on the common base, inserts and dotted removes both, replayed into one sequence.
+        //The compaction frontier is the prefix's OWN full context, so every insert is certified: the
+        //merged state is insert-quiescent, the §17 contract compaction requires. Divergence lands only in
+        //the suffixes, which are REMOVES-ONLY — an above-frontier remove keeps every vertex stable, while
+        //a suffix insert would raise an unstable vertex and Compact would fail closed.
         OffsetAnchoredSequence<int> shared = OffsetAnchoredSequence<int>.WithBase(SharedBase);
         var targets = new List<OffsetAnchor>
         {
@@ -77,7 +87,6 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
             OffsetAnchor.AtBase(1),
             OffsetAnchor.AtBase(2)
         };
-        var dotsByOp = new List<Dot?>(ops.Length);
         for(int opIndex = 0; opIndex < ops.Length; opIndex++)
         {
             (int replica, int seed) = ops[opIndex];
@@ -85,100 +94,58 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
             if(seed % 4 == 0 && visibleCount > 0)
             {
                 OffsetAnchor removeTarget = shared.VisibleElements[seed % visibleCount].Anchor;
-                shared = shared.Remove(removeTarget);
-                dotsByOp.Add(null);
-
-                continue;
+                shared = shared.Remove(removeTarget, Replicas[replica]);
             }
-
-            OffsetAnchor inserted;
-            (shared, inserted) = shared.InsertAfter(targets[seed % targets.Count], (100 * replica) + opIndex, Replicas[replica]);
-            targets.Add(inserted);
-            dotsByOp.Add(inserted.LiveId);
-        }
-
-        //Frontier: a cut over the op count; the per-replica maximum counter over the dots the first cut
-        //ops inserted. Ops past the cut stay shared but above the frontier — retained shared vertices.
-        int boundedCut = Math.Min(cut, dotsByOp.Count);
-        VectorClock frontier = VectorClock.Empty;
-        for(int opIndex = 0; opIndex < boundedCut; opIndex++)
-        {
-            if(dotsByOp[opIndex] is { } dot)
+            else
             {
-                frontier = RaiseTo(frontier, dot);
+                OffsetAnchor inserted;
+                (shared, inserted) = shared.InsertAfter(targets[seed % targets.Count], (100 * replica) + opIndex, Replicas[replica]);
+                targets.Add(inserted);
             }
         }
 
-        //Checkpoint: from the final shared sequence, base entries plus stable live entries, in order. Each
-        //entry gains a dot: a live element carries its real vertex dot, recoverable by value; a base element
-        //carries a SYNTHESIZED placeholder dot. The §3.4 offset adapter projects values out and discards every
-        //dot before offset's value-typed integrity check, so the placeholder is never certified against a real
-        //vertex — real offset dot certification is the slice-3 parity work.
-        ImmutableArray<SequenceCheckpointEntry<int>>.Builder checkpointBuilder = ImmutableArray.CreateBuilder<SequenceCheckpointEntry<int>>();
-        foreach((OffsetAnchor anchor, int value) in shared.VisibleElements)
-        {
-            if(anchor.LiveId is { } liveId)
-            {
-                if(IsStable(frontier, liveId))
-                {
-                    checkpointBuilder.Add(new SequenceCheckpointEntry<int>(DotStateOf(liveId), value));
-                }
+        //The frontier is the shared prefix's own full context: it certifies every insert AND every shared
+        //remove. The checkpoint is that prefix's certified projection, which the determinism theorem makes
+        //the merged operand's projection at the same frontier too — the divergent suffix removes stay
+        //above it. Real dots for live elements, sentinel identities for base slots.
+        VectorClock frontier = shared.CausalContext;
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = shared.CertifiedProjection(frontier);
 
-                continue;
-            }
-
-            checkpointBuilder.Add(new SequenceCheckpointEntry<int>(PlaceholderDot(anchor.BaseOffset), value));
-        }
-
-        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = checkpointBuilder.ToImmutable();
-
-        //Insert-only divergent suffixes: removals above the frontier on stable elements would make A and
-        //B derive different checkpoints, which the composition forbids, so the generator only inserts.
-        OffsetAnchoredSequence<int> a = ApplySuffix(shared, Replicas[0], suffixA, 1000);
-        OffsetAnchoredSequence<int> b = ApplySuffix(shared, Replicas[1], suffixB, 2000);
+        //Divergent REMOVES-ONLY suffixes above the frontier: each hides a still-visible element without
+        //minting a vertex, so both operands stay insert-quiescent and derive the identical checkpoint.
+        OffsetAnchoredSequence<int> a = ApplyRemoveSuffix(shared, Replicas[0], suffixA);
+        OffsetAnchoredSequence<int> b = ApplyRemoveSuffix(shared, Replicas[1], suffixB);
 
         return (a, b, frontier, checkpoint);
     }
 
 
-    private static OffsetAnchoredSequence<int> ApplySuffix(OffsetAnchoredSequence<int> start, ReplicaId replica, int[] seeds, int valueBase)
+    private static bool CompactionChangesTheMergedState((OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint) input)
+    {
+        OffsetAnchoredSequence<int> merged = input.A.Merge(input.B);
+
+        return !merged.Compact(input.Frontier, input.Checkpoint).Equals(merged);
+    }
+
+
+    //Removes-only, so the operand stays insert-quiescent: each seed hides one still-visible element,
+    //minting an above-frontier remove-dot but never a vertex. A suffix insert would raise an unstable
+    //vertex and Compact would fail closed under the §17 guard.
+    private static OffsetAnchoredSequence<int> ApplyRemoveSuffix(OffsetAnchoredSequence<int> start, ReplicaId replica, int[] seeds)
     {
         OffsetAnchoredSequence<int> sequence = start;
-        var targets = new List<OffsetAnchor>();
-        foreach((OffsetAnchor anchor, int _) in sequence.VisibleElements)
-        {
-            targets.Add(anchor);
-        }
-
-        int value = valueBase;
         foreach(int seed in seeds)
         {
-            OffsetAnchor anchor = targets.Count == 0 ? OffsetAnchor.Head : targets[seed % targets.Count];
-            OffsetAnchor inserted;
-            (sequence, inserted) = sequence.InsertAfter(anchor, value, replica);
-            targets.Add(inserted);
-            value++;
+            int visibleCount = sequence.VisibleElements.Count;
+            if(visibleCount == 0)
+            {
+                break;
+            }
+
+            sequence = sequence.Remove(sequence.VisibleElements[seed % visibleCount].Anchor, replica);
         }
 
         return sequence;
-    }
-
-
-    private static bool IsStable(VectorClock frontier, Dot dot)
-    {
-        return frontier[dot.Replica] >= dot.Counter;
-    }
-
-
-    private static VectorClock RaiseTo(VectorClock frontier, Dot dot)
-    {
-        VectorClock raised = frontier;
-        while(raised[dot.Replica] < dot.Counter)
-        {
-            raised = raised.Increment(dot.Replica);
-        }
-
-        return raised;
     }
 
 
@@ -196,6 +163,14 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
 
         foreach(int seed in seeds)
         {
+            int visibleCount = sequence.VisibleElements.Count;
+            if(seed % 4 == 0 && visibleCount > 0)
+            {
+                sequence = sequence.Remove(sequence.VisibleElements[seed % visibleCount].Anchor, Replicas[replicaIndex]);
+
+                continue;
+            }
+
             OffsetAnchor inserted;
             (sequence, inserted) = sequence.InsertAfter(targets[seed % targets.Count], value, Replicas[replicaIndex]);
             targets.Add(inserted);
@@ -203,21 +178,6 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
         }
 
         return sequence;
-    }
-
-
-    private static DotState DotStateOf(Dot dot) => new(ImmutableArray.Create(dot.Replica.AsSpan()), dot.Counter);
-
-
-    //A base element has no natural dot, so a reserved replica (first byte 254, outside every generator's
-    //range) with counter = base slot + 1 stands in as a deterministic, non-colliding placeholder the offset
-    //adapter discards before its value-typed integrity check.
-    private static DotState PlaceholderDot(int baseOffset)
-    {
-        Span<byte> reserved = stackalloc byte[ReplicaId.Size];
-        reserved[0] = 254;
-
-        return new DotState(ImmutableArray.Create(ReplicaId.FromSpan(reserved).AsSpan()), baseOffset + 1);
     }
 
 
