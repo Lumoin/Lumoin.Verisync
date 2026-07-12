@@ -1,3 +1,4 @@
+using CsCheck;
 using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Collections.Immutable;
@@ -432,6 +433,207 @@ internal sealed class OffsetAnchoredSequenceTests
         Assert.ThrowsExactly<ArgumentNullException>(() => sequence.Compact(null!, emptyCheckpoint));
         Assert.ThrowsExactly<ArgumentException>(() => sequence.Compact(VectorClock.Empty, default));
         Assert.ThrowsExactly<ArgumentNullException>(() => sequence.TranslateAnchor(null!));
+    }
+
+
+    //T-O2-1, probe basics: the empty state and a pure-base state probe empty at any frontier — base
+    //slots mint no insert-dots — and a state with vertices probed at the empty frontier reports every
+    //vertex insert-dot in (Replica, Counter) ascending order.
+    [TestMethod]
+    public void TheProbeIsEmptyOnAnEmptyStateAndListsEveryVertexInOrder()
+    {
+        Assert.IsTrue(OffsetAnchoredSequence<string>.Empty.UnstableInserts(VectorClock.Empty).IsEmpty);
+        OffsetAnchoredSequence<string> baseOnly = OffsetAnchoredSequence<string>.WithBase(Base);
+        Assert.IsTrue(baseOnly.UnstableInserts(VectorClock.Empty).IsEmpty);
+        Assert.IsTrue(baseOnly.UnstableInserts(VectorClock.Empty.Increment(R1)).IsEmpty);
+
+        //Vertices minted on two axes: R2's head insert comes first in time, R1's dots come first in
+        //the probe's replica order, counters ascending within one axis.
+        (OffsetAnchoredSequence<string> withX, OffsetAnchor x) = baseOnly.InsertAtHead("x", R2);
+        (OffsetAnchoredSequence<string> withY, OffsetAnchor y) = withX.InsertAfter(x, "y", R1);
+        (OffsetAnchoredSequence<string> withZ, _) = withY.InsertAfter(y, "z", R1);
+
+        Dot[] expected = [new Dot(R1, 2), new Dot(R1, 3), new Dot(R2, 1)];
+        CollectionAssert.AreEqual(expected, withZ.UnstableInserts(VectorClock.Empty).ToArray());
+
+        //The state's own context covers every insert-dot, so the probe reads empty there.
+        Assert.IsTrue(withZ.UnstableInserts(withZ.CausalContext).IsEmpty);
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => withZ.UnstableInserts(null!));
+    }
+
+
+    //T-O2-2: remove-dots never block insert-quiescence — the probe reads INSERT stability only. A
+    //frontier covering both inserts but not the remove-dot probes empty on both members, the certified
+    //projection still carries the locally hidden element, and both members compact to byte-identical
+    //base value arrays: the remover converts it pending-removed, the laggard converts it visible.
+    [TestMethod]
+    public void RemoveDotsAboveTheFrontierNeverBlockInsertQuiescence()
+    {
+        (OffsetAnchoredSequence<string> withA, OffsetAnchor a) = OffsetAnchoredSequence<string>.Empty.InsertAtHead("a", R1);
+        (OffsetAnchoredSequence<string> shared, OffsetAnchor b) = withA.InsertAfter(a, "b", R1);
+        OffsetAnchoredSequence<string> m2 = shared;
+        OffsetAnchoredSequence<string> m1 = shared.Remove(b, R1);
+
+        //The min-fold of the two members' digests is the laggard's pre-remove context: both insert
+        //dots covered, the remove-dot (R1,3) not.
+        VectorClock frontier = m2.CausalContext;
+        Assert.IsTrue(m1.UnstableInserts(frontier).IsEmpty);
+        Assert.IsTrue(m2.UnstableInserts(frontier).IsEmpty);
+
+        //The determinism inclusion: the projection carries the locally hidden b, identically on both.
+        ImmutableArray<SequenceCheckpointEntry<string>> m1Projection = m1.CertifiedProjection(frontier);
+        ImmutableArray<SequenceCheckpointEntry<string>> m2Projection = m2.CertifiedProjection(frontier);
+        CollectionAssert.AreEqual(m2Projection.ToArray(), m1Projection.ToArray());
+
+        OffsetAnchoredSequence<string> m1Compacted = m1.Compact(frontier, m1Projection);
+        OffsetAnchoredSequence<string> m2Compacted = m2.Compact(frontier, m2Projection);
+        string[] expectedBase = ["a", "b"];
+        string[] m1Visible = ["a"];
+        CollectionAssert.AreEqual(expectedBase, m1Compacted.ToState().Base.ToArray());
+        CollectionAssert.AreEqual(expectedBase, m2Compacted.ToState().Base.ToArray());
+        CollectionAssert.AreEqual(m1Visible, m1Compacted.Values.ToArray());
+        CollectionAssert.AreEqual(expectedBase, m2Compacted.Values.ToArray());
+
+        //The remover's marking rides at offset 1 carrying exactly the remove-dot (R1,3); the laggard
+        //never observed the remove and carries no marking.
+        OffsetBaseRemovalEntry marking = m1Compacted.ToState().RemovedBaseOffsets[0];
+        Assert.AreEqual(1, marking.Offset);
+        Assert.HasCount(1, marking.RemoveDots);
+        Assert.AreEqual(3, marking.RemoveDots[0].Counter);
+        Assert.AreEqual(1, marking.RemoveDots[0].Replica[0]);
+        Assert.HasCount(0, m2Compacted.ToState().RemovedBaseOffsets);
+    }
+
+
+    //The probe/guard-agreement property: over generated op histories on the empty base, the probe at a
+    //snapshot-cut frontier is empty EXACTLY when the base-materializing compaction passes its
+    //quiescence guard, and the probe's content equals a naively recomputed uncovered set in
+    //(Replica, Counter) order. Sampled over BOTH regions — histories with at least one post-cut insert
+    //(probe provably non-empty) and histories with none (probe provably empty) — so neither half of
+    //the iff can go vacuous.
+    [TestMethod]
+    public void TheProbeIsEmptyExactlyWhenCompactionPasses()
+    {
+        GenProbeCase.Where(static input => NaiveUncoveredInsertDots(input.Full, input.Frontier).Length > 0).Sample(input =>
+        {
+            AssertProbeAgreesWithGuardAndOracle(input.Full, input.Frontier);
+        });
+
+        GenProbeCase.Where(static input => NaiveUncoveredInsertDots(input.Full, input.Frontier).Length == 0).Sample(input =>
+        {
+            AssertProbeAgreesWithGuardAndOracle(input.Full, input.Frontier);
+        });
+    }
+
+
+    private static void AssertProbeAgreesWithGuardAndOracle(OffsetAnchoredSequence<int> full, VectorClock frontier)
+    {
+        ImmutableArray<Dot> probe = full.UnstableInserts(frontier);
+
+        //The iff between the probe and the guard: the checkpoint is the state's own certified
+        //projection at an honest historical frontier, so the quiescence guard is the only throw
+        //reachable by construction.
+        bool compactionPassed;
+        try
+        {
+            full.Compact(frontier, full.CertifiedProjection(frontier));
+            compactionPassed = true;
+        }
+        catch(InvalidOperationException)
+        {
+            compactionPassed = false;
+        }
+
+        Assert.AreEqual(probe.IsEmpty, compactionPassed);
+
+        //The completeness oracle: the probe equals the naively recomputed uncovered set, in order.
+        CollectionAssert.AreEqual(NaiveUncoveredInsertDots(full, frontier), probe.ToArray());
+    }
+
+
+    //The replica axes the probe property's op histories mint on; one replica per operand index.
+    private static ReplicaId[] HistoryReplicas { get; } = [Replica(10), Replica(11), Replica(12)];
+
+
+    //A replica-honest op history over the EMPTY base with a snapshot cut: the probed state is the full
+    //history and the frontier is the cut snapshot's own causal context.
+    private static Gen<(OffsetAnchoredSequence<int> Full, VectorClock Frontier)> GenProbeCase { get; } =
+        Gen.Select(
+            Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 8],
+            Gen.Int[0, 8],
+            static (ops, cut) =>
+            {
+                (OffsetAnchoredSequence<int> full, IReadOnlyList<OffsetAnchoredSequence<int>> snapshots) = BuildSnapshots(ops);
+
+                return (full, SnapshotAt(snapshots, cut).CausalContext);
+            });
+
+
+    //Live-axis op histories over the EMPTY base: head and live-anchored inserts plus dotted removes of
+    //still-visible elements.
+    private static (OffsetAnchoredSequence<int> Full, IReadOnlyList<OffsetAnchoredSequence<int>> Snapshots) BuildSnapshots((int Replica, int Seed)[] ops)
+    {
+        OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.Empty;
+        var anchors = new List<OffsetAnchor>();
+        var snapshots = new List<OffsetAnchoredSequence<int>>(ops.Length);
+        for(int opIndex = 0; opIndex < ops.Length; opIndex++)
+        {
+            (int replica, int seed) = ops[opIndex];
+            int visibleCount = sequence.VisibleElements.Count;
+            if(seed % 3 == 0 && visibleCount > 0)
+            {
+                OffsetAnchor target = sequence.VisibleElements[seed % visibleCount].Anchor;
+                sequence = sequence.Remove(target, HistoryReplicas[replica]);
+            }
+            else if(anchors.Count == 0)
+            {
+                (sequence, OffsetAnchor head) = sequence.InsertAtHead((100 * replica) + opIndex, HistoryReplicas[replica]);
+                anchors.Add(head);
+            }
+            else
+            {
+                (sequence, OffsetAnchor inserted) = sequence.InsertAfter(anchors[seed % anchors.Count], (100 * replica) + opIndex, HistoryReplicas[replica]);
+                anchors.Add(inserted);
+            }
+
+            snapshots.Add(sequence);
+        }
+
+        return (sequence, snapshots);
+    }
+
+
+    private static OffsetAnchoredSequence<int> SnapshotAt(IReadOnlyList<OffsetAnchoredSequence<int>> snapshots, int cut)
+    {
+        int bounded = Math.Min(cut, snapshots.Count);
+
+        return bounded == 0 ? OffsetAnchoredSequence<int>.Empty : snapshots[bounded - 1];
+    }
+
+
+    //The naive uncovered set: every vertex insert-dot the frontier does not cover, recomputed from the
+    //serialized state and sorted by (Replica, Counter) — the completeness oracle the probe must equal.
+    private static Dot[] NaiveUncoveredInsertDots(OffsetAnchoredSequence<int> sequence, VectorClock frontier)
+    {
+        var uncovered = new List<Dot>();
+        foreach(OffsetVertexEntry<int> vertex in sequence.ToState().Vertices)
+        {
+            var dot = new Dot(ReplicaId.FromSpan(vertex.Id.Replica.AsSpan()), vertex.Id.Counter);
+            if(frontier[dot.Replica] < dot.Counter)
+            {
+                uncovered.Add(dot);
+            }
+        }
+
+        uncovered.Sort(static (left, right) =>
+        {
+            int byReplica = left.Replica.CompareTo(right.Replica);
+
+            return byReplica != 0 ? byReplica : left.Counter.CompareTo(right.Counter);
+        });
+
+        return uncovered.ToArray();
     }
 
 

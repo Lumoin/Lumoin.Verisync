@@ -20,6 +20,8 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
 {
     private static ReplicaId[] Replicas { get; } = [MakeReplica(0), MakeReplica(1), MakeReplica(2), MakeReplica(3)];
 
+    private static ReplicaId R1 { get; } = MakeReplica(1);
+
 
     protected override SequenceCrdtContext<Rga<int>, int, Dot> Context { get; } = WellKnownSequenceStrategies.CreateRgaRle<int>();
 
@@ -64,6 +66,53 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
 
 
     protected override Gen<(Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)>? GenCommutationCase => GenCase;
+
+
+    //LAW-NFD: an op history of inserts and dotted removes over an empty Rga with a strict prefix cut.
+    protected override Gen<(Rga<int> Full, Rga<int> Behind)> GenFullAndBehindHistory { get; } =
+        Gen.Select(
+            Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 8],
+            Gen.Int[0, 8],
+            static (ops, cut) =>
+            {
+                (Rga<int> full, IReadOnlyList<Rga<int>> snapshots) = BuildSnapshots(ops);
+
+                return (Full: full, Behind: SnapshotAt(snapshots, cut));
+            }).Where(static pair => !pair.Full.Equals(pair.Behind));
+
+
+    //The drop-only remove scenario for LAW-NR/LAW-SR: R1 inserts a survivor then a childless element and
+    //removes the element; compacting at the certified frontier drops it, leaving the survivor live, so the
+    //compacted state legally merges with the uncompacted ghost-holder and stale operands.
+    protected override RemoveScenario? BuildRemoveScenario()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
+        Rga<int> stalePreRemove = withB;
+        Rga<int> ghostHolder = withB.Remove(idB, R1);
+
+        VectorClock postRemove = ghostHolder.CausalContext;
+        VectorClock frontier = FrontierOf(postRemove, postRemove, postRemove);
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = ghostHolder.CertifiedProjection(frontier);
+        Rga<int> compacted = ghostHolder.Compact(frontier, checkpoint);
+
+        return new RemoveScenario(compacted, ghostHolder, stalePreRemove, frontier, checkpoint);
+    }
+
+
+    //The RGA-shaped half of LAW-RG: at the uncertified frontier the ghost is kept in place, so the removed
+    //dot translates to itself; at the certified frontier it re-anchors to the survivor.
+    protected override void AssertRemoveConversionOutcome(
+        Rga<int> uncertifiedCompacted,
+        Rga<int> certifiedCompacted,
+        Dot removedAnchor,
+        Dot survivorAnchor,
+        VectorClock uncertifiedFrontier,
+        VectorClock certifiedFrontier)
+    {
+        Assert.AreEqual(removedAnchor, uncertifiedCompacted.TranslateAnchor(removedAnchor));
+        Assert.AreEqual(survivorAnchor, certifiedCompacted.TranslateAnchor(removedAnchor));
+    }
 
 
     //The shared-prefix ops, the frontier cut, and the two divergent insert-and-remove suffixes all come from
@@ -249,6 +298,59 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
         }
 
         return rga;
+    }
+
+
+    private static (Rga<int> Full, IReadOnlyList<Rga<int>> Snapshots) BuildSnapshots((int Replica, int Seed)[] ops)
+    {
+        Rga<int> sequence = Rga<int>.Empty;
+        var insertedDots = new List<Dot>();
+        var snapshots = new List<Rga<int>>(ops.Length);
+        for(int opIndex = 0; opIndex < ops.Length; opIndex++)
+        {
+            (int replica, int seed) = ops[opIndex];
+            int visibleCount = sequence.Values.Count;
+            if(seed % 3 == 0 && visibleCount > 0)
+            {
+                sequence = sequence.Remove(MostRecentVisibleDot(sequence, insertedDots), Replicas[replica]);
+            }
+            else if(insertedDots.Count == 0)
+            {
+                (sequence, Dot head) = sequence.InsertAtHead((100 * replica) + opIndex, Replicas[replica]);
+                insertedDots.Add(head);
+            }
+            else
+            {
+                (sequence, Dot inserted) = sequence.InsertAfter(insertedDots[seed % insertedDots.Count], (100 * replica) + opIndex, Replicas[replica]);
+                insertedDots.Add(inserted);
+            }
+
+            snapshots.Add(sequence);
+        }
+
+        return (sequence, snapshots);
+    }
+
+
+    private static Rga<int> SnapshotAt(IReadOnlyList<Rga<int>> snapshots, int cut)
+    {
+        int bounded = Math.Min(cut, snapshots.Count);
+
+        return bounded == 0 ? Rga<int>.Empty : snapshots[bounded - 1];
+    }
+
+
+    //Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect
+    //the element-wise minimum but keep the digests honest.
+    private static VectorClock FrontierOf(params VectorClock[] memberContexts)
+    {
+        var digests = new List<GossipDigest>(memberContexts.Length);
+        for(int i = 0; i < memberContexts.Length; i++)
+        {
+            digests.Add(new GossipDigest(MakeReplica((byte)(200 + i)), memberContexts[i]));
+        }
+
+        return StabilityFrontier.Compute(digests);
     }
 
 

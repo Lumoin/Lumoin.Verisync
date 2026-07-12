@@ -127,7 +127,8 @@ public static class WellKnownSequenceStrategies
             Compact = static (sequence, frontier, checkpoint) => sequence.Compact(frontier, checkpoint),
             TranslateAnchor = static (sequence, anchor) => sequence.TranslateAnchor(anchor),
             CausalContext = static sequence => sequence.CausalContext,
-            CertifyProjection = static (sequence, frontier) => sequence.CertifiedProjection(frontier)
+            CertifyProjection = static (sequence, frontier) => sequence.CertifiedProjection(frontier),
+            UnstableInserts = static (sequence, frontier) => sequence.UnstableInserts(frontier)
         };
     }
 }

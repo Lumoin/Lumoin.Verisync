@@ -25,6 +25,8 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
 
     private static ReplicaId[] Replicas { get; } = [MakeReplica(0), MakeReplica(1), MakeReplica(2), MakeReplica(3)];
 
+    private static ReplicaId R1 { get; } = MakeReplica(1);
+
 
     protected override SequenceCrdtContext<OffsetAnchoredSequence<int>, int, OffsetAnchor> Context { get; } = WellKnownSequenceStrategies.CreateOffset<int>();
 
@@ -57,6 +59,69 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
 
 
     protected override Gen<(OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)>? GenCommutationCase => GenCase;
+
+
+    //LAW-NFD: an op history of inserts and dotted removes over the EMPTY base, so an empty operand shares
+    //the genesis generation with the Full and Behind states and no generation fence throws.
+    protected override Gen<(OffsetAnchoredSequence<int> Full, OffsetAnchoredSequence<int> Behind)> GenFullAndBehindHistory { get; } =
+        Gen.Select(
+            Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 8],
+            Gen.Int[0, 8],
+            static (ops, cut) =>
+            {
+                (OffsetAnchoredSequence<int> full, IReadOnlyList<OffsetAnchoredSequence<int>> snapshots) = BuildSnapshots(ops);
+
+                return (Full: full, Behind: SnapshotAt(snapshots, cut));
+            }).Where(static pair => !pair.Full.Equals(pair.Behind));
+
+
+    //The drop-only remove scenario for LAW-NR/LAW-SR: the survivor is a BASE slot and the removed element
+    //is a childless live vertex after it. Compacting at the certified frontier DROPS the vertex without
+    //touching the base, so the generation stays genesis and the compacted state merges legally with the
+    //uncompacted ghost-holder and stale operands. A live-survivor construction would advance the generation
+    //and throw the fence.
+    protected override RemoveScenario? BuildRemoveScenario()
+    {
+        ImmutableArray<int> singleBase = [9000];
+        OffsetAnchoredSequence<int> shared = OffsetAnchoredSequence<int>.WithBase(singleBase);
+        (shared, OffsetAnchor x) = shared.InsertAfter(OffsetAnchor.AtBase(0), 42, R1);
+        OffsetAnchoredSequence<int> stalePreRemove = shared;
+        OffsetAnchoredSequence<int> ghostHolder = shared.Remove(x, R1);
+
+        VectorClock postRemove = ghostHolder.CausalContext;
+        VectorClock frontier = FrontierOf(postRemove, postRemove, postRemove);
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = ghostHolder.CertifiedProjection(frontier);
+        OffsetAnchoredSequence<int> compacted = ghostHolder.Compact(frontier, checkpoint);
+
+        return new RemoveScenario(compacted, ghostHolder, stalePreRemove, frontier, checkpoint);
+    }
+
+
+    //The offset-shaped half of LAW-RG under the generic live-survivor construction (empty base, both values
+    //the sentinel): the survivor converts to base offset 0 in BOTH halves, so BOTH stamp the frontier. At
+    //the uncertified frontier the removed element converts pending-removed to offset 1, hidden; at the
+    //certified frontier it drops and the removed anchor translates to the gap at offset 0.
+    protected override void AssertRemoveConversionOutcome(
+        OffsetAnchoredSequence<int> uncertifiedCompacted,
+        OffsetAnchoredSequence<int> certifiedCompacted,
+        OffsetAnchor removedAnchor,
+        OffsetAnchor survivorAnchor,
+        VectorClock uncertifiedFrontier,
+        VectorClock certifiedFrontier)
+    {
+        int[] uncertifiedBase = [FreshValue, FreshValue];
+        CollectionAssert.AreEqual(uncertifiedBase, uncertifiedCompacted.ToState().Base.ToArray());
+        Assert.AreEqual(OffsetAnchor.AtBase(1), uncertifiedCompacted.TranslateAnchor(removedAnchor));
+        Assert.AreEqual(uncertifiedFrontier, VectorClock.FromState(uncertifiedCompacted.ToState().BaseFrontier));
+        OffsetBaseRemovalEntry marking = uncertifiedCompacted.ToState().RemovedBaseOffsets[0];
+        Assert.AreEqual(1, marking.Offset);
+        Assert.HasCount(1, marking.RemoveDots);
+
+        int[] certifiedBase = [FreshValue];
+        CollectionAssert.AreEqual(certifiedBase, certifiedCompacted.ToState().Base.ToArray());
+        Assert.AreEqual(OffsetAnchor.AtBase(0), certifiedCompacted.TranslateAnchor(removedAnchor));
+        Assert.AreEqual(certifiedFrontier, VectorClock.FromState(certifiedCompacted.ToState().BaseFrontier));
+    }
 
 
     //The shared-prefix ops and the two divergent remove-only suffixes all come from CsCheck seeds, so
@@ -178,6 +243,62 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
         }
 
         return sequence;
+    }
+
+
+    //Live-axis op histories over the EMPTY base, so an empty operand shares the generation: head and
+    //live-anchored inserts plus dotted removes of still-visible elements.
+    private static (OffsetAnchoredSequence<int> Full, IReadOnlyList<OffsetAnchoredSequence<int>> Snapshots) BuildSnapshots((int Replica, int Seed)[] ops)
+    {
+        OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.Empty;
+        var anchors = new List<OffsetAnchor>();
+        var snapshots = new List<OffsetAnchoredSequence<int>>(ops.Length);
+        for(int opIndex = 0; opIndex < ops.Length; opIndex++)
+        {
+            (int replica, int seed) = ops[opIndex];
+            int visibleCount = sequence.VisibleElements.Count;
+            if(seed % 3 == 0 && visibleCount > 0)
+            {
+                OffsetAnchor target = sequence.VisibleElements[seed % visibleCount].Anchor;
+                sequence = sequence.Remove(target, Replicas[replica]);
+            }
+            else if(anchors.Count == 0)
+            {
+                (sequence, OffsetAnchor head) = sequence.InsertAtHead((100 * replica) + opIndex, Replicas[replica]);
+                anchors.Add(head);
+            }
+            else
+            {
+                (sequence, OffsetAnchor inserted) = sequence.InsertAfter(anchors[seed % anchors.Count], (100 * replica) + opIndex, Replicas[replica]);
+                anchors.Add(inserted);
+            }
+
+            snapshots.Add(sequence);
+        }
+
+        return (sequence, snapshots);
+    }
+
+
+    private static OffsetAnchoredSequence<int> SnapshotAt(IReadOnlyList<OffsetAnchoredSequence<int>> snapshots, int cut)
+    {
+        int bounded = Math.Min(cut, snapshots.Count);
+
+        return bounded == 0 ? OffsetAnchoredSequence<int>.Empty : snapshots[bounded - 1];
+    }
+
+
+    //Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect
+    //the element-wise minimum but keep the digests honest.
+    private static VectorClock FrontierOf(params VectorClock[] memberContexts)
+    {
+        var digests = new List<GossipDigest>(memberContexts.Length);
+        for(int i = 0; i < memberContexts.Length; i++)
+        {
+            digests.Add(new GossipDigest(MakeReplica((byte)(200 + i)), memberContexts[i]));
+        }
+
+        return StabilityFrontier.Compute(digests);
     }
 
 
