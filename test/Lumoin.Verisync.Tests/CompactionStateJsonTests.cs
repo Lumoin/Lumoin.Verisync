@@ -9,9 +9,11 @@ namespace Lumoin.Verisync.Tests;
 
 /// <summary>
 /// Round-trips both compaction-strategy JSON codecs — the offset-anchored sequence state and the RGA
-/// run-length state — for uncompacted and compacted instances, and asserts the codecs fail closed with
-/// <see cref="MessageDeserializationException"/> on hand-authored payloads that mutate one field of the wire
-/// format at a time.
+/// run-length state — for uncompacted, compacted, and pending-removed instances plus the reclaimed wire
+/// shape a future consensus-carried follow-on emits, and asserts the codecs fail closed with
+/// <see cref="MessageDeserializationException"/> on hand-authored payloads that mutate one field of the
+/// wire format at a time. The codec validates shape only; model-level invariants (dot pools, coverage,
+/// W-shapes) surface at <c>FromState</c> and are covered there.
 /// </summary>
 [TestClass]
 internal sealed class CompactionStateJsonTests
@@ -23,7 +25,8 @@ internal sealed class CompactionStateJsonTests
     private static ImmutableArray<int> BaseValues { get; } = [10, 20, 30];
 
 
-    //An uncompacted offset sequence with every anchor kind round-trips through the JSON codec and FromState.
+    //An uncompacted offset sequence with every anchor kind and dotted removes on both axes round-trips
+    //through the JSON codec and FromState.
     [TestMethod]
     public void UncompactedOffsetSequenceRoundTripsThroughTheJsonCodec()
     {
@@ -39,8 +42,8 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //A compacted offset sequence carrying both translation maps round-trips through the JSON codec with its
-    //servability intact.
+    //A compacted offset sequence carrying both translation maps and the stamped generation identity
+    //round-trips through the JSON codec with its servability intact.
     [TestMethod]
     public void CompactedOffsetSequenceRoundTripsThroughTheJsonCodec()
     {
@@ -54,6 +57,45 @@ internal sealed class CompactionStateJsonTests
 
         Assert.AreEqual(compacted, back);
         Assert.IsNotNull(back.TranslateAnchor(OffsetAnchor.AtBase(1)));
+    }
+
+
+    //A pending-removed generation — a base-removal entry carrying remove-dots plus a non-empty
+    //baseFrontier — round-trips and stays hidden.
+    [TestMethod]
+    public void APendingRemovedOffsetSequenceRoundTripsThroughTheJsonCodec()
+    {
+        OffsetAnchoredSequence<int> pending = PendingRemoved();
+
+        OffsetAnchoredSequenceState<int> reloaded = RoundTrip(
+            pending.ToState(),
+            CrdtStateJson.CreateOffsetAnchoredSequenceStateSerializer<int>(WriteInt),
+            CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadInt));
+        OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(reloaded);
+
+        Assert.AreEqual(pending, back);
+        CollectionAssert.AreEqual(BaseValues.ToArray(), back.Values.ToArray());
+    }
+
+
+    //A reclaimed generation — a dropped base offset served by the Head gap anchor through the
+    //anchor-typed base-offset translation map — is a future consensus-carried follow-on's output, not
+    //Compact's, which defers reclamation; the shape stays legal on the wire, so it is hand-built through
+    //FromState and must round-trip with its servability intact.
+    [TestMethod]
+    public void AReclaimedOffsetSequenceRoundTripsThroughTheJsonCodec()
+    {
+        OffsetAnchoredSequence<int> reclaimed = OffsetAnchoredSequence<int>.FromState(ReclaimedShape());
+
+        OffsetAnchoredSequenceState<int> reloaded = RoundTrip(
+            reclaimed.ToState(),
+            CrdtStateJson.CreateOffsetAnchoredSequenceStateSerializer<int>(WriteInt),
+            CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadInt));
+        OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(reloaded);
+
+        Assert.AreEqual(reclaimed, back);
+        Assert.HasCount(0, back.Values);
+        Assert.AreEqual(OffsetAnchor.Head, back.TranslateAnchor(OffsetAnchor.AtBase(0)));
     }
 
 
@@ -182,15 +224,79 @@ internal sealed class CompactionStateJsonTests
     [TestMethod]
     public void OffsetDeserializerRejectsANegativeRemovedOffset()
     {
-        string json = $$"""
+        string json = """
         {
           "base":[10],
-          "removedBaseOffsets":[-1],
+          "removedBaseOffsets":[{"offset":-1,"removeDots":[]}],
           "context":{"entries":[]},
+          "baseFrontier":{"entries":[]},
           "vertices":[],
           "tombstones":[],
           "compactedDotAnchors":[],
           "compactedBaseOffsets":[]
+        }
+        """;
+
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeOffset(json));
+    }
+
+
+    [TestMethod]
+    public void OffsetDeserializerRejectsAZeroTombstoneRemoveDotCounter()
+    {
+        //The triple-dollar form allows the nested JSON objects' consecutive closing braces as content.
+        string json = $$$"""
+        {
+          "base":[10],
+          "removedBaseOffsets":[],
+          "context":{"entries":[]},
+          "baseFrontier":{"entries":[]},
+          "vertices":[],
+          "tombstones":[{"target":{"replica":"{{{Hex(R1)}}}","counter":1},"removeDots":[{"replica":"{{{Hex(R2)}}}","counter":0}]}],
+          "compactedDotAnchors":[],
+          "compactedBaseOffsets":[]
+        }
+        """;
+
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeOffset(json));
+    }
+
+
+    [TestMethod]
+    public void OffsetDeserializerRejectsAZeroBaseRemovalRemoveDotCounter()
+    {
+        string json = $$$"""
+        {
+          "base":[10],
+          "removedBaseOffsets":[{"offset":0,"removeDots":[{"replica":"{{{Hex(R2)}}}","counter":0}]}],
+          "context":{"entries":[]},
+          "baseFrontier":{"entries":[]},
+          "vertices":[],
+          "tombstones":[],
+          "compactedDotAnchors":[],
+          "compactedBaseOffsets":[]
+        }
+        """;
+
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeOffset(json));
+    }
+
+
+    [TestMethod]
+    public void OffsetDeserializerRejectsAMalformedCompactedBaseAnchorTarget()
+    {
+        //The anchor-typed base-offset translation target obeys the one-canonical-shape rule too. The
+        //quadruple-dollar form allows the triply-nested JSON object's closing braces as content.
+        string json = $$$$"""
+        {
+          "base":[10],
+          "removedBaseOffsets":[],
+          "context":{"entries":[]},
+          "baseFrontier":{"entries":[]},
+          "vertices":[],
+          "tombstones":[],
+          "compactedDotAnchors":[],
+          "compactedBaseOffsets":[{"previous":0,"target":{"baseOffset":0,"liveId":{"replica":"{{{{Hex(R1)}}}}","counter":1}}}]
         }
         """;
 
@@ -318,7 +424,8 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //Wraps a single vertex object into an otherwise-minimal valid offset-state document over a one-element base.
+    //Wraps a single vertex object into an otherwise-minimal valid offset-state document over a
+    //one-element base.
     private static string OffsetStateJson(string vertex)
     {
         return $$"""
@@ -326,6 +433,7 @@ internal sealed class CompactionStateJsonTests
           "base":[10],
           "removedBaseOffsets":[],
           "context":{"entries":[]},
+          "baseFrontier":{"entries":[]},
           "vertices":[{{vertex}}],
           "tombstones":[],
           "compactedDotAnchors":[],
@@ -347,32 +455,66 @@ internal sealed class CompactionStateJsonTests
     }
 
 
+    //An edited generation: every anchor kind plus a dotted base removal and a dotted live removal.
     private static OffsetAnchoredSequence<int> Edited()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
         (sequence, _) = sequence.InsertAtHead(40, R1);
         (sequence, OffsetAnchor atBase) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R2);
         (sequence, OffsetAnchor chained) = sequence.InsertAfter(atBase, 60, R1);
-        sequence = sequence.Remove(OffsetAnchor.AtBase(2));
+        sequence = sequence.Remove(OffsetAnchor.AtBase(2), R1);
 
-        return sequence.Remove(chained);
+        return sequence.Remove(chained, R2);
     }
 
 
-    //A compacted offset generation carrying both translation maps: a dropped stable tombstone, a converted
-    //vertex that shifts the base, and an unstable insert that stays live.
+    //A compacted offset generation carrying both translation maps and the stamped identity: a converted
+    //vertex that shifts the base (populating the base-offset map) and a dropped certified tombstone
+    //(populating the dot map). The frontier is insert-quiescent — it certifies both inserts and the
+    //remove-dot — as §17 requires of any compaction.
     private static OffsetAnchoredSequence<int> CompactedWithBothMaps()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
-        (sequence, OffsetAnchor converted) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R1);
+        (sequence, _) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R1);
         (sequence, OffsetAnchor dropped) = sequence.InsertAfter(OffsetAnchor.AtBase(1), 60, R1);
-        sequence = sequence.Remove(dropped);
-        (sequence, _) = sequence.InsertAfter(OffsetAnchor.AtBase(2), 70, R2);
+        sequence = sequence.Remove(dropped, R2);
 
-        VectorClock frontier = FrontierCovering(converted.LiveId!, dropped.LiveId!);
-        ImmutableArray<int> checkpoint = [10, 50, 20, 30];
+        VectorClock frontier = sequence.CausalContext;
 
-        return sequence.Compact(frontier, checkpoint);
+        return sequence.Compact(frontier, sequence.CertifiedProjection(frontier));
+    }
+
+
+    //A pending-removed generation: an uncertified-removed stable vertex converted into the base, hidden,
+    //its remove-dot keyed to the new offset.
+    private static OffsetAnchoredSequence<int> PendingRemoved()
+    {
+        OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
+        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R1);
+        sequence = sequence.Remove(x, R2);
+
+        VectorClock frontier = FrontierCovering(x.LiveId!);
+
+        return sequence.Compact(frontier, sequence.CertifiedProjection(frontier));
+    }
+
+
+    //The reclaimed wire shape, hand-built: an empty base whose previous generation's only slot was
+    //dropped, its offset served by the Head gap anchor, the generation identity stamped by the frontier
+    //that certified the removal.
+    private static OffsetAnchoredSequenceState<int> ReclaimedShape()
+    {
+        VectorClockState identity = VectorClock.Empty.Increment(R1).ToState();
+
+        return new OffsetAnchoredSequenceState<int>(
+            [],
+            identity,
+            [],
+            identity,
+            [],
+            [],
+            [],
+            [new OffsetBaseAnchorEntry(0, new OffsetAnchorState(-1, null))]);
     }
 
 

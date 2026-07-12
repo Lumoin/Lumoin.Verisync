@@ -1,10 +1,19 @@
 using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Collections.Immutable;
-using System.Diagnostics.CodeAnalysis;
 
 namespace Lumoin.Verisync.Tests;
 
+/// <summary>
+/// Focused coverage of <see cref="OffsetAnchoredSequence{TValue}"/> under offset.v2: both removal
+/// kinds are dotted events that tick the context, compaction acts on the four-way retention taxonomy
+/// (unstable, stable-visible, stable-tombstoned-uncertified, stable-tombstoned-certified), the
+/// checkpoint is the dotted certified projection, and stale operands fail closed on the generation
+/// fence or the stale-replay detector. Compaction requires an insert-quiescent frontier (§17): a state
+/// carrying an unstable vertex — the only way to reach the ghost or the retained-child branches — fails
+/// closed, so those branches are exercised here through the guard throw, and the quiescent conversions
+/// and drop through the materialized base.
+/// </summary>
 [TestClass]
 internal sealed class OffsetAnchoredSequenceTests
 {
@@ -62,11 +71,15 @@ internal sealed class OffsetAnchoredSequenceTests
 
 
     [TestMethod]
-    public void RemoveHidesABaseElementButKeepsItsAnchor()
+    public void RemoveHidesABaseElementKeepsItsAnchorAndTicksTheContext()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
 
-        OffsetAnchoredSequence<string> removed = sequence.Remove(OffsetAnchor.AtBase(1));
+        OffsetAnchoredSequence<string> removed = sequence.Remove(OffsetAnchor.AtBase(1), R1);
+
+        //A base removal is now a dotted event on the remover's axis.
+        Assert.AreEqual(1, removed.CausalContext[R1]);
+
         (OffsetAnchoredSequence<string> inserted, _) = removed.InsertAfter(OffsetAnchor.AtBase(1), "x", R1);
 
         //b1 is hidden yet still anchors: x sits where b1 was, between b0 and b2.
@@ -76,12 +89,15 @@ internal sealed class OffsetAnchoredSequenceTests
 
 
     [TestMethod]
-    public void RemoveTombstonesALiveElement()
+    public void RemoveTombstonesALiveElementAndTicksTheContext()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
         (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
 
-        OffsetAnchoredSequence<string> removed = sequence.Remove(x);
+        OffsetAnchoredSequence<string> removed = sequence.Remove(x, R1);
+
+        //The remove minted a dot past the insert on the remover's axis.
+        Assert.AreEqual(2, removed.CausalContext[R1]);
 
         string[] expected = ["b0", "b1", "b2"];
         CollectionAssert.AreEqual(expected, removed.Values.ToArray());
@@ -122,6 +138,8 @@ internal sealed class OffsetAnchoredSequenceTests
     [TestMethod]
     public void MergingDifferentGenerationsFailsClosed()
     {
+        //Two fresh generations share the genesis identity but carry divergent base values, which the
+        //BaseEqual integrity assertion rejects as forged or corrupt.
         OffsetAnchoredSequence<string> first = OffsetAnchoredSequence<string>.WithBase(Base);
         OffsetAnchoredSequence<string> second = OffsetAnchoredSequence<string>.WithBase(["other"]);
 
@@ -137,8 +155,9 @@ internal sealed class OffsetAnchoredSequenceTests
 
         Assert.ThrowsExactly<ArgumentException>(() => sequence.InsertAfter(OffsetAnchor.AtBase(3), "x", R1));
         Assert.ThrowsExactly<ArgumentException>(() => sequence.InsertAfter(OffsetAnchor.AtLive(foreign), "x", R1));
-        Assert.ThrowsExactly<ArgumentException>(() => sequence.Remove(OffsetAnchor.Head));
-        Assert.ThrowsExactly<ArgumentNullException>(() => sequence.Remove(null!));
+        Assert.ThrowsExactly<ArgumentException>(() => sequence.Remove(OffsetAnchor.Head, R1));
+        Assert.ThrowsExactly<ArgumentException>(() => sequence.Remove(OffsetAnchor.AtBase(3), R1));
+        Assert.ThrowsExactly<ArgumentNullException>(() => sequence.Remove(null!, R1));
         Assert.ThrowsExactly<ArgumentNullException>(() => sequence.Merge(null!));
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => OffsetAnchor.AtBase(-1));
         Assert.ThrowsExactly<ArgumentNullException>(() => OffsetAnchor.AtLive(null!));
@@ -167,7 +186,7 @@ internal sealed class OffsetAnchoredSequenceTests
         (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
 
         VectorClock frontier = FrontierCovering(x.LiveId!);
-        ImmutableArray<string> checkpoint = ["b0", "x", "b1", "b2"];
+        ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
         OffsetAnchoredSequence<string> compacted = sequence.Compact(frontier, checkpoint);
 
         //The visible values are unchanged and x now lives in the base at its linearization position.
@@ -178,18 +197,21 @@ internal sealed class OffsetAnchoredSequenceTests
 
 
     [TestMethod]
-    public void CompactKeepsRemovedBaseEntriesWhileFoldingInTheCheckpoint()
+    public void CompactKeepsAnUncertifiedRemovedBaseEntryHiddenInTheNewBase()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
         (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(1), "x", R1);
-        sequence = sequence.Remove(OffsetAnchor.AtBase(1));
+        sequence = sequence.Remove(OffsetAnchor.AtBase(1), R2);
 
+        //The frontier certifies x's insert but not R2's base removal, so the removed slot stays in the
+        //certified projection — the determinism inclusion — and in the new base, hidden and re-marked.
         VectorClock frontier = FrontierCovering(x.LiveId!);
-        ImmutableArray<string> checkpoint = ["b0", "x", "b2"];
+        ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
+        Assert.HasCount(4, checkpoint);
+        Assert.AreEqual("b1", checkpoint[1].Value);
+
         OffsetAnchoredSequence<string> compacted = sequence.Compact(frontier, checkpoint);
 
-        //The removed b1 is kept in the new base so re-anchored children stay in their sibling set; the
-        //checkpoint is the new base minus that still-removed offset.
         string[] expectedBase = ["b0", "b1", "x", "b2"];
         string[] expectedValues = ["b0", "x", "b2"];
         CollectionAssert.AreEqual(expectedBase, compacted.Base.ToArray());
@@ -202,43 +224,79 @@ internal sealed class OffsetAnchoredSequenceTests
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
         (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
-
         VectorClock frontier = FrontierCovering(x.LiveId!);
-        ImmutableArray<string> wrongCheckpoint = ["b0", "b1", "b2"];
 
-        Assert.ThrowsExactly<InvalidOperationException>(() => sequence.Compact(frontier, wrongCheckpoint));
+        //A checkpoint projected at a different frontier misses the stable x.
+        ImmutableArray<SequenceCheckpointEntry<string>> staleCheckpoint = sequence.CertifiedProjection(VectorClock.Empty);
+        Assert.ThrowsExactly<InvalidOperationException>(() => sequence.Compact(frontier, staleCheckpoint));
+
+        //The integrity check is dot-aware: the same values under a forged identity fail closed too.
+        ImmutableArray<SequenceCheckpointEntry<string>> proper = sequence.CertifiedProjection(frontier);
+        SequenceCheckpointEntry<string>[] forged = proper.ToArray();
+        forged[1] = new SequenceCheckpointEntry<string>(DotStateOf(new Dot(R2, 9)), forged[1].Value);
+        Assert.ThrowsExactly<InvalidOperationException>(() => sequence.Compact(frontier, ImmutableArray.Create(forged)));
     }
 
 
+    //RE-POINTED under §17: a certified-removed parent kept alive because its child is retained is the
+    //ghost the taxonomy describes, but it can only exist above the waterline — its child is unstable — so
+    //compaction fails closed rather than materialize it. The certified projection is unrestricted and
+    //still excludes the certified-removed parent.
     [TestMethod]
-    public void CompactRetainsAStableTombstoneThatStillRootsAnUnstableChild()
+    public void CompactFailsClosedOnACertifiedTombstoneThatStillRootsAnUnstableChild()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
         (sequence, OffsetAnchor parent) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "p", R1);
-        (sequence, OffsetAnchor child) = sequence.InsertAfter(parent, "c", R1);
-        sequence = sequence.Remove(parent);
+        (sequence, _) = sequence.InsertAfter(parent, "c", R1);
+        sequence = sequence.Remove(parent, R2);
 
-        //The parent is stable and tombstoned; the child is above the frontier and keeps it alive.
+        //The parent's remove is CERTIFIED — R2's first event is the remove-dot — while the child stays
+        //above the frontier as an unstable vertex, so the state is not insert-quiescent.
+        VectorClock frontier = FrontierCovering(parent.LiveId!, new Dot(R2, 1));
+        ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
+        Assert.HasCount(3, checkpoint);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => sequence.Compact(frontier, checkpoint));
+    }
+
+
+    //RE-POINTED under §17: an uncertified-removed stable vertex converting pending-removed WITH a retained
+    //child would re-anchor that child at the gap — but the child is unstable, so the state is not
+    //insert-quiescent and compaction fails closed. The pending-removed conversion itself is exercised
+    //quiescently by the certification law suite. The certified projection is unrestricted and still
+    //carries the uncertified-removed parent with its real dot.
+    [TestMethod]
+    public void CompactFailsClosedOnAnUncertifiedTombstoneWithAnUnstableChild()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        (sequence, OffsetAnchor parent) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "p", R1);
+        (sequence, _) = sequence.InsertAfter(parent, "c", R1);
+        sequence = sequence.Remove(parent, R2);
+
+        //The frontier covers p's insert but neither R2's remove nor the child.
         VectorClock frontier = FrontierCovering(parent.LiveId!);
-        ImmutableArray<string> checkpoint = ["b0", "b1", "b2"];
-        OffsetAnchoredSequence<string> compacted = sequence.Compact(frontier, checkpoint);
+        ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
 
-        string[] expectedValues = ["b0", "c", "b1", "b2"];
-        CollectionAssert.AreEqual(expectedValues, compacted.Values.ToArray());
-        Assert.AreEqual(child, compacted.VisibleElements[1].Anchor);
-        Assert.AreEqual(parent, compacted.TranslateAnchor(parent));
+        //The uncertified-removed p stays in the projection with its real dot; the checkpoint entry's
+        //custom value equality compares the replica bytes by content.
+        Assert.HasCount(4, checkpoint);
+        Assert.AreEqual(new SequenceCheckpointEntry<string>(DotStateOf(parent.LiveId!), "p"), checkpoint[1]);
+
+        //The child is unstable, so the base-materializing compaction fails closed.
+        Assert.ThrowsExactly<InvalidOperationException>(() => sequence.Compact(frontier, checkpoint));
     }
 
 
     [TestMethod]
-    public void CompactDropsAStableTombstoneWithNoRetainedDescendants()
+    public void CompactDropsACertifiedTombstoneWithNoRetainedDescendants()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
         (sequence, OffsetAnchor tombstoned) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "t", R1);
-        sequence = sequence.Remove(tombstoned);
+        sequence = sequence.Remove(tombstoned, R1);
 
-        VectorClock frontier = FrontierCovering(tombstoned.LiveId!);
-        ImmutableArray<string> checkpoint = ["b0", "b1", "b2"];
+        //The state's own context certifies both the insert and the remove.
+        VectorClock frontier = sequence.CausalContext;
+        ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
         OffsetAnchoredSequence<string> compacted = sequence.Compact(frontier, checkpoint);
 
         //The dropped tombstone's anchor still translates to a servable position, but the vertex is gone.
@@ -254,7 +312,7 @@ internal sealed class OffsetAnchoredSequenceTests
         (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
 
         VectorClock frontier = FrontierCovering(x.LiveId!);
-        ImmutableArray<string> checkpoint = ["b0", "x", "b1", "b2"];
+        ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
         OffsetAnchoredSequence<string> compacted = sequence.Compact(frontier, checkpoint);
 
         //b1 sat at base offset 1 before compaction and at offset 2 after x converted ahead of it.
@@ -272,17 +330,16 @@ internal sealed class OffsetAnchoredSequenceTests
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
         (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
-        (sequence, OffsetAnchor y) = sequence.InsertAfter(OffsetAnchor.AtBase(2), "y", R2);
 
-        //First compaction folds x but leaves y above the frontier.
+        //First compaction folds x at an insert-quiescent frontier.
         VectorClock firstFrontier = FrontierCovering(x.LiveId!);
-        ImmutableArray<string> firstCheckpoint = ["b0", "x", "b1", "b2"];
-        OffsetAnchoredSequence<string> first = sequence.Compact(firstFrontier, firstCheckpoint);
+        OffsetAnchoredSequence<string> first = sequence.Compact(firstFrontier, sequence.CertifiedProjection(firstFrontier));
 
-        //Second compaction at a strictly higher frontier folds y too.
+        //A second generation: y is inserted AFTER the first compaction, then folded at a frontier that
+        //covers it — each compaction stays insert-quiescent, which §17 requires.
+        (OffsetAnchoredSequence<string> withY, OffsetAnchor y) = first.InsertAfter(OffsetAnchor.AtBase(2), "y", R2);
         VectorClock secondFrontier = FrontierCovering(x.LiveId!, y.LiveId!);
-        ImmutableArray<string> secondCheckpoint = ["b0", "x", "b1", "b2", "y"];
-        OffsetAnchoredSequence<string> second = first.Compact(secondFrontier, secondCheckpoint);
+        OffsetAnchoredSequence<string> second = withY.Compact(secondFrontier, withY.CertifiedProjection(secondFrontier));
 
         //The dot folded away in the first generation is still translatable after the second, by map composition.
         Assert.IsNotNull(second.TranslateAnchor(x));
@@ -296,7 +353,7 @@ internal sealed class OffsetAnchoredSequenceTests
         (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
 
         VectorClock frontier = FrontierCovering(x.LiveId!);
-        ImmutableArray<string> checkpoint = ["b0", "x", "b1", "b2"];
+        ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
         OffsetAnchoredSequence<string> once = sequence.Compact(frontier, checkpoint);
 
         OffsetAnchoredSequence<string> twice = once.Compact(frontier, checkpoint);
@@ -311,12 +368,13 @@ internal sealed class OffsetAnchoredSequenceTests
         OffsetAnchoredSequence<string> shared = OffsetAnchoredSequence<string>.WithBase(Base);
         (shared, OffsetAnchor x) = shared.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
 
-        //Both members diverge with their own inserts above the frontier, then compact at the same waterline.
-        (OffsetAnchoredSequence<string> a, _) = shared.InsertAfter(x, "a", R1);
-        (OffsetAnchoredSequence<string> b, _) = shared.InsertAfter(x, "b", R2);
+        //Both members stay insert-quiescent at the frontier and diverge only by removing different base
+        //slots above it — a suffix insert would raise an unstable vertex and fail closed under §17.
+        OffsetAnchoredSequence<string> a = shared.Remove(OffsetAnchor.AtBase(1), R1);
+        OffsetAnchoredSequence<string> b = shared.Remove(OffsetAnchor.AtBase(2), R2);
 
         VectorClock frontier = FrontierCovering(x.LiveId!);
-        ImmutableArray<string> checkpoint = ["b0", "x", "b1", "b2"];
+        ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = a.CertifiedProjection(frontier);
         OffsetAnchoredSequence<string> compactedA = a.Compact(frontier, checkpoint);
         OffsetAnchoredSequence<string> compactedB = b.Compact(frontier, checkpoint);
 
@@ -324,7 +382,29 @@ internal sealed class OffsetAnchoredSequenceTests
 
         CollectionAssert.AreEqual(merged.Values.ToArray(), compactedB.Merge(compactedA).Values.ToArray());
         Assert.AreEqual(merged, compactedB.Merge(compactedA));
+
+        //An uncompacted operand carries the previous generation identity, which the fence rejects.
         Assert.ThrowsExactly<InvalidOperationException>(() => compactedA.Merge(a));
+    }
+
+
+    //The map's §5a trace, green-but-unsound before offset.v2: a laggard that never saw the remove slips
+    //the base gate (a tombstone-only drop leaves the base unchanged) and the union used to resurrect the
+    //element cluster-wide. The stale-replay detector now fails it closed in both merge orders.
+    [TestMethod]
+    public void AStalePreRemoveLaggardFailsClosedAgainstACompactedRemove()
+    {
+        OffsetAnchoredSequence<string> shared = OffsetAnchoredSequence<string>.WithBase(Base);
+        (OffsetAnchoredSequence<string> withX, OffsetAnchor x) = shared.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
+        OffsetAnchoredSequence<string> laggard = withX;
+        OffsetAnchoredSequence<string> removed = withX.Remove(x, R1);
+
+        VectorClock frontier = removed.CausalContext;
+        ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = removed.CertifiedProjection(frontier);
+        OffsetAnchoredSequence<string> compacted = removed.Compact(frontier, checkpoint);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => compacted.Merge(laggard));
+        Assert.ThrowsExactly<InvalidOperationException>(() => laggard.Merge(compacted));
     }
 
 
@@ -347,11 +427,15 @@ internal sealed class OffsetAnchoredSequenceTests
     public void CompactAndTranslateAnchorValidateTheirArguments()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        ImmutableArray<SequenceCheckpointEntry<string>> emptyCheckpoint = [];
 
-        Assert.ThrowsExactly<ArgumentNullException>(() => sequence.Compact(null!, Base));
+        Assert.ThrowsExactly<ArgumentNullException>(() => sequence.Compact(null!, emptyCheckpoint));
         Assert.ThrowsExactly<ArgumentException>(() => sequence.Compact(VectorClock.Empty, default));
         Assert.ThrowsExactly<ArgumentNullException>(() => sequence.TranslateAnchor(null!));
     }
+
+
+    private static DotState DotStateOf(Dot dot) => new(ImmutableArray.Create(dot.Replica.AsSpan()), dot.Counter);
 
 
     private static VectorClock FrontierCovering(params Dot[] dots)

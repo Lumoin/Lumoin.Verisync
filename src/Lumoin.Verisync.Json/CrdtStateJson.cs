@@ -417,10 +417,22 @@ public static class CrdtStateJson
 
             writer.WriteEndArray();
 
+            writer.WritePropertyName("baseFrontier");
+            WriteVectorClockState(writer, state.BaseFrontier);
+
             writer.WriteStartArray("removedBaseOffsets");
-            foreach(int offset in state.RemovedBaseOffsets)
+            foreach(OffsetBaseRemovalEntry removal in state.RemovedBaseOffsets)
             {
-                writer.WriteNumberValue(offset);
+                writer.WriteStartObject();
+                writer.WriteNumber("offset", removal.Offset);
+                writer.WriteStartArray("removeDots");
+                foreach(DotState removeDot in removal.RemoveDots)
+                {
+                    WriteDotState(writer, removeDot);
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
             }
 
             writer.WriteEndArray();
@@ -444,9 +456,19 @@ public static class CrdtStateJson
             writer.WriteEndArray();
 
             writer.WriteStartArray("tombstones");
-            foreach(DotState tombstone in state.Tombstones)
+            foreach(OffsetTombstoneEntry tombstone in state.Tombstones)
             {
-                WriteDotState(writer, tombstone);
+                writer.WriteStartObject();
+                writer.WritePropertyName("target");
+                WriteDotState(writer, tombstone.Target);
+                writer.WriteStartArray("removeDots");
+                foreach(DotState removeDot in tombstone.RemoveDots)
+                {
+                    WriteDotState(writer, removeDot);
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
             }
 
             writer.WriteEndArray();
@@ -465,11 +487,12 @@ public static class CrdtStateJson
             writer.WriteEndArray();
 
             writer.WriteStartArray("compactedBaseOffsets");
-            foreach(OffsetRebaseEntry entry in state.CompactedBaseOffsets)
+            foreach(OffsetBaseAnchorEntry entry in state.CompactedBaseOffsets)
             {
                 writer.WriteStartObject();
                 writer.WriteNumber("previous", entry.PreviousOffset);
-                writer.WriteNumber("current", entry.CurrentOffset);
+                writer.WritePropertyName("target");
+                WriteOffsetAnchorState(writer, entry.Target);
                 writer.WriteEndObject();
             }
 
@@ -501,10 +524,19 @@ public static class CrdtStateJson
             }
 
             JsonElement removedElement = RequireProperty(root, "removedBaseOffsets", "An offset-anchored sequence");
-            ImmutableArray<int>.Builder removed = ImmutableArray.CreateBuilder<int>(removedElement.GetArrayLength());
-            foreach(JsonElement offset in removedElement.EnumerateArray())
+            ImmutableArray<OffsetBaseRemovalEntry>.Builder removed = ImmutableArray.CreateBuilder<OffsetBaseRemovalEntry>(removedElement.GetArrayLength());
+            foreach(JsonElement removal in removedElement.EnumerateArray())
             {
-                removed.Add(ReadNonNegative(offset, "A removed base offset"));
+                JsonElement removalDotsElement = RequireProperty(removal, "removeDots", "A removed base offset");
+                ImmutableArray<DotState>.Builder removalDots = ImmutableArray.CreateBuilder<DotState>(removalDotsElement.GetArrayLength());
+                foreach(JsonElement removeDot in removalDotsElement.EnumerateArray())
+                {
+                    removalDots.Add(ReadDotState(removeDot));
+                }
+
+                removed.Add(new OffsetBaseRemovalEntry(
+                    ReadNonNegative(RequireProperty(removal, "offset", "A removed base offset"), "A removed base offset"),
+                    removalDots.ToImmutable()));
             }
 
             JsonElement verticesElement = RequireProperty(root, "vertices", "An offset-anchored sequence");
@@ -518,10 +550,19 @@ public static class CrdtStateJson
             }
 
             JsonElement tombstonesElement = RequireProperty(root, "tombstones", "An offset-anchored sequence");
-            ImmutableArray<DotState>.Builder tombstones = ImmutableArray.CreateBuilder<DotState>(tombstonesElement.GetArrayLength());
+            ImmutableArray<OffsetTombstoneEntry>.Builder tombstones = ImmutableArray.CreateBuilder<OffsetTombstoneEntry>(tombstonesElement.GetArrayLength());
             foreach(JsonElement tombstone in tombstonesElement.EnumerateArray())
             {
-                tombstones.Add(ReadDotState(tombstone));
+                JsonElement tombstoneDotsElement = RequireProperty(tombstone, "removeDots", "An offset-anchored sequence tombstone");
+                ImmutableArray<DotState>.Builder tombstoneDots = ImmutableArray.CreateBuilder<DotState>(tombstoneDotsElement.GetArrayLength());
+                foreach(JsonElement removeDot in tombstoneDotsElement.EnumerateArray())
+                {
+                    tombstoneDots.Add(ReadDotState(removeDot));
+                }
+
+                tombstones.Add(new OffsetTombstoneEntry(
+                    ReadDotState(RequireProperty(tombstone, "target", "An offset-anchored sequence tombstone")),
+                    tombstoneDots.ToImmutable()));
             }
 
             JsonElement dotAnchorsElement = RequireProperty(root, "compactedDotAnchors", "An offset-anchored sequence");
@@ -534,16 +575,17 @@ public static class CrdtStateJson
             }
 
             JsonElement baseOffsetsElement = RequireProperty(root, "compactedBaseOffsets", "An offset-anchored sequence");
-            ImmutableArray<OffsetRebaseEntry>.Builder baseOffsets = ImmutableArray.CreateBuilder<OffsetRebaseEntry>(baseOffsetsElement.GetArrayLength());
+            ImmutableArray<OffsetBaseAnchorEntry>.Builder baseOffsets = ImmutableArray.CreateBuilder<OffsetBaseAnchorEntry>(baseOffsetsElement.GetArrayLength());
             foreach(JsonElement entry in baseOffsetsElement.EnumerateArray())
             {
-                baseOffsets.Add(new OffsetRebaseEntry(
+                baseOffsets.Add(new OffsetBaseAnchorEntry(
                     ReadNonNegative(RequireProperty(entry, "previous", "A compacted base offset"), "A compacted base offset's previous offset"),
-                    ReadNonNegative(RequireProperty(entry, "current", "A compacted base offset"), "A compacted base offset's current offset")));
+                    ReadOffsetAnchorState(RequireProperty(entry, "target", "A compacted base offset"))));
             }
 
             return new OffsetAnchoredSequenceState<TValue>(
                 baseValues.ToImmutable(),
+                ReadVectorClockState(RequireProperty(root, "baseFrontier", "An offset-anchored sequence")),
                 removed.ToImmutable(),
                 ReadVectorClockState(RequireProperty(root, "context", "An offset-anchored sequence")),
                 vertices.ToImmutable(),

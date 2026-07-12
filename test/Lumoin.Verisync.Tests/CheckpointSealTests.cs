@@ -253,21 +253,29 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //A strategy that certifies no projection cannot seal: the offset strategy and the plain non-compacting
-    //RGA strategy both throw.
+    //A strategy that certifies no projection cannot seal: the plain non-compacting RGA strategy throws.
+    //offset.v2 now satisfies the seal preconditions, pinned by a minimal smoke seal — the offset seal
+    //end-to-end suite is slice O2.
     [TestMethod]
     public void SealRequiresACertifyingStrategy()
     {
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
 
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> offset =
-            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Create(
-                WellKnownSequenceStrategies.CreateOffset<string>(), Canonicalize, Sha256);
-        Assert.ThrowsExactly<InvalidOperationException>(() => offset.Seal(register, new Ballot(1, RA), VectorClock.Empty));
-
         CheckpointedSequence<Rga<string>, string, Dot> plainRga =
             CheckpointedSequence<Rga<string>, string, Dot>.Create(WellKnownSequenceStrategies.CreateRga<string>(), Canonicalize, Sha256);
         Assert.ThrowsExactly<InvalidOperationException>(() => plainRga.Seal(register, new Ballot(1, RA), VectorClock.Empty));
+
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> offset =
+            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Create(
+                WellKnownSequenceStrategies.CreateOffset<string>(), Canonicalize, Sha256);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withA, _) = offset.InsertAtHead("a", R1);
+        CasPaxosRegister<CheckpointCommitment> offsetRegister = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> sealedOffset, _, ChangeOutcome<CheckpointCommitment> outcome, bool wasSealed) =
+            withA.Seal(offsetRegister, new Ballot(1, RA), withA.CausalContext!);
+        Assert.IsTrue(wasSealed);
+        Assert.IsTrue(outcome.IsChosen);
+        Assert.HasCount(1, sealedOffset.Checkpoint);
+        Assert.AreEqual("a", sealedOffset.Checkpoint[0].Value);
     }
 
 
