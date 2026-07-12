@@ -487,7 +487,7 @@
       "lumoin.verisync.core": {
         "type": "Project",
         "dependencies": {
-          "Lumoin.Base": "[0.0.5, )"
+          "Lumoin.Base": "[0.0.6, )"
         }
       },
       "lumoin.verisync.json": {
@@ -498,9 +498,9 @@
       },
       "Lumoin.Base": {
         "type": "CentralTransitive",
-        "requested": "[0.0.5, )",
-        "resolved": "0.0.5",
-        "contentHash": "f+3/RJPIgheAL6ARpPds5iI5MLvM54AJ7pkrlq712H+dc8xe09EOJaIQUYc8QlRL+OXMqvvk0q5mG5yzd9lv8w=="
+        "requested": "[0.0.6, )",
+        "resolved": "0.0.6",
+        "contentHash": "NRaNiGb9SPGuDo9+tRGxZ5UQPWWPFSVt5Il/UV3yFGY/EHIVAuGy5M+wFHmNcXzMWucHOj8vxt19qQ1ZjJoE1A=="
       },
       "System.Formats.Cbor": {
         "type": "CentralTransitive",
