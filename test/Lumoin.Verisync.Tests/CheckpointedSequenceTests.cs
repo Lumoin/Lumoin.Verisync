@@ -202,6 +202,99 @@ internal sealed class CheckpointedSequenceTests
     }
 
 
+    //The container's probe checks exist independently of the strategy guard: RGA's Compact never
+    //imposes an insert-quiescence precondition, so with a hand-built context whose probe constantly
+    //reports one unstable insert, any quiescence throw below can only come from the container itself —
+    //both from Seal and from ApplyCommittedSeal with an honestly-built commitment whose dominance,
+    //chain, and digest checks all pass.
+    [TestMethod]
+    public void TheContainerRefusesToSealWhenTheProbeReportsInstability()
+    {
+        SequenceCrdtContext<Rga<string>, string, Dot> wired = WellKnownSequenceStrategies.CreateRgaRle<string>();
+        var probed = new SequenceCrdtContext<Rga<string>, string, Dot>
+        {
+            StrategyId = wired.StrategyId,
+            Empty = wired.Empty,
+            InsertAtHead = wired.InsertAtHead,
+            InsertAfter = wired.InsertAfter,
+            Remove = wired.Remove,
+            Merge = wired.Merge,
+            Values = wired.Values,
+            Compact = wired.Compact,
+            TranslateAnchor = wired.TranslateAnchor,
+            CausalContext = wired.CausalContext,
+            CertifyProjection = wired.CertifyProjection,
+            UnstableInserts = static (_, _) => [new Dot(R1, 99)]
+        };
+        (CheckpointedSequence<Rga<string>, string, Dot> withA, _) =
+            CheckpointedSequence<Rga<string>, string, Dot>.Create(probed, Canonicalize, Sha256).InsertAtHead("A", R1);
+        VectorClock frontier = withA.CausalContext!;
+        CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => withA.Seal(register, new Ballot(1, R1), frontier));
+
+        //The probe-refused Seal ran no consensus round, so the register is untouched: a probe-LESS context
+        //over the same delegates seals it at the SAME frontier as the register's first commitment.
+        var probeless = new SequenceCrdtContext<Rga<string>, string, Dot>
+        {
+            StrategyId = wired.StrategyId,
+            Empty = wired.Empty,
+            InsertAtHead = wired.InsertAtHead,
+            InsertAfter = wired.InsertAfter,
+            Remove = wired.Remove,
+            Merge = wired.Merge,
+            Values = wired.Values,
+            Compact = wired.Compact,
+            TranslateAnchor = wired.TranslateAnchor,
+            CausalContext = wired.CausalContext,
+            CertifyProjection = wired.CertifyProjection
+        };
+        (CheckpointedSequence<Rga<string>, string, Dot> probelessA, _) =
+            CheckpointedSequence<Rga<string>, string, Dot>.Create(probeless, Canonicalize, Sha256).InsertAtHead("A", R1);
+        (_, _, ChangeOutcome<CheckpointCommitment> probelessOutcome, bool probelessSealed) =
+            probelessA.Seal(register, new Ballot(1, R1), frontier);
+        Assert.IsTrue(probelessSealed);
+        Assert.AreEqual(frontier, probelessOutcome.Value!.Frontier);
+
+        var committed = new CheckpointCommitment(frontier, Sha256(Canonicalize(withA.Live.CertifiedProjection(frontier))));
+        Assert.ThrowsExactly<InvalidOperationException>(() => withA.ApplyCommittedSeal(committed, new Ballot(1, R1)));
+    }
+
+
+    //The digest check runs BEFORE the probe in ApplyCommittedSeal: with the probe wired to throw a
+    //marker exception and a MISMATCHED digest, the digest-first order surfaces the digest's
+    //InvalidOperationException; a probe-first implementation would surface NotSupportedException. The
+    //ordering is pinned by exception TYPE alone.
+    [TestMethod]
+    public void TheDigestCheckPrecedesTheProbeInApplyCommittedSeal()
+    {
+        SequenceCrdtContext<Rga<string>, string, Dot> wired = WellKnownSequenceStrategies.CreateRgaRle<string>();
+        var probed = new SequenceCrdtContext<Rga<string>, string, Dot>
+        {
+            StrategyId = wired.StrategyId,
+            Empty = wired.Empty,
+            InsertAtHead = wired.InsertAtHead,
+            InsertAfter = wired.InsertAfter,
+            Remove = wired.Remove,
+            Merge = wired.Merge,
+            Values = wired.Values,
+            Compact = wired.Compact,
+            TranslateAnchor = wired.TranslateAnchor,
+            CausalContext = wired.CausalContext,
+            CertifyProjection = wired.CertifyProjection,
+            UnstableInserts = static (_, _) => throw new NotSupportedException()
+        };
+        (CheckpointedSequence<Rga<string>, string, Dot> withA, _) =
+            CheckpointedSequence<Rga<string>, string, Dot>.Create(probed, Canonicalize, Sha256).InsertAtHead("A", R1);
+        VectorClock frontier = withA.CausalContext!;
+
+        ReadOnlyMemory<byte> mismatched = new byte[] { 1, 2, 3 };
+        var committed = new CheckpointCommitment(frontier, mismatched);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => withA.ApplyCommittedSeal(committed, new Ballot(1, R1)));
+    }
+
+
     private static CheckpointedSequence<Rga<string>, string, Dot> NewSequence()
     {
         return CheckpointedSequence<Rga<string>, string, Dot>.Create(WellKnownSequenceStrategies.CreateRga<string>(), Canonicalize, Sha256);

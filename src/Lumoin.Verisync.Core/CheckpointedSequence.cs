@@ -62,10 +62,45 @@ namespace Lumoin.Verisync.Core;
 /// it was learned at, takes a healthy member's FULL sequence state, seeds a fresh container around it with
 /// <see cref="Adopt(SequenceCrdtContext{TSequence, TValue, TAnchor}, CanonicalizeCheckpointDelegate{TValue}, ComputeDigestDelegate, TSequence)"/>,
 /// and calls <see cref="ApplyCommittedSeal(CheckpointCommitment, Ballot)"/> — whose digest verification IS the
-/// adoption check, since the donor state's certified projection at the committed frontier must match the group's
-/// commitment. The rejoiner then converges the above-frontier tail by NORMAL merging with other members; its own
-/// partition-time edits are gone (a host that wants them back re-applies them as fresh inserts at the
-/// application layer).
+/// adoption check for a donor still on the commitment's SOURCE generation: any donor for an identity-stable
+/// strategy like RGA, and for a base-materializing strategy like offset any donor whose lineage has not
+/// BASE-CHANGED at the committed frontier — a base-changing compaction re-identifies converted elements, so a
+/// donor that applied one can never digest-match the pre-compaction commitment, while a drop-only compaction
+/// stays on the source generation and still verifies. After the group applies a base-changing seal a rejoiner
+/// therefore adopts a post-seal donor, inherits the checkpoint and commitment through container
+/// <see cref="Merge(CheckpointedSequence{TSequence, TValue, TAnchor})"/> — the higher-ballot arm hands them
+/// over — and is verified by the NEXT committed seal rather than the current one. The rejoiner converges the
+/// above-frontier tail by NORMAL merging with other members; its own partition-time edits are gone (a host that
+/// wants them back re-applies them as fresh inserts at the application layer). Run the recovery AT MOST ONCE
+/// per lost context and persist its result before gossiping it: a fresh insert re-minted from the adopted
+/// context reproduces the lost dot deterministically, so a recovery that runs twice with a different insertion
+/// point or value forges two vertices under one identity — the strategies' merge detector fails that state
+/// closed rather than let merge order choose.
+/// </para>
+/// <para>
+/// GROUP-QUIESCENT SEALING. A strategy whose compaction requires insert-quiescence — it advertises this by
+/// wiring the context's insert-quiescence probe, surfaced here as <see cref="UnstableInserts(VectorClock)"/> —
+/// makes sealing a GROUP-QUIESCENT, stop-the-world checkpoint: a host must drive the group to insert-quiescence
+/// at the committed frontier (stop accepting inserts, let digests advance, re-fold) or accept adoption for a
+/// straggling writer whose edits the frontier cannot cover. The probe is both the readiness check — fold every
+/// member's probe at a candidate frontier, all empty means the group can seal — and the recovery discriminator
+/// — a non-empty probe at a committed frontier means adopt, not apply. That is why adoption is wholesale: the
+/// seal was stop-the-world. For the offset strategy the GENERATION FENCE is the second adoption trigger
+/// alongside the stale-pre-remove detector — a base-changing seal advances the generation identity, so a member
+/// on the prior generation cannot merge as a peer and rejoins by adoption.
+/// </para>
+/// <para>
+/// A STRAGGLER MUST NEVER SEAL. <see cref="Seal(CasPaxosRegister{CheckpointCommitment}, Ballot, VectorClock)"/>
+/// probes only the SEALER'S OWN state — a sufficient local witness to refuse, never proof of group quiescence —
+/// so a member that cannot fold fresh digests and probes from EVERY member must not seal at all. A partitioned
+/// straggler that seals at its own locally-quiescent frontier commits an ISLAND the register accepts (it
+/// strictly dominates the committed line): every other member is then wedged — applying the island demands a
+/// catch-up its generation fence forbids, and every group seal quietly returns un-<c>Sealed</c> forever, because
+/// no group-reachable frontier dominates the island's foreign axis. The group's only recovery is wholesale
+/// adoption FROM the island (adopt plus container merge — the island is a post-compaction donor, so the
+/// current-commitment digest check cannot verify it), re-applying its own above-frontier edits as fresh inserts.
+/// The seal-progress guarantee below therefore holds for sealers on the committed generation with fresh
+/// group-wide digests, not for stragglers.
 /// </para>
 /// </remarks>
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
@@ -119,6 +154,33 @@ public sealed class CheckpointedSequence<TSequence, TValue, TAnchor>: IEquatable
 
     /// <summary>The causal context the host advertises for this document as a gossip digest, or <see langword="null"/> when the strategy exposes none.</summary>
     public VectorClock? CausalContext => Context.CausalContext?.Invoke(Live);
+
+
+    /// <summary>
+    /// The seal-readiness and apply-vs-adopt diagnostic: the vertex insert-dots the strategy's
+    /// insert-quiescence probe reports uncovered at <paramref name="stabilityFrontier"/>, or
+    /// <see langword="null"/> when the strategy wires no probe (its compaction imposes no
+    /// insert-quiescence precondition).
+    /// </summary>
+    /// <param name="stabilityFrontier">The candidate or committed stability frontier to probe.</param>
+    /// <returns>
+    /// The uncovered vertex insert-dots for a probe-wiring strategy — empty when the frontier is
+    /// insert-quiescent — or <see langword="null"/> when the strategy wires no probe.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="stabilityFrontier"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// A host drives a group-quiescent seal by folding every member's probe at the candidate frontier — all
+    /// empty means the group can seal there. At a COMMITTED frontier the probe is the recovery
+    /// discriminator: a non-sealer whose probe is non-empty holds in-flight inserts the frontier can never
+    /// cover and must adopt wholesale rather than apply. A <see langword="null"/> result says sealing this
+    /// strategy is not group-quiescent at all.
+    /// </remarks>
+    public ImmutableArray<Dot>? UnstableInserts(VectorClock stabilityFrontier)
+    {
+        ArgumentNullException.ThrowIfNull(stabilityFrontier);
+
+        return Context.UnstableInserts?.Invoke(Live, stabilityFrontier);
+    }
 
 
     /// <summary>
@@ -247,7 +309,14 @@ public sealed class CheckpointedSequence<TSequence, TValue, TAnchor>: IEquatable
     /// proposal won.
     /// </returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="register"/> or <paramref name="stabilityFrontier"/> is <see langword="null"/>.</exception>
-    /// <exception cref="InvalidOperationException">Thrown when the strategy does not certify a projection or does not compact, so the container cannot be sealed.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when the strategy does not certify a projection or does not compact, so the container cannot be
+    /// sealed; or, for a strategy that wires an insert-quiescence probe, when THIS member holds inserts
+    /// <paramref name="stabilityFrontier"/> does not cover — a sufficient local witness that the group is not
+    /// insert-quiescent — in which case the seal fails closed before any consensus round. The check is a local
+    /// witness only: it cannot see other members' inserts, so group quiescence remains the host's probe-fold
+    /// obligation before sealing.
+    /// </exception>
     /// <remarks>
     /// <para>
     /// What certifies what: the digest covers the certified dotted projection at the frontier — the visible order
@@ -257,16 +326,22 @@ public sealed class CheckpointedSequence<TSequence, TValue, TAnchor>: IEquatable
     /// register is empty (the first seal — every clock dominates the absent frontier), when my frontier strictly
     /// dominates the recovered one, or when the frontiers are equal and the digests are byte-identical (an
     /// idempotent re-seal); otherwise — behind, concurrent, or an equal frontier with a divergent digest (the
-    /// fail-safe against a buggy or forged sealer, unreachable for honest members by the determinism theorem) —
-    /// it re-proposes the recovered commitment unchanged. The committed line is therefore a chain, each committed
-    /// frontier strictly dominating its predecessor or repeating it byte-identically.
+    /// fail-safe against a buggy or forged sealer, unreachable for honest members sealing from states on the
+    /// commitment's SOURCE generation) — it re-proposes the recovered commitment unchanged. An offset member
+    /// re-sealing at the same frontier AFTER its own BASE-CHANGING compaction reaches the
+    /// equal-frontier-divergent-digest arm harmlessly: its post-compaction projection is sentinel-re-keyed, so
+    /// the digests differ and it aborts unchanged. A DROP-ONLY seal does not re-key the projection, so its
+    /// re-seal takes the idempotent equal-digest arm exactly as RGA. The committed line is therefore a chain,
+    /// each committed frontier strictly dominating its predecessor or repeating it byte-identically.
     /// </para>
     /// <para>
     /// <c>Sealed</c> is true only when the change was chosen AND the chosen value equals this sealer's own
     /// proposal. When it is false — a quorum failure or a competing commitment won — the container is returned
     /// UNCHANGED (the abort-on-lose): the host merges digests, recomputes at a frontier that dominates the chosen
     /// one (readable off <c>Outcome.Value.Frontier</c> when chosen), and retries. Every successful commit
-    /// strictly ascends the chain, so competing sealers make progress rather than livelock. The recorded
+    /// strictly ascends the chain, so competing sealers ON THE COMMITTED GENERATION with fresh group-wide digests
+    /// make progress rather than livelock — a partitioned straggler that seals commits an island no group frontier
+    /// can ever dominate (see the class remarks: a straggler must never seal). The recorded
     /// <c>(Checkpoint, Commitment)</c> pair is written only by a sealer whose own proposal won, so the commitment
     /// is consistent with its content by construction.
     /// </para>
@@ -290,6 +365,20 @@ public sealed class CheckpointedSequence<TSequence, TValue, TAnchor>: IEquatable
         if(Context.CertifyProjection is null || Context.Compact is null)
         {
             throw new InvalidOperationException("The strategy does not certify a projection, so it cannot seal.");
+        }
+
+        //Insert-quiescence probe, before any projection, compaction, or consensus round: a probe-wiring
+        //strategy (the base-materializing offset strategy) makes sealing group-quiescent, and THIS SEALER
+        //holding uncovered inserts is a sufficient local witness that the group is not quiescent — the check
+        //cannot see other members' inserts, so group quiescence stays the host's probe-fold obligation. This
+        //precedes register.Change, so the refusal is structurally pre-consensus — nothing is proposed or
+        //accepted before it fires; there is no direct register observable for the placement (an equal-frontier
+        //divergent-digest re-seal discriminates it indirectly), so the ordering is pinned here and by the
+        //synthetic-context ordering tests. The strategy's own guard inside compact-before-propose stays as
+        //defense in depth.
+        if(Context.UnstableInserts is { } unstableInserts && !unstableInserts(Live, stabilityFrontier).IsEmpty)
+        {
+            throw new InvalidOperationException("This member holds inserts the frontier does not cover, so the group is not insert-quiescent there and this strategy's compaction materializes only a fully-stable line. Drive the group quiescent — stop accepting inserts, let digests advance, and re-fold the frontier — then seal at a frontier that covers the inserts the UnstableInserts probe reports.");
         }
 
         ImmutableArray<SequenceCheckpointEntry<TValue>> projection = Context.CertifyProjection(Live, stabilityFrontier);
@@ -357,20 +446,26 @@ public sealed class CheckpointedSequence<TSequence, TValue, TAnchor>: IEquatable
     /// observed everything below the committed frontier and must catch up before applying (its causal context
     /// does not dominate the committed frontier); when <paramref name="committed"/> sits behind or concurrent to
     /// a commitment this container already recorded (committed seals apply in chain order, so a stale earlier
-    /// seal fails closed even when its digest would coincide); or when its certified projection at the committed
+    /// seal fails closed even when its digest would coincide); when its certified projection at the committed
     /// frontier does not byte-match the committed digest — with the preconditions satisfied, a mismatch is
-    /// genuine divergence or a forged commitment, so it fails closed.
+    /// genuine divergence or a forged commitment, so it fails closed; or, for a strategy that wires an
+    /// insert-quiescence probe, when this member still holds in-flight inserts the committed frontier can never
+    /// cover — checked AFTER the digest so the graver divergence-or-forgery diagnosis surfaces first — in which
+    /// case it must recover by wholesale adoption rather than applying.
     /// </exception>
     /// <remarks>
     /// The precondition — the applier's context must DOMINATE the committed frontier — is the scope of the
     /// determinism theorem: automatic for any member whose digest was folded into the frontier, a lagging member
     /// merges up first, and a restored or evicted replica adopts wholesale rather than applies-then-merges.
     /// Committed seals are applied in CHAIN ORDER; applying a stale earlier seal to a container already sealed
-    /// above it fails the precondition-or-digest checks rather than regressing state, and applying an
-    /// already-applied seal recomputes the same projection and no-op-compacts — idempotent by construction. A
-    /// sealer that crashes between the register's acceptance and its own compaction leaves a committed checkpoint
-    /// no member compacted against; that is harmless, because any member applies it on learning of it and the
-    /// next seal strictly dominates it.
+    /// above it fails the precondition-or-digest checks rather than regressing state. Re-applying an
+    /// already-applied seal is idempotent when the compaction preserved projection identities — always for RGA,
+    /// and for a base-materializing strategy (offset) when the seal was DROP-ONLY; a BASE-CHANGING seal is
+    /// instead applied EXACTLY ONCE, because once it converted live content into sentinel-keyed base entries the
+    /// re-application's projection no longer matches the committed digest and the digest check fails closed — a
+    /// refusal, not corruption. A sealer that crashes between the register's acceptance and its
+    /// own compaction leaves a committed checkpoint no member compacted against; that is harmless, because any
+    /// member applies it on learning of it and the next seal strictly dominates it.
     /// </remarks>
     public CheckpointedSequence<TSequence, TValue, TAnchor> ApplyCommittedSeal(CheckpointCommitment committed, Ballot ballot)
     {
@@ -402,6 +497,16 @@ public sealed class CheckpointedSequence<TSequence, TValue, TAnchor>: IEquatable
         if(!digest.Span.SequenceEqual(committed.Digest.Span))
         {
             throw new InvalidOperationException("This member's certified projection at the committed frontier does not match the committed digest; the state has diverged or the commitment is forged.");
+        }
+
+        //Probe AFTER the digest check: the digest check runs first because a mismatch is divergence or
+        //forgery — the graver diagnosis — and the certified projection is quiescence-independent, so the
+        //digest check's meaning does not depend on the probe's outcome. With the digest verified, a
+        //non-empty probe at the committed frontier means this member holds in-flight inserts the frontier can
+        //never cover, so it fails closed and recovers by wholesale adoption rather than applying.
+        if(Context.UnstableInserts is { } unstableInserts && !unstableInserts(Live, committed.Frontier).IsEmpty)
+        {
+            throw new InvalidOperationException("This member holds in-flight inserts the committed frontier can never cover, so it cannot apply this seal. Recover by wholesale adoption: adopt a healthy member's full sequence state with Adopt, inherit the current checkpoint and commitment by MERGING containers with that member — the higher-ballot arm hands them over — re-apply this member's in-flight edits as fresh inserts, and be verified by the NEXT committed seal it applies. Do not expect ApplyCommittedSeal at the current commitment to verify a post-compaction donor: a base-changing compaction re-identifies converted elements, so the current commitment's digest, computed over the pre-compaction projection, can never match a post-seal donor's projection.");
         }
 
         return new CheckpointedSequence<TSequence, TValue, TAnchor>(

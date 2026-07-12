@@ -85,6 +85,33 @@ internal sealed class CheckpointSealTests
     }
 
 
+    //Re-applying an already-applied seal is idempotent for the identity-stable RGA strategy: its compaction
+    //preserves projection identities, so the applier's projection at the committed frontier still matches the
+    //digest on the second application and the container is unchanged. The base-materializing offset analog
+    //instead fails closed once the seal converted live content — pinned in OffsetCheckpointSealTests.
+    [TestMethod]
+    public void ReapplyingAnAppliedSealIsIdempotentForAnIdentityStableStrategy()
+    {
+        (CheckpointedSequence<Rga<string>, string, Dot> withA, Dot idA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<Rga<string>, string, Dot> withB, Dot idB) = withA.InsertAfter(idA, "b", R1);
+        CheckpointedSequence<Rga<string>, string, Dot> removed = withB.Remove(idB, R1);
+
+        VectorClock frontier = removed.CausalContext!;
+        CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
+        Ballot ballot = new(1, RA);
+        (_, _, ChangeOutcome<CheckpointCommitment> outcome, _) = removed.Seal(register, ballot, frontier);
+
+        (CheckpointedSequence<Rga<string>, string, Dot> otherA, Dot otherIdA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<Rga<string>, string, Dot> otherB, Dot otherIdB) = otherA.InsertAfter(otherIdA, "b", R1);
+        CheckpointedSequence<Rga<string>, string, Dot> otherRemoved = otherB.Remove(otherIdB, R1);
+        CheckpointedSequence<Rga<string>, string, Dot> applied = otherRemoved.ApplyCommittedSeal(outcome.Value!, ballot);
+
+        CheckpointedSequence<Rga<string>, string, Dot> reapplied = applied.ApplyCommittedSeal(outcome.Value!, ballot);
+
+        Assert.AreEqual(applied, reapplied);
+    }
+
+
     //A competing seal that is behind aborts unchanged, re-proposing the winner's commitment; a later seal
     //that strictly dominates the winner succeeds — the committed chain only ascends.
     [TestMethod]
@@ -254,8 +281,8 @@ internal sealed class CheckpointSealTests
 
 
     //A strategy that certifies no projection cannot seal: the plain non-compacting RGA strategy throws.
-    //offset.v2 now satisfies the seal preconditions, pinned by a minimal smoke seal — the offset seal
-    //end-to-end suite is slice O2.
+    //offset.v2 satisfies the seal preconditions, pinned here by a minimal smoke seal — the offset seal
+    //end-to-end suite lives in OffsetCheckpointSealTests.
     [TestMethod]
     public void SealRequiresACertifyingStrategy()
     {

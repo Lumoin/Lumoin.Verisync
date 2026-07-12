@@ -310,14 +310,21 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
     /// on both sides — that the other operand's lineage compacted away after the element's remove was
     /// observed group-wide, witnessed permanently by that operand's translation map. A replica rejoining
     /// after eviction, restore, or replay must adopt a current state wholesale rather than merge; merging a
-    /// stale pre-remove state would resurrect the element, so it fails closed.
+    /// stale pre-remove state would resurrect the element, so it fails closed. Also thrown when the operands
+    /// carry CONFLICTING vertices for one insert identity — a dot mints exactly one immutable vertex, so the
+    /// conflict is equivocation or an adoption recovery that ran more than once and re-minted the identity
+    /// divergently (run the recovery at most once per lost context and persist it before gossiping);
+    /// overwriting would let merge order pick a winner silently.
     /// </exception>
     /// <remarks>
     /// Tombstones union their remove-dots per target, and base removals per offset: a legacy empty set
     /// unioned with a dotted set yields the dotted set, so a v1-loaded removal is upgraded by any peer that
     /// holds the dotted remove. Both translation maps union with the other operand winning a key collision,
     /// which within the fenced generation only arises for identically derived entries or a harmless
-    /// ghost-GC asymmetry, so the choice is immaterial.
+    /// ghost-GC asymmetry, so the choice is immaterial. The conflicting-vertex check compares values with
+    /// <see cref="System.Collections.Generic.EqualityComparer{T}.Default"/>, so <typeparamref name="TValue"/>
+    /// must carry VALUE equality: a reference-equality element type would compare honest copies of one
+    /// vertex unequal after any serialization boundary and fail honest merges closed.
     /// </remarks>
     public OffsetAnchoredSequence<TValue> Merge(OffsetAnchoredSequence<TValue> other)
     {
@@ -352,6 +359,19 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
 
         foreach(KeyValuePair<Dot, Vertex> entry in other.Vertices)
         {
+            //A dot mints exactly one immutable vertex, and within a fenced generation no compaction
+            //rewrites a retained vertex (drop-only walks re-anchor nothing; base-changing walks are
+            //fence-blocked before this point), so operands disagreeing on a shared dot's vertex is never
+            //an honest edge: it is equivocation or an adoption recovery that ran twice and re-minted the
+            //identity divergently. Overwriting would let merge order pick a winner silently — fail closed.
+            //The drop-only claim is a COROLLARY of the insert-quiescence guard (a successful Compact
+            //retains no vertex at all, so there is nothing to re-anchor); a reclamation follow-on that
+            //makes the ghost retention arm reachable must re-establish this premise.
+            if(mergedVertices.TryGetValue(entry.Key, out Vertex? mine) && !mine.Equals(entry.Value))
+            {
+                throw new InvalidOperationException("The operands carry conflicting vertices for one insert identity: a dot mints exactly one immutable vertex, so this state is equivocation or an adoption recovery that ran more than once and re-minted the identity divergently. Merging would let merge order choose silently; the divergent member must rejoin by wholesale adoption.");
+            }
+
             mergedVertices[entry.Key] = entry.Value;
         }
 
@@ -436,6 +456,29 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
                 throw new InvalidOperationException("A merge operand presents an element live that the other operand's lineage compacted after its remove was universally observed; the operand is a stale pre-remove state. A replica rejoining after eviction, restore, or replay must adopt a current state wholesale instead of merging.");
             }
         }
+    }
+
+
+    /// <summary>
+    /// The insert-quiescence probe: the vertex insert-dots <paramref name="stabilityFrontier"/> does not
+    /// cover, ascending by (Replica, Counter) — empty exactly when <see cref="Compact"/> at this frontier
+    /// passes its insert-quiescence guard.
+    /// </summary>
+    /// <param name="stabilityFrontier">The group stability frontier — see <see cref="StabilityFrontier"/>.</param>
+    /// <returns>The uncovered vertex insert-dots ascending by (Replica, Counter), or empty when the frontier is insert-quiescent.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="stabilityFrontier"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// Each returned dot is a vertex insert the frontier does not cover, so the per-replica maximum of the
+    /// result is what every member's digest must reach before a frontier folded from those digests covers
+    /// this state. Remove-dots never appear: quiescence reads insert-stability only, and a frontier that
+    /// certifies no pending remove is still quiescent. The guard and this probe run the one shared scan, so
+    /// they can never disagree on which state is quiescent.
+    /// </remarks>
+    public ImmutableArray<Dot> UnstableInserts(VectorClock stabilityFrontier)
+    {
+        ArgumentNullException.ThrowIfNull(stabilityFrontier);
+
+        return CollectUnstableInserts(stabilityFrontier);
     }
 
 
@@ -608,13 +651,21 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
         //element and the base region, and because base slots linearize after the live head region that
         //conversion would reorder the visible sequence, wedge honest members on frontier-path-dependent
         //bases at one generation identity, and break certified-projection determinism. Reading only
-        //insert-stability keeps the guard frontier-pure.
-        foreach(Dot vertex in Vertices.Keys)
+        //insert-stability keeps the guard frontier-pure. The scan is the shared CollectUnstableInserts core
+        //the public UnstableInserts probe also runs, so the guard's fail-closed set and the probe's report
+        //can never drift; a passing guard scans every vertex exactly as before, only the failing path — which
+        //throws anyway — pays for collecting the whole uncovered set for the diagnostic.
+        ImmutableArray<Dot> uncovered = CollectUnstableInserts(stabilityFrontier);
+        if(!uncovered.IsEmpty)
         {
-            if(!IsStable(vertex, stabilityFrontier))
+            var replicaAxes = new HashSet<ReplicaId>();
+            foreach(Dot vertex in uncovered)
             {
-                throw new InvalidOperationException("Compaction requires an insert-quiescent frontier: the frontier must cover every vertex's insert-dot, because the base-materializing model materializes only a fully-stable line. An unstable vertex would let a base conversion reorder the visible sequence and fork honest members' bases at one generation identity. Advance the frontier until every insert is stable, or read the state with CertifiedProjection, which is unrestricted.");
+                replicaAxes.Add(vertex.Replica);
             }
+
+            string axisWord = replicaAxes.Count == 1 ? "axis" : "axes";
+            throw new InvalidOperationException($"Compaction requires an insert-quiescent frontier: {uncovered.Length} vertex insert-dot(s) across {replicaAxes.Count} replica {axisWord} are above it, so the base-materializing model cannot materialize a fully-stable line. An unstable vertex would let a base conversion reorder the visible sequence and fork honest members' bases at one generation identity. Advance the frontier past every uncovered insert — a host sealing a group drives it to insert-quiescence first — or read the state with CertifiedProjection, which is unrestricted.");
         }
 
         //Classify every vertex against the frontier with the four-way taxonomy.
@@ -726,8 +777,12 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
         //Translation maps. Prior dot-map entries compose through this compaction (the anchors they point
         //at have themselves moved this generation); converted and dropped dots got fresh entries during
         //the walk, which win any collision. The base-offset map is REPLACED by this generation's
-        //oldToNew: a previous-generation base anchor can no longer arrive once the line passed the
-        //previous checkpoint, so composing the old map would only retain unreachable entries.
+        //oldToNew only when the base CHANGED: a previous-generation base anchor can no longer arrive once
+        //the line passed the previous checkpoint, so composing the old map would only retain unreachable
+        //entries. A DROP-ONLY walk keeps the prior map instead — its own oldToNew is the identity (every
+        //base slot is kept at its offset), so keeping the prior map IS the exact composition, whereas
+        //installing the identity would silently retarget still-in-window previous-generation base anchors
+        //to wrong elements mid-window.
         var newDotAnchors = new Dictionary<Dot, OffsetAnchor>(CompactedDotAnchors.Count + dotAnchor.Count);
         foreach(KeyValuePair<Dot, OffsetAnchor> entry in CompactedDotAnchors)
         {
@@ -743,7 +798,7 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
         //both the base and its identity untouched.
         VectorClock newBaseFrontier = baseChanged ? stabilityFrontier : BaseFrontier;
 
-        return new OffsetAnchoredSequence<TValue>(newBase.ToImmutableArray(), newBaseFrontier, newRemoved.ToFrozenDictionary(), Context, newVertices.ToFrozenDictionary(), newTombstones.ToFrozenDictionary(), newDotAnchors.ToFrozenDictionary(), oldToNew.ToFrozenDictionary());
+        return new OffsetAnchoredSequence<TValue>(newBase.ToImmutableArray(), newBaseFrontier, newRemoved.ToFrozenDictionary(), Context, newVertices.ToFrozenDictionary(), newTombstones.ToFrozenDictionary(), newDotAnchors.ToFrozenDictionary(), baseChanged ? oldToNew.ToFrozenDictionary() : CompactedBaseOffsets);
     }
 
 
@@ -755,11 +810,24 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
     /// <returns>The current anchor — the input itself when no translation is needed — or <see langword="null"/> when unservable.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="anchor"/> is <see langword="null"/>.</exception>
     /// <remarks>
+    /// <para>
     /// A translated anchor at a dropped tombstone or a reclaimed base offset resolves to the gap anchor of
     /// its old position — the nearest preceding checkpoint entry — which can place a later insert ahead of
     /// surviving subtrees the removed element's position would have followed. Convergence is unaffected —
     /// every member translates through the same replica-independent map — and intention degrades only for
     /// anchors at elements that were already removed.
+    /// </para>
+    /// <para>
+    /// BASE anchors carry no generation tag, so the base-offset map serves the PREVIOUS generation's
+    /// numbering for the one-generation window the stability rule permits: an in-map offset translates as a
+    /// previous-generation anchor, and an unmapped in-range offset translates as itself (it can only name
+    /// the current generation — a base-changing compaction maps every previous slot, and a drop-only
+    /// compaction keeps both the base and the prior map). During that window a caller naming a CURRENT
+    /// slot whose offset collides with a previous-generation key receives the previous generation's
+    /// reading — inherent to untagged integer offsets; callers that must address the current base
+    /// unambiguously during the window use live-dot anchors or re-read positions from
+    /// <see cref="VisibleElements"/>.
+    /// </para>
     /// </remarks>
     public OffsetAnchor? TranslateAnchor(OffsetAnchor anchor)
     {
@@ -797,7 +865,17 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
             return CompactedDotAnchors.TryGetValue(dot, out OffsetAnchor? translated) ? translated : null;
         }
 
-        return CompactedBaseOffsets.TryGetValue(anchor.BaseOffset, out OffsetAnchor? target) ? target : null;
+        if(CompactedBaseOffsets.TryGetValue(anchor.BaseOffset, out OffsetAnchor? target))
+        {
+            return target;
+        }
+
+        //An unmapped in-range base offset is a CURRENT-generation anchor and translates as itself: a
+        //base-changing compaction maps every previous-generation slot, so a servable previous-generation
+        //anchor is always a key, and a drop-only compaction keeps both the base and the prior map — its
+        //current-generation slots (all of them, when the generation has never base-changed and the kept
+        //map is empty) must not fall through to null just because no walk ever recorded them.
+        return anchor.BaseOffset < Base.Length ? anchor : null;
     }
 
 
@@ -1027,6 +1105,16 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
             }
 
             OffsetAnchor target = FromAnchorState(entry.Target);
+
+            //Honest base-offset translations point only at base positions or the head (the walk writes the
+            //shifted slot or the gap anchor, never a live dot). A live target would additionally dangle
+            //uncomposed through a drop-only compaction, which keeps this map verbatim while the vertex may
+            //drop — reject the shape at the model boundary instead.
+            if(target.IsLive)
+            {
+                throw new ArgumentException($"The compacted base offset {entry.PreviousOffset} targets a live anchor; base-offset translations point at base positions or the head.", nameof(state));
+            }
+
             ValidateTargetAnchor(target, vertices, state.Base.Length);
             if(!compactedBaseOffsets.TryAdd(entry.PreviousOffset, target))
             {
@@ -1604,6 +1692,33 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
     private static bool IsStable(Dot dot, VectorClock frontier)
     {
         return frontier[dot.Replica] >= dot.Counter;
+    }
+
+
+    //The one insert-quiescence scan Compact's guard and the public UnstableInserts probe share, so the
+    //guard's fail-closed set and the probe's report can never drift. Every vertex whose insert-dot the
+    //frontier does not cover, ascending by (Replica, Counter) so members holding equal state report the
+    //identical order. Empty when the frontier is insert-quiescent, so a passing guard allocates nothing.
+    private ImmutableArray<Dot> CollectUnstableInserts(VectorClock stabilityFrontier)
+    {
+        List<Dot>? uncovered = null;
+        foreach(Dot vertex in Vertices.Keys)
+        {
+            if(!IsStable(vertex, stabilityFrontier))
+            {
+                uncovered ??= new List<Dot>();
+                uncovered.Add(vertex);
+            }
+        }
+
+        if(uncovered is null)
+        {
+            return ImmutableArray<Dot>.Empty;
+        }
+
+        uncovered.Sort(CompareDotsByReplica);
+
+        return [.. uncovered];
     }
 
 

@@ -191,6 +191,51 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Added
 
+- Sealing is group-quiescent-aware and its diagnostics are actionable. The offset strategy exposes an
+  insert-quiescence probe — `OffsetAnchoredSequence.UnstableInserts(frontier)` returns the vertex
+  insert-dots the frontier does not cover, in deterministic `(Replica, Counter)` order, running the
+  ONE scan the compaction guard also runs so the two can never disagree — surfaced through a new
+  optional `SequenceUnstableInsertsDelegate` slot on the strategy context and as
+  `CheckpointedSequence.UnstableInserts` (null for strategies whose compaction imposes no quiescence
+  precondition, so hosts can detect whether sealing a strategy is stop-the-world at all). The
+  container now refuses with two distinct diagnostics: `Seal` fails closed BEFORE any consensus
+  round when the frontier leaves inserts uncovered (drive the group quiescent, then seal), and
+  `ApplyCommittedSeal` — after the graver digest check — tells a straggling writer the honest
+  recovery: the committed frontier can never cover its in-flight inserts, so it adopts a healthy
+  member's state, inherits the checkpoint and commitment by merging containers, re-applies its edits
+  as fresh inserts, and is verified by the NEXT committed seal. That recovery wording is
+  load-bearing: a base-changing compaction re-identifies converted elements (real dots become base
+  sentinels), so the digest-verification adoption check holds only for donors still on the
+  commitment's source generation, offset appliers apply each BASE-CHANGING committed seal exactly
+  once (re-application fails closed — a refusal, not corruption; a drop-only seal re-applies
+  idempotently exactly as RGA), and an offset member re-sealing after its own base-changing
+  compaction is refused harmlessly at the equal-frontier arm; the container docs now state all
+  three honestly. Two hardenings came out of the adversarial verification of that recovery:
+  `OffsetAnchoredSequence.Merge` and `Rga.Merge` now fail closed when the operands carry
+  CONFLICTING vertices under one insert identity — a dot mints exactly one immutable vertex, so
+  the conflict is equivocation or an adoption recovery that ran twice and re-minted the identity
+  divergently, and the previous unchecked union let merge order pick a winner silently (the check
+  compares element values, so `TValue` must carry value equality under
+  `EqualityComparer<T>.Default`; a reference-equality element type would fail honest merges closed
+  after a serialization boundary — now a documented contract on both strategies) — and a drop-only
+  offset compaction now KEEPS the prior base-offset translation map (its own shift is the
+  identity, so keeping the prior map is the exact composition) instead of replacing it and
+  silently retargeting still-in-window prior-generation base anchors to wrong elements, with
+  `TranslateAnchor` gaining the matching identity fallback for unmapped in-range base offsets
+  (they can only name the current generation, and previously fell to null after a drop-only walk)
+  and `FromState` rejecting base-offset translations that target live anchors (an inadmissible
+  shape that would dangle uncomposed through a drop-only walk). Because
+  the seal probe is a local witness only, a partitioned straggler that SEALS instead of adopting
+  commits an island frontier that quietly wedges every group seal thereafter — the container docs
+  now state plainly that a member without fresh group-wide digests must never seal, and that the
+  group's recovery from an island is wholesale adoption from it. The offset container is exercised
+  end to end — seal, non-sealer convergence,
+  competing and idempotent seals, chain order, divergent digests, the rejoin-by-adoption recipe, and
+  the full straggler wedge through recovery — and the remove-certification laws (no-false-drop,
+  remove-observation gating, no-resurrection, stale-replay detection) lift into the shared strategy
+  law harness now that two certifying strategies exist, each strategy supplying its scenario and
+  outcome hooks.
+
 - The offset-anchored sequence strategy certifies removals on both of its axes, closing the same
   causal-invisibility defect the RGA strategies closed: `offset.v2` removes are dotted events that
   tick the context — live-tombstone removals exactly as the RGA mechanism, and base-offset removals

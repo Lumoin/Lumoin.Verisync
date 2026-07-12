@@ -357,6 +357,36 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
+    //A base-offset translation whose target is a LIVE anchor is a forged state: honest base-offset
+    //translations point only at base positions or the head, and a live target would dangle uncomposed
+    //through a drop-only compaction (which keeps this map verbatim while the vertex may drop). (R2,3) is a
+    //retained live vertex of the compacted fixture, so the live-target guard fires before the target-anchor
+    //validation would otherwise accept it; the base- and head-targeting twins both load fine.
+    [TestMethod]
+    public void ABaseOffsetTranslationTargetingALiveAnchorFailsClosed()
+    {
+        OffsetAnchoredSequenceState<int> valid = CompactedWithBothMaps().ToState();
+
+        OffsetAnchoredSequenceState<int> liveTarget = valid with
+        {
+            CompactedBaseOffsets = [new OffsetBaseAnchorEntry(0, new OffsetAnchorState(-1, new DotState(R2Bytes, 3)))]
+        };
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(liveTarget));
+
+        OffsetAnchoredSequenceState<int> baseTarget = valid with
+        {
+            CompactedBaseOffsets = [new OffsetBaseAnchorEntry(0, new OffsetAnchorState(0, null))]
+        };
+        Assert.IsNotNull(OffsetAnchoredSequence<int>.FromState(baseTarget));
+
+        OffsetAnchoredSequenceState<int> headTarget = valid with
+        {
+            CompactedBaseOffsets = [new OffsetBaseAnchorEntry(0, new OffsetAnchorState(-1, null))]
+        };
+        Assert.IsNotNull(OffsetAnchoredSequence<int>.FromState(headTarget));
+    }
+
+
     //The CompactedDotAnchors duplicate posture is unified to TryAdd-throw; the duplicated dropped dot is
     //neither live nor tombstoned, so the W-shape guard cannot mask the duplicate.
     [TestMethod]

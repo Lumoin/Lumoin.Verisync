@@ -79,4 +79,12 @@ public sealed class SequenceCrdtContext<TSequence, TValue, TAnchor>
     /// <see langword="null"/> when the strategy cannot certify a projection and therefore cannot be sealed.
     /// </summary>
     public CertifySequenceProjectionDelegate<TSequence, TValue>? CertifyProjection { get; init; }
+
+    /// <summary>
+    /// Enumerates the vertex insert-dots a frontier does not cover — the strategy's insert-quiescence
+    /// probe — or <see langword="null"/> when the strategy's compaction imposes no insert-quiescence
+    /// precondition. A null slot is the honest statement that sealing this strategy is not group-quiescent;
+    /// hosts branch on its presence to learn whether a seal must be driven to quiescence at all.
+    /// </summary>
+    public SequenceUnstableInsertsDelegate<TSequence>? UnstableInserts { get; init; }
 }

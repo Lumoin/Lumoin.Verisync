@@ -217,7 +217,11 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
     /// a host concern that lands with the container seal — rather than merge; merging a stale pre-remove
     /// state would resurrect the element, so it fails closed. Also thrown on a forged input whose
     /// translation maps are mutually inconsistent — a candidate resolving to neither a merged vertex nor a
-    /// further translation, or a dropped dot with no resolvable target.
+    /// further translation, or a dropped dot with no resolvable target. Also thrown when the operands carry
+    /// CONFLICTING vertices for one insert identity — a dot mints exactly one immutable vertex, so the
+    /// conflict is equivocation or an adoption recovery that ran more than once and re-minted the identity
+    /// divergently (run the recovery at most once per lost context and persist it before gossiping);
+    /// overwriting would let merge order pick a winner silently.
     /// </exception>
     /// <remarks>
     /// Tombstones union their remove-dots per target: a legacy empty set unioned with a dotted set yields
@@ -226,7 +230,11 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
     /// dropped dot resolves to the maximum-counter merged vertex reachable through the union, the nearest
     /// retained ancestor and identical on every member — so the merge is commutative, associative, and
     /// idempotent. A laggard that observed the remove re-enters the ghost vertex together with its
-    /// tombstone, converged-correct because the drop gate certifies the remove before dropping.
+    /// tombstone, converged-correct because the drop gate certifies the remove before dropping. The
+    /// conflicting-vertex check compares values with
+    /// <see cref="System.Collections.Generic.EqualityComparer{T}.Default"/>, so <typeparamref name="TValue"/>
+    /// must carry VALUE equality: a reference-equality element type would compare honest copies of one
+    /// vertex unequal after any serialization boundary and fail honest merges closed.
     /// </remarks>
     public Rga<TValue> Merge(Rga<TValue> other)
     {
@@ -246,6 +254,16 @@ public sealed class Rga<TValue>: IEquatable<Rga<TValue>>
 
         foreach(KeyValuePair<Dot, Vertex> entry in other.Vertices)
         {
+            //A dot mints exactly one immutable vertex, and compaction never rewrites a retained vertex's
+            //predecessor or value (dropped anchors are served through the translation map instead), so
+            //operands disagreeing on a shared dot's vertex is never an honest edge: it is equivocation or
+            //an adoption recovery that ran twice and re-minted the identity divergently. Overwriting would
+            //let merge order pick a winner silently — fail closed.
+            if(mergedVertices.TryGetValue(entry.Key, out Vertex? mine) && !mine.Equals(entry.Value))
+            {
+                throw new InvalidOperationException("The operands carry conflicting vertices for one insert identity: a dot mints exactly one immutable vertex, so this state is equivocation or an adoption recovery that ran more than once and re-minted the identity divergently. Merging would let merge order choose silently; the divergent member must rejoin by wholesale adoption.");
+            }
+
             mergedVertices[entry.Key] = entry.Value;
         }
 

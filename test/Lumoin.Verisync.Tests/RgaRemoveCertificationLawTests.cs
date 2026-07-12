@@ -12,7 +12,10 @@ namespace Lumoin.Verisync.Tests;
 /// folded from REAL gossip digests over each member's <see cref="Rga{TValue}.CausalContext"/> — including
 /// the laggard's — so the shipped <see cref="StabilityFrontier"/> min-fold is exercised end to end. The
 /// certified projection at a frontier includes a locally tombstoned element whose remove is not yet
-/// certified, which is why several checkpoints carry values the operand's own <c>Values</c> hides.
+/// certified, which is why several checkpoints carry values the operand's own <c>Values</c> hides. The
+/// four strategy-agnostic remove laws — LAW-RG, LAW-NR, LAW-SR, and LAW-NFD — have lifted into
+/// <see cref="SequenceStrategyLawTests{TSequence, TValue, TAnchor}"/>; what remains here is the
+/// RGA-specific translation-map, orphan-tombstone, tie-break, and deep-chain family.
 /// </summary>
 [TestClass]
 internal sealed class RgaRemoveCertificationLawTests
@@ -25,95 +28,6 @@ internal sealed class RgaRemoveCertificationLawTests
 
     //The replica axes the CsCheck op histories mint on; one replica per operand index.
     private static ReplicaId[] Replicas { get; } = [MakeReplica(0), MakeReplica(1), MakeReplica(2)];
-
-
-    //LAW-RG: a remove only gates a drop once it is certified group-wide. While the laggard advertises the
-    //pre-remove context the drop does not fire and the certified projection still carries the hidden value;
-    //once every member observes the remove the drop fires.
-    [TestMethod]
-    public void RemoveObservationGatesTheDrop()
-    {
-        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
-        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
-        Rga<int> withRemove = withB.Remove(idB, R1);
-
-        //F1: two members advertise the post-remove context, the laggard advertises the pre-remove context, so
-        //the min floors R1 below the remove-dot and the remove is not certified.
-        VectorClock preRemove = withB.CausalContext;
-        VectorClock postRemove = withRemove.CausalContext;
-        VectorClock f1 = FrontierOf(postRemove, postRemove, preRemove);
-
-        //b is not dropped: still a vertex, no translation, and its value is in the certified projection even
-        //though the operand's own Values already hides it locally. The dotted checkpoint is that projection.
-        ImmutableArray<SequenceCheckpointEntry<int>> certifiedAtF1 = withRemove.CertifiedProjection(f1);
-        Rga<int> notDropped = withRemove.Compact(f1, certifiedAtF1);
-        Assert.AreEqual(idB, notDropped.TranslateAnchor(idB));
-        int[] hiddenLocally = [1];
-        CollectionAssert.AreEqual(hiddenLocally, notDropped.Values.ToArray());
-
-        //The laggard now observes the remove; every member advertises the post-remove context and the drop fires.
-        VectorClock f2 = FrontierOf(postRemove, postRemove, postRemove);
-        ImmutableArray<SequenceCheckpointEntry<int>> certifiedAtF2 = withRemove.CertifiedProjection(f2);
-        Rga<int> dropped = withRemove.Compact(f2, certifiedAtF2);
-        int[] afterDrop = [1];
-        CollectionAssert.AreEqual(afterDrop, dropped.Values.ToArray());
-        Assert.AreEqual(idA, dropped.TranslateAnchor(idB));
-    }
-
-
-    //LAW-NR: merging a former laggard that holds the vertex AND its dotted tombstone re-enters the ghost
-    //hidden, never resurrecting the committed remove, and recompacting either merge order returns the
-    //compacted state.
-    [TestMethod]
-    public void MergeDoesNotResurrectACommittedRemove()
-    {
-        RemoveScenario scenario = BuildRemoveScenario();
-        Rga<int> x = scenario.Compacted;
-        Rga<int> y = scenario.GhostHolder;
-
-        int[] visible = [1];
-        CollectionAssert.AreEqual(visible, x.Merge(y).Values.ToArray());
-        CollectionAssert.AreEqual(visible, y.Merge(x).Values.ToArray());
-
-        Assert.AreEqual(x, x.Merge(y).Compact(scenario.Frontier, scenario.Checkpoint));
-        Assert.AreEqual(x, y.Merge(x).Compact(scenario.Frontier, scenario.Checkpoint));
-    }
-
-
-    //LAW-SR: a stale pre-remove state (element live, no tombstone) fails the stale-replay detector closed in
-    //BOTH merge orders, while the honest ghost-holder throws in neither.
-    [TestMethod]
-    public void AStalePreRemoveStateFailsClosedInBothMergeOrders()
-    {
-        RemoveScenario scenario = BuildRemoveScenario();
-        Rga<int> x = scenario.Compacted;
-        Rga<int> z = scenario.StalePreRemove;
-        Rga<int> y = scenario.GhostHolder;
-
-        Assert.ThrowsExactly<InvalidOperationException>(() => x.Merge(z));
-        Assert.ThrowsExactly<InvalidOperationException>(() => z.Merge(x));
-
-        //The honest ghost-holder is not stale: it re-enters the ghost with its tombstone and never throws.
-        int[] visible = [1];
-        CollectionAssert.AreEqual(visible, x.Merge(y).Values.ToArray());
-        CollectionAssert.AreEqual(visible, y.Merge(x).Values.ToArray());
-    }
-
-
-    //LAW-NFD: merging an empty or a strictly-behind operand never drops a live element — the merge equals the
-    //full state's visible values in every order.
-    [TestMethod]
-    public void MergeWithEmptyOrABehindOperandNeverDropsALiveElement()
-    {
-        GenHistoryWithCut.Sample(input =>
-        {
-            int[] full = input.Full.Values.ToArray();
-            CollectionAssert.AreEqual(full, input.Full.Merge(Rga<int>.Empty).Values.ToArray());
-            CollectionAssert.AreEqual(full, Rga<int>.Empty.Merge(input.Full).Values.ToArray());
-            CollectionAssert.AreEqual(full, input.Full.Merge(input.Prefix).Values.ToArray());
-            CollectionAssert.AreEqual(full, input.Prefix.Merge(input.Full).Values.ToArray());
-        });
-    }
 
 
     //LAW-TMC: two operands compacted at different honest frontiers carry different translation maps and drop
@@ -156,6 +70,30 @@ internal sealed class RgaRemoveCertificationLawTests
         Rga<int> recompacted = forward.Compact(f2, checkpointB);
         Assert.AreEqual(idA, recompacted.TranslateAnchor(idP));
         Assert.AreEqual(idA, recompacted.TranslateAnchor(idD));
+    }
+
+
+    //Two operands carry the SAME insert dot with DIFFERENT vertex content — a forged double-mint. A dot mints
+    //exactly one immutable vertex, so Merge fails closed in both orders on the equivocation detector rather
+    //than letting merge order silently pick a value; an identical-vertex pair carries no conflict and merges.
+    [TestMethod]
+    public void ConflictingVerticesUnderOneInsertIdentityFailClosedOnMerge()
+    {
+        //The context covers the shared head dot (R1,1); one state carries it with value 1, the other value 2.
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        ImmutableArray<RgaVertexEntry<int>> headWithOne = [new RgaVertexEntry<int>(DotStateOf(new Dot(R1, 1)), null, 1)];
+        ImmutableArray<RgaVertexEntry<int>> headWithTwo = [new RgaVertexEntry<int>(DotStateOf(new Dot(R1, 1)), null, 2)];
+        ImmutableArray<RgaTombstoneEntry> noTombstones = [];
+
+        Rga<int> carriesOne = Rga<int>.FromState(new RgaState<int>(context, headWithOne, noTombstones));
+        Rga<int> carriesTwo = Rga<int>.FromState(new RgaState<int>(context, headWithTwo, noTombstones));
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => carriesOne.Merge(carriesTwo));
+        Assert.ThrowsExactly<InvalidOperationException>(() => carriesTwo.Merge(carriesOne));
+
+        //An identical-vertex pair is the ordinary idempotent union — no conflict, no throw.
+        Rga<int> carriesOneTwin = Rga<int>.FromState(new RgaState<int>(context, headWithOne, noTombstones));
+        Assert.AreEqual(carriesOne, carriesOne.Merge(carriesOneTwin));
     }
 
 
@@ -438,37 +376,9 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    private readonly record struct RemoveScenario(Rga<int> Compacted, Rga<int> GhostHolder, Rga<int> StalePreRemove, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint);
-
-
-    private static RemoveScenario BuildRemoveScenario()
-    {
-        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
-        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
-        Rga<int> stalePreRemove = withB;
-        Rga<int> ghostHolder = withB.Remove(idB, R1);
-
-        VectorClock postRemove = ghostHolder.CausalContext;
-        VectorClock frontier = FrontierOf(postRemove, postRemove, postRemove);
-        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = ghostHolder.CertifiedProjection(frontier);
-        Rga<int> compacted = ghostHolder.Compact(frontier, checkpoint);
-
-        return new RemoveScenario(compacted, ghostHolder, stalePreRemove, frontier, checkpoint);
-    }
-
-
     //Declared before the generators that consume it: static initializers run in textual order.
     private static Gen<(int Replica, int Seed)> OpGen { get; } =
         Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed));
-
-
-    private static Gen<(Rga<int> Full, Rga<int> Prefix)> GenHistoryWithCut { get; } =
-        Gen.Select(OpGen.Array[0, 8], Gen.Int[0, 8], static (ops, cut) =>
-        {
-            (Rga<int> full, IReadOnlyList<Rga<int>> snapshots) = BuildSnapshots(ops);
-
-            return (full, SnapshotAt(snapshots, cut));
-        });
 
 
     //Filtered so every sampled case actually drops a vertex at the folded frontier — without the filter the

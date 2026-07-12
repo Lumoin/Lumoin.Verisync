@@ -1,4 +1,3 @@
-using CsCheck;
 using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Collections.Immutable;
@@ -16,7 +15,10 @@ namespace Lumoin.Verisync.Tests;
 /// <see cref="StabilityFrontier"/> min-fold is exercised end to end. The certified projection at a
 /// frontier includes a locally removed element whose remove is not yet certified — the determinism
 /// inclusion that keeps two disagreeing members on one byte-identical base — and the base generation is
-/// fenced by the consensus-stamped <c>BaseFrontier</c> identity, not by base value equality.
+/// fenced by the consensus-stamped <c>BaseFrontier</c> identity, not by base value equality. The four
+/// strategy-agnostic remove laws — LAW-RG, LAW-NR, LAW-SR, and LAW-NFD — have lifted into
+/// <see cref="SequenceStrategyLawTests{TSequence, TValue, TAnchor}"/>; what remains here is the offset
+/// base-axis, generation-fence, and §17 quiescence family.
 /// </summary>
 [TestClass]
 internal sealed class OffsetRemoveCertificationLawTests
@@ -24,9 +26,6 @@ internal sealed class OffsetRemoveCertificationLawTests
     private static ReplicaId R1 { get; } = MakeReplica(1);
     private static ReplicaId R2 { get; } = MakeReplica(2);
     private static ReplicaId R3 { get; } = MakeReplica(3);
-
-    //The replica axes the CsCheck op histories mint on; one replica per operand index.
-    private static ReplicaId[] Replicas { get; } = [MakeReplica(10), MakeReplica(11), MakeReplica(12)];
 
     private static ImmutableArray<string> SingleBase { get; } = ["b0"];
 
@@ -79,112 +78,6 @@ internal sealed class OffsetRemoveCertificationLawTests
         Assert.AreEqual(forward, backward);
         Assert.HasCount(0, forward.Values);
         Assert.HasCount(0, backward.Values);
-    }
-
-
-    //LAW-RG over the live axis: an UNCERTIFIED remove converts its stable target into the base as a
-    //pending-removed entry (value carried, hidden locally, generation advanced); a CERTIFIED remove
-    //drops the vertex without touching the base, so the generation identity does not advance.
-    [TestMethod]
-    public void RemoveObservationGatesTheDrop()
-    {
-        OffsetAnchoredSequence<string> shared = OffsetAnchoredSequence<string>.WithBase(SingleBase);
-        (shared, OffsetAnchor x) = shared.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
-        OffsetAnchoredSequence<string> withRemove = shared.Remove(x, R1);
-
-        //F1: two members advertise the post-remove context, the laggard the pre-remove context, so the
-        //min floors R1 below the remove-dot and the remove is not certified.
-        VectorClock preRemove = shared.CausalContext;
-        VectorClock postRemove = withRemove.CausalContext;
-        VectorClock f1 = FrontierOf(postRemove, postRemove, preRemove);
-
-        //The projection still carries the locally hidden x with its real dot.
-        ImmutableArray<SequenceCheckpointEntry<string>> certifiedAtF1 = withRemove.CertifiedProjection(f1);
-        SequenceCheckpointEntry<string>[] expectedAtF1 =
-        [
-            new SequenceCheckpointEntry<string>(SentinelDot(0), "b0"),
-            new SequenceCheckpointEntry<string>(DotStateOf(x.LiveId!), "x")
-        ];
-        CollectionAssert.AreEqual(expectedAtF1, certifiedAtF1.ToArray());
-
-        //Uncertified: x converts pending-removed — its value enters the new base, hidden locally.
-        OffsetAnchoredSequence<string> pending = withRemove.Compact(f1, certifiedAtF1);
-        string[] pendingBase = ["b0", "x"];
-        string[] hiddenLocally = ["b0"];
-        CollectionAssert.AreEqual(pendingBase, pending.ToState().Base.ToArray());
-        CollectionAssert.AreEqual(hiddenLocally, pending.Values.ToArray());
-        Assert.AreEqual(OffsetAnchor.AtBase(1), pending.TranslateAnchor(x));
-        Assert.AreEqual(f1, VectorClock.FromState(pending.ToState().BaseFrontier));
-
-        //The laggard observes the remove; the drop fires and the base is untouched, so the generation
-        //identity carries unchanged.
-        VectorClock f2 = FrontierOf(postRemove, postRemove, postRemove);
-        ImmutableArray<SequenceCheckpointEntry<string>> certifiedAtF2 = withRemove.CertifiedProjection(f2);
-        SequenceCheckpointEntry<string>[] expectedAtF2 = [new SequenceCheckpointEntry<string>(SentinelDot(0), "b0")];
-        CollectionAssert.AreEqual(expectedAtF2, certifiedAtF2.ToArray());
-
-        OffsetAnchoredSequence<string> dropped = withRemove.Compact(f2, certifiedAtF2);
-        CollectionAssert.AreEqual(hiddenLocally, dropped.Values.ToArray());
-        CollectionAssert.AreEqual(SingleBase.ToArray(), dropped.ToState().Base.ToArray());
-        Assert.AreEqual(OffsetAnchor.AtBase(0), dropped.TranslateAnchor(x));
-        Assert.AreEqual(VectorClock.Empty, VectorClock.FromState(dropped.ToState().BaseFrontier));
-    }
-
-
-    //LAW-NR: merging a former laggard that holds the vertex AND its dotted tombstone re-enters the ghost
-    //hidden, never resurrecting the committed remove, and recompacting either merge order returns the
-    //compacted state.
-    [TestMethod]
-    public void MergeDoesNotResurrectACommittedRemove()
-    {
-        RemoveScenario scenario = BuildRemoveScenario();
-        OffsetAnchoredSequence<string> x = scenario.Compacted;
-        OffsetAnchoredSequence<string> y = scenario.GhostHolder;
-
-        string[] visible = ["b0"];
-        CollectionAssert.AreEqual(visible, x.Merge(y).Values.ToArray());
-        CollectionAssert.AreEqual(visible, y.Merge(x).Values.ToArray());
-
-        Assert.AreEqual(x, x.Merge(y).Compact(scenario.Frontier, scenario.Checkpoint));
-        Assert.AreEqual(x, y.Merge(x).Compact(scenario.Frontier, scenario.Checkpoint));
-    }
-
-
-    //LAW-SR: a stale pre-remove state (element live, no tombstone) fails the stale-replay detector closed
-    //in BOTH merge orders, while the honest ghost-holder throws in neither. A tombstone-only drop leaves
-    //the base and its generation identity unchanged, so the fence passes and the detector is the fence.
-    [TestMethod]
-    public void AStalePreRemoveStateFailsClosedInBothMergeOrders()
-    {
-        RemoveScenario scenario = BuildRemoveScenario();
-        OffsetAnchoredSequence<string> x = scenario.Compacted;
-        OffsetAnchoredSequence<string> z = scenario.StalePreRemove;
-        OffsetAnchoredSequence<string> y = scenario.GhostHolder;
-
-        Assert.ThrowsExactly<InvalidOperationException>(() => x.Merge(z));
-        Assert.ThrowsExactly<InvalidOperationException>(() => z.Merge(x));
-
-        //The honest ghost-holder is not stale: it re-enters the ghost with its tombstone and never throws.
-        string[] visible = ["b0"];
-        CollectionAssert.AreEqual(visible, x.Merge(y).Values.ToArray());
-        CollectionAssert.AreEqual(visible, y.Merge(x).Values.ToArray());
-    }
-
-
-    //LAW-NFD: merging an empty or a strictly-behind operand never drops a live element — the merge equals
-    //the full state's visible values in every order. Histories run over the empty base so the empty
-    //sequence shares the operands' generation.
-    [TestMethod]
-    public void MergeWithEmptyOrABehindOperandNeverDropsALiveElement()
-    {
-        GenHistoryWithCut.Sample(input =>
-        {
-            int[] full = input.Full.Values.ToArray();
-            CollectionAssert.AreEqual(full, input.Full.Merge(OffsetAnchoredSequence<int>.Empty).Values.ToArray());
-            CollectionAssert.AreEqual(full, OffsetAnchoredSequence<int>.Empty.Merge(input.Full).Values.ToArray());
-            CollectionAssert.AreEqual(full, input.Full.Merge(input.Prefix).Values.ToArray());
-            CollectionAssert.AreEqual(full, input.Prefix.Merge(input.Full).Values.ToArray());
-        });
     }
 
 
@@ -388,6 +281,136 @@ internal sealed class OffsetRemoveCertificationLawTests
         CollectionAssert.AreEqual(equalBase.ToArray(), dropped.ToState().Base.ToArray());
         Assert.AreEqual(OffsetAnchor.Head, dropped.TranslateAnchor(g));
         Assert.AreEqual(VectorClock.Empty, VectorClock.FromState(dropped.ToState().BaseFrontier));
+    }
+
+
+    //A prior-generation base anchor keeps translating correctly THROUGH a drop-only compaction. A
+    //base-changing seal (head-insert h converts, shifting b0 from offset 0 to offset 1) installs the map
+    //{0 -> AtBase(1)}. Inside that generation a childless x is inserted and certified-removed; compacting at
+    //a frontier covering everything drops x without converting anything, so the walk is DROP-ONLY and must
+    //keep the prior base-offset map rather than install this walk's identity map — under the old defect the
+    //identity map silently retargeted the previous generation's AtBase(0) anchor to itself.
+    [TestMethod]
+    public void ADropOnlyCompactionPreservesPriorGenerationBaseAnchorTranslation()
+    {
+        //A base-changing compaction: h converts to base offset 0 and the original b0 shifts to offset 1.
+        (OffsetAnchoredSequence<string> withH, _) = OffsetAnchoredSequence<string>.WithBase(SingleBase).InsertAtHead("h", R1);
+        VectorClock f1 = FrontierOf(withH.CausalContext, withH.CausalContext);
+        OffsetAnchoredSequence<string> gen1 = withH.Compact(f1, withH.CertifiedProjection(f1));
+        string[] gen1Base = ["h", "b0"];
+        CollectionAssert.AreEqual(gen1Base, gen1.ToState().Base.ToArray());
+        Assert.AreEqual(OffsetAnchor.AtBase(1), gen1.TranslateAnchor(OffsetAnchor.AtBase(0)));
+
+        //On the new generation the only below-line live vertex is a childless x that is certified-removed, so
+        //its compaction drops x and converts nothing — a genuinely drop-only walk.
+        (OffsetAnchoredSequence<string> gen1WithX, OffsetAnchor x) = gen1.InsertAfter(OffsetAnchor.AtBase(1), "x", R2);
+        OffsetAnchoredSequence<string> withXRemoved = gen1WithX.Remove(x, R2);
+        VectorClock f2 = FrontierOf(withXRemoved.CausalContext, withXRemoved.CausalContext);
+        OffsetAnchoredSequence<string> dropped = withXRemoved.Compact(f2, withXRemoved.CertifiedProjection(f2));
+
+        //The base is untouched and the prior base-offset map still serves the previous generation's anchor.
+        CollectionAssert.AreEqual(gen1Base, dropped.ToState().Base.ToArray());
+        Assert.AreEqual(OffsetAnchor.AtBase(1), dropped.TranslateAnchor(OffsetAnchor.AtBase(0)));
+
+        //The generation did not advance: the base identity is carried unchanged, so the drop-only result
+        //still merges with the pre-compaction state in both orders.
+        Assert.AreEqual(VectorClock.FromState(gen1.ToState().BaseFrontier), VectorClock.FromState(dropped.ToState().BaseFrontier));
+        Assert.AreEqual(dropped.Merge(withXRemoved), withXRemoved.Merge(dropped));
+    }
+
+
+    //The companion of the prior-generation pin: a drop-only compaction must keep the CURRENT generation's
+    //own base anchors servable too — an unmapped in-range offset is a current-generation anchor and
+    //translates as itself through the identity fallback, not to null. Two flavors exercise the fallback:
+    //a base-changing seal leaves a non-empty kept map whose keys do NOT cover the highest current offset,
+    //and a genesis generation leaves an empty kept map covering none of them. Under the pre-fix code both
+    //returned null for the unmapped offsets after the drop-only walk, orphaning live current-generation
+    //content.
+    [TestMethod]
+    public void ADropOnlyCompactionKeepsCurrentGenerationBaseAnchorsServable()
+    {
+        //Flavor one: a base-changing seal then a drop-only compaction. Head-inserting h over base [a, b]
+        //converts h to offset 0 and shifts a and b up, installing the map {0 -> AtBase(1), 1 -> AtBase(2)}.
+        ImmutableArray<string> pairBase = ["a", "b"];
+        (OffsetAnchoredSequence<string> withH, _) = OffsetAnchoredSequence<string>.WithBase(pairBase).InsertAtHead("h", R1);
+        VectorClock f1 = FrontierOf(withH.CausalContext, withH.CausalContext);
+        OffsetAnchoredSequence<string> gen1 = withH.Compact(f1, withH.CertifiedProjection(f1));
+        string[] gen1Base = ["h", "a", "b"];
+        CollectionAssert.AreEqual(gen1Base, gen1.ToState().Base.ToArray());
+
+        //AtBase(0) and AtBase(1) collide with the prior-generation keys, so during the window they serve
+        //the prior generation's reading — the documented untagged-offset behavior.
+        Assert.AreEqual(OffsetAnchor.AtBase(1), gen1.TranslateAnchor(OffsetAnchor.AtBase(0)));
+        Assert.AreEqual(OffsetAnchor.AtBase(2), gen1.TranslateAnchor(OffsetAnchor.AtBase(1)));
+
+        //AtBase(2) is unambiguous — the prior generation had length 2 (keys 0..1) — so it is the current
+        //generation's own anchor and translates as itself through the identity fallback.
+        Assert.AreEqual(OffsetAnchor.AtBase(2), gen1.TranslateAnchor(OffsetAnchor.AtBase(2)));
+
+        //A genuinely drop-only walk on the new generation: a childless x is certified-removed, so nothing
+        //converts and the prior base-offset map (keys 0..1) is kept verbatim.
+        (OffsetAnchoredSequence<string> gen1WithX, OffsetAnchor x) = gen1.InsertAfter(OffsetAnchor.AtBase(2), "x", R2);
+        OffsetAnchoredSequence<string> withXRemoved = gen1WithX.Remove(x, R2);
+        VectorClock f2 = FrontierOf(withXRemoved.CausalContext, withXRemoved.CausalContext);
+        OffsetAnchoredSequence<string> dropped = withXRemoved.Compact(f2, withXRemoved.CertifiedProjection(f2));
+
+        //AtBase(2) is still unmapped in the kept map, so it must still fall to the identity fallback — the
+        //pre-fix code returned null here because the kept map has no key 2.
+        CollectionAssert.AreEqual(gen1Base, dropped.ToState().Base.ToArray());
+        Assert.AreEqual(OffsetAnchor.AtBase(2), dropped.TranslateAnchor(OffsetAnchor.AtBase(2)));
+
+        //The current-generation anchor still serves an insert: z lands immediately after b.
+        OffsetAnchor translated = dropped.TranslateAnchor(OffsetAnchor.AtBase(2))!;
+        (OffsetAnchoredSequence<string> withZ, _) = dropped.InsertAfter(translated, "z", R3);
+        string[] withZVisible = ["h", "a", "b", "z"];
+        CollectionAssert.AreEqual(withZVisible, withZ.Values.ToArray());
+
+        //Flavor two: a genesis generation (base, empty frontier, no maps) does a drop-only compaction; the
+        //kept base-offset map is EMPTY, so every current-generation base anchor relies on the identity
+        //fallback — under the pre-fix code the empty kept map sent all of them to null after the walk.
+        OffsetAnchoredSequence<string> genesis = OffsetAnchoredSequence<string>.WithBase(TripleBase);
+        (OffsetAnchoredSequence<string> genesisWithX, OffsetAnchor gx) = genesis.InsertAfter(OffsetAnchor.AtBase(0), "gx", R1);
+        OffsetAnchoredSequence<string> genesisRemoved = genesisWithX.Remove(gx, R1);
+        VectorClock gf = FrontierOf(genesisRemoved.CausalContext, genesisRemoved.CausalContext);
+        OffsetAnchoredSequence<string> genesisDropped = genesisRemoved.Compact(gf, genesisRemoved.CertifiedProjection(gf));
+
+        //The base is untouched and the kept base-offset map is empty, yet every in-range base anchor still
+        //translates as itself.
+        CollectionAssert.AreEqual(TripleBase.ToArray(), genesisDropped.ToState().Base.ToArray());
+        for(int offset = 0; offset < TripleBase.Length; offset++)
+        {
+            Assert.AreEqual(OffsetAnchor.AtBase(offset), genesisDropped.TranslateAnchor(OffsetAnchor.AtBase(offset)));
+        }
+
+        //And a current-generation base anchor still serves an insert: y lands immediately after b1.
+        OffsetAnchor translatedGenesis = genesisDropped.TranslateAnchor(OffsetAnchor.AtBase(1))!;
+        (OffsetAnchoredSequence<string> withY, _) = genesisDropped.InsertAfter(translatedGenesis, "y", R2);
+        string[] withYVisible = ["b0", "b1", "y", "b2"];
+        CollectionAssert.AreEqual(withYVisible, withY.Values.ToArray());
+    }
+
+
+    //The §16 follow-on invariant the merge conflicting-vertex detector's premise rests on: a SUCCESSFUL
+    //compaction retains NO vertex — a corollary of the insert-quiescence guard, since every vertex is then
+    //stable and so converts, converts pending-removed, or drops, with the ghost arm unreachable. Several
+    //inserts and removes over a base, compacted at the full context, leave the compacted state's vertices
+    //empty.
+    [TestMethod]
+    public void ASuccessfulCompactionRetainsNoVertex()
+    {
+        OffsetAnchoredSequence<string> seq = OffsetAnchoredSequence<string>.WithBase(TripleBase);
+        (seq, OffsetAnchor a) = seq.InsertAfter(OffsetAnchor.AtBase(0), "a", R1);
+        (seq, _) = seq.InsertAfter(a, "b", R1);
+        (seq, OffsetAnchor c) = seq.InsertAfter(OffsetAnchor.AtBase(2), "c", R2);
+        seq = seq.Remove(c, R2);
+        seq = seq.Remove(OffsetAnchor.AtBase(1), R1);
+
+        //The full context certifies every insert and every remove, so the frontier is insert-quiescent and
+        //nothing lands on the ghost or instability-retention arms.
+        VectorClock frontier = FrontierOf(seq.CausalContext, seq.CausalContext);
+        OffsetAnchoredSequence<string> compacted = seq.Compact(frontier, seq.CertifiedProjection(frontier));
+
+        Assert.HasCount(0, compacted.ToState().Vertices);
     }
 
 
@@ -628,30 +651,6 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    private readonly record struct RemoveScenario(
-        OffsetAnchoredSequence<string> Compacted,
-        OffsetAnchoredSequence<string> GhostHolder,
-        OffsetAnchoredSequence<string> StalePreRemove,
-        VectorClock Frontier,
-        ImmutableArray<SequenceCheckpointEntry<string>> Checkpoint);
-
-
-    private static RemoveScenario BuildRemoveScenario()
-    {
-        OffsetAnchoredSequence<string> shared = OffsetAnchoredSequence<string>.WithBase(SingleBase);
-        (shared, OffsetAnchor x) = shared.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
-        OffsetAnchoredSequence<string> stalePreRemove = shared;
-        OffsetAnchoredSequence<string> ghostHolder = shared.Remove(x, R1);
-
-        VectorClock postRemove = ghostHolder.CausalContext;
-        VectorClock frontier = FrontierOf(postRemove, postRemove, postRemove);
-        ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = ghostHolder.CertifiedProjection(frontier);
-        OffsetAnchoredSequence<string> compacted = ghostHolder.Compact(frontier, checkpoint);
-
-        return new RemoveScenario(compacted, ghostHolder, stalePreRemove, frontier, checkpoint);
-    }
-
-
     //The ghost-chain shape shared by the §17 reorder and wedge regressions: P at head, G and V after P, U
     //after the ghost G, then P and G removed — so U hangs off the ghost chain P->G while V is P's stable
     //sibling. A laggard that never observed U pins its axis at zero, so a min-fold frontier certifies the
@@ -670,62 +669,6 @@ internal sealed class OffsetRemoveCertificationLawTests
         laggard = laggard.Remove(laggardP, R1).Remove(laggardG, R2);
 
         return (seq, laggard.CausalContext);
-    }
-
-
-    //Declared before the generators that consume it: static initializers run in textual order.
-    private static Gen<(int Replica, int Seed)> OpGen { get; } =
-        Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed));
-
-
-    private static Gen<(OffsetAnchoredSequence<int> Full, OffsetAnchoredSequence<int> Prefix)> GenHistoryWithCut { get; } =
-        Gen.Select(OpGen.Array[0, 8], Gen.Int[0, 8], static (ops, cut) =>
-        {
-            (OffsetAnchoredSequence<int> full, IReadOnlyList<OffsetAnchoredSequence<int>> snapshots) = BuildSnapshots(ops);
-
-            return (full, SnapshotAt(snapshots, cut));
-        });
-
-
-    //Live-axis op histories over the EMPTY base, so an empty operand shares the generation: head and
-    //live-anchored inserts plus dotted removes of still-visible elements.
-    private static (OffsetAnchoredSequence<int> Full, IReadOnlyList<OffsetAnchoredSequence<int>> Snapshots) BuildSnapshots((int Replica, int Seed)[] ops)
-    {
-        OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.Empty;
-        var anchors = new List<OffsetAnchor>();
-        var snapshots = new List<OffsetAnchoredSequence<int>>(ops.Length);
-        for(int opIndex = 0; opIndex < ops.Length; opIndex++)
-        {
-            (int replica, int seed) = ops[opIndex];
-            int visibleCount = sequence.VisibleElements.Count;
-            if(seed % 3 == 0 && visibleCount > 0)
-            {
-                OffsetAnchor target = sequence.VisibleElements[seed % visibleCount].Anchor;
-                sequence = sequence.Remove(target, Replicas[replica]);
-            }
-            else if(anchors.Count == 0)
-            {
-                (sequence, OffsetAnchor head) = sequence.InsertAtHead((100 * replica) + opIndex, Replicas[replica]);
-                anchors.Add(head);
-            }
-            else
-            {
-                (sequence, OffsetAnchor inserted) = sequence.InsertAfter(anchors[seed % anchors.Count], (100 * replica) + opIndex, Replicas[replica]);
-                anchors.Add(inserted);
-            }
-
-            snapshots.Add(sequence);
-        }
-
-        return (sequence, snapshots);
-    }
-
-
-    private static OffsetAnchoredSequence<int> SnapshotAt(IReadOnlyList<OffsetAnchoredSequence<int>> snapshots, int cut)
-    {
-        int bounded = Math.Min(cut, snapshots.Count);
-
-        return bounded == 0 ? OffsetAnchoredSequence<int>.Empty : snapshots[bounded - 1];
     }
 
 
