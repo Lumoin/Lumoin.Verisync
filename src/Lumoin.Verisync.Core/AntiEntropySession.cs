@@ -796,21 +796,25 @@ public sealed class AntiEntropySession<TElement>: IDisposable
             throw new InvalidOperationException("An elements message arrived without an apply hook.");
         }
 
-        //The initiator's deferred local drops apply together with its fetch answer: with the answer in hand
-        //every decoded dot is accounted for, so the full-context fold the appliers perform is sound. The hook
-        //is non-null by the eager remove-aware validation, since only a remove-aware initiator defers.
+        //The uniform apply admits the genuine adds and returns the local tombstones the pre-fold context already
+        //covered; the applier folds the peer context, so this side's context is merged whenever entries arrive.
+        //It runs before the deferred local drops because every applier folds the FULL peer context and only this
+        //one carries the entries that context covers: folding here first means no fault between the two applies
+        //can persist a context that covers entries this side never applied — the same permanent false drop the
+        //deferral exists to prevent. An unapplied local drop merely re-classifies in the next session.
+        ImmutableArray<DotState> drops = await applyElements(elements.Entries, PeerContextState(), cancellationToken).ConfigureAwait(false);
+        if(LocalContext is not null)
+        {
+            contextFolded = true;
+        }
+
+        //The initiator's deferred local drops apply together with its fetch answer: with the answer applied,
+        //every decoded dot is accounted for, so the full-context fold the drop applier performs is sound. The
+        //hook is non-null by the eager remove-aware validation, since only a remove-aware initiator defers.
         if(!deferredLocalDrops.IsEmpty)
         {
             await applyDrops!(deferredLocalDrops, PeerContextState(), cancellationToken).ConfigureAwait(false);
             deferredLocalDrops = ImmutableArray<DotState>.Empty;
-            contextFolded = true;
-        }
-
-        //The uniform apply admits the genuine adds and returns the local tombstones the pre-fold context already
-        //covered; the applier folds the peer context, so this side's context is merged whenever entries arrive.
-        ImmutableArray<DotState> drops = await applyElements(elements.Entries, PeerContextState(), cancellationToken).ConfigureAwait(false);
-        if(LocalContext is not null)
-        {
             contextFolded = true;
         }
 

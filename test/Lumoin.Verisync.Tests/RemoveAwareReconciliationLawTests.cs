@@ -531,6 +531,210 @@ internal sealed class RemoveAwareReconciliationLawTests
 
 
     [TestMethod]
+    public async Task AFaultingFetchAnswerApplyLeavesTheDeferredDropsUnappliedAndFoldsNothing()
+    {
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        CancellationToken cancellationToken = timeoutSource.Token;
+
+        //The crash-window law behind the deferral: every drop applier folds the FULL peer context, so on the
+        //answer path the entries must apply first — the fold then rides the same hook call as the entries it
+        //covers. If the elements apply faults, the deferred drops must still be unapplied and nothing folded;
+        //applying the drops first would have already folded a context covering the never-applied unicorn, and
+        //a fault between the two hooks would persist it as the next session's permanent false drop.
+        DottedVersionVectorSet<string> shared = DvvSet().Add(R1, "alpha");
+        DottedVersionVectorSet<string> withGhost = shared.Add(R3, ResurrectionProbe);
+        DottedVersionVectorSet<string> initiatorStart = withGhost;
+        DottedVersionVectorSet<string> responderStart = withGhost.RemoveValue(ResurrectionProbe).Add(R3, "unicorn");
+
+        DottedVersionVectorSet<string> expected = initiatorStart.Merge(responderStart);
+        Assert.Contains("unicorn", expected.Values);
+        Assert.DoesNotContain(ResurrectionProbe, expected.Values);
+
+        RemoveAwareReconciliationHost initiatorHost = new(initiatorStart);
+        RemoveAwareReconciliationHost responderHost = new(responderStart);
+        using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: initiatorHost.LocalContext);
+
+        //The send capture keeps the outbound fetch so the answer can be served back; the elements apply
+        //faults before touching the host, and the drop applier counts its invocations.
+        List<ReconciliationEnvelope<DottedEntry<string>>> outbound = [];
+        int dropApplierCalls = 0;
+
+        Task initiatorRun = initiator.RunAsync(
+            (envelope, sendToken) =>
+            {
+                outbound.Add(envelope);
+
+                return ValueTask.CompletedTask;
+            },
+            initiatorHost.ResolveDifference,
+            null,
+            (entries, peerContext, applyToken) => throw new NotSupportedException("The elements apply faulted mid-handler."),
+            applyDrops: (dots, peerContext, applyToken) =>
+            {
+                dropApplierCalls++;
+
+                return initiatorHost.ApplyDrops(dots, peerContext, applyToken);
+            },
+            mergeContext: initiatorHost.MergeContext,
+            cancellationToken: cancellationToken);
+
+        await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForOffer(ReconciliationOffer.FromContract(ContentHashContract)), cancellationToken).ConfigureAwait(false);
+        await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForContext(new ReconciliationContext(responderHost.LocalContext)), cancellationToken).ConfigureAwait(false);
+
+        using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        foreach(ReadOnlyMemory<byte> item in responderHost.Items)
+        {
+            remote.Add(item.Span);
+        }
+
+        int submissions = 0;
+        while(initiator.State != AntiEntropySessionState.Resolving)
+        {
+            int startIndex = remote.ProducedCount;
+            ReconciliationSymbol symbol = remote.ProduceNext();
+            await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForSymbols(new ReconciliationSymbolBatch(startIndex, [symbol])), cancellationToken).ConfigureAwait(false);
+            await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+            submissions++;
+            Assert.IsLessThan(TriggerCap, submissions, "The initiator never reached Resolving within the submission cap.");
+        }
+
+        //The initiator parked in Resolving with the ghost drop deferred and the unicorn fetch captured; the
+        //answer arrives and its apply faults.
+        ReconciliationFetch? fetch = null;
+        foreach(ReconciliationEnvelope<DottedEntry<string>> envelope in outbound)
+        {
+            if(envelope.Fetch is not null)
+            {
+                fetch = envelope.Fetch;
+            }
+        }
+
+        Assert.IsNotNull(fetch, "The initiator never sent the unicorn fetch.");
+        ImmutableArray<ReconciliationElementEntry<DottedEntry<string>>> answer = [.. responderHost.ServeFetch(fetch.Items)];
+        await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForElements(new ReconciliationElements<DottedEntry<string>>(answer)), cancellationToken).ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(() => initiatorRun).ConfigureAwait(false);
+
+        //The regression: the fault landed before the drop applier ran, so nothing dropped and nothing folded —
+        //the local state is byte-identical and the ghost is still held.
+        Assert.AreEqual(0, dropApplierCalls, "A faulting fetch-answer apply must leave the deferred local drops unapplied.");
+        Assert.AreEqual(initiatorStart, initiatorHost.Current);
+        Assert.Contains(ResurrectionProbe, initiatorHost.Current.Values);
+
+        //The follow-up session converges to the oracle: the unicorn lives (no false drop from the faulted
+        //exchange) and the ghost's drop applies with the completed exchange.
+        (RemoveAwareReconciliationHost followUpInitiator, RemoveAwareReconciliationHost followUpResponder) = await ReconcileOnceAsync(initiatorHost.Current, responderStart, cancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(expected, followUpInitiator.Current);
+        Assert.AreEqual(expected, followUpResponder.Current);
+        Assert.Contains("unicorn", followUpInitiator.Current.Values);
+        Assert.DoesNotContain(ResurrectionProbe, followUpInitiator.Current.Values);
+        Assert.DoesNotContain(ResurrectionProbe, followUpResponder.Current.Values);
+    }
+
+
+    [TestMethod]
+    public async Task AFaultingDeferredDropApplyAfterTheAnswerCausesNoFalseDrop()
+    {
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        timeoutSource.CancelAfter(Timeout);
+        CancellationToken cancellationToken = timeoutSource.Token;
+
+        //The elements-first order's own crash window, pinned safe: the answer applies and folds — the fold
+        //riding the hook call that carries the entries it covers — and THEN the deferred drop applier faults.
+        //The ghost is still held with the peer context folded over it, which is exactly the shape the next
+        //session re-classifies as a genuine local drop; nothing here can false-drop live data.
+        DottedVersionVectorSet<string> shared = DvvSet().Add(R1, "alpha");
+        DottedVersionVectorSet<string> withGhost = shared.Add(R3, ResurrectionProbe);
+        DottedVersionVectorSet<string> initiatorStart = withGhost;
+        DottedVersionVectorSet<string> responderStart = withGhost.RemoveValue(ResurrectionProbe).Add(R3, "unicorn");
+
+        DottedVersionVectorSet<string> expected = initiatorStart.Merge(responderStart);
+        Assert.Contains("unicorn", expected.Values);
+        Assert.DoesNotContain(ResurrectionProbe, expected.Values);
+
+        RemoveAwareReconciliationHost initiatorHost = new(initiatorStart);
+        RemoveAwareReconciliationHost responderHost = new(responderStart);
+        using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: initiatorHost.LocalContext);
+
+        List<ReconciliationEnvelope<DottedEntry<string>>> outbound = [];
+        bool elementsApplied = false;
+
+        Task initiatorRun = initiator.RunAsync(
+            (envelope, sendToken) =>
+            {
+                outbound.Add(envelope);
+
+                return ValueTask.CompletedTask;
+            },
+            initiatorHost.ResolveDifference,
+            null,
+            async (entries, peerContext, applyToken) =>
+            {
+                ImmutableArray<DotState> surfaced = await initiatorHost.ApplyElements(entries, peerContext, applyToken).ConfigureAwait(false);
+                elementsApplied = true;
+
+                return surfaced;
+            },
+            applyDrops: (dots, peerContext, applyToken) => throw new NotSupportedException("The deferred drop apply faulted mid-handler."),
+            mergeContext: initiatorHost.MergeContext,
+            cancellationToken: cancellationToken);
+
+        await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForOffer(ReconciliationOffer.FromContract(ContentHashContract)), cancellationToken).ConfigureAwait(false);
+        await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForContext(new ReconciliationContext(responderHost.LocalContext)), cancellationToken).ConfigureAwait(false);
+
+        using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        foreach(ReadOnlyMemory<byte> item in responderHost.Items)
+        {
+            remote.Add(item.Span);
+        }
+
+        int submissions = 0;
+        while(initiator.State != AntiEntropySessionState.Resolving)
+        {
+            int startIndex = remote.ProducedCount;
+            ReconciliationSymbol symbol = remote.ProduceNext();
+            await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForSymbols(new ReconciliationSymbolBatch(startIndex, [symbol])), cancellationToken).ConfigureAwait(false);
+            await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+            submissions++;
+            Assert.IsLessThan(TriggerCap, submissions, "The initiator never reached Resolving within the submission cap.");
+        }
+
+        ReconciliationFetch? fetch = null;
+        foreach(ReconciliationEnvelope<DottedEntry<string>> envelope in outbound)
+        {
+            if(envelope.Fetch is not null)
+            {
+                fetch = envelope.Fetch;
+            }
+        }
+
+        Assert.IsNotNull(fetch, "The initiator never sent the unicorn fetch.");
+        ImmutableArray<ReconciliationElementEntry<DottedEntry<string>>> answer = [.. responderHost.ServeFetch(fetch.Items)];
+        await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForElements(new ReconciliationElements<DottedEntry<string>>(answer)), cancellationToken).ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(() => initiatorRun).ConfigureAwait(false);
+
+        //The answer landed before the fault: the unicorn is present and the ghost is still held, so the
+        //unapplied local drop remains re-classifiable rather than lost.
+        Assert.IsTrue(elementsApplied, "The answer's elements must apply before the deferred drops.");
+        Assert.Contains("unicorn", initiatorHost.Current.Values);
+        Assert.Contains(ResurrectionProbe, initiatorHost.Current.Values);
+
+        //The follow-up session converges to the oracle: the ghost re-classifies as a local drop against the
+        //responder's context and the unicorn stays alive — the fault cost one session, never data.
+        (RemoveAwareReconciliationHost followUpInitiator, RemoveAwareReconciliationHost followUpResponder) = await ReconcileOnceAsync(initiatorHost.Current, responderStart, cancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(expected, followUpInitiator.Current);
+        Assert.AreEqual(expected, followUpResponder.Current);
+        Assert.Contains("unicorn", followUpInitiator.Current.Values);
+        Assert.DoesNotContain(ResurrectionProbe, followUpInitiator.Current.Values);
+        Assert.DoesNotContain(ResurrectionProbe, followUpResponder.Current.Values);
+    }
+
+
+    [TestMethod]
     public async Task ADropDispatchedOnAnInitiatorFailsClosed()
     {
         using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);

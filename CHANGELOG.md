@@ -157,6 +157,16 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   pre-terminally; at a terminal state the two agree. Deliberate consequence: after a no-transfer exchange
   the responder's context does not advance to the merged context; contexts converge across alternating
   session directions, which the rewritten context law proves.
+- The initiator's deferred local drops now apply after the fetch answer's elements, not before. Every
+  applier folds the full peer context, and only the elements apply carries the entries that context
+  covers, so the old order left a one-await window — the elements hook throwing, or the process dying
+  between the two applies — where the folded context durably covered entries that never applied, and
+  the next session would classify them observed-and-removed: the same permanent false drop the deferral
+  itself exists to prevent, one handler step later. With the elements first, the fold always rides the
+  hook call that carries the entries it covers, and a fault before the drops apply merely re-classifies
+  them in the next session. Found by the TLA+ session model's crash-enabled run; pinned by a
+  faulting-apply regression proving the drops stay unapplied, nothing folds, and a follow-up session
+  converges without a false drop.
 - A remove-aware responder now fails closed when the peer never ships its causal context: a done signal
   without a prior context faults the run — mirroring the initiator's decode-completion guard — instead
   of the responder silently classifying later applies against the empty clock and completing as if the
