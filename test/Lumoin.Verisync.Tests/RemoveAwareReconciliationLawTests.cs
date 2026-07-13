@@ -539,9 +539,9 @@ internal sealed class RemoveAwareReconciliationLawTests
 
         //The crash-window law behind the deferral: every drop applier folds the FULL peer context, so on the
         //answer path the entries must apply first — the fold then rides the same hook call as the entries it
-        //covers. If the elements apply faults, the deferred drops must still be unapplied and nothing folded;
-        //applying the drops first would have already folded a context covering the never-applied unicorn, and
-        //a fault between the two hooks would persist it as the next session's permanent false drop.
+        //covers. A faulting elements apply must therefore leave the deferred drops unapplied and nothing
+        //folded; a context folded over the never-applied unicorn classifies it observed-and-removed in the
+        //next session, a permanent false drop.
         DottedVersionVectorSet<string> shared = DvvSet().Add(R1, "alpha");
         DottedVersionVectorSet<string> withGhost = shared.Add(R3, ResurrectionProbe);
         DottedVersionVectorSet<string> initiatorStart = withGhost;

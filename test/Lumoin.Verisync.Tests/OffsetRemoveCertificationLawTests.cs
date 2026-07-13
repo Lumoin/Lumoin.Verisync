@@ -323,9 +323,8 @@ internal sealed class OffsetRemoveCertificationLawTests
     //own base anchors servable too — an unmapped in-range offset is a current-generation anchor and
     //translates as itself through the identity fallback, not to null. Two flavors exercise the fallback:
     //a base-changing seal leaves a non-empty kept map whose keys do NOT cover the highest current offset,
-    //and a genesis generation leaves an empty kept map covering none of them. Under the pre-fix code both
-    //returned null for the unmapped offsets after the drop-only walk, orphaning live current-generation
-    //content.
+    //and a genesis generation leaves an empty kept map covering none of them. A null on either shape
+    //orphans live current-generation content.
     [TestMethod]
     public void ADropOnlyCompactionKeepsCurrentGenerationBaseAnchorsServable()
     {
@@ -354,8 +353,8 @@ internal sealed class OffsetRemoveCertificationLawTests
         VectorClock f2 = FrontierOf(withXRemoved.CausalContext, withXRemoved.CausalContext);
         OffsetAnchoredSequence<string> dropped = withXRemoved.Compact(f2, withXRemoved.CertifiedProjection(f2));
 
-        //AtBase(2) is still unmapped in the kept map, so it must still fall to the identity fallback — the
-        //pre-fix code returned null here because the kept map has no key 2.
+        //AtBase(2) is still unmapped in the kept map, so it must still fall to the identity fallback
+        //rather than to null.
         CollectionAssert.AreEqual(gen1Base, dropped.ToState().Base.ToArray());
         Assert.AreEqual(OffsetAnchor.AtBase(2), dropped.TranslateAnchor(OffsetAnchor.AtBase(2)));
 
@@ -367,7 +366,7 @@ internal sealed class OffsetRemoveCertificationLawTests
 
         //Flavor two: a genesis generation (base, empty frontier, no maps) does a drop-only compaction; the
         //kept base-offset map is EMPTY, so every current-generation base anchor relies on the identity
-        //fallback — under the pre-fix code the empty kept map sent all of them to null after the walk.
+        //fallback alone.
         OffsetAnchoredSequence<string> genesis = OffsetAnchoredSequence<string>.WithBase(TripleBase);
         (OffsetAnchoredSequence<string> genesisWithX, OffsetAnchor gx) = genesis.InsertAfter(OffsetAnchor.AtBase(0), "gx", R1);
         OffsetAnchoredSequence<string> genesisRemoved = genesisWithX.Remove(gx, R1);

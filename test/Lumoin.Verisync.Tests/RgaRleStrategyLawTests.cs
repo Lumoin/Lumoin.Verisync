@@ -116,10 +116,11 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
 
 
     //The shared-prefix ops, the frontier cut, and the two divergent insert-and-remove suffixes all come from
-    //CsCheck seeds, so the whole case is deterministic and reproduces on shrink. Filtered so every sampled
-    //case actually drops a vertex when the merged operands compact at the shared frontier — unfiltered random
-    //histories reach the drop region only a few percent of the time, leaving the compaction laws asserting
-    //on no-op compactions.
+    //CsCheck seeds, so the whole case is deterministic and reproduces on shrink. Every case drops a vertex
+    //when the merged operands compact at the shared frontier: the builder seeds a survivor and a certified
+    //childless tombstone (pinned by TheSeededCaseReachesTheDropRegionByConstruction), since unfiltered
+    //random histories reach the drop region only a few percent of the time — too sparse for a rejection
+    //filter. The Where is a backstop on the construction, never a working filter.
     private static Gen<(Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)> GenCase { get; } =
         Gen.Select(
             Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 6],
@@ -130,24 +131,50 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
         .Where(static input => MergedCompactionDrops(input.A, input.B, input.Frontier, input.Checkpoint));
 
 
+    [TestMethod]
+    public void TheSeededCaseReachesTheDropRegionByConstruction()
+    {
+        //The constructive guarantee behind GenCase's backstop, pinned deterministically: with no sampled
+        //ops at all, the seeded survivor-and-tombstone prefix alone must satisfy the drop predicate — the
+        //tombstone drops at the seeded frontier and its dot re-anchors to the survivor.
+        (Rga<int> a, Rga<int> b, VectorClock frontier, ImmutableArray<SequenceCheckpointEntry<int>> checkpoint) = BuildCase([], 0, [], []);
+
+        Assert.IsTrue(MergedCompactionDrops(a, b, frontier, checkpoint), "The seeded prefix must reach the drop region on its own.");
+    }
+
+
     private static (Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint) BuildCase((int Replica, int Seed)[] ops, int cut, int[] suffixA, int[] suffixB)
     {
         //Shared prefix on an empty Rga: the common knowledge every derived operand starts from. The state at
         //the cut is snapshotted to supply the frontier and the certified checkpoint. Removes are dotted, so
         //the cut context covers the prefix's remove-dots as well as its insert-dots.
         int boundedCut = Math.Min(cut, ops.Length);
-        Rga<int> shared = Rga<int>.Empty;
+
+        //Every case must reach the drop region by construction: a visible survivor at the head, then a
+        //child tombstone removed while itself childless. Both dots precede every sampled op, so any cut's
+        //context covers them; no sampled insert anchors to the tombstone, since parents come from
+        //insertedDots and visible values. Compacting at any cut drops the tombstone and re-anchors its dot
+        //to the survivor, satisfying the Where backstop below on every sample. The survivor is load-bearing:
+        //a head-anchored tombstone has a null predecessor and is retained by the drop gate, so it stays a
+        //vertex and translates to itself — anchoring the tombstone after a visible survivor is what makes
+        //it droppable.
+        (Rga<int> seededSurvivor, Dot survivorDot) = Rga<int>.Empty.InsertAtHead(-8, Replicas[0]);
+        (Rga<int> seededInsert, Dot seededDot) = seededSurvivor.InsertAfter(survivorDot, -7, Replicas[0]);
+        Rga<int> seeded = seededInsert.Remove(seededDot, Replicas[0]);
+        Rga<int> shared = seeded;
         var insertedDots = new List<Dot>();
-        Rga<int> prefixAtCut = Rga<int>.Empty;
+        Rga<int> prefixAtCut = seeded;
         for(int opIndex = 0; opIndex < ops.Length; opIndex++)
         {
             (int replica, int seed) = ops[opIndex];
-            int visibleCount = shared.Values.Count;
-            if(seed % 3 == 0 && visibleCount > 0)
+            if(seed % 3 == 0 && TryMostRecentVisibleDot(shared, insertedDots, out Dot removeTarget))
             {
                 //Biased to the most recently inserted still-visible element: a recent insert is most likely
                 //childless, the only kind of tombstone the drop gate can fold, so cases actually reach it.
-                shared = shared.Remove(MostRecentVisibleDot(shared, insertedDots), Replicas[replica]);
+                //The guard reads the sampled inserts, not the raw visible count: the seeded survivor is
+                //always visible but never a remove target, so a remove op with every sampled insert already
+                //hidden falls through to an insert instead.
+                shared = shared.Remove(removeTarget, Replicas[replica]);
             }
             else
             {
@@ -237,7 +264,7 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     }
 
 
-    private static Dot MostRecentVisibleDot(Rga<int> sequence, List<Dot> insertedDots)
+    private static bool TryMostRecentVisibleDot(Rga<int> sequence, List<Dot> insertedDots, out Dot dot)
     {
         var hidden = new HashSet<Dot>();
         foreach(RgaTombstoneEntry tombstone in sequence.ToState().Tombstones)
@@ -249,11 +276,15 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
         {
             if(!hidden.Contains(insertedDots[i]))
             {
-                return insertedDots[i];
+                dot = insertedDots[i];
+
+                return true;
             }
         }
 
-        throw new InvalidOperationException("No visible element remains to remove.");
+        dot = default!;
+
+        return false;
     }
 
 
@@ -309,10 +340,9 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
         for(int opIndex = 0; opIndex < ops.Length; opIndex++)
         {
             (int replica, int seed) = ops[opIndex];
-            int visibleCount = sequence.Values.Count;
-            if(seed % 3 == 0 && visibleCount > 0)
+            if(seed % 3 == 0 && TryMostRecentVisibleDot(sequence, insertedDots, out Dot removeTarget))
             {
-                sequence = sequence.Remove(MostRecentVisibleDot(sequence, insertedDots), Replicas[replica]);
+                sequence = sequence.Remove(removeTarget, Replicas[replica]);
             }
             else if(insertedDots.Count == 0)
             {
