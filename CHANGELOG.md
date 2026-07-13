@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Security
 -->
 
-## [Unreleased]
+## [0.0.6] - 2026-07-13
 
 ### Changed
 
