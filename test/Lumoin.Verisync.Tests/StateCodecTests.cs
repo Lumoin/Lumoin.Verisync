@@ -135,7 +135,7 @@ internal sealed class StateCodecTests
         (Rga<string> array, Dot first) = Rga<string>.Empty.InsertAtHead("a", R1);
         (array, Dot second) = array.InsertAfter(first, "b", R1);
         (array, _) = array.InsertAfter(second, "c", R1);
-        array = array.Remove(second);
+        array = array.Remove(second, R1);
 
         Rga<string> back = Rga<string>.FromState(array.ToState());
 

@@ -56,7 +56,7 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
     /// the first compacting strategy registers, with an operand generator constrained to at-or-above
     /// the frontier.
     /// </summary>
-    protected virtual Gen<(TSequence Sequence, VectorClock Frontier, ImmutableArray<TValue> Checkpoint)>? GenCompactionCase => null;
+    protected virtual Gen<(TSequence Sequence, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<TValue>> Checkpoint)>? GenCompactionCase => null;
 
 
     /// <summary>
@@ -65,7 +65,65 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
     /// compaction delegate; <see langword="null"/> otherwise. The operands are generation-aligned so the
     /// merge of their compactions stays a legal same-generation merge.
     /// </summary>
-    protected virtual Gen<(TSequence A, TSequence B, VectorClock Frontier, ImmutableArray<TValue> Checkpoint)>? GenCommutationCase => null;
+    protected virtual Gen<(TSequence A, TSequence B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<TValue>> Checkpoint)>? GenCommutationCase => null;
+
+
+    /// <summary>
+    /// Generates a replica-honest op history — inserts and dotted removes — together with a strict prefix
+    /// snapshot: <c>Full</c> is the whole history, <c>Behind</c> the state after only the prefix. Abstract
+    /// because the no-drop law is universal: every registration supplies it.
+    /// </summary>
+    protected abstract Gen<(TSequence Full, TSequence Behind)> GenFullAndBehindHistory { get; }
+
+
+    /// <summary>
+    /// Builds the drop-only remove scenario the resurrection and stale-replay laws consume, or
+    /// <see langword="null"/> when the strategy does not certify removes. Mandatory for a certifying
+    /// strategy; the scenario's compaction must be drop-only so the compacted survivor merges legally with
+    /// the uncompacted ghost-holder and stale operands.
+    /// </summary>
+    protected virtual RemoveScenario? BuildRemoveScenario() => null;
+
+
+    /// <summary>
+    /// Asserts the strategy-shaped half of the remove-observation law: how the removed element's anchor and
+    /// the compacted state present at the uncertified frontier versus the certified one. Both frontiers are
+    /// carried so a base-materializing strategy can assert its generation stamping. The default is a no-op —
+    /// the generic body already asserts the frontier-invariant half.
+    /// </summary>
+    protected virtual void AssertRemoveConversionOutcome(
+        TSequence uncertifiedCompacted,
+        TSequence certifiedCompacted,
+        TAnchor removedAnchor,
+        TAnchor survivorAnchor,
+        VectorClock uncertifiedFrontier,
+        VectorClock certifiedFrontier)
+    {
+    }
+
+
+    /// <summary>
+    /// The drop-only remove scenario: a compacted survivor-only state, an uncompacted ghost-holder that
+    /// still carries the removed vertex with its dotted tombstone, a stale pre-remove state that holds it
+    /// live with no tombstone, and the frontier and checkpoint the compaction ran at.
+    /// </summary>
+    protected sealed record RemoveScenario(
+        TSequence Compacted,
+        TSequence GhostHolder,
+        TSequence StalePreRemove,
+        VectorClock Frontier,
+        ImmutableArray<SequenceCheckpointEntry<TValue>> Checkpoint);
+
+
+    [TestMethod]
+    public void TheAnchorTypeCarriesTheFailClosedNull()
+    {
+        //The translation seam returns TAnchor?, and for an unconstrained type parameter that is a real
+        //nullable only when TAnchor is a reference type: a value-type anchor cannot carry the fail-closed
+        //null through the seam, and every servability null-assertion in this harness would box it and pass
+        //vacuously. Every registered strategy therefore supplies a reference-type anchor.
+        Assert.IsTrue(typeof(TAnchor).IsClass, "The anchor type must be a reference type so the translation seam's null and this harness's null assertions are meaningful.");
+    }
 
 
     [TestMethod]
@@ -255,7 +313,7 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
             int targetIndex = input.pick % before.Count;
             TAnchor target = AnchorOfVisibleElement(input.sequence, targetIndex);
 
-            TSequence removed = Context.Remove(input.sequence, target);
+            TSequence removed = Context.Remove(input.sequence, target, Replica(3));
 
             IReadOnlyList<TValue> after = Context.Values(removed);
             Assert.HasCount(before.Count - 1, after);
@@ -263,6 +321,158 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
             expected.RemoveAt(targetIndex);
             CollectionAssert.AreEqual(ToArray(expected), ToArray(after));
         });
+    }
+
+
+    //LAW-NFD: merging an empty or a strictly-behind operand never drops a live element — the merge equals
+    //the full history's visible values in every order. Runs for every strategy, no capability gate.
+    [TestMethod]
+    public void MergeWithEmptyOrABehindOperandNeverDropsALiveElement()
+    {
+        GenFullAndBehindHistory.Sample(input =>
+        {
+            TValue[] full = ToArray(Context.Values(input.Full));
+            CollectionAssert.AreEqual(full, ToArray(Context.Values(Context.Merge(input.Full, Context.Empty))));
+            CollectionAssert.AreEqual(full, ToArray(Context.Values(Context.Merge(Context.Empty, input.Full))));
+            CollectionAssert.AreEqual(full, ToArray(Context.Values(Context.Merge(input.Full, input.Behind))));
+            CollectionAssert.AreEqual(full, ToArray(Context.Values(Context.Merge(input.Behind, input.Full))));
+        });
+    }
+
+
+    //LAW-RG: a remove only gates a drop once it is certified group-wide. A head-insert survivor and a
+    //childless element after it, the element removed; at the uncertified frontier the projection still
+    //carries the hidden value and the drop does not fire, at the certified frontier it does. The
+    //strategy-shaped conversion outcome — ghost-in-place versus pending-removed base conversion — is
+    //asserted through the hook, which carries both frontiers.
+    [TestMethod]
+    public void RemoveObservationGatesTheDrop()
+    {
+        if(Context.CertifyProjection is null || Context.Compact is null || Context.TranslateAnchor is null || Context.CausalContext is null)
+        {
+            return;
+        }
+
+        CertifySequenceProjectionDelegate<TSequence, TValue> certifyProjection = Context.CertifyProjection;
+        CompactSequenceDelegate<TSequence, TValue> compact = Context.Compact;
+        TranslateAnchorDelegate<TSequence, TAnchor> translateAnchor = Context.TranslateAnchor;
+        SequenceCausalContextDelegate<TSequence> causalContext = Context.CausalContext;
+
+        (TSequence withA, TAnchor anchorA) = Context.InsertAtHead(Context.Empty, FreshValue, Replica(1));
+        (TSequence withB, TAnchor anchorB) = Context.InsertAfter(withA, anchorA, FreshValue, Replica(1));
+        TSequence withRemove = Context.Remove(withB, anchorB, Replica(1));
+
+        //f1 folds the laggard's PRE-remove context, so the min floors the removing axis below the remove-dot:
+        //both inserts covered (insert-quiescent for offset), the remove not certified. f2 certifies it.
+        VectorClock preRemove = causalContext(withB);
+        VectorClock postRemove = causalContext(withRemove);
+        VectorClock f1 = Frontier(postRemove, postRemove, preRemove);
+        VectorClock f2 = Frontier(postRemove, postRemove, postRemove);
+
+        //The projection at f1 still carries the locally hidden removed element; at f2 the remove is certified
+        //and it leaves. The survivor and removed values are both the sentinel — LAW-RG certifies the gating,
+        //not value distinctness, and the strategy-shaped structure is the hook's concern.
+        ImmutableArray<SequenceCheckpointEntry<TValue>> projectionAtF1 = certifyProjection(withRemove, f1);
+        ImmutableArray<SequenceCheckpointEntry<TValue>> projectionAtF2 = certifyProjection(withRemove, f2);
+        TValue[] bothValues = [FreshValue, FreshValue];
+        TValue[] survivorOnly = [FreshValue];
+        CollectionAssert.AreEqual(bothValues, ProjectionValues(projectionAtF1));
+        CollectionAssert.AreEqual(survivorOnly, ProjectionValues(projectionAtF2));
+
+        TSequence compactedAtF1 = compact(withRemove, f1, projectionAtF1);
+        TSequence compactedAtF2 = compact(withRemove, f2, projectionAtF2);
+        CollectionAssert.AreEqual(survivorOnly, ToArray(Context.Values(compactedAtF1)));
+        CollectionAssert.AreEqual(survivorOnly, ToArray(Context.Values(compactedAtF2)));
+        Assert.IsNotNull(translateAnchor(compactedAtF1, anchorB));
+        Assert.IsNotNull(translateAnchor(compactedAtF2, anchorB));
+
+        AssertRemoveConversionOutcome(compactedAtF1, compactedAtF2, anchorB, anchorA, f1, f2);
+    }
+
+
+    //LAW-NR: merging a former laggard that holds the removed vertex and its dotted tombstone re-enters the
+    //ghost hidden, never resurrecting the committed remove; recompacting either merge order returns the
+    //compacted state.
+    [TestMethod]
+    public void MergeDoesNotResurrectACommittedRemove()
+    {
+        if(Context.CertifyProjection is null || Context.Compact is null || Context.CausalContext is null)
+        {
+            return;
+        }
+
+        CompactSequenceDelegate<TSequence, TValue> compact = Context.Compact;
+        RemoveScenario? scenario = BuildRemoveScenario();
+        Assert.IsNotNull(scenario, "A certifying strategy must supply BuildRemoveScenario.");
+        TSequence x = scenario.Compacted;
+        TSequence y = scenario.GhostHolder;
+
+        TValue[] visible = ToArray(Context.Values(x));
+        CollectionAssert.AreEqual(visible, ToArray(Context.Values(Context.Merge(x, y))));
+        CollectionAssert.AreEqual(visible, ToArray(Context.Values(Context.Merge(y, x))));
+        Assert.AreEqual(x, compact(Context.Merge(x, y), scenario.Frontier, scenario.Checkpoint));
+        Assert.AreEqual(x, compact(Context.Merge(y, x), scenario.Frontier, scenario.Checkpoint));
+    }
+
+
+    //LAW-SR: a stale pre-remove state (the removed element live, no tombstone) fails the stale-replay
+    //detector closed in both merge orders, while the honest ghost-holder throws in neither.
+    [TestMethod]
+    public void AStalePreRemoveStateFailsClosedInBothMergeOrders()
+    {
+        if(Context.CertifyProjection is null || Context.Compact is null || Context.CausalContext is null)
+        {
+            return;
+        }
+
+        RemoveScenario? scenario = BuildRemoveScenario();
+        Assert.IsNotNull(scenario, "A certifying strategy must supply BuildRemoveScenario.");
+        TSequence x = scenario.Compacted;
+        TSequence z = scenario.StalePreRemove;
+        TSequence y = scenario.GhostHolder;
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => Context.Merge(x, z));
+        Assert.ThrowsExactly<InvalidOperationException>(() => Context.Merge(z, x));
+
+        //The honest ghost-holder is not stale: it re-enters the ghost with its tombstone and never throws.
+        TValue[] visible = ToArray(Context.Values(x));
+        CollectionAssert.AreEqual(visible, ToArray(Context.Values(Context.Merge(x, y))));
+        CollectionAssert.AreEqual(visible, ToArray(Context.Values(Context.Merge(y, x))));
+    }
+
+
+    private static TValue[] ProjectionValues(ImmutableArray<SequenceCheckpointEntry<TValue>> projection)
+    {
+        var values = new TValue[projection.Length];
+        for(int i = 0; i < projection.Length; i++)
+        {
+            values[i] = projection[i].Value;
+        }
+
+        return values;
+    }
+
+
+    //Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect
+    //the element-wise minimum but keep the digests honest.
+    private static VectorClock Frontier(params VectorClock[] memberContexts)
+    {
+        var digests = new List<GossipDigest>(memberContexts.Length);
+        for(int i = 0; i < memberContexts.Length; i++)
+        {
+            digests.Add(new GossipDigest(MakeReplica((byte)(200 + i)), memberContexts[i]));
+        }
+
+        return StabilityFrontier.Compute(digests);
+    }
+
+
+    private static ReplicaId MakeReplica(byte id)
+    {
+        Span<byte> buffer = stackalloc byte[ReplicaId.Size];
+        buffer[0] = id;
+
+        return ReplicaId.FromSpan(buffer);
     }
 
 

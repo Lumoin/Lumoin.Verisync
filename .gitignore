@@ -370,3 +370,5 @@ MigrationBackup/
 FodyWeavers.xsd
 
 tempdocs/
+
+tla/states/

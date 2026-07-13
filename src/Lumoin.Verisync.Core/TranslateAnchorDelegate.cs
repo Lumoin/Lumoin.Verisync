@@ -18,18 +18,26 @@ namespace Lumoin.Verisync.Core;
 /// state.
 /// </para>
 /// <para>
-/// The composition routes here only anchors expressed in the <em>immediately previous</em> compaction
-/// generation; current-generation anchors are used directly. An anchor older than one generation can no
-/// longer arrive once the stability line passes the previous checkpoint — base anchors are unambiguous
-/// only one generation back, while dot anchors stay translatable indefinitely because dots are globally
-/// unique. Given that stability rule, an unservable anchor indicates a contract violation by the peer
-/// (it referenced state below a frontier it had advertised passing) — return <see langword="null"/> and
-/// fail closed rather than guessing.
+/// A DOT translation is PERMANENT: compaction reclaims payload, not identity, so a dropped dot keeps its
+/// translation entry for the life of the sequence — one entry per dropped dot, forever (coalesced in the run
+/// shape) — because dots are globally unique and the map that serves them is never trimmed, so a dot anchor
+/// stays translatable across arbitrarily many generations.
+/// </para>
+/// <para>
+/// A BASE translation is bounded: the base-offset map is REPLACED on each base-changing compaction, so it
+/// serves exactly the immediately preceding generation. An addressing type that distinguishes generations
+/// carries which generation an incoming base anchor belongs to, and the seam decides on it — the current
+/// generation resolves as identity, the one immediately preceding generation resolves through the map, and
+/// any older or newer generation resolves to nothing.
+/// </para>
+/// <para>
+/// On every path an anchor that resolves to neither a live vertex nor a servable translation indicates a
+/// contract violation by the peer (it referenced state its own advertised frontier had passed, or a forged
+/// identity) — return <see langword="null"/> and fail closed rather than guessing.
 /// </para>
 /// <para>
 /// Strategies whose anchors survive compaction unchanged use the identity translation; strategies that
-/// re-anchor onto checkpoint positions serve stale anchors from a translation map retained until the
-/// frontier passes the checkpoint.
+/// re-anchor onto checkpoint positions serve stale anchors from the same translation state.
 /// </para>
 /// </remarks>
 public delegate TAnchor? TranslateAnchorDelegate<TSequence, TAnchor>(TSequence sequence, TAnchor anchor);

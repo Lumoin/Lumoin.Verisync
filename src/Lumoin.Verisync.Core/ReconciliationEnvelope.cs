@@ -4,10 +4,11 @@ namespace Lumoin.Verisync.Core;
 
 /// <summary>
 /// The wire envelope that carries exactly one reconciliation message between two peers over a dedicated
-/// point-to-point channel. The seven payload slots cover the whole session shape: an offer that pins the
+/// point-to-point channel. The eight payload slots cover the whole session shape: an offer that pins the
 /// contract, the coded-symbol batches the responder streams, the done signal that closes the stream, the
 /// fetch that requests decoded items, the elements that resolve them, the causal context a remove-aware
-/// session exchanges, and the drop that propagates a remove.
+/// session exchanges, the drop that propagates a remove, and the completion frame a remove-aware initiator
+/// sends to license the responder's terminal fold.
 /// </summary>
 /// <typeparam name="TElement">The application element type carried by the elements payload.</typeparam>
 /// <param name="Offer">The carried <see cref="ReconciliationOffer"/>, or <see langword="null"/>.</param>
@@ -17,18 +18,19 @@ namespace Lumoin.Verisync.Core;
 /// <param name="Elements">The carried <see cref="ReconciliationElements{TElement}"/>, or <see langword="null"/>.</param>
 /// <param name="Context">The carried <see cref="ReconciliationContext"/>, or <see langword="null"/>.</param>
 /// <param name="Drop">The carried <see cref="ReconciliationDrop"/>, or <see langword="null"/>.</param>
+/// <param name="Completion">The carried <see cref="ReconciliationCompletion"/>, or <see langword="null"/>.</param>
 /// <remarks>
-/// Exactly one of the seven payloads is non-null; an envelope carrying none or more than one is not a valid
-/// message. The seven static factories — <see cref="ForOffer"/>, <see cref="ForSymbols"/>,
-/// <see cref="ForDone"/>, <see cref="ForFetch"/>, <see cref="ForElements"/>, <see cref="ForContext"/>, and
-/// <see cref="ForDrop"/> — are the only documented construction path, and both the codec and the session
-/// runner fail closed on an envelope that violates the invariant: the codec at its boundary
-/// (<see cref="ArgumentException"/> in process, <c>JsonException</c> on the wire), and the runner through
-/// <see cref="EnsureSinglePayload"/> as it validates every inbound envelope. The context and drop are the
-/// remove-aware additions; an add-only session constructs neither, so the add-only path is unchanged. The
-/// primary constructor stays public so the record's value semantics and <c>with</c> expressions work, but
-/// constructing a malformed envelope through it is a caller error caught downstream. The session runs
-/// point-to-point over a dedicated channel, so the envelope carries no sender identity.
+/// Exactly one of the eight payloads is non-null; an envelope carrying none or more than one is not a valid
+/// message. The eight static factories — <see cref="ForOffer"/>, <see cref="ForSymbols"/>,
+/// <see cref="ForDone"/>, <see cref="ForFetch"/>, <see cref="ForElements"/>, <see cref="ForContext"/>,
+/// <see cref="ForDrop"/>, and <see cref="ForCompletion"/> — are the only documented construction path, and both
+/// the codec and the session runner fail closed on an envelope that violates the invariant: the codec at its
+/// boundary (<see cref="ArgumentException"/> in process, <c>JsonException</c> on the wire), and the runner
+/// through <see cref="EnsureSinglePayload"/> as it validates every inbound envelope. The context, drop, and
+/// completion are the remove-aware additions; an add-only session constructs none of them, so the add-only
+/// path is unchanged. The primary constructor stays public so the record's value semantics and <c>with</c>
+/// expressions work, but constructing a malformed envelope through it is a caller error caught downstream. The
+/// session runs point-to-point over a dedicated channel, so the envelope carries no sender identity.
 /// </remarks>
 public sealed record ReconciliationEnvelope<TElement>(
     ReconciliationOffer? Offer,
@@ -37,7 +39,8 @@ public sealed record ReconciliationEnvelope<TElement>(
     ReconciliationFetch? Fetch,
     ReconciliationElements<TElement>? Elements,
     ReconciliationContext? Context,
-    ReconciliationDrop? Drop)
+    ReconciliationDrop? Drop,
+    ReconciliationCompletion? Completion)
 {
     /// <summary>Builds an envelope carrying a <see cref="ReconciliationOffer"/>.</summary>
     /// <param name="offer">The offer to carry.</param>
@@ -47,7 +50,7 @@ public sealed record ReconciliationEnvelope<TElement>(
     {
         ArgumentNullException.ThrowIfNull(offer);
 
-        return new ReconciliationEnvelope<TElement>(offer, null, null, null, null, null, null);
+        return new ReconciliationEnvelope<TElement>(offer, null, null, null, null, null, null, null);
     }
 
 
@@ -59,7 +62,7 @@ public sealed record ReconciliationEnvelope<TElement>(
     {
         ArgumentNullException.ThrowIfNull(symbols);
 
-        return new ReconciliationEnvelope<TElement>(null, symbols, null, null, null, null, null);
+        return new ReconciliationEnvelope<TElement>(null, symbols, null, null, null, null, null, null);
     }
 
 
@@ -71,7 +74,7 @@ public sealed record ReconciliationEnvelope<TElement>(
     {
         ArgumentNullException.ThrowIfNull(done);
 
-        return new ReconciliationEnvelope<TElement>(null, null, done, null, null, null, null);
+        return new ReconciliationEnvelope<TElement>(null, null, done, null, null, null, null, null);
     }
 
 
@@ -83,7 +86,7 @@ public sealed record ReconciliationEnvelope<TElement>(
     {
         ArgumentNullException.ThrowIfNull(fetch);
 
-        return new ReconciliationEnvelope<TElement>(null, null, null, fetch, null, null, null);
+        return new ReconciliationEnvelope<TElement>(null, null, null, fetch, null, null, null, null);
     }
 
 
@@ -95,7 +98,7 @@ public sealed record ReconciliationEnvelope<TElement>(
     {
         ArgumentNullException.ThrowIfNull(elements);
 
-        return new ReconciliationEnvelope<TElement>(null, null, null, null, elements, null, null);
+        return new ReconciliationEnvelope<TElement>(null, null, null, null, elements, null, null, null);
     }
 
 
@@ -107,7 +110,7 @@ public sealed record ReconciliationEnvelope<TElement>(
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        return new ReconciliationEnvelope<TElement>(null, null, null, null, null, context, null);
+        return new ReconciliationEnvelope<TElement>(null, null, null, null, null, context, null, null);
     }
 
 
@@ -119,7 +122,19 @@ public sealed record ReconciliationEnvelope<TElement>(
     {
         ArgumentNullException.ThrowIfNull(drop);
 
-        return new ReconciliationEnvelope<TElement>(null, null, null, null, null, null, drop);
+        return new ReconciliationEnvelope<TElement>(null, null, null, null, null, null, drop, null);
+    }
+
+
+    /// <summary>Builds an envelope carrying a <see cref="ReconciliationCompletion"/>.</summary>
+    /// <param name="completion">The completion frame to carry.</param>
+    /// <returns>An envelope whose only payload is <paramref name="completion"/>.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="completion"/> is <see langword="null"/>.</exception>
+    public static ReconciliationEnvelope<TElement> ForCompletion(ReconciliationCompletion completion)
+    {
+        ArgumentNullException.ThrowIfNull(completion);
+
+        return new ReconciliationEnvelope<TElement>(null, null, null, null, null, null, null, completion);
     }
 
 
@@ -164,6 +179,11 @@ public sealed record ReconciliationEnvelope<TElement>(
         }
 
         if(Drop is not null)
+        {
+            payloadCount++;
+        }
+
+        if(Completion is not null)
         {
             payloadCount++;
         }

@@ -8,9 +8,12 @@ namespace Lumoin.Verisync.Tests;
 
 /// <summary>
 /// Deterministic, hand-built coverage of <see cref="OffsetAnchoredSequence{TValue}"/> state round-trips:
-/// fresh, edited, and compacted generations; the deterministic ordering of <c>ToState</c>; and every
-/// fail-closed guard <c>FromState</c> raises against state no honest history produces. Valid state records
-/// are obtained from real sequences and then mutated one field at a time with <c>with</c> expressions.
+/// fresh, edited, compacted, pending-removed, legacy, and ghost-witness generations; the deterministic
+/// ordering of <c>ToState</c>; and every fail-closed guard <c>FromState</c> raises against state no honest
+/// history produces — one DISTINCT discriminating case per validation clause, each crafted so no earlier
+/// guard masks the one under test. Valid state records are obtained from real sequences and then mutated
+/// one field at a time with <c>with</c> expressions. The base generation ordinal is genesis exactly when
+/// the base frontier is empty, so a compacted fixture carries generation 1 and a genesis fixture carries 0.
 /// </summary>
 /// <remarks>
 /// <c>ToState</c> determinism is asserted over the canonical serialized bytes rather than raw record
@@ -23,12 +26,17 @@ internal sealed class OffsetAnchoredSequenceStateTests
 {
     private static ReplicaId R1 { get; } = Replica(1);
     private static ReplicaId R2 { get; } = Replica(2);
+    private static ReplicaId R3 { get; } = Replica(3);
 
     //Reused so the byte arrays behind the DotState records keep reference identity (DotState compares by
     //reference), and to satisfy CA1861 by hoisting the base array.
     private static ImmutableArray<int> BaseValues { get; } = [10, 20, 30];
 
     private static ImmutableArray<byte> R1Bytes { get; } = ImmutableArray.Create(R1.AsSpan());
+
+    private static ImmutableArray<byte> R2Bytes { get; } = ImmutableArray.Create(R2.AsSpan());
+
+    private static ImmutableArray<byte> R3Bytes { get; } = ImmutableArray.Create(R3.AsSpan());
 
 
     [TestMethod]
@@ -51,8 +59,8 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //An edited generation — head, base, and live-anchored inserts plus a base removal and a live removal —
-    //survives the round-trip exactly.
+    //An edited generation — head, base, and live-anchored inserts plus a dotted base removal and a dotted
+    //live removal — survives the round-trip exactly.
     [TestMethod]
     public void EditedGenerationRoundTripsThroughState()
     {
@@ -64,8 +72,8 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //A compacted generation carrying both translation maps (dropped-dot anchors and rebased base offsets)
-    //round-trips with its servability intact.
+    //A compacted generation carrying both translation maps (dropped-dot anchors and anchor-typed rebased
+    //base offsets) plus the stamped generation identity round-trips with its servability intact.
     [TestMethod]
     public void CompactedGenerationWithBothMapsRoundTripsThroughState()
     {
@@ -75,8 +83,73 @@ internal sealed class OffsetAnchoredSequenceStateTests
 
         Assert.AreEqual(compacted, back);
 
-        //The maps survived: a previous-generation base anchor and a dropped dot both still translate.
-        Assert.IsNotNull(back.TranslateAnchor(OffsetAnchor.AtBase(1)));
+        //The maps survived: a previous-generation base address still translates through the map arm.
+        Assert.IsNotNull(back.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(1), 0)));
+    }
+
+
+    //A pending-removed conversion — an uncertified-removed vertex materialized into the base with its
+    //remove-dot keyed to the new offset — round-trips, stays hidden, and keeps its marking.
+    [TestMethod]
+    public void APendingRemovedGenerationRoundTripsThroughState()
+    {
+        OffsetAnchoredSequence<int> pending = PendingRemoved();
+
+        OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(pending.ToState());
+
+        Assert.AreEqual(pending, back);
+        CollectionAssert.AreEqual(BaseValues.ToArray(), back.Values.ToArray());
+
+        OffsetBaseRemovalEntry marking = back.ToState().RemovedBaseOffsets[0];
+        Assert.AreEqual(1, marking.Offset);
+        Assert.HasCount(1, marking.RemoveDots);
+    }
+
+
+    //Gate 9: legacy (v1-loaded, empty remove-dot set) removals on BOTH axes round-trip, stay hidden, and
+    //are retained forever — a compaction converts the legacy tombstone pending-removed with its EMPTY set
+    //and keeps the legacy base slot, because an empty set can never be certified.
+    [TestMethod]
+    public void ALegacyStateRoundTripsAndIsRetainedForever()
+    {
+        OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R1);
+        OffsetAnchoredSequenceState<int> legacy = sequence.ToState() with
+        {
+            Tombstones = [new OffsetTombstoneEntry(new DotState(R1Bytes, 1), [])],
+            RemovedBaseOffsets = [new OffsetBaseRemovalEntry(2, [])]
+        };
+
+        OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(legacy);
+        int[] hidden = [10, 20];
+        CollectionAssert.AreEqual(hidden, back.Values.ToArray());
+        Assert.AreEqual(back, OffsetAnchoredSequence<int>.FromState(back.ToState()));
+        Assert.AreEqual(x, back.TranslateAnchor(x));
+
+        //The state's own context certifies every dot it covers, yet neither legacy removal is
+        //reclaimable: the tombstone converts pending-removed carrying its empty set, the slot stays.
+        VectorClock frontier = back.CausalContext;
+        OffsetAnchoredSequence<int> compacted = back.Compact(frontier, back.CertifiedProjection(frontier));
+        CollectionAssert.AreEqual(hidden, compacted.Values.ToArray());
+        ImmutableArray<OffsetBaseRemovalEntry> markings = compacted.ToState().RemovedBaseOffsets;
+        Assert.HasCount(2, markings);
+        Assert.AreEqual(1, markings[0].Offset);
+        Assert.HasCount(0, markings[0].RemoveDots);
+        Assert.AreEqual(3, markings[1].Offset);
+        Assert.HasCount(0, markings[1].RemoveDots);
+    }
+
+
+    //The legal half of the W-shape rule: a ghost re-entered by merge sits live WITH its tombstone while
+    //the witness entry remains — that state round-trips; only the untombstoned form is rejected.
+    [TestMethod]
+    public void AGhostWitnessShapeRoundTripsThroughState()
+    {
+        OffsetAnchoredSequence<int> merged = GhostWitnessMerge();
+
+        OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(merged.ToState());
+
+        Assert.AreEqual(merged, back);
     }
 
 
@@ -98,8 +171,8 @@ internal sealed class OffsetAnchoredSequenceStateTests
     public void MergeCommutativityPairYieldsEqualStates()
     {
         OffsetAnchoredSequence<int> shared = OffsetAnchoredSequence<int>.WithBase(BaseValues);
-        (OffsetAnchoredSequence<int> byFirst, _) = shared.InsertAfter(OffsetAnchor.AtBase(0), 100, R1);
-        (OffsetAnchoredSequence<int> bySecond, _) = shared.InsertAfter(OffsetAnchor.AtBase(0), 200, R2);
+        (OffsetAnchoredSequence<int> byFirst, _) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 100, R1);
+        (OffsetAnchoredSequence<int> bySecond, _) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 200, R2);
 
         OffsetAnchoredSequence<int> oneWay = byFirst.Merge(bySecond);
         OffsetAnchoredSequence<int> otherWay = bySecond.Merge(byFirst);
@@ -121,7 +194,11 @@ internal sealed class OffsetAnchoredSequenceStateTests
     [TestMethod]
     public void FromStateRejectsARemovedOffsetOutsideTheBase()
     {
-        OffsetAnchoredSequenceState<int> state = Edited().ToState() with { RemovedBaseOffsets = [BaseValues.Length] };
+        //The remove-dot is covered, positive, and collision-free, so only the range guard can fire.
+        OffsetAnchoredSequenceState<int> state = Edited().ToState() with
+        {
+            RemovedBaseOffsets = [new OffsetBaseRemovalEntry(BaseValues.Length, [new DotState(R2Bytes, 1)])]
+        };
 
         Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
     }
@@ -130,7 +207,15 @@ internal sealed class OffsetAnchoredSequenceStateTests
     [TestMethod]
     public void FromStateRejectsADuplicatedRemovedOffset()
     {
-        OffsetAnchoredSequenceState<int> state = Edited().ToState() with { RemovedBaseOffsets = [1, 1] };
+        //Two distinct, covered, collision-free remove-dots on one offset key only the duplicate guard.
+        OffsetAnchoredSequenceState<int> state = Edited().ToState() with
+        {
+            RemovedBaseOffsets =
+            [
+                new OffsetBaseRemovalEntry(1, [new DotState(R2Bytes, 1)]),
+                new OffsetBaseRemovalEntry(1, [new DotState(R1Bytes, 2)])
+            ]
+        };
 
         Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
     }
@@ -205,10 +290,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     {
         OffsetAnchoredSequenceState<int> valid = Edited().ToState();
 
-        //Two vertices each anchored at the other through AtLive links: the predecessor walk never reaches a
-        //head or base anchor.
-        DotState idLeft = new(R1Bytes, 50);
-        DotState idRight = new(R1Bytes, 51);
+        //Two vertices each anchored at the other through AtLive links: the anchor walk never reaches a
+        //head or base anchor. Both dots are context-covered so the coverage guard cannot mask the cycle.
+        DotState idLeft = new(R1Bytes, 2);
+        DotState idRight = new(R2Bytes, 1);
         OffsetVertexEntry<int> left = new(idLeft, new OffsetAnchorState(-1, idRight), 1);
         OffsetVertexEntry<int> right = new(idRight, new OffsetAnchorState(-1, idLeft), 2);
         OffsetAnchoredSequenceState<int> state = valid with { Vertices = [left, right] };
@@ -221,17 +306,36 @@ internal sealed class OffsetAnchoredSequenceStateTests
     public void FromStateRejectsACompactedBaseOffsetWithNegativePrevious()
     {
         OffsetAnchoredSequenceState<int> valid = CompactedWithBothMaps().ToState();
-        OffsetAnchoredSequenceState<int> state = valid with { CompactedBaseOffsets = [new OffsetRebaseEntry(-1, 0)] };
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            CompactedBaseOffsets = [new OffsetBaseAnchorEntry(-1, new OffsetAnchorState(0, null))]
+        };
 
         Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
     }
 
 
     [TestMethod]
-    public void FromStateRejectsACompactedBaseOffsetWithCurrentOutsideTheBase()
+    public void FromStateRejectsACompactedBaseAnchorTargetOutsideTheBase()
     {
         OffsetAnchoredSequenceState<int> valid = CompactedWithBothMaps().ToState();
-        OffsetAnchoredSequenceState<int> state = valid with { CompactedBaseOffsets = [new OffsetRebaseEntry(0, valid.Base.Length)] };
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            CompactedBaseOffsets = [new OffsetBaseAnchorEntry(0, new OffsetAnchorState(valid.Base.Length, null))]
+        };
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsACompactedBaseAnchorTargetWithACanonicalShapeViolation()
+    {
+        OffsetAnchoredSequenceState<int> valid = CompactedWithBothMaps().ToState();
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            CompactedBaseOffsets = [new OffsetBaseAnchorEntry(0, new OffsetAnchorState(0, new DotState(R1Bytes, 1)))]
+        };
 
         Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
     }
@@ -241,43 +345,389 @@ internal sealed class OffsetAnchoredSequenceStateTests
     public void FromStateRejectsADuplicatedCompactedBaseOffsetPrevious()
     {
         OffsetAnchoredSequenceState<int> valid = CompactedWithBothMaps().ToState();
-        OffsetAnchoredSequenceState<int> state = valid with { CompactedBaseOffsets = [new OffsetRebaseEntry(3, 0), new OffsetRebaseEntry(3, 1)] };
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            CompactedBaseOffsets =
+            [
+                new OffsetBaseAnchorEntry(3, new OffsetAnchorState(0, null)),
+                new OffsetBaseAnchorEntry(3, new OffsetAnchorState(1, null))
+            ]
+        };
 
         Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
     }
 
 
+    //A base-offset translation whose target is a LIVE anchor is a forged state: honest base-offset
+    //translations point only at base positions or the head, and a live target would dangle uncomposed
+    //through a drop-only compaction (which keeps this map verbatim while the vertex may drop). (R2,3) is a
+    //retained live vertex of the compacted fixture, so the live-target guard fires before the target-anchor
+    //validation would otherwise accept it; the base- and head-targeting twins both load fine.
+    [TestMethod]
+    public void ABaseOffsetTranslationTargetingALiveAnchorFailsClosed()
+    {
+        OffsetAnchoredSequenceState<int> valid = CompactedWithBothMaps().ToState();
+
+        OffsetAnchoredSequenceState<int> liveTarget = valid with
+        {
+            CompactedBaseOffsets = [new OffsetBaseAnchorEntry(0, new OffsetAnchorState(-1, new DotState(R2Bytes, 3)))]
+        };
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(liveTarget));
+
+        OffsetAnchoredSequenceState<int> baseTarget = valid with
+        {
+            CompactedBaseOffsets = [new OffsetBaseAnchorEntry(0, new OffsetAnchorState(0, null))]
+        };
+        Assert.IsNotNull(OffsetAnchoredSequence<int>.FromState(baseTarget));
+
+        OffsetAnchoredSequenceState<int> headTarget = valid with
+        {
+            CompactedBaseOffsets = [new OffsetBaseAnchorEntry(0, new OffsetAnchorState(-1, null))]
+        };
+        Assert.IsNotNull(OffsetAnchoredSequence<int>.FromState(headTarget));
+    }
+
+
+    //The CompactedDotAnchors duplicate posture is unified to TryAdd-throw; the duplicated dropped dot is
+    //neither live nor tombstoned, so the W-shape guard cannot mask the duplicate.
+    [TestMethod]
+    public void FromStateRejectsADuplicatedCompactedDotAnchor()
+    {
+        OffsetAnchoredSequenceState<int> valid = CompactedWithBothMaps().ToState();
+        OffsetTranslationEntry entry = valid.CompactedDotAnchors[0];
+        OffsetAnchoredSequenceState<int> state = valid with { CompactedDotAnchors = [entry, entry] };
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+    }
+
+
+    //W-shape rejection: a translation entry whose dropped dot is simultaneously a LIVE untombstoned
+    //vertex is a forged state. The ghost-plus-witness shape stays legal (see the round-trip above).
+    [TestMethod]
+    public void FromStateRejectsAWShapeTranslation()
+    {
+        OffsetAnchoredSequenceState<int> valid = CompactedWithBothMaps().ToState();
+
+        //(R2,3) is the retained live, untombstoned vertex of the compacted fixture.
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            CompactedDotAnchors =
+            [
+                .. valid.CompactedDotAnchors,
+                new OffsetTranslationEntry(new DotState(R2Bytes, 3), new OffsetAnchorState(0, null))
+            ]
+        };
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+    }
+
+
+    //Invariant CC over vertex dots — new for offset in v2.
+    [TestMethod]
+    public void FromStateRejectsAVertexDotNotCoveredByTheContext()
+    {
+        OffsetAnchoredSequenceState<int> valid = Edited().ToState();
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            Vertices = [.. valid.Vertices, new OffsetVertexEntry<int>(new DotState(R1Bytes, 99), new OffsetAnchorState(-1, null), 77)]
+        };
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+    }
+
+
+    //Invariant CC over live remove-dots: the target is a real vertex, the dot is positive and
+    //collision-free, so only the coverage guard can fire.
+    [TestMethod]
+    public void FromStateRejectsALiveRemoveDotNotCoveredByTheContext()
+    {
+        OffsetAnchoredSequenceState<int> valid = Edited().ToState();
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            Tombstones = [.. valid.Tombstones, new OffsetTombstoneEntry(new DotState(R2Bytes, 2), [new DotState(R2Bytes, 99)])]
+        };
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+    }
+
+
+    //Invariant CC over base remove-dots — base removals are never exempt.
+    [TestMethod]
+    public void FromStateRejectsABaseRemoveDotNotCoveredByTheContext()
+    {
+        OffsetAnchoredSequenceState<int> valid = Edited().ToState();
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            RemovedBaseOffsets = [.. valid.RemovedBaseOffsets, new OffsetBaseRemovalEntry(1, [new DotState(R1Bytes, 99)])]
+        };
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+    }
+
+
+    //The coverage exemption is exactly the orphan live TARGET — its insert may not have arrived — and
+    //never the orphan's remove-dots.
+    [TestMethod]
+    public void AnOrphanTombstoneTargetIsExemptFromCoverageButItsRemoveDotsAreNot()
+    {
+        OffsetAnchoredSequenceState<int> valid = Edited().ToState();
+
+        OffsetAnchoredSequenceState<int> accepted = valid with
+        {
+            Tombstones = [.. valid.Tombstones, new OffsetTombstoneEntry(new DotState(R3Bytes, 50), [new DotState(R2Bytes, 1)])]
+        };
+        OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(accepted);
+        CollectionAssert.AreEqual(Edited().Values.ToArray(), back.Values.ToArray());
+
+        OffsetAnchoredSequenceState<int> rejected = valid with
+        {
+            Tombstones = [.. valid.Tombstones, new OffsetTombstoneEntry(new DotState(R3Bytes, 50), [new DotState(R3Bytes, 1)])]
+        };
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(rejected));
+    }
+
+
+    //Counter positivity on both remove axes and on an orphan target: a zero counter passes the coverage
+    //comparison, so positivity is the only guard that can fire.
+    [TestMethod]
+    public void FromStateRejectsANonPositiveDotCounterOnEitherRemoveAxis()
+    {
+        OffsetAnchoredSequenceState<int> valid = Edited().ToState();
+
+        OffsetAnchoredSequenceState<int> liveAxis = valid with
+        {
+            Tombstones = [.. valid.Tombstones, new OffsetTombstoneEntry(new DotState(R2Bytes, 2), [new DotState(R2Bytes, 0)])]
+        };
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(liveAxis));
+
+        OffsetAnchoredSequenceState<int> baseAxis = valid with
+        {
+            RemovedBaseOffsets = [.. valid.RemovedBaseOffsets, new OffsetBaseRemovalEntry(1, [new DotState(R1Bytes, 0)])]
+        };
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(baseAxis));
+
+        OffsetAnchoredSequenceState<int> orphanTarget = valid with
+        {
+            Tombstones = [.. valid.Tombstones, new OffsetTombstoneEntry(new DotState(R3Bytes, 0), [new DotState(R2Bytes, 1)])]
+        };
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(orphanTarget));
+    }
+
+
+    //THE cross-axis clause (§14.5): one dot pool spans both remove axes, so a remove-dot appearing as a
+    //live remove AND a base remove is rejected even though each entry is valid on its own.
+    [TestMethod]
+    public void FromStateRejectsARemoveDotSharedAcrossTheAxes()
+    {
+        OffsetAnchoredSequenceState<int> valid = Edited().ToState();
+        DotState shared = new(R2Bytes, 1);
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            Tombstones = [.. valid.Tombstones, new OffsetTombstoneEntry(new DotState(R2Bytes, 2), [shared])],
+            RemovedBaseOffsets = [.. valid.RemovedBaseOffsets, new OffsetBaseRemovalEntry(1, [shared])]
+        };
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsADuplicateRemoveDotWithinATombstone()
+    {
+        OffsetAnchoredSequenceState<int> valid = Edited().ToState();
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            Tombstones = [.. valid.Tombstones, new OffsetTombstoneEntry(new DotState(R2Bytes, 2), [new DotState(R2Bytes, 1), new DotState(R2Bytes, 1)])]
+        };
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsARemoveDotSharedByTwoTombstones()
+    {
+        OffsetAnchoredSequenceState<int> valid = Edited().ToState();
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            Tombstones =
+            [
+                new OffsetTombstoneEntry(new DotState(R1Bytes, 1), [new DotState(R2Bytes, 1)]),
+                new OffsetTombstoneEntry(new DotState(R2Bytes, 2), [new DotState(R2Bytes, 1)])
+            ]
+        };
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+    }
+
+
+    [TestMethod]
+    public void FromStateRejectsADuplicateRemoveDotWithinABaseRemoval()
+    {
+        OffsetAnchoredSequenceState<int> valid = Edited().ToState();
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            RemovedBaseOffsets = [new OffsetBaseRemovalEntry(1, [new DotState(R2Bytes, 1), new DotState(R2Bytes, 1)])]
+        };
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+    }
+
+
+    //Remove-dot and vertex-id disjointness, live axis: (R2,2) is a vertex id of the fixture.
+    [TestMethod]
+    public void FromStateRejectsARemoveDotEqualToAVertexId()
+    {
+        OffsetAnchoredSequenceState<int> valid = Edited().ToState();
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            Tombstones = [.. valid.Tombstones, new OffsetTombstoneEntry(new DotState(R1Bytes, 1), [new DotState(R2Bytes, 2)])]
+        };
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+    }
+
+
+    //Remove-dot and vertex-id disjointness crosses the axes too: a base remove-dot aliasing a vertex id
+    //would let an honest live certification reclaim an unremoved base slot.
+    [TestMethod]
+    public void FromStateRejectsABaseRemoveDotEqualToAVertexId()
+    {
+        OffsetAnchoredSequenceState<int> valid = Edited().ToState();
+        OffsetAnchoredSequenceState<int> state = valid with
+        {
+            RemovedBaseOffsets = [.. valid.RemovedBaseOffsets, new OffsetBaseRemovalEntry(1, [new DotState(R1Bytes, 1)])]
+        };
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+    }
+
+
+    //An absent array is not the same statement as an explicitly empty one: every default ImmutableArray,
+    //including a per-entry RemoveDots, fails closed.
+    [TestMethod]
+    public void FromStateFailsClosedOnDefaultArrays()
+    {
+        OffsetAnchoredSequenceState<int> valid = Edited().ToState();
+
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(valid with { Base = default }));
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(valid with { Vertices = default }));
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(valid with { Tombstones = default }));
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(valid with { RemovedBaseOffsets = default }));
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(valid with { CompactedDotAnchors = default }));
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(valid with { CompactedBaseOffsets = default }));
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(valid with { Tombstones = [valid.Tombstones[0] with { RemoveDots = default }] }));
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(valid with { RemovedBaseOffsets = [valid.RemovedBaseOffsets[0] with { RemoveDots = default }] }));
+    }
+
+
+    //§12.2: the generation-fence field cannot arrive inconsistent with the context that certifies the
+    //generation — the context must dominate the base frontier element-wise.
+    [TestMethod]
+    public void FromStateRejectsABaseFrontierTheContextDoesNotDominate()
+    {
+        OffsetAnchoredSequenceState<int> valid = CompactedWithBothMaps().ToState();
+
+        //An axis the context has never seen.
+        OffsetAnchoredSequenceState<int> foreignAxis = valid with
+        {
+            BaseFrontier = new VectorClockState([new ReplicaCounterEntry(R3Bytes, 1)])
+        };
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(foreignAxis));
+
+        //A known axis raised above the context.
+        OffsetAnchoredSequenceState<int> raisedAxis = valid with
+        {
+            BaseFrontier = new VectorClockState([new ReplicaCounterEntry(R1Bytes, 99)])
+        };
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(raisedAxis));
+    }
+
+
+    //§5: the base generation ordinal is genesis EXACTLY when the base frontier is empty, and is never
+    //negative. A genesis frontier paired with a non-zero generation, a non-genesis frontier paired with
+    //the genesis generation, and a negative generation are each forged and fail closed.
+    [TestMethod]
+    public void FromStateRejectsABaseGenerationInconsistentWithItsFrontier()
+    {
+        //Edited never compacts, so its base frontier is empty and its generation is genesis.
+        OffsetAnchoredSequenceState<int> genesisFrontier = Edited().ToState();
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(genesisFrontier with { BaseGeneration = 1 }));
+
+        //The compacted fixture carries a non-genesis frontier and generation 1.
+        OffsetAnchoredSequenceState<int> nonGenesisFrontier = CompactedWithBothMaps().ToState();
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(nonGenesisFrontier with { BaseGeneration = 0 }));
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(nonGenesisFrontier with { BaseGeneration = -1 }));
+    }
+
+
     //An edited generation: a head insert, a base-anchored insert, a live-anchored insert chained off it, a
-    //base removal, and a live removal — every anchor kind plus both removal kinds.
+    //dotted base removal by R1, and a dotted live removal by R2 — every anchor kind plus both removal
+    //kinds. Context {R1:4, R2:3}; vertices (R1,1), (R2,2), (R1,3); remove-dots (R1,4) and (R2,3), leaving
+    //(R1,2) and (R2,1) as covered, collision-free dots the fail-closed crafts can use.
     private static OffsetAnchoredSequence<int> Edited()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
         (sequence, _) = sequence.InsertAtHead(40, R1);
-        (sequence, OffsetAnchor atBase) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R2);
-        (sequence, OffsetAnchor chained) = sequence.InsertAfter(atBase, 60, R1);
-        sequence = sequence.Remove(OffsetAnchor.AtBase(2));
+        (sequence, OffsetAddress atBase) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R2);
+        (sequence, OffsetAddress chained) = sequence.InsertAfter(atBase, 60, R1);
+        sequence = sequence.Remove(new OffsetAddress(OffsetAnchor.AtBase(2), 0), R1);
 
-        return sequence.Remove(chained);
+        return sequence.Remove(chained, R2);
     }
 
 
-    //A compacted generation that carries both translation maps: a dropped stable tombstone populates
-    //CompactedDotAnchors, the converted vertex shifts the base so CompactedBaseOffsets is non-empty, and an
-    //unstable insert remains as a live vertex.
+    //A compacted generation that carries both translation maps and the stamped identity, then a post-seal
+    //live edit: the converted vertex 50 shifts the base so CompactedBaseOffsets is non-empty, the certified
+    //tombstone 60 drops so CompactedDotAnchors is non-empty, the frontier is insert-quiescent as §17
+    //requires, and a fresh insert 70=(R2,3) lands live in the new generation AFTER the compaction — the
+    //retained live vertex the W-shape fixture references. The compaction is base-changing, so the sealed
+    //generation is generation 1 and the post-seal base address of offset 3 carries that generation.
     private static OffsetAnchoredSequence<int> CompactedWithBothMaps()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
-        (sequence, OffsetAnchor converted) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R1);
-        (sequence, OffsetAnchor dropped) = sequence.InsertAfter(OffsetAnchor.AtBase(1), 60, R1);
-        sequence = sequence.Remove(dropped);
-        (sequence, _) = sequence.InsertAfter(OffsetAnchor.AtBase(2), 70, R2);
+        (sequence, _) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R1);
+        (sequence, OffsetAddress dropped) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(1), 0), 60, R1);
+        sequence = sequence.Remove(dropped, R2);
 
-        //The frontier covers the converted and dropped dots but not the trailing R2 insert, so the insert
-        //stays a live vertex while the stable pair compacts.
-        VectorClock frontier = FrontierCovering(converted.LiveId!, dropped.LiveId!);
-        ImmutableArray<int> checkpoint = [10, 50, 20, 30];
+        //The frontier certifies both inserts and the remove-dot, so the state is insert-quiescent.
+        VectorClock frontier = sequence.CausalContext;
+        OffsetAnchoredSequence<int> compacted = sequence.Compact(frontier, sequence.CertifiedProjection(frontier));
 
-        return sequence.Compact(frontier, checkpoint);
+        //A fresh insert after the seal lands live in the new generation: 70=(R2,3).
+        (compacted, _) = compacted.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(3), 1), 70, R2);
+
+        return compacted;
+    }
+
+
+    //A pending-removed generation: an uncertified-removed stable vertex converted into the base, hidden,
+    //its remove-dot keyed to the new offset, and the generation identity stamped.
+    private static OffsetAnchoredSequence<int> PendingRemoved()
+    {
+        OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R1);
+        sequence = sequence.Remove(x, R2);
+
+        //The frontier covers the insert but not R2's remove.
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
+
+        return sequence.Compact(frontier, sequence.CertifiedProjection(frontier));
+    }
+
+
+    //A ghost re-entered by merge after its certified drop: the vertex is live WITH its tombstone while
+    //the compacted operand's witness entry remains — the legal half of the W-shape rule.
+    private static OffsetAnchoredSequence<int> GhostWitnessMerge()
+    {
+        OffsetAnchoredSequence<int> shared = OffsetAnchoredSequence<int>.WithBase(BaseValues);
+        (OffsetAnchoredSequence<int> withX, OffsetAddress x) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R1);
+        OffsetAnchoredSequence<int> ghostHolder = withX.Remove(x, R1);
+
+        VectorClock frontier = ghostHolder.CausalContext;
+        OffsetAnchoredSequence<int> compacted = ghostHolder.Compact(frontier, ghostHolder.CertifiedProjection(frontier));
+
+        return compacted.Merge(ghostHolder);
     }
 
 

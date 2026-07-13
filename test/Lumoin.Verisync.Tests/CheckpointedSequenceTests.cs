@@ -1,7 +1,5 @@
 using Lumoin.Verisync.Core;
-using System.Buffers;
 using System.Collections.Immutable;
-using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -22,7 +20,7 @@ internal sealed class CheckpointedSequenceTests
         Assert.HasCount(0, sequence.Values);
         Assert.HasCount(0, sequence.Checkpoint);
         Assert.IsNull(sequence.CheckpointBallot);
-        Assert.AreEqual(WellKnownSequenceStrategies.RgaV1, sequence.StrategyId);
+        Assert.AreEqual(WellKnownSequenceStrategies.RgaV2, sequence.StrategyId);
     }
 
 
@@ -42,7 +40,16 @@ internal sealed class CheckpointedSequenceTests
     {
         //The identifier is part of the replication contract: changing it is a protocol break, so it is
         //pinned literally here, not referenced through the constant it must equal.
-        Assert.AreEqual("verisync.sequence.rga.v1", WellKnownSequenceStrategies.CreateRga<string>().StrategyId);
+        Assert.AreEqual("verisync.sequence.rga.v2", WellKnownSequenceStrategies.CreateRga<string>().StrategyId);
+    }
+
+
+    [TestMethod]
+    public void TheOffsetStrategyIdentifierIsPinned()
+    {
+        //offset.v2 certifies both removal kinds; the v1 identifier's semantics no longer exist in code,
+        //and published identifiers never change meaning.
+        Assert.AreEqual("verisync.sequence.offset.v2", WellKnownSequenceStrategies.CreateOffset<string>().StrategyId);
     }
 
 
@@ -63,49 +70,65 @@ internal sealed class CheckpointedSequenceTests
     {
         (CheckpointedSequence<Rga<string>, string, Dot> withA, Dot idA) = NewSequence().InsertAtHead("A", R1);
 
-        CheckpointedSequence<Rga<string>, string, Dot> removed = withA.Remove(idA);
+        CheckpointedSequence<Rga<string>, string, Dot> removed = withA.Remove(idA, R1);
 
         Assert.HasCount(0, removed.Values);
     }
 
 
     [TestMethod]
-    public void PromoteAgreesOnTheCommitmentAndKeepsContentLocal()
+    public void CausalContextIsTheLiveClockForRgaAndNullWithoutTheDelegate()
     {
-        (CheckpointedSequence<Rga<string>, string, Dot> withA, Dot idA) = NewSequence().InsertAtHead("A", R1);
-        (CheckpointedSequence<Rga<string>, string, Dot> withB, _) = withA.InsertAfter(idA, "B", R1);
-        CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
+        //The rga strategy wires the causal-context accessor, so the container advertises the live sequence's
+        //clock; after one head insert on R1 the clock reads one on R1's axis.
+        (CheckpointedSequence<Rga<string>, string, Dot> withA, _) = NewSequence().InsertAtHead("A", R1);
+        Assert.IsNotNull(withA.CausalContext);
+        Assert.AreEqual(1, withA.CausalContext![R1]);
 
-        (CheckpointedSequence<Rga<string>, string, Dot> promoted, _, ChangeOutcome<CheckpointCommitment> outcome) = withB.Promote(register, new Ballot(1, R1));
+        //offset.v2 advertises a live causal context too, and its dotted removes tick it through the
+        //container wiring: one insert plus one remove reads two on R1's axis.
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> offset =
+            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress>.Create(
+                WellKnownSequenceStrategies.CreateOffset<string>(), Canonicalize, Sha256);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withOffsetA, OffsetAddress offsetAnchor) = offset.InsertAtHead("A", R1);
+        Assert.IsNotNull(withOffsetA.CausalContext);
+        Assert.AreEqual(1, withOffsetA.CausalContext![R1]);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> offsetRemoved = withOffsetA.Remove(offsetAnchor, R1);
+        Assert.AreEqual(2, offsetRemoved.CausalContext![R1]);
 
-        Assert.IsTrue(outcome.IsChosen);
-        string[] expected = ["A", "B"];
-        CollectionAssert.AreEqual(expected, promoted.Checkpoint.ToArray());
-        Assert.AreEqual(new Ballot(1, R1), promoted.CheckpointBallot);
-
-        //The register carries the digest of the snapshot's canonical bytes - metadata-sized - never the
-        //snapshot itself; the local commitment matches an independent recomputation.
-        byte[] recomputed = SHA256.HashData(Canonicalize([.. expected]).Span);
-        Assert.AreEqual(new CheckpointCommitment(recomputed), outcome.Value);
-        Assert.AreEqual(new CheckpointCommitment(recomputed), promoted.Commitment);
-        Assert.AreEqual(32, outcome.Value!.Digest.Length);
+        //A context built WITHOUT the delegate advertises none.
+        SequenceCrdtContext<OffsetAnchoredSequence<string>, string, OffsetAddress> wired = WellKnownSequenceStrategies.CreateOffset<string>();
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> bare =
+            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress>.Create(new SequenceCrdtContext<OffsetAnchoredSequence<string>, string, OffsetAddress>
+            {
+                StrategyId = wired.StrategyId,
+                Empty = wired.Empty,
+                InsertAtHead = wired.InsertAtHead,
+                InsertAfter = wired.InsertAfter,
+                Remove = wired.Remove,
+                Merge = wired.Merge,
+                Values = wired.Values
+            }, Canonicalize, Sha256);
+        Assert.IsNull(bare.CausalContext);
     }
 
 
+    //A sealed checkpoint's content stays in the compactable strategy's live sequence; edits after the seal
+    //accumulate live while the recorded checkpoint holds the sealed dotted content.
     [TestMethod]
     public void EditsAfterCheckpointStayInLive()
     {
-        (CheckpointedSequence<Rga<string>, string, Dot> withA, Dot idA) = NewSequence().InsertAtHead("A", R1);
+        (CheckpointedSequence<Rga<string>, string, Dot> withA, Dot idA) = Sealable().InsertAtHead("A", R1);
         (CheckpointedSequence<Rga<string>, string, Dot> withB, Dot idB) = withA.InsertAfter(idA, "B", R1);
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
-        (CheckpointedSequence<Rga<string>, string, Dot> promoted, _, _) = withB.Promote(register, new Ballot(1, R1));
+        (CheckpointedSequence<Rga<string>, string, Dot> afterSeal, _, _, _) = withB.Seal(register, new Ballot(1, R1), withB.CausalContext!);
 
-        (CheckpointedSequence<Rga<string>, string, Dot> edited, _) = promoted.InsertAfter(idB, "C", R1);
+        (CheckpointedSequence<Rga<string>, string, Dot> edited, _) = afterSeal.InsertAfter(idB, "C", R1);
 
         string[] liveExpected = ["A", "B", "C"];
         string[] checkpointExpected = ["A", "B"];
         CollectionAssert.AreEqual(liveExpected, edited.Values.ToArray());
-        CollectionAssert.AreEqual(checkpointExpected, edited.Checkpoint.ToArray());
+        CollectionAssert.AreEqual(checkpointExpected, CheckpointValues(edited.Checkpoint));
     }
 
 
@@ -123,20 +146,22 @@ internal sealed class CheckpointedSequenceTests
     }
 
 
+    //Two seals on an ascending frontier chain leave the later checkpoint recorded at the higher ballot;
+    //merging the earlier container with the later one keeps that later checkpoint.
     [TestMethod]
     public void MergeKeepsLaterCheckpoint()
     {
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
-        (CheckpointedSequence<Rga<string>, string, Dot> a, _) = NewSequence().InsertAtHead("A", R1);
-        (CheckpointedSequence<Rga<string>, string, Dot> earlier, CasPaxosRegister<CheckpointCommitment> register1, _) = a.Promote(register, new Ballot(1, R1));
-        (CheckpointedSequence<Rga<string>, string, Dot> b, _) = NewSequence().InsertAtHead("B", R2);
-        (CheckpointedSequence<Rga<string>, string, Dot> later, _, _) = b.Promote(register1, new Ballot(2, R1));
+        (CheckpointedSequence<Rga<string>, string, Dot> withA, Dot idA) = Sealable().InsertAtHead("A", R1);
+        (CheckpointedSequence<Rga<string>, string, Dot> earlier, CasPaxosRegister<CheckpointCommitment> register1, _, _) = withA.Seal(register, new Ballot(1, R1), withA.CausalContext!);
+        (CheckpointedSequence<Rga<string>, string, Dot> withB, _) = earlier.InsertAfter(idA, "B", R1);
+        (CheckpointedSequence<Rga<string>, string, Dot> later, _, _, _) = withB.Seal(register1, new Ballot(2, R1), withB.CausalContext!);
 
         CheckpointedSequence<Rga<string>, string, Dot> merged = earlier.Merge(later);
 
         Assert.AreEqual(new Ballot(2, R1), merged.CheckpointBallot);
-        string[] expected = ["B"];
-        CollectionAssert.AreEqual(expected, merged.Checkpoint.ToArray());
+        string[] expected = ["A", "B"];
+        CollectionAssert.AreEqual(expected, CheckpointValues(merged.Checkpoint));
         Assert.AreEqual(later.Commitment, merged.Commitment);
     }
 
@@ -171,9 +196,102 @@ internal sealed class CheckpointedSequenceTests
 
 
     [TestMethod]
-    public void PromoteRejectsNullRegister()
+    public void SealRejectsNullRegister()
     {
-        Assert.ThrowsExactly<ArgumentNullException>(() => NewSequence().Promote(null!, new Ballot(1, R1)));
+        Assert.ThrowsExactly<ArgumentNullException>(() => Sealable().Seal(null!, new Ballot(1, R1), VectorClock.Empty));
+    }
+
+
+    //The container's probe checks exist independently of the strategy guard: RGA's Compact never
+    //imposes an insert-quiescence precondition, so with a hand-built context whose probe constantly
+    //reports one unstable insert, any quiescence throw below can only come from the container itself —
+    //both from Seal and from ApplyCommittedSeal with an honestly-built commitment whose dominance,
+    //chain, and digest checks all pass.
+    [TestMethod]
+    public void TheContainerRefusesToSealWhenTheProbeReportsInstability()
+    {
+        SequenceCrdtContext<Rga<string>, string, Dot> wired = WellKnownSequenceStrategies.CreateRgaRle<string>();
+        var probed = new SequenceCrdtContext<Rga<string>, string, Dot>
+        {
+            StrategyId = wired.StrategyId,
+            Empty = wired.Empty,
+            InsertAtHead = wired.InsertAtHead,
+            InsertAfter = wired.InsertAfter,
+            Remove = wired.Remove,
+            Merge = wired.Merge,
+            Values = wired.Values,
+            Compact = wired.Compact,
+            TranslateAnchor = wired.TranslateAnchor,
+            CausalContext = wired.CausalContext,
+            CertifyProjection = wired.CertifyProjection,
+            UnstableInserts = static (_, _) => [new Dot(R1, 99)]
+        };
+        (CheckpointedSequence<Rga<string>, string, Dot> withA, _) =
+            CheckpointedSequence<Rga<string>, string, Dot>.Create(probed, Canonicalize, Sha256).InsertAtHead("A", R1);
+        VectorClock frontier = withA.CausalContext!;
+        CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => withA.Seal(register, new Ballot(1, R1), frontier));
+
+        //The probe-refused Seal ran no consensus round, so the register is untouched: a probe-LESS context
+        //over the same delegates seals it at the SAME frontier as the register's first commitment.
+        var probeless = new SequenceCrdtContext<Rga<string>, string, Dot>
+        {
+            StrategyId = wired.StrategyId,
+            Empty = wired.Empty,
+            InsertAtHead = wired.InsertAtHead,
+            InsertAfter = wired.InsertAfter,
+            Remove = wired.Remove,
+            Merge = wired.Merge,
+            Values = wired.Values,
+            Compact = wired.Compact,
+            TranslateAnchor = wired.TranslateAnchor,
+            CausalContext = wired.CausalContext,
+            CertifyProjection = wired.CertifyProjection
+        };
+        (CheckpointedSequence<Rga<string>, string, Dot> probelessA, _) =
+            CheckpointedSequence<Rga<string>, string, Dot>.Create(probeless, Canonicalize, Sha256).InsertAtHead("A", R1);
+        (_, _, ChangeOutcome<CheckpointCommitment> probelessOutcome, bool probelessSealed) =
+            probelessA.Seal(register, new Ballot(1, R1), frontier);
+        Assert.IsTrue(probelessSealed);
+        Assert.AreEqual(frontier, probelessOutcome.Value!.Frontier);
+
+        var committed = new CheckpointCommitment(frontier, Sha256(Canonicalize(withA.Live.CertifiedProjection(frontier))));
+        Assert.ThrowsExactly<InvalidOperationException>(() => withA.ApplyCommittedSeal(committed, new Ballot(1, R1)));
+    }
+
+
+    //The digest check runs BEFORE the probe in ApplyCommittedSeal: with the probe wired to throw a
+    //marker exception and a MISMATCHED digest, the digest-first order surfaces the digest's
+    //InvalidOperationException; a probe-first implementation would surface NotSupportedException. The
+    //ordering is pinned by exception TYPE alone.
+    [TestMethod]
+    public void TheDigestCheckPrecedesTheProbeInApplyCommittedSeal()
+    {
+        SequenceCrdtContext<Rga<string>, string, Dot> wired = WellKnownSequenceStrategies.CreateRgaRle<string>();
+        var probed = new SequenceCrdtContext<Rga<string>, string, Dot>
+        {
+            StrategyId = wired.StrategyId,
+            Empty = wired.Empty,
+            InsertAtHead = wired.InsertAtHead,
+            InsertAfter = wired.InsertAfter,
+            Remove = wired.Remove,
+            Merge = wired.Merge,
+            Values = wired.Values,
+            Compact = wired.Compact,
+            TranslateAnchor = wired.TranslateAnchor,
+            CausalContext = wired.CausalContext,
+            CertifyProjection = wired.CertifyProjection,
+            UnstableInserts = static (_, _) => throw new NotSupportedException()
+        };
+        (CheckpointedSequence<Rga<string>, string, Dot> withA, _) =
+            CheckpointedSequence<Rga<string>, string, Dot>.Create(probed, Canonicalize, Sha256).InsertAtHead("A", R1);
+        VectorClock frontier = withA.CausalContext!;
+
+        ReadOnlyMemory<byte> mismatched = new byte[] { 1, 2, 3 };
+        var committed = new CheckpointCommitment(frontier, mismatched);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => withA.ApplyCommittedSeal(committed, new Ballot(1, R1)));
     }
 
 
@@ -183,10 +301,40 @@ internal sealed class CheckpointedSequenceTests
     }
 
 
-    private static ReadOnlyMemory<byte> Canonicalize(ImmutableArray<string> values)
+    private static CheckpointedSequence<Rga<string>, string, Dot> Sealable()
     {
-        //Unit separator between elements keeps the encoding unambiguous for these test values.
-        return Encoding.UTF8.GetBytes(string.Join('\u001F', values));
+        return CheckpointedSequence<Rga<string>, string, Dot>.Create(WellKnownSequenceStrategies.CreateRgaRle<string>(), Canonicalize, Sha256);
+    }
+
+
+    private static string[] CheckpointValues(ImmutableArray<SequenceCheckpointEntry<string>> checkpoint)
+    {
+        var values = new string[checkpoint.Length];
+        for(int i = 0; i < checkpoint.Length; i++)
+        {
+            values[i] = checkpoint[i].Value;
+        }
+
+        return values;
+    }
+
+
+    //Encodes each dotted entry deterministically as dot replica hex, counter, and value, so equal checkpoints
+    //produce equal canonical bytes on every replica.
+    private static ReadOnlyMemory<byte> Canonicalize(ImmutableArray<SequenceCheckpointEntry<string>> entries)
+    {
+        var builder = new StringBuilder();
+        foreach(SequenceCheckpointEntry<string> entry in entries)
+        {
+            builder.Append(Convert.ToHexStringLower(entry.Dot.Replica.AsSpan()));
+            builder.Append(':');
+            builder.Append(entry.Dot.Counter);
+            builder.Append(':');
+            builder.Append(entry.Value);
+            builder.Append('\u001F');
+        }
+
+        return Encoding.UTF8.GetBytes(builder.ToString());
     }
 
 

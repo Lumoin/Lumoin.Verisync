@@ -67,4 +67,24 @@ public sealed class SequenceCrdtContext<TSequence, TValue, TAnchor>
     /// strategy's anchors survive compaction unchanged.
     /// </summary>
     public TranslateAnchorDelegate<TSequence, TAnchor>? TranslateAnchor { get; init; }
+
+    /// <summary>
+    /// Reads the sequence's causal context for gossip digests and stability frontiers, or
+    /// <see langword="null"/> when the strategy does not expose a remove-aware causal context.
+    /// </summary>
+    public SequenceCausalContextDelegate<TSequence>? CausalContext { get; init; }
+
+    /// <summary>
+    /// Produces the certified dotted projection at a frontier — the checkpoint a container seals — or
+    /// <see langword="null"/> when the strategy cannot certify a projection and therefore cannot be sealed.
+    /// </summary>
+    public CertifySequenceProjectionDelegate<TSequence, TValue>? CertifyProjection { get; init; }
+
+    /// <summary>
+    /// Enumerates the vertex insert-dots a frontier does not cover — the strategy's insert-quiescence
+    /// probe — or <see langword="null"/> when the strategy's compaction imposes no insert-quiescence
+    /// precondition. A null slot is the honest statement that sealing this strategy is not group-quiescent;
+    /// hosts branch on its presence to learn whether a seal must be driven to quiescence at all.
+    /// </summary>
+    public SequenceUnstableInsertsDelegate<TSequence>? UnstableInserts { get; init; }
 }

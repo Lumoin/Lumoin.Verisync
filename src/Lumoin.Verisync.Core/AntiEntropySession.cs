@@ -36,7 +36,14 @@ namespace Lumoin.Verisync.Core;
 /// A session is add-only by default — a difference of present elements converges — and becomes remove-aware
 /// when constructed with a local causal context. A remove-aware session exchanges each side's context once,
 /// right after the offer, and propagates observed removes as drops, so a tombstone never resurrects; an
-/// add-only session sends and accepts no context and is byte-for-byte as before. Because every outbound send
+/// add-only session sends and accepts no context and is byte-for-byte as before. Each side folds the peer's
+/// context together with the applies that carry the peer's entries or drops — and a responder folds once more on
+/// the initiator's completion frame, which the ordered channel delivers after every one of those applies — never
+/// on a bare wind-down, because a context folded without its entries would cover dots the local side never
+/// received, and the next session would classify those entries as observed-and-removed: a permanent false drop.
+/// An initiator whose fetch is outstanding even holds its local drops back until the answer applies, so a
+/// session wound down before the exchange finishes has folded nothing at all and reports
+/// <see cref="AntiEntropySessionState.Interrupted"/>. Because every outbound send
 /// happens inside the single consumer loop, the session's writes to the transport are serialized BY
 /// CONSTRUCTION — two tasks cannot tear a frame on one shared writer.
 /// </para>
@@ -76,6 +83,22 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     //Whether the peer's context has already been folded into the local one by an apply or drop, so the terminal
     //merge runs only on a path where no apply ran. Written and read only by the consumer loop.
     private bool contextFolded;
+
+    //The remove-aware initiator's local drops held back while its fetch is outstanding. The drop applier folds
+    //the FULL peer context, and that fold is sound only once every decoded dot is accounted for, so with a
+    //fetch pending the drops ride along to the answer's apply. Written and read only by the consumer loop.
+    private ImmutableArray<DotState> deferredLocalDrops = ImmutableArray<DotState>.Empty;
+
+    //The number of transfer envelopes — carrying an Elements or Drop payload — this initiator has sent in this
+    //session; it stamps the completion frame at the two Completed transitions. Written and read only by the
+    //consumer loop, like the state fields, and incremented immediately after each transfer send returns.
+    private int initiatorTransferCount;
+
+    //The number of transfer envelopes this responder has applied in this session, one per pushed elements and
+    //one per received drop. A completion frame's transfer count must equal it before the terminal fold — a
+    //cardinality cross-check that catches a lost, truncated, or duplicated transfer. Written and read only by
+    //the consumer loop.
+    private int responderTransferCount;
 
 
     /// <summary>
@@ -171,9 +194,11 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// is advisory because it may lag the loop's true position by one dispatched item.
     /// </summary>
     /// <remarks>
-    /// <see cref="AntiEntropySessionState.Completed"/> alone does NOT attest convergence: a session wound
-    /// down through <see cref="Complete"/> reaches the same terminal state as one that reconciled. A host
-    /// asserting the sets converged must read <see cref="IsConverged"/> alongside the state.
+    /// A terminal <see cref="AntiEntropySessionState.Completed"/> means the exchange finished, as distinct from
+    /// a wind-down before it, which lands <see cref="AntiEntropySessionState.Interrupted"/>.
+    /// <see cref="IsConverged"/> is the convergence attestation: at a terminal state it agrees with this
+    /// split — <see cref="AntiEntropySessionState.Completed"/> exactly when converged — and it additionally
+    /// reads <see langword="true"/> pre-terminally once a responder's done signal has attested the decode.
     /// </remarks>
     public AntiEntropySessionState State => (AntiEntropySessionState)Volatile.Read(ref stateValue);
 
@@ -183,8 +208,9 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// finished (the push sent and any fetch answered); for a responder it is set when the peer's done signal
     /// attested a complete decode against this session's snapshot — the strongest convergence evidence a
     /// responder receives. It stays <see langword="false"/> for a session wound down by <see cref="Complete"/>
-    /// before that point, which is exactly the case <see cref="State"/> being
-    /// <see cref="AntiEntropySessionState.Completed"/> cannot distinguish. Written only by the consumer loop
+    /// before that point — the terminal <see cref="AntiEntropySessionState.Interrupted"/> case, which it
+    /// agrees with, while also reading <see langword="true"/> pre-terminally for a responder still resolving
+    /// fetches. Written only by the consumer loop
     /// and read with a volatile-safe read, so a host may read it from another thread; a converged session's
     /// difference is exact within the contract's masquerade bound (see <see cref="ReconciliationDecoder"/>).
     /// </summary>
@@ -207,14 +233,23 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// <summary>
     /// Runs the single-consumer loop. It sends the offer, then dispatches every inbound work item against the
     /// encoder, decoder, and state machine until the channel completes after <see cref="Complete"/> or, for an
-    /// initiator, until it reaches <see cref="AntiEntropySessionState.Completed"/>.
+    /// initiator, until it reaches <see cref="AntiEntropySessionState.Completed"/>. A drain that ends before
+    /// the exchange finished leaves <see cref="State"/> at <see cref="AntiEntropySessionState.Interrupted"/>
+    /// rather than <see cref="AntiEntropySessionState.Completed"/>, and folds no peer context.
     /// </summary>
     /// <param name="send">The outbound transport edge; see <see cref="SendReconciliationEnvelopeDelegate{TElement}"/>.</param>
     /// <param name="resolveDifference">The initiator's classification seam; required for an initiator, unused by a responder.</param>
     /// <param name="serveFetch">The responder's lookup seam; required for a responder, unused by an initiator.</param>
     /// <param name="applyElements">The seam that admits received elements to the local replica; required for a remove-aware responder, optional otherwise.</param>
     /// <param name="applyDrops">The seam that drops named dots from the local replica; required for both roles when remove-aware, unused when add-only.</param>
-    /// <param name="mergeContext">The terminal context-fold seam for paths where no apply ran; required for both roles when remove-aware, unused when add-only.</param>
+    /// <param name="mergeContext">
+    /// The terminal context-fold seam a side runs when it completes an exchange in which no apply folded: an
+    /// initiator at either of its Completed transitions, and — the direction the completion frame opens — a
+    /// responder on receiving the initiator's completion frame, which attests the initiator's exchange work was
+    /// complete, so every transfer preceded the frame and the fold covers nothing untransferred. A single
+    /// session therefore converges both directions when the exchange completes; an interrupted exchange still
+    /// folds nothing on either side. Required for both roles when remove-aware. Unused when add-only.
+    /// </param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A task that completes when the loop returns.</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="send"/> is <see langword="null"/>, an initiator's <paramref name="resolveDifference"/> is <see langword="null"/>, a responder's <paramref name="serveFetch"/> is <see langword="null"/>, or a remove-aware session is missing its role's <paramref name="applyElements"/>, <paramref name="applyDrops"/>, or <paramref name="mergeContext"/> hook.</exception>
@@ -224,7 +259,13 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// A throwing <paramref name="send"/>, <paramref name="resolveDifference"/>, <paramref name="serveFetch"/>,
     /// <paramref name="applyElements"/>, <paramref name="applyDrops"/>, or <paramref name="mergeContext"/>
     /// propagates out of this method and ends the loop — the fail-closed posture. Every dispatch-rule violation
-    /// throws <see cref="InvalidOperationException"/> naming the rule.
+    /// throws <see cref="InvalidOperationException"/> naming the rule. A remove-aware initiator's completion frame
+    /// is its last send, after the terminal merge and before it marks itself
+    /// <see cref="AntiEntropySessionState.Completed"/>; if that send faults once its bytes are already on the
+    /// wire, this method throws and the initiator ends faulted and non-terminal — neither
+    /// <see cref="AntiEntropySessionState.Completed"/> nor <see cref="AntiEntropySessionState.Interrupted"/>, a
+    /// third terminal condition the host recovers as it does any faulted session, while a responder that
+    /// received the frame still folds soundly because every transfer preceded it.
     /// </remarks>
     public async Task RunAsync(
         SendReconciliationEnvelopeDelegate<TElement> send,
@@ -295,15 +336,14 @@ public sealed class AntiEntropySession<TElement>: IDisposable
             }
         }
 
-        //The channel completed through Complete(); fold the peer's context if no apply did so on this side, then
-        //the session is terminal whatever phase it last held. The merge hook is non-null whenever the session is
-        //remove-aware, by the eager validation, so the explicit check only satisfies flow analysis.
-        if(LocalContext is not null && !contextFolded && mergeContext is not null)
-        {
-            await MergePeerContextAsync(mergeContext, cancellationToken).ConfigureAwait(false);
-        }
-
-        SetState(AntiEntropySessionState.Completed);
+        //The channel completed through Complete(): the host wound the session down. No side folds the peer's
+        //context here. An initiator reaches this drain only when the exchange never completed (a completed
+        //initiator returns from the loop above), and a responder can never verify the initiator's trailing
+        //element and drop frames all arrived, so on both roles the fold would risk covering dots of entries
+        //never transferred — which the next session would classify as observed-and-removed, a permanent,
+        //cluster-wide false drop. The peer context folds only alongside the applies that carry the peer's
+        //entries or drops; the terminal state below makes a wind-down before a finished exchange observable.
+        SetState(DrainState());
     }
 
 
@@ -315,6 +355,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// <returns>A task that completes once the envelope is enqueued.</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="envelope"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">Thrown when <paramref name="envelope"/> does not carry exactly one payload.</exception>
+    /// <exception cref="ChannelClosedException">Thrown through the returned task when no further work is accepted after <see cref="Complete"/>.</exception>
     public ValueTask SubmitAsync(ReconciliationEnvelope<TElement> envelope, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(envelope);
@@ -331,6 +372,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A task that completes once the trigger is enqueued.</returns>
     /// <exception cref="InvalidOperationException">Thrown synchronously on an initiator, which never streams batches.</exception>
+    /// <exception cref="ChannelClosedException">Thrown through the returned task when no further work is accepted after <see cref="Complete"/>.</exception>
     public ValueTask TriggerBatchAsync(CancellationToken cancellationToken = default)
     {
         if(Role == AntiEntropyRole.Initiator)
@@ -344,11 +386,13 @@ public sealed class AntiEntropySession<TElement>: IDisposable
 
     /// <summary>
     /// Completes the work channel: no further work is accepted, and <see cref="RunAsync"/> drains the queued
-    /// items, sets <see cref="State"/> to <see cref="AntiEntropySessionState.Completed"/>, and returns. The
-    /// host calls this to wind the transport down, because a responder cannot know a fetch is not still coming.
-    /// Winding down does NOT converge the session: <see cref="IsConverged"/> stays <see langword="false"/>
-    /// unless the reconciliation path already set it, so an incomplete decode wound down here is
-    /// distinguishable from a reconciled one.
+    /// items, sets <see cref="State"/> to its terminal value, and returns. The host calls this to wind the
+    /// transport down, because a responder cannot know a fetch is not still coming. A responder past the done
+    /// signal ends at <see cref="AntiEntropySessionState.Completed"/> — the done signal already converged it,
+    /// so <see cref="IsConverged"/> reads <see langword="true"/> there; a wind-down in any earlier phase, on
+    /// either role, ends at <see cref="AntiEntropySessionState.Interrupted"/> with <see cref="IsConverged"/>
+    /// <see langword="false"/> and folds no peer context. After this call a <see cref="SubmitAsync"/> or
+    /// <see cref="TriggerBatchAsync"/> faults its returned task with <see cref="ChannelClosedException"/>.
     /// </summary>
     public void Complete()
     {
@@ -476,7 +520,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
 
         if(envelope.Elements is { } elements)
         {
-            await HandleElementsAsync(elements, send, applyElements, mergeContext, cancellationToken).ConfigureAwait(false);
+            await HandleElementsAsync(elements, send, applyElements, applyDrops, mergeContext, cancellationToken).ConfigureAwait(false);
 
             return;
         }
@@ -484,6 +528,13 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         if(envelope.Drop is { } drop)
         {
             await HandleDropAsync(drop, applyDrops, cancellationToken).ConfigureAwait(false);
+
+            return;
+        }
+
+        if(envelope.Completion is { } completion)
+        {
+            await HandleCompletionAsync(completion, mergeContext, cancellationToken).ConfigureAwait(false);
 
             return;
         }
@@ -605,12 +656,33 @@ public sealed class AntiEntropySession<TElement>: IDisposable
             throw new InvalidOperationException("A difference resolver must not return null.");
         }
 
-        //Apply the local drops first: the entries the peer observed and removed leave this side immediately, and
-        //the fold the applier performs lets the merged context dominate them so they never resurrect.
+        //Apply the local drops now only when nothing remains outstanding. The drop applier folds the FULL peer
+        //context (its documented contract), and that fold is sound only once every decoded dot is held, pushed,
+        //or dropped: with a fetch outstanding it would cover the never-fetched entries' dots, and a wind-down
+        //before the answer would persist a context that classifies those live entries observed-and-removed in
+        //the next session — the same permanent false drop the old drain-path fold caused. A remove-aware
+        //initiator therefore defers its local drops to the answer's apply; if the exchange never completes, the
+        //entries the peer removed simply stay put and re-classify in the next session.
         if(!resolution.LocalDrops.IsEmpty)
         {
-            await applyDrops!(resolution.LocalDrops, peerContextState, cancellationToken).ConfigureAwait(false);
-            contextFolded = true;
+            //An add-only session carries no drop path: it accepts no local context, wires no drop applier, and
+            //its terminal merge folds nothing. A resolver that hands it local drops is misuse, so fail closed
+            //here — the earliest honest point, since the drops arrive at dispatch time, not construction — rather
+            //than dereference the null applier, mirroring the add-only rejection of the context and drop frames.
+            if(LocalContext is null)
+            {
+                throw new InvalidOperationException("An add-only session carries no drop path; a difference resolver must not return local drops for it.");
+            }
+
+            if(!resolution.Fetch.IsEmpty)
+            {
+                deferredLocalDrops = resolution.LocalDrops;
+            }
+            else
+            {
+                await applyDrops!(resolution.LocalDrops, peerContextState, cancellationToken).ConfigureAwait(false);
+                contextFolded = true;
+            }
         }
 
         if(!resolution.Fetch.IsEmpty)
@@ -621,6 +693,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         if(!resolution.Push.IsEmpty)
         {
             await send(ReconciliationEnvelope<TElement>.ForElements(new ReconciliationElements<TElement>(resolution.Push)), cancellationToken).ConfigureAwait(false);
+            initiatorTransferCount++;
         }
 
         //Resolving when a fetch went out and an answer is outstanding; otherwise the session is complete, and on
@@ -631,6 +704,11 @@ public sealed class AntiEntropySession<TElement>: IDisposable
             {
                 await MergePeerContextAsync(mergeContext!, cancellationToken).ConfigureAwait(false);
             }
+
+            //The completion frame is the initiator's last send, after the terminal merge and immediately before
+            //the Completed transition, so an interrupted initiator can never reach it. It stamps the transfer
+            //count so the responder can license its own terminal fold.
+            await SendCompletionAsync(send, cancellationToken).ConfigureAwait(false);
 
             //Converged: the decode recovered the whole difference and every resolution send has landed.
             MarkConverged();
@@ -653,6 +731,14 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         if(State != AntiEntropySessionState.Reconciling)
         {
             throw new InvalidOperationException("A done signal is legal only while reconciling.");
+        }
+
+        //The ordered channel delivers a remove-aware peer's context before its done signal, so an honest peer
+        //never completes the stream without one; guard so a missing context fails closed here — mirroring the
+        //initiator's decode-completion guard — instead of the later applies classifying against an empty clock.
+        if(LocalContext is not null && peerContext is null)
+        {
+            throw new InvalidOperationException("A remove-aware responder received the done signal before the peer's causal context arrived.");
         }
 
         //The done signal attests the initiator's decoder recovered the whole symmetric difference against this
@@ -696,6 +782,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         ReconciliationElements<TElement> elements,
         SendReconciliationEnvelopeDelegate<TElement> send,
         ApplyReconciliationElementsDelegate<TElement>? applyElements,
+        ApplyReconciliationDropsDelegate<TElement>? applyDrops,
         MergeReconciliationContextDelegate? mergeContext,
         CancellationToken cancellationToken)
     {
@@ -711,17 +798,44 @@ public sealed class AntiEntropySession<TElement>: IDisposable
 
         //The uniform apply admits the genuine adds and returns the local tombstones the pre-fold context already
         //covered; the applier folds the peer context, so this side's context is merged whenever entries arrive.
+        //It runs before the deferred local drops because every applier folds the FULL peer context and only this
+        //one carries the entries that context covers: folding here first means no fault between the two applies
+        //can persist a context that covers entries this side never applied — the same permanent false drop the
+        //deferral exists to prevent. An unapplied local drop merely re-classifies in the next session.
         ImmutableArray<DotState> drops = await applyElements(elements.Entries, PeerContextState(), cancellationToken).ConfigureAwait(false);
         if(LocalContext is not null)
         {
             contextFolded = true;
         }
 
+        //The initiator's deferred local drops apply together with its fetch answer: with the answer applied,
+        //every decoded dot is accounted for, so the full-context fold the drop applier performs is sound. The
+        //hook is non-null by the eager remove-aware validation, since only a remove-aware initiator defers.
+        if(!deferredLocalDrops.IsEmpty)
+        {
+            await applyDrops!(deferredLocalDrops, PeerContextState(), cancellationToken).ConfigureAwait(false);
+            deferredLocalDrops = ImmutableArray<DotState>.Empty;
+            contextFolded = true;
+        }
+
+        //A responder counts the initiator's pushed elements toward the completion frame's cardinality
+        //cross-check. The initiator reaches this arm applying its own fetch answer, which it received rather than
+        //transferred, so it does not count here — only the responder branch does.
+        if(Role == AntiEntropyRole.Responder)
+        {
+            responderTransferCount++;
+        }
+
         //The initiator applying its fetch answer may surface local tombstones the peer must honour; it sends one
-        //drop. The responder applying the initiator's pre-filtered push surfaces none, so it sends nothing.
+        //drop. The responder applying the initiator's pre-filtered push surfaces none, so it sends nothing —
+        //and if a hook violated that contract, the counter stays the initiator's alone.
         if(!drops.IsEmpty)
         {
             await send(ReconciliationEnvelope<TElement>.ForDrop(new ReconciliationDrop(drops)), cancellationToken).ConfigureAwait(false);
+            if(Role == AntiEntropyRole.Initiator)
+            {
+                initiatorTransferCount++;
+            }
         }
 
         //The initiator's outstanding fetch is answered, so it completes; the responder stays resolving until the
@@ -732,6 +846,10 @@ public sealed class AntiEntropySession<TElement>: IDisposable
             {
                 await MergePeerContextAsync(mergeContext!, cancellationToken).ConfigureAwait(false);
             }
+
+            //The completion frame follows the trailing drop and the terminal merge and precedes the Completed
+            //transition, stamping the transfer count accumulated across the push and this trailing drop.
+            await SendCompletionAsync(send, cancellationToken).ConfigureAwait(false);
 
             //Converged: the decode recovered the whole difference and the outstanding fetch is now answered.
             MarkConverged();
@@ -750,6 +868,15 @@ public sealed class AntiEntropySession<TElement>: IDisposable
             throw new InvalidOperationException("An add-only session must not receive a drop.");
         }
 
+        //On the ordered channel the responder's fetch answer precedes any drop it might send, and a completed
+        //initiator returns without draining further, so a drop dispatched on a running initiator is always a
+        //peer violating the exchange order — applying it would fold the peer context before the fetch answer,
+        //covering entries never received.
+        if(Role != AntiEntropyRole.Responder)
+        {
+            throw new InvalidOperationException("Only a responder applies a received drop; an initiator's exchange ends with its fetch answer.");
+        }
+
         if(State != AntiEntropySessionState.Resolving)
         {
             throw new InvalidOperationException("A drop is legal only while resolving.");
@@ -764,6 +891,60 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         //dominates them; the responder stays resolving until the host completes the channel.
         await applyDrops(drop.Dots, PeerContextState(), cancellationToken).ConfigureAwait(false);
         contextFolded = true;
+
+        //Count the applied drop toward the completion frame's cardinality cross-check; this handler is
+        //responder-only and remove-aware by the guards above, so the counter tracks only genuine transfers.
+        responderTransferCount++;
+    }
+
+
+    private async ValueTask HandleCompletionAsync(
+        ReconciliationCompletion completion,
+        MergeReconciliationContextDelegate? mergeContext,
+        CancellationToken cancellationToken)
+    {
+        //The guards run in the same order as the drop handler — add-only, then role, then phase, then the count
+        //check — and every one fails closed before any fold, so a rejected frame leaves the local context
+        //untouched.
+        if(LocalContext is null)
+        {
+            throw new InvalidOperationException("An add-only session must not receive a completion frame.");
+        }
+
+        //Completion travels initiator to responder only; an initiator ends its own exchange at its Completed
+        //transition, so a completion arriving on one is a peer violating the exchange order.
+        if(Role != AntiEntropyRole.Responder)
+        {
+            throw new InvalidOperationException("Only a responder receives the completion frame; an initiator ends its own exchange.");
+        }
+
+        //Legal only while resolving — the mirror of the done-only-while-reconciling guard. A duplicate completion
+        //trips this same guard, because the first one already left resolving for the terminal Completed.
+        if(State != AntiEntropySessionState.Resolving)
+        {
+            throw new InvalidOperationException("A completion frame is legal only while resolving.");
+        }
+
+        //The responder's applied-transfer count must equal the count the initiator stamped. A mismatch means the
+        //ordered, exactly-once transport lost, truncated, or duplicated a transfer envelope, or the frame is not
+        //authentic; folding then would risk covering dots of entries never transferred, so it fails closed with
+        //the context unpoisoned.
+        if(responderTransferCount != completion.TransferCount)
+        {
+            throw new InvalidOperationException("A completion frame's transfer count does not match the applied transfer count; the exchange is incomplete or the frame is not authentic.");
+        }
+
+        //The responder's first and only terminal fold. Ordered delivery places this frame after every element
+        //and drop the initiator sent, all applied above, so folding the initiator's exchanged context covers
+        //nothing untransferred — the direction dbdd3e4 fenced as unsafe, now licensed by the verified-complete
+        //frame.
+        await MergePeerContextAsync(mergeContext!, cancellationToken).ConfigureAwait(false);
+
+        //Terminal. IsConverged was set when the done signal arrived, so the Completed and IsConverged pair holds.
+        //The responder keeps consuming after this — any later frame fails closed through the existing phase
+        //guards, none of which accepts Completed — and a wind-down now drains to Completed rather than
+        //overwriting the frame-earned terminal.
+        SetState(AntiEntropySessionState.Completed);
     }
 
 
@@ -815,10 +996,26 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     }
 
 
+    private async ValueTask SendCompletionAsync(SendReconciliationEnvelopeDelegate<TElement> send, CancellationToken cancellationToken)
+    {
+        //The completion frame rides only remove-aware exchanges, where a context is exchanged and the responder
+        //has a context to fold; an add-only exchange carries no contexts and never sends it. It stamps the count
+        //of transfer envelopes this initiator sent — the cardinality the responder cross-checks before folding.
+        if(LocalContext is null)
+        {
+            return;
+        }
+
+        await send(ReconciliationEnvelope<TElement>.ForCompletion(new ReconciliationCompletion(initiatorTransferCount)), cancellationToken).ConfigureAwait(false);
+    }
+
+
     private async ValueTask MergePeerContextAsync(MergeReconciliationContextDelegate mergeContext, CancellationToken cancellationToken)
     {
-        //The terminal fold for a path where no apply ran; idempotent, so it is harmless even if it overlaps a
-        //context the local side already dominates, and it leaves both sides at the merged context.
+        //The terminal fold an initiator runs on a completed exchange where no apply folded: having decoded the
+        //whole difference and classified every item, the initiator knows the peer's context summarizes nothing
+        //it has not seen, so the fold is safe; idempotent, so it is harmless even if it overlaps a context the
+        //local side already dominates.
         await mergeContext(PeerContextState(), cancellationToken).ConfigureAwait(false);
         contextFolded = true;
     }
@@ -827,8 +1024,34 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     private VectorClockState PeerContextState()
     {
         //The peer's context as state when remove-aware (captured before the decode), or the empty clock's state
-        //when add-only, where the hooks ignore it and fold nothing.
-        return peerContext is null ? VectorClock.Empty.ToState() : peerContext.ToState();
+        //when add-only, where the hooks ignore it and fold nothing. A remove-aware session reaching here without
+        //the peer's context would classify as if the peer had observed nothing, so it fails closed instead; the
+        //decode-completion and done-signal guards make this unreachable, and the throw keeps it that way.
+        if(peerContext is not null)
+        {
+            return peerContext.ToState();
+        }
+
+        if(LocalContext is not null)
+        {
+            throw new InvalidOperationException("A remove-aware session has no peer causal context to classify against.");
+        }
+
+        return VectorClock.Empty.ToState();
+    }
+
+
+    private AntiEntropySessionState DrainState()
+    {
+        //A responder past the done signal has served the full symbol stream and applied every element or drop
+        //that followed — the documented graceful wind-down, so it completes; a responder that already reached
+        //Completed on the initiator's completion frame stays Completed, so the host's wind-down never overwrites
+        //that frame-earned terminal — and its folded context — with Interrupted. Any earlier phase, on either
+        //role, is an exchange the host abandoned mid-flight and is reported as interrupted.
+        return Role == AntiEntropyRole.Responder
+            && State is AntiEntropySessionState.Resolving or AntiEntropySessionState.Completed
+            ? AntiEntropySessionState.Completed
+            : AntiEntropySessionState.Interrupted;
     }
 
 
