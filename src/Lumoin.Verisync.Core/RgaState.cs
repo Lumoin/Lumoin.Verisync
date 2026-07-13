@@ -9,5 +9,5 @@ namespace Lumoin.Verisync.Core;
 /// <typeparam name="TValue">The element type.</typeparam>
 /// <param name="Context">The serialized causal context.</param>
 /// <param name="Vertices">The serialized vertices, visible and tombstoned alike.</param>
-/// <param name="Tombstones">The serialized identities of the tombstoned elements.</param>
-public sealed record RgaState<TValue>(VectorClockState Context, ImmutableArray<RgaVertexEntry<TValue>> Vertices, ImmutableArray<DotState> Tombstones);
+/// <param name="Tombstones">The serialized tombstones: each a removed element's identity paired with the dotted remove events that hide it.</param>
+public sealed record RgaState<TValue>(VectorClockState Context, ImmutableArray<RgaVertexEntry<TValue>> Vertices, ImmutableArray<RgaTombstoneEntry> Tombstones);

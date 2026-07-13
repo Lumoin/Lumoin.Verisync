@@ -27,8 +27,8 @@ internal sealed class RemoveAwareReconciliationHost
 
     //The replica's causal context at session start, the baseline the apply rule classifies a received dot
     //against: a fetched dot the pinned context already covers is a local tombstone, not a fresh add. The
-    //running Current.Context cannot serve this — the initiator folds the peer context in via its local drops
-    //BEFORE the fetch answer arrives, so a later read of Current.Context would mis-classify a genuine add.
+    //running Current.Context cannot serve this — the applies fold the peer context as the session runs, so
+    //a read of Current.Context would classify against a moving baseline instead of the exchange-start one.
     private VectorClock PinnedContext { get; }
 
 

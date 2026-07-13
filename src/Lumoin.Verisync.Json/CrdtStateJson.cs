@@ -325,9 +325,19 @@ public static class CrdtStateJson
             writer.WriteEndArray();
 
             writer.WriteStartArray("tombstones");
-            foreach(DotState tombstone in state.Tombstones)
+            foreach(RgaTombstoneEntry tombstone in state.Tombstones)
             {
-                WriteDotState(writer, tombstone);
+                writer.WriteStartObject();
+                writer.WritePropertyName("target");
+                WriteDotState(writer, tombstone.Target);
+                writer.WriteStartArray("removeDots");
+                foreach(DotState removeDot in tombstone.RemoveDots)
+                {
+                    WriteDotState(writer, removeDot);
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
             }
 
             writer.WriteEndArray();
@@ -362,10 +372,19 @@ public static class CrdtStateJson
             }
 
             JsonElement tombstonesElement = RequireProperty(root, "tombstones", "An RGA");
-            ImmutableArray<DotState>.Builder tombstones = ImmutableArray.CreateBuilder<DotState>(tombstonesElement.GetArrayLength());
+            ImmutableArray<RgaTombstoneEntry>.Builder tombstones = ImmutableArray.CreateBuilder<RgaTombstoneEntry>(tombstonesElement.GetArrayLength());
             foreach(JsonElement tombstone in tombstonesElement.EnumerateArray())
             {
-                tombstones.Add(ReadDotState(tombstone));
+                JsonElement removeDotsElement = RequireProperty(tombstone, "removeDots", "An RGA tombstone");
+                ImmutableArray<DotState>.Builder removeDots = ImmutableArray.CreateBuilder<DotState>(removeDotsElement.GetArrayLength());
+                foreach(JsonElement removeDot in removeDotsElement.EnumerateArray())
+                {
+                    removeDots.Add(ReadDotState(removeDot));
+                }
+
+                tombstones.Add(new RgaTombstoneEntry(
+                    ReadDotState(RequireProperty(tombstone, "target", "An RGA tombstone")),
+                    removeDots.ToImmutable()));
             }
 
             return new RgaState<TValue>(
@@ -398,10 +417,24 @@ public static class CrdtStateJson
 
             writer.WriteEndArray();
 
+            writer.WritePropertyName("baseFrontier");
+            WriteVectorClockState(writer, state.BaseFrontier);
+
+            writer.WriteNumber("baseGeneration", state.BaseGeneration);
+
             writer.WriteStartArray("removedBaseOffsets");
-            foreach(int offset in state.RemovedBaseOffsets)
+            foreach(OffsetBaseRemovalEntry removal in state.RemovedBaseOffsets)
             {
-                writer.WriteNumberValue(offset);
+                writer.WriteStartObject();
+                writer.WriteNumber("offset", removal.Offset);
+                writer.WriteStartArray("removeDots");
+                foreach(DotState removeDot in removal.RemoveDots)
+                {
+                    WriteDotState(writer, removeDot);
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
             }
 
             writer.WriteEndArray();
@@ -425,9 +458,19 @@ public static class CrdtStateJson
             writer.WriteEndArray();
 
             writer.WriteStartArray("tombstones");
-            foreach(DotState tombstone in state.Tombstones)
+            foreach(OffsetTombstoneEntry tombstone in state.Tombstones)
             {
-                WriteDotState(writer, tombstone);
+                writer.WriteStartObject();
+                writer.WritePropertyName("target");
+                WriteDotState(writer, tombstone.Target);
+                writer.WriteStartArray("removeDots");
+                foreach(DotState removeDot in tombstone.RemoveDots)
+                {
+                    WriteDotState(writer, removeDot);
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
             }
 
             writer.WriteEndArray();
@@ -446,11 +489,12 @@ public static class CrdtStateJson
             writer.WriteEndArray();
 
             writer.WriteStartArray("compactedBaseOffsets");
-            foreach(OffsetRebaseEntry entry in state.CompactedBaseOffsets)
+            foreach(OffsetBaseAnchorEntry entry in state.CompactedBaseOffsets)
             {
                 writer.WriteStartObject();
                 writer.WriteNumber("previous", entry.PreviousOffset);
-                writer.WriteNumber("current", entry.CurrentOffset);
+                writer.WritePropertyName("target");
+                WriteOffsetAnchorState(writer, entry.Target);
                 writer.WriteEndObject();
             }
 
@@ -482,10 +526,19 @@ public static class CrdtStateJson
             }
 
             JsonElement removedElement = RequireProperty(root, "removedBaseOffsets", "An offset-anchored sequence");
-            ImmutableArray<int>.Builder removed = ImmutableArray.CreateBuilder<int>(removedElement.GetArrayLength());
-            foreach(JsonElement offset in removedElement.EnumerateArray())
+            ImmutableArray<OffsetBaseRemovalEntry>.Builder removed = ImmutableArray.CreateBuilder<OffsetBaseRemovalEntry>(removedElement.GetArrayLength());
+            foreach(JsonElement removal in removedElement.EnumerateArray())
             {
-                removed.Add(ReadNonNegative(offset, "A removed base offset"));
+                JsonElement removalDotsElement = RequireProperty(removal, "removeDots", "A removed base offset");
+                ImmutableArray<DotState>.Builder removalDots = ImmutableArray.CreateBuilder<DotState>(removalDotsElement.GetArrayLength());
+                foreach(JsonElement removeDot in removalDotsElement.EnumerateArray())
+                {
+                    removalDots.Add(ReadDotState(removeDot));
+                }
+
+                removed.Add(new OffsetBaseRemovalEntry(
+                    ReadNonNegative(RequireProperty(removal, "offset", "A removed base offset"), "A removed base offset"),
+                    removalDots.ToImmutable()));
             }
 
             JsonElement verticesElement = RequireProperty(root, "vertices", "An offset-anchored sequence");
@@ -499,10 +552,19 @@ public static class CrdtStateJson
             }
 
             JsonElement tombstonesElement = RequireProperty(root, "tombstones", "An offset-anchored sequence");
-            ImmutableArray<DotState>.Builder tombstones = ImmutableArray.CreateBuilder<DotState>(tombstonesElement.GetArrayLength());
+            ImmutableArray<OffsetTombstoneEntry>.Builder tombstones = ImmutableArray.CreateBuilder<OffsetTombstoneEntry>(tombstonesElement.GetArrayLength());
             foreach(JsonElement tombstone in tombstonesElement.EnumerateArray())
             {
-                tombstones.Add(ReadDotState(tombstone));
+                JsonElement tombstoneDotsElement = RequireProperty(tombstone, "removeDots", "An offset-anchored sequence tombstone");
+                ImmutableArray<DotState>.Builder tombstoneDots = ImmutableArray.CreateBuilder<DotState>(tombstoneDotsElement.GetArrayLength());
+                foreach(JsonElement removeDot in tombstoneDotsElement.EnumerateArray())
+                {
+                    tombstoneDots.Add(ReadDotState(removeDot));
+                }
+
+                tombstones.Add(new OffsetTombstoneEntry(
+                    ReadDotState(RequireProperty(tombstone, "target", "An offset-anchored sequence tombstone")),
+                    tombstoneDots.ToImmutable()));
             }
 
             JsonElement dotAnchorsElement = RequireProperty(root, "compactedDotAnchors", "An offset-anchored sequence");
@@ -515,16 +577,18 @@ public static class CrdtStateJson
             }
 
             JsonElement baseOffsetsElement = RequireProperty(root, "compactedBaseOffsets", "An offset-anchored sequence");
-            ImmutableArray<OffsetRebaseEntry>.Builder baseOffsets = ImmutableArray.CreateBuilder<OffsetRebaseEntry>(baseOffsetsElement.GetArrayLength());
+            ImmutableArray<OffsetBaseAnchorEntry>.Builder baseOffsets = ImmutableArray.CreateBuilder<OffsetBaseAnchorEntry>(baseOffsetsElement.GetArrayLength());
             foreach(JsonElement entry in baseOffsetsElement.EnumerateArray())
             {
-                baseOffsets.Add(new OffsetRebaseEntry(
+                baseOffsets.Add(new OffsetBaseAnchorEntry(
                     ReadNonNegative(RequireProperty(entry, "previous", "A compacted base offset"), "A compacted base offset's previous offset"),
-                    ReadNonNegative(RequireProperty(entry, "current", "A compacted base offset"), "A compacted base offset's current offset")));
+                    ReadOffsetAnchorState(RequireProperty(entry, "target", "A compacted base offset"))));
             }
 
             return new OffsetAnchoredSequenceState<TValue>(
                 baseValues.ToImmutable(),
+                ReadVectorClockState(RequireProperty(root, "baseFrontier", "An offset-anchored sequence")),
+                ReadNonNegative(RequireProperty(root, "baseGeneration", "An offset-anchored sequence"), "A base generation"),
                 removed.ToImmutable(),
                 ReadVectorClockState(RequireProperty(root, "context", "An offset-anchored sequence")),
                 vertices.ToImmutable(),
@@ -583,9 +647,29 @@ public static class CrdtStateJson
             foreach(RgaTombstoneSpan span in state.TombstoneSpans)
             {
                 writer.WriteStartObject();
-                writer.WriteString("replica", Convert.ToHexStringLower(span.Replica.AsSpan()));
-                writer.WriteNumber("from", span.FromCounter);
-                writer.WriteNumber("to", span.ToCounter);
+                writer.WriteString("targetReplica", Convert.ToHexStringLower(span.TargetReplica.AsSpan()));
+                writer.WriteNumber("targetFrom", span.TargetFrom);
+                writer.WriteNumber("targetTo", span.TargetTo);
+                writer.WriteString("removeReplica", Convert.ToHexStringLower(span.RemoveReplica.AsSpan()));
+                writer.WriteNumber("removeFrom", span.RemoveFrom);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("irregularTombstones");
+            foreach(RgaConcurrentTombstone tombstone in state.IrregularTombstones)
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("target");
+                WriteDotState(writer, tombstone.Target);
+                writer.WriteStartArray("removeDots");
+                foreach(DotState removeDot in tombstone.RemoveDots)
+                {
+                    WriteDotState(writer, removeDot);
+                }
+
+                writer.WriteEndArray();
                 writer.WriteEndObject();
             }
 
@@ -599,6 +683,20 @@ public static class CrdtStateJson
                 WriteDotState(writer, translation.Dropped);
                 writer.WritePropertyName("target");
                 WriteDotState(writer, translation.Target);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+
+            writer.WriteStartArray("translationSpans");
+            foreach(RgaTranslationSpan span in state.TranslationSpans)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("replica", Convert.ToHexStringLower(span.DroppedReplica.AsSpan()));
+                writer.WriteNumber("from", span.FromCounter);
+                writer.WriteNumber("to", span.ToCounter);
+                writer.WritePropertyName("target");
+                WriteDotState(writer, span.Target);
                 writer.WriteEndObject();
             }
 
@@ -649,14 +747,36 @@ public static class CrdtStateJson
             ImmutableArray<RgaTombstoneSpan>.Builder spans = ImmutableArray.CreateBuilder<RgaTombstoneSpan>(spansElement.GetArrayLength());
             foreach(JsonElement span in spansElement.EnumerateArray())
             {
-                int from = RequireProperty(span, "from", "A tombstone span").GetInt32();
-                int to = RequireProperty(span, "to", "A tombstone span").GetInt32();
-                if(from < 1 || to < from)
+                int targetFrom = RequireProperty(span, "targetFrom", "A tombstone span").GetInt32();
+                int targetTo = RequireProperty(span, "targetTo", "A tombstone span").GetInt32();
+                int removeFrom = RequireProperty(span, "removeFrom", "A tombstone span").GetInt32();
+                if(targetFrom < 1 || targetTo < targetFrom || removeFrom < 1)
                 {
-                    throw new JsonException($"A tombstone span must satisfy 1 <= from <= to, got from {from}, to {to}.");
+                    throw new JsonException($"A tombstone span must satisfy 1 <= targetFrom <= targetTo and removeFrom >= 1, got targetFrom {targetFrom}, targetTo {targetTo}, removeFrom {removeFrom}.");
                 }
 
-                spans.Add(new RgaTombstoneSpan(ReadReplicaBytes(RequireProperty(span, "replica", "A tombstone span").GetString()!), from, to));
+                spans.Add(new RgaTombstoneSpan(
+                    ReadReplicaBytes(RequireProperty(span, "targetReplica", "A tombstone span").GetString()!),
+                    targetFrom,
+                    targetTo,
+                    ReadReplicaBytes(RequireProperty(span, "removeReplica", "A tombstone span").GetString()!),
+                    removeFrom));
+            }
+
+            JsonElement irregularsElement = RequireProperty(root, "irregularTombstones", "An RGA run state");
+            ImmutableArray<RgaConcurrentTombstone>.Builder irregulars = ImmutableArray.CreateBuilder<RgaConcurrentTombstone>(irregularsElement.GetArrayLength());
+            foreach(JsonElement tombstone in irregularsElement.EnumerateArray())
+            {
+                JsonElement removeDotsElement = RequireProperty(tombstone, "removeDots", "An irregular tombstone");
+                ImmutableArray<DotState>.Builder removeDots = ImmutableArray.CreateBuilder<DotState>(removeDotsElement.GetArrayLength());
+                foreach(JsonElement removeDot in removeDotsElement.EnumerateArray())
+                {
+                    removeDots.Add(ReadDotState(removeDot));
+                }
+
+                irregulars.Add(new RgaConcurrentTombstone(
+                    ReadDotState(RequireProperty(tombstone, "target", "An irregular tombstone")),
+                    removeDots.ToImmutable()));
             }
 
             JsonElement translationsElement = RequireProperty(root, "translations", "An RGA run state");
@@ -668,11 +788,31 @@ public static class CrdtStateJson
                     ReadDotState(RequireProperty(translation, "target", "A translation"))));
             }
 
+            JsonElement translationSpansElement = RequireProperty(root, "translationSpans", "An RGA run state");
+            ImmutableArray<RgaTranslationSpan>.Builder translationSpans = ImmutableArray.CreateBuilder<RgaTranslationSpan>(translationSpansElement.GetArrayLength());
+            foreach(JsonElement span in translationSpansElement.EnumerateArray())
+            {
+                int from = RequireProperty(span, "from", "A translation span").GetInt32();
+                int to = RequireProperty(span, "to", "A translation span").GetInt32();
+                if(from < 1 || to < from)
+                {
+                    throw new JsonException($"A translation span must satisfy 1 <= from <= to, got from {from}, to {to}.");
+                }
+
+                translationSpans.Add(new RgaTranslationSpan(
+                    ReadReplicaBytes(RequireProperty(span, "replica", "A translation span").GetString()!),
+                    from,
+                    to,
+                    ReadDotState(RequireProperty(span, "target", "A translation span"))));
+            }
+
             return new RgaRunState<TValue>(
                 ReadVectorClockState(RequireProperty(root, "context", "An RGA run state")),
                 runs.ToImmutable(),
                 spans.ToImmutable(),
-                translations.ToImmutable());
+                irregulars.ToImmutable(),
+                translations.ToImmutable(),
+                translationSpans.ToImmutable());
         });
     }
 

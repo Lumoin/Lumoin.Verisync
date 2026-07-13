@@ -115,6 +115,16 @@ internal sealed class RgaPropertyTests
 
         foreach(int seed in seeds)
         {
+            //A seeded removal by the same replica building the chain mints a dotted remove, so the
+            //semilattice laws exercise the tombstone map and its per-target remove-dot unions.
+            if(seed % 4 == 0 && rga.Count > 0)
+            {
+                Dot target = FindIdAt(rga, seed % rga.Values.Count);
+                rga = rga.Remove(target, replica);
+
+                continue;
+            }
+
             Dot inserted;
             if(ids.Count == 0)
             {

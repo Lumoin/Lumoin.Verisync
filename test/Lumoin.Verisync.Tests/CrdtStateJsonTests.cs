@@ -1,6 +1,7 @@
 using Lumoin.Verisync.Core;
 using Lumoin.Verisync.Json;
 using System.Buffers;
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json;
 
@@ -138,15 +139,22 @@ internal sealed class CrdtStateJsonTests
         (Rga<string> array, Dot first) = Rga<string>.Empty.InsertAtHead("a", R1);
         (array, Dot second) = array.InsertAfter(first, "b", R1);
         (array, _) = array.InsertAfter(second, "c", R1);
-        array = array.Remove(second);
+        array = array.Remove(second, R1);
+
+        //Combine the dotted tombstone the remove minted with a legacy (empty remove-dots) orphan tombstone,
+        //so the round-trip exercises both tombstone-entry shapes.
+        RgaState<string> dotted = array.ToState();
+        RgaTombstoneEntry legacy = new(new DotState(Bytes(R2), 5), []);
+        RgaState<string> withBoth = new(dotted.Context, dotted.Vertices, [.. dotted.Tombstones, legacy]);
+        Rga<string> source = Rga<string>.FromState(withBoth);
 
         RgaState<string> reloaded = RoundTrip(
-            array.ToState(),
+            source.ToState(),
             CrdtStateJson.CreateRgaStateSerializer<string>(WriteString),
             CrdtStateJson.CreateRgaStateDeserializer(ReadString));
         Rga<string> back = Rga<string>.FromState(reloaded);
 
-        Assert.AreEqual(array, back);
+        Assert.AreEqual(source, back);
         string[] expected = ["a", "c"];
         CollectionAssert.AreEqual(expected, back.Values.ToArray());
     }
@@ -264,26 +272,46 @@ internal sealed class CrdtStateJsonTests
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"vertices":[{"predecessor":null,"value":"x"}],"tombstones":[]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
         Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"vertices":[{"predecessor":null,"id":{"replica":"{{{replica}}}","counter":1}}],"tombstones":[]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
 
-        //The run-length RGA's four sections, then a field within a run, a span and a translation.
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"tombstoneSpans":[],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"runs":[],"tombstoneSpans":[],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[{"predecessor":null}],"tombstoneSpans":[],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[{"from":1,"to":1}],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[],"translations":[{"target":{"replica":"{{{replica}}}","counter":1}}]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        //An RGA tombstone entry's two fields, then its remove-dot's counter bound.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"vertices":[],"tombstones":[{"removeDots":[]}]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"vertices":[],"tombstones":[{"target":{"replica":"{{{replica}}}","counter":1}}]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"vertices":[],"tombstones":[{"target":{"replica":"{{{replica}}}","counter":1},"removeDots":[{"replica":"{{{replica}}}","counter":0}]}]}""", CrdtStateJson.CreateRgaStateDeserializer(ReadString)));
 
-        //The offset-anchored sequence's seven sections, then a vertex's anchor and the anchor's own fields.
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[]}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"base":[],"removedBaseOffsets":[],"vertices":[{"id":{"replica":"{{{replica}}}","counter":1},"value":"x"}],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"base":[],"removedBaseOffsets":[],"vertices":[{"id":{"replica":"{{{replica}}}","counter":1},"anchor":{"liveId":null},"value":"x"}],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
-        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"base":[],"removedBaseOffsets":[],"vertices":[{"id":{"replica":"{{{replica}}}","counter":1},"anchor":{"baseOffset":-1},"value":"x"}],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        //The run-length RGA's six v2 sections, then a field within a run, a two-range span, an irregular
+        //tombstone, a translation, and a translation span.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"runs":[],"tombstoneSpans":[],"irregularTombstones":[],"translations":[],"translationSpans":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"tombstoneSpans":[],"irregularTombstones":[],"translations":[],"translationSpans":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[],"irregularTombstones":[],"translations":[],"translationSpans":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[],"translations":[],"translationSpans":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[],"irregularTombstones":[],"translationSpans":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[],"irregularTombstones":[],"translations":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"context":{"entries":[]},"runs":[{"predecessor":null}],"tombstoneSpans":[],"irregularTombstones":[],"translations":[],"translationSpans":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[{"targetReplica":"{{{replica}}}","targetFrom":1,"targetTo":1,"removeFrom":1}],"irregularTombstones":[],"translations":[],"translationSpans":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[],"irregularTombstones":[{"target":{"replica":"{{{replica}}}","counter":1}}],"translations":[],"translationSpans":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[],"irregularTombstones":[],"translations":[{"target":{"replica":"{{{replica}}}","counter":1}}],"translationSpans":[]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"context":{"entries":[]},"runs":[],"tombstoneSpans":[],"irregularTombstones":[],"translations":[],"translationSpans":[{"replica":"{{{replica}}}","from":1,"to":2}]}""", CrdtStateJson.CreateRgaRunStateDeserializer(ReadString)));
+
+        //The offset-anchored sequence's eight sections, then a vertex's anchor and the anchor's own fields.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedBaseOffsets":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"base":[],"removedBaseOffsets":[],"vertices":[{"id":{"replica":"{{{replica}}}","counter":1},"value":"x"}],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"base":[],"removedBaseOffsets":[],"vertices":[{"id":{"replica":"{{{replica}}}","counter":1},"anchor":{"liveId":null},"value":"x"}],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"base":[],"removedBaseOffsets":[],"vertices":[{"id":{"replica":"{{{replica}}}","counter":1},"anchor":{"baseOffset":-1},"value":"x"}],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+
+        //An offset tombstone entry's two fields, an offset base-removal entry's two fields, and the
+        //anchor-typed compacted-base-offset entry's two fields.
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[],"vertices":[],"tombstones":[{"removeDots":[]}],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize($$$"""{"base":[],"removedBaseOffsets":[],"vertices":[],"tombstones":[{"target":{"replica":"{{{replica}}}","counter":1}}],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":[],"removedBaseOffsets":[{"removeDots":[]}],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":["x"],"removedBaseOffsets":[{"offset":0}],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":["x"],"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[{"target":{"baseOffset":0,"liveId":null}}],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => Deserialize("""{"base":["x"],"removedBaseOffsets":[],"vertices":[],"tombstones":[],"compactedDotAnchors":[],"compactedBaseOffsets":[{"previous":0}],"context":{"entries":[]},"baseFrontier":{"entries":[]}}""", CrdtStateJson.CreateOffsetAnchoredSequenceStateDeserializer(ReadString)));
     }
 
 
@@ -315,6 +343,9 @@ internal sealed class CrdtStateJsonTests
 
 
     private static string ReadString(JsonElement element) => element.GetString()!;
+
+
+    private static ImmutableArray<byte> Bytes(ReplicaId replica) => ImmutableArray.Create(replica.AsSpan());
 
 
     private static ReplicaId Replica(byte id)

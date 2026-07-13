@@ -6,7 +6,7 @@ using System.Diagnostics.CodeAnalysis;
 namespace Lumoin.Verisync.Tests;
 
 /// <summary>
-/// Registers the <see cref="WellKnownSequenceStrategies.RgaV1"/> strategy with the shared law harness.
+/// Registers the <see cref="WellKnownSequenceStrategies.RgaV2"/> strategy with the shared law harness.
 /// The laws are exercised through the context delegates — the same surface
 /// <see cref="CheckpointedSequence{TSequence, TValue, TAnchor}"/> uses — complementing the type-level
 /// property tests in <see cref="RgaPropertyTests"/>.
@@ -47,6 +47,80 @@ internal sealed class RgaStrategyLawTests: SequenceStrategyLawTests<Rga<int>, in
         }
 
         throw new InvalidOperationException("The visible element was not found.");
+    }
+
+
+    //Plain RGA runs LAW-NFD for uniformity: an op history of inserts and dotted removes over an empty
+    //Rga with a strict prefix cut. Its semantic coverage coincides with the rga-rle registration — both
+    //wire the identical Rga<int>.Merge — so it is uniformity, not new merge coverage.
+    protected override Gen<(Rga<int> Full, Rga<int> Behind)> GenFullAndBehindHistory { get; } =
+        Gen.Select(
+            Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 8],
+            Gen.Int[0, 8],
+            static (ops, cut) =>
+            {
+                (Rga<int> full, IReadOnlyList<Rga<int>> snapshots) = BuildSnapshots(ops);
+
+                return (Full: full, Behind: SnapshotAt(snapshots, cut));
+            }).Where(static pair => !pair.Full.Equals(pair.Behind));
+
+
+    private static (Rga<int> Full, IReadOnlyList<Rga<int>> Snapshots) BuildSnapshots((int Replica, int Seed)[] ops)
+    {
+        Rga<int> sequence = Rga<int>.Empty;
+        var insertedDots = new List<Dot>();
+        var snapshots = new List<Rga<int>>(ops.Length);
+        for(int opIndex = 0; opIndex < ops.Length; opIndex++)
+        {
+            (int replica, int seed) = ops[opIndex];
+            int visibleCount = sequence.Values.Count;
+            if(seed % 3 == 0 && visibleCount > 0)
+            {
+                sequence = sequence.Remove(MostRecentVisibleDot(sequence, insertedDots), Replicas[replica]);
+            }
+            else if(insertedDots.Count == 0)
+            {
+                (sequence, Dot head) = sequence.InsertAtHead((100 * replica) + opIndex, Replicas[replica]);
+                insertedDots.Add(head);
+            }
+            else
+            {
+                (sequence, Dot inserted) = sequence.InsertAfter(insertedDots[seed % insertedDots.Count], (100 * replica) + opIndex, Replicas[replica]);
+                insertedDots.Add(inserted);
+            }
+
+            snapshots.Add(sequence);
+        }
+
+        return (sequence, snapshots);
+    }
+
+
+    private static Rga<int> SnapshotAt(IReadOnlyList<Rga<int>> snapshots, int cut)
+    {
+        int bounded = Math.Min(cut, snapshots.Count);
+
+        return bounded == 0 ? Rga<int>.Empty : snapshots[bounded - 1];
+    }
+
+
+    private static Dot MostRecentVisibleDot(Rga<int> sequence, List<Dot> insertedDots)
+    {
+        var hidden = new HashSet<Dot>();
+        foreach(RgaTombstoneEntry tombstone in sequence.ToState().Tombstones)
+        {
+            hidden.Add(new Dot(ReplicaId.FromSpan(tombstone.Target.Replica.AsSpan()), tombstone.Target.Counter));
+        }
+
+        for(int i = insertedDots.Count - 1; i >= 0; i--)
+        {
+            if(!hidden.Contains(insertedDots[i]))
+            {
+                return insertedDots[i];
+            }
+        }
+
+        throw new InvalidOperationException("No visible element remains to remove.");
     }
 
 

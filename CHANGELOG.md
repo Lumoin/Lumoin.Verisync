@@ -18,218 +18,74 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Changed
 
-- The public `ReconciliationContract` constructor now enforces a checksum-width production floor of four bytes
-  (`MinimumProductionChecksumWidth`). Below four bytes the per-decode masquerade union bound — roughly
-  `d·ln d · 2^(−8·width)` for a difference of `d` items — becomes material at realistic difference sizes, so a
-  width of one, two, or three is now rejected by the constructor and constructible only through the new internal
-  `ForAdversarialTesting` factory, which the masquerade probes use to provoke a collision deliberately.
-  **Breaking** for a caller constructing a width-one-through-three contract through the public constructor: move
-  to a width of four or more (eight for a difference past the tens of thousands). The per-decode union-bound
-  documentation on the decoder and on `ReconciliationContract.ChecksumWidth` is expanded to state that scaling
-  explicitly and to point at the decoder's new count and bound members as its runtime surface.
+- `CheckpointedSequence.Promote` and the container's standalone `Compact` are removed; `Seal` is now the sole compaction entry point, so consensus checkpointing requires a certification-capable strategy. `CheckpointCommitment` carries its frontier, and `CompactSequenceDelegate` and `CanonicalizeCheckpointDelegate` now take the dotted checkpoint. The compactable RGA run state serializes dotted removes: tombstone spans carry two aligned counter ranges so a contiguous single-replica deletion coalesces to one span, irregular tombstones fall back to explicit entries, and the translation map coalesces into spans under a predicate that never covers a dot currently present as a vertex, so a resurrected ghost's witness entry always survives verbatim.
 
-- Verisync's tagging and pooled-memory primitives now come from `Lumoin.Base` rather than being maintained in
-  `Lumoin.Verisync.Core`. `VerisyncTags` and `TaggedMemory` build on and expose `Lumoin.Base.Tag` — the typed
-  `Create<T>`/`With<T>`/`Get<T>` API with content-based, order-independent equality — in place of the former
-  bespoke `Tag` record. The reconciliation cell buffer, item arena, dotted projection, encoder, decoder, and
-  anti-entropy session now **require** an injected `MemoryPool<byte>`: the pool parameter is non-null and the
-  former pool-less convenience constructors and the private heap-backed fallback owner are gone, so every
-  backing is explicitly pooled, tracked, and cleared on return with no implicit default. Wire formats and
-  reconciliation behavior are unchanged — verified against the full suite including the pooled-memory
-  accountability gate. Requires `Lumoin.Base` 0.0.4.
+- The RGA strategy identifiers are replaced: `verisync.sequence.rga.v2` and `verisync.sequence.rga-rle.v2` supersede the deleted v1 identifiers, because the dotted-remove semantics change both strategies' replication contracts; the superseded `offset.v1` identifier is also deleted. `SequenceRemoveDelegate` and `CheckpointedSequence.Remove` now carry the removing `ReplicaId`. Flat `RgaState` tombstones become `RgaTombstoneEntry` records (`target` plus `removeDots`, empty for legacy); both deserializers throw on duplicate identities, validate that the context covers every vertex and remove-dot, and reject a default (absent) array. `ToRunState` fails closed on a state carrying dotted removes, while legacy-only states still round-trip. The translation-map merge is no longer last-writer-wins: a dropped dot resolves to the maximum-counter merged vertex reachable through the union of both maps, making the merge commutative across states compacted at different frontiers. Retention classification is now an explicit-stack post-order walk, so long stable deleted runs compact without call-stack growth.
 
-- Deserialization fails closed under one type across encodings: every `DeserializeMessageDelegate` the
-  JSON and CBOR codecs build now throws a single new `MessageDeserializationException` (in
-  `Lumoin.Verisync.Core`, documented on the delegate), with the encoding-native cause — a `JsonException`,
-  a `CborContentException`, a wrapped argument exception — preserved as its inner exception, so a channel
-  consumer catches one type whether the wire is JSON or CBOR instead of an encoding-specific exception. The
-  conversion is a per-assembly guard wrapping every deserializer factory; serializers are unchanged and
-  still throw their native exceptions, and a factory's argument-null guard stays at construction time. This
-  supersedes the surfaced exception type in the `JsonException` entries below — those now describe the inner
-  cause a handler can still read off `InnerException`.
+- The public `ReconciliationContract` constructor now enforces a checksum-width production floor of four bytes (`MinimumProductionChecksumWidth`): a width of one, two, or three is rejected, because below four bytes the per-decode masquerade bound becomes material at realistic difference sizes. **Breaking** for a caller constructing a width-one-through-three contract through the public constructor: move to a width of four or more (eight for a difference past the tens of thousands). The per-decode union-bound documentation on the decoder and on `ReconciliationContract.ChecksumWidth` now states that scaling explicitly and points at the decoder's new count and bound members.
 
-- The reconciliation decoder peels in near-linear time. The previous decode re-scanned the whole
-  decoded set on every absorbed symbol and re-scanned all cells to a fixpoint on every absorb —
-  Θ(d²) in the difference size, so throughput collapsed as differences grew. It now applies
-  already-decoded items to incoming cells through an incremental cursor heap (mirroring the encoder)
-  and finds newly pure cells through a work-list seeded by each modified cell. The decoded set, the
-  completion point, the soundness rules (peel only pure cells, stall on an already-decoded sum, never
-  un-decode), and the wire format are unchanged — verified against the full law and vector suites and
-  an independent adversarial model. Measured on the throughput soak: a 16,384-item difference that
-  took ~54 s now reconciles in ~0.2 s, and per-symbol throughput rises with the difference instead of
-  falling.
+- Verisync's tagging and pooled-memory primitives now come from `Lumoin.Base` rather than `Lumoin.Verisync.Core`. `VerisyncTags` and `TaggedMemory` build on and expose `Lumoin.Base.Tag`, the typed `Create<T>`/`With<T>`/`Get<T>` API with content-based, order-independent equality, in place of the former bespoke `Tag` record. The reconciliation cell buffer, item arena, dotted projection, encoder, decoder, and anti-entropy session now require an injected `MemoryPool<byte>`: the pool parameter is non-null, and the former pool-less convenience constructors and private heap-backed fallback owner are gone. Wire formats and reconciliation behavior are unchanged. Requires `Lumoin.Base` 0.0.4.
 
-- The encoder and decoder store coded symbols in a single flat, contiguous `ReconciliationCellBuffer`
-  rather than parallel lists of per-cell arrays, so the XOR fold walks contiguous memory and the
-  per-cell allocation is gone; the two duplicated content-keyed-bytes helpers are unified into one
-  `ContentAddress`. `ReconciliationSymbol` gains an additive `ReadOnlySpan<byte>` constructor so a
-  symbol can be snapshotted from a cell in a single copy. Behavior, wire format, and the pinned
-  vectors are unchanged (the full suite is the oracle); the gain is locality and modest decode
-  throughput. Steady-state per-session allocation is unchanged — it is dominated by per-item
-  encoding work, not cell storage — so a pooled cell buffer was measured and deliberately not taken.
+- Deserialization fails closed under one type across encodings: every `DeserializeMessageDelegate` the JSON and CBOR codecs build now throws a single new `MessageDeserializationException` (in `Lumoin.Verisync.Core`), with the encoding-native cause (a `JsonException`, a `CborContentException`, or a wrapped argument exception) preserved as its inner exception, so a channel consumer catches one type whether the wire is JSON or CBOR. Serializers are unchanged and still throw their native exceptions. This supersedes the surfaced exception type in the `JsonException` entries below; those now describe the inner cause a handler can still read off `InnerException`.
 
-- The encoder and decoder reuse their walk cursors instead of reallocating one per fold. The cursors
-  that carry pending item contributions through the produce/peel priority queues were reference-type
-  records cloned with a `with` expression on every re-enqueue — an object per fold, which the
-  allocation soak identified as the dominant per-session allocation. They are now mutable structs
-  stored inline in the queue and advanced in place, and the encoder cursor carries its checksum as a
-  value re-materialized at fold time rather than a copied array. Behavior is byte-identical (the full
-  suite plus an independent adversarial verification confirm the produced symbols, decoded set, and
-  completion point are unchanged); the throughput soak shows steady-state per-session allocation down
-  about 47% (≈287 KB → ≈151 KB) with the live heap still flat.
+- The reconciliation decoder now peels in near-linear time. The previous decode re-scanned the whole decoded set on every absorbed symbol and re-scanned all cells to a fixpoint on every absorb, quadratic in the difference size, so throughput collapsed as differences grew. It now applies already-decoded items to incoming cells through an incremental cursor heap and finds newly pure cells through a work-list seeded by each modified cell. The decoded set, the completion point, the soundness rules, and the wire format are unchanged. Measured: a 16,384-item difference that took about 54 s now reconciles in about 0.2 s, and per-symbol throughput rises with the difference instead of falling.
 
-- The reconciliation encoder, decoder, and `AntiEntropySession` are now `IDisposable` and rent their
-  coded-cell backing from a caller-supplied `MemoryPool<byte>` — a tracked exact-size pool in
-  production — so the kernel's largest scoped buffer is accountable through the pool's rental metrics
-  rather than living in a naked array. The constructors thread the required pool and a capacity hint
-  (the session pre-sizes from its projected snapshot). The
-  session disposes the encoder and decoder it owns but never the injected pool. Pooled segments are
-  cleared on rent — a pool does not zero recycled memory — preserving the all-zero-fresh-cell contract
-  the fold relies on, and the paired rent is exception-safe so a failed second rent returns the first
-  rather than leaking it. A `ReconciliationSymbol` stays an owned-copy value: the documented exception
-  for bytes that escape the kernel to callers and the wire. A new accountability test asserts the
-  rental ledger balances to zero after a full session (no leaked rentals), and a soak over two thousand
-  pooled sessions confirms it at scale.
+- The encoder and decoder store coded symbols in a single flat, contiguous `ReconciliationCellBuffer` rather than parallel lists of per-cell arrays, so the XOR fold walks contiguous memory and the per-cell allocation is gone; the two duplicated content-keyed-bytes helpers are unified into one `ContentAddress`. `ReconciliationSymbol` gains an additive `ReadOnlySpan<byte>` constructor so a symbol can be snapshotted from a cell in a single copy. Behavior, wire format, and the pinned vectors are unchanged; the gain is locality and modest decode throughput.
+
+- The encoder and decoder reuse their walk cursors instead of reallocating one per fold. The cursors that carry pending item contributions through the produce and peel priority queues were reference-type records cloned on every re-enqueue; they are now mutable structs stored inline in the queue and advanced in place, and the encoder cursor carries its checksum as a value re-materialized at fold time rather than a copied array. Behavior is byte-identical, and steady-state per-session allocation is down about 47% (about 287 KB to about 151 KB) with the live heap still flat.
+
+- The reconciliation encoder, decoder, and `AntiEntropySession` are now `IDisposable` and rent their coded-cell backing from a caller-supplied `MemoryPool<byte>`, so the kernel's largest scoped buffer is accountable through the pool's rental metrics rather than a naked array. The constructors thread the required pool and a capacity hint; the session pre-sizes from its projected snapshot, disposes the encoder and decoder it owns, but never the injected pool. Pooled segments are cleared on rent, preserving the all-zero-fresh-cell contract the fold relies on, and the paired rent is exception-safe so a failed second rent returns the first rather than leaking it. A `ReconciliationSymbol` stays an owned-copy value: the documented exception for bytes that escape the kernel to callers and the wire.
 
 ### Removed
 
-- The bespoke `Lumoin.Verisync.Core.Tag` type, superseded by `Lumoin.Base.Tag` (which now carries the type's
-  unit tests). **Breaking** for any consumer that referenced `Lumoin.Verisync.Core.Tag` directly: the type
-  moves to the `Lumoin.Base` namespace and drops the `(Type, object)` tuple factories, the `Data` property, and
-  the `Type` indexer in favor of the typed `Create<T>`/`With<T>`/`Get<T>`/`TryGet<T>`/`Contains<T>` API. The
-  internal heap-backed reconciliation fallback owner (`ReconciliationHeapMemoryOwner`) is removed in the same
-  move.
+- The bespoke `Lumoin.Verisync.Core.Tag` type, superseded by `Lumoin.Base.Tag`. **Breaking** for any consumer that referenced `Lumoin.Verisync.Core.Tag` directly: the type moves to the `Lumoin.Base` namespace and drops the `(Type, object)` tuple factories, the `Data` property, and the `Type` indexer in favor of the typed `Create<T>`/`With<T>`/`Get<T>`/`TryGet<T>`/`Contains<T>` API. The internal heap-backed reconciliation fallback owner (`ReconciliationHeapMemoryOwner`) is removed in the same move.
 
-- The pool-less and nullable-pool constructors on `ReconciliationCellBuffer`, `ReconciliationItemArena`,
-  `DottedReconciliationProjection`, `ReconciliationEncoder`, `ReconciliationDecoder`, and `AntiEntropySession`.
-  **Breaking**: these types now take a required, non-null `MemoryPool<byte>`, so a caller that previously
-  omitted the pool (or passed `null`) must now name one explicitly — for example `BaseMemoryPool.Shared`.
+- The pool-less and nullable-pool constructors on `ReconciliationCellBuffer`, `ReconciliationItemArena`, `DottedReconciliationProjection`, `ReconciliationEncoder`, `ReconciliationDecoder`, and `AntiEntropySession`. **Breaking**: these types now take a required, non-null `MemoryPool<byte>`, so a caller that previously omitted the pool (or passed `null`) must now name one explicitly, for example `BaseMemoryPool.Shared`.
+
+### Fixed
+
+- A remove-aware anti-entropy session can no longer poison its causal context on an interrupted exchange. The drain path used to fold the peer's context whenever the host wound the session down with `Complete()` and no apply had folded, but the fold could cover the dots of entries never transferred, and the next session would then classify those entries observed-and-removed: a permanent, cluster-wide false drop of live data. The drain now folds nothing on either role; a remove-aware initiator additionally defers its local drops while its fetch is outstanding, and a drop dispatched on a running initiator fails closed as an order violation. A wind-down before the exchange finishes is now observable as the new terminal `AntiEntropySessionState.Interrupted`, previously indistinguishable from `Completed`, and an interrupted session has folded no peer context at all. `Interrupted` and `IsConverged` are complementary: `IsConverged` stays false on any interrupted wind-down and true only through the reconciliation path. As a deliberate consequence, the responder's context advances only through applies during the exchange; the completion frame (see Added) converges both contexts in one session.
+- The initiator's deferred local drops now apply after the fetch answer's elements, not before. Every applier folds the full peer context, and only the elements apply carries the entries that context covers, so the old order left a one-await window (the elements hook throwing, or the process dying between the two applies) where the folded context durably covered entries that never applied, and the next session would classify them observed-and-removed: the same permanent false drop the deferral itself exists to prevent, one handler step later. With the elements first, the fold always rides the hook call that carries the entries it covers, and a fault before the drops apply merely re-classifies them in the next session.
+- A remove-aware responder now fails closed when the peer never ships its causal context: a done signal without a prior context faults the run, instead of the responder silently classifying later applies against the empty clock and completing as if the remove-aware exchange had happened. `SubmitAsync` and `TriggerBatchAsync` now document the `ChannelClosedException` their returned tasks fault with after `Complete()`.
+- `RaftRunner` no longer strands proposals when its loop ends. A non-cancellation hook failure (the fail-closed path for a broken transport, durable store, or state machine) used to complete nothing: every queued, in-flight, and later-issued `ProposeAsync` task hung forever, and cancellation orphaned the proposal being dispatched between its dequeue and its result. On every early exit the runner now completes the work channel first and then cancels (on cancellation) or faults (on any other failure, with an `InvalidOperationException` carrying the loop failure as its inner exception) every pending and in-flight proposal, so a later `ProposeAsync`, `SubmitAsync`, or trigger fails fast with the now-documented `ChannelClosedException`. The `ProposeAsync` contract also states plainly that a faulted or cancelled proposal may already be appended and persisted, and may later commit, so a host that retries must tolerate or deduplicate a possible duplicate command.
+- `RaftRunner.RunAsync` given a null `send` delegate now fails closed instead of hanging pre-enqueued proposals. The argument validation threw before the loop started and left the work channel writer open, so a proposal already queued on a runner that would never run hung forever; the null-send path now completes the writer and faults every enqueued proposal, with the validation failure as the inner exception, exactly as an early loop exit does.
+- A `RaftRunner` proposal cancelled when the runner token ends the loop now carries that token as its cancellation cause. The abandonment used a token-less `TrySetCanceled`, so the resulting `TaskCanceledException` lost the attribution; it now passes the runner's cancellation token.
+- `RaftRunner` no longer misreads a hook's own cancellation as a clean stop. The loop's `catch (OperationCanceledException)` is narrowed with `when (cancellationToken.IsCancellationRequested)`, so an `OperationCanceledException` a persist, send, or apply hook throws for its own reasons, while the runner token is not signalled, flows to the fault path and faults the pending proposals rather than cancelling them as if the runner had stopped cleanly.
+- An add-only `AntiEntropySession` handed local drops by its difference resolver now fails closed with `InvalidOperationException` instead of dereferencing a missing drop applier. An add-only session wires no drop path, so a resolution carrying local drops used to `NullReferenceException` on the null-forgiving apply; it is now rejected at decode completion, mirroring the add-only rejection of the remove-aware context and drop frames.
 
 ### Security
 
-- The reconciliation envelope JSON deserializer now fails closed as `JsonException` on every
-  present-but-malformed field, closing a contract-stability gap found by an adversarial audit of the
-  tier: a JSON-null hex field (which had leaked `ArgumentNullException` from the hex decode), a
-  wrong-kind value where a string or hex field was expected (`InvalidOperationException`), a
-  fractional or `Int32`-overflowing integer (`FormatException`), and a non-object/non-array carrier
-  where the shape required one. Every `JsonElement` accessor is now kind-guarded before use, so a
-  hostile or buggy peer can no longer drive the verifying deserializer to throw an exception type the
-  contract promises it never will — a handler catching `JsonException` to treat a frame as a protocol
-  fault sees the fault it expects. A structurally missing required property fails closed as well: every
-  per-field read across the JSON codecs (reconciliation, CRDT state, Raft, log commitment, consensus) now
-  goes through a `RequireProperty` guard that throws rather than leaking the framework's
-  `KeyNotFoundException`.
+- The reconciliation envelope JSON deserializer now fails closed as `JsonException` on every present-but-malformed field: a JSON-null hex field (which had leaked `ArgumentNullException`), a wrong-kind value where a string or hex field was expected (`InvalidOperationException`), a fractional or `Int32`-overflowing integer (`FormatException`), and a non-object or non-array carrier where the shape required one. Every `JsonElement` accessor is now kind-guarded before use, so a hostile or buggy peer can no longer drive the verifying deserializer to throw an exception type the contract promises it never will. A structurally missing required property fails closed as well: every per-field read across the JSON codecs (reconciliation, CRDT state, Raft, log commitment, consensus) now goes through a `RequireProperty` guard that throws rather than leaking the framework's `KeyNotFoundException`.
 
 ### Added
 
-- `AntiEntropySession<TElement>.IsConverged`: the convergence surface distinct from the wound-down terminal
-  state. A session driven to `AntiEntropySessionState.Completed` reached that state either by reconciling or by
-  being wound down through `Complete`, and the state alone cannot tell the two apart. `IsConverged` is set only
-  on the reconciliation path — for an initiator when the decoder recovered the whole symmetric difference and
-  the resolution finished (the push sent, any fetch answered), for a responder when the peer's done signal
-  attested a complete decode against this session's snapshot — and stays false for a session merely terminated.
-  It is written only by the consumer loop and read with a volatile-safe read, so a host may poll it from another
-  thread alongside `State` to assert the sets actually converged.
+- The anti-entropy session closes its one-directional context gap with a wire-level completion frame. A remove-aware initiator whose exchange work completed sends `ReconciliationCompletion` as its final frame, carrying the count of transfer envelopes it sent; the responder, protected by add-only, role, and phase guards and a count check that fails closed on any transfer-count drift (a lost, truncated, or duplicated transfer envelope), runs its one terminal fold of the initiator's exchanged context and reaches `Completed`. One session now converges both members' contexts, where convergence previously required a second, reverse-direction session. An interrupted exchange emits no frame and keeps the landed semantics verbatim (`Interrupted`, zero folds, not converged). Remove-aware mode only; a 0.0.5 peer receiving the unknown frame tears down loudly through the uniform fail-closed deserialization contract.
 
-- The reconciliation decoder's per-decode false-peel bound is now observable. `ReconciliationDecoder.PurityCheckCount`
-  counts every non-neutral purity evaluation a decode runs — the masquerade opportunities, each accepting a
-  mixed cell as pure with probability `2^(−8·ChecksumWidth)` — and `FalseDecodeProbabilityBound` is that count
-  times the per-cell bound, clamped to one: the operative union-bound figure over the whole decode, as distinct
-  from the per-cell probability. A consumer acting on a decode, such as a repair path, should require the bound
-  far below one before trusting the recovered difference; the bound is against random corruption, an adversary
-  holding the checksum key being covered by the contract's key discipline.
+- Sealing is group-quiescent-aware and its diagnostics are actionable. The offset strategy exposes an insert-quiescence probe: `OffsetAnchoredSequence.UnstableInserts(frontier)` returns the vertex insert-dots the frontier does not cover, in deterministic `(Replica, Counter)` order, surfaced through a new optional `SequenceUnstableInsertsDelegate` slot on the strategy context and as `CheckpointedSequence.UnstableInserts` (null for strategies whose compaction imposes no quiescence precondition). The container now refuses with two distinct diagnostics: `Seal` fails closed before any consensus round when the frontier leaves inserts uncovered, and `ApplyCommittedSeal`, after the digest check, tells a straggling writer the recovery: the committed frontier can never cover its in-flight inserts, so it adopts a healthy member's state, inherits the checkpoint and commitment by merging containers, and re-applies its edits as fresh inserts. Because a base-changing compaction re-identifies converted elements, offset appliers apply each base-changing committed seal exactly once (re-application fails closed; a drop-only seal re-applies idempotently exactly as RGA), and an offset member re-sealing after its own base-changing compaction is refused harmlessly at the equal-frontier arm. `OffsetAnchoredSequence.Merge` and `Rga.Merge` now fail closed when the operands carry conflicting vertices under one insert identity, since a dot mints exactly one immutable vertex; the check compares element values, so `TValue` must carry value equality under `EqualityComparer<T>.Default` (now a documented contract on both strategies). A drop-only offset compaction now keeps the prior base-offset translation map instead of replacing it, `TranslateAnchor` gains a matching identity fallback for unmapped in-range base offsets, and `FromState` rejects base-offset translations that target live anchors. The container docs state plainly that a member without fresh group-wide digests must never seal, and that the group's recovery from an island is wholesale adoption from it.
 
-- Pool-aware and item-stream wire deserialization, the read-side companions to the message channel
-  (backlog #27). `OwnedMessageChannelReader<TMessage>` deserializes each framed message into an owned,
-  disposable value whose bytes are rented from a required, injected `MemoryPool<byte>` through the new
-  `DeserializeOwnedMessageDelegate<TMessage>` rather than copied to the GC heap — the "one framed blob in, one
-  owned payload out" shape (a sketch image, any borrowed-then-kept byte payload); ownership of each yielded
-  value transfers to the consumer, which disposes it. `ItemStreamChannelReader<TItem>` reads a length-prefixed
-  flow of one structured type and drives a per-item handler (`DecodeItemDelegate<TItem>` plus the synchronous
-  `ItemHandlerDelegate<TItem>`) materialising no collection: each item is borrowed for exactly one handler call
-  and the pooled backing the decoder rented for it is released the moment the call returns, so the reconcile
-  keys and content triples bind to it with their term bytes sourced from the engine pool instead of a per-term
-  `byte[]`. Both readers reuse the existing channel's framing, padding, and hostile-frame bounds — now
-  centralised in one internal `FrameReader` so the outer-length cap, the padded inner real-length check, the
-  up-front item-count bound (the declared count times the minimum item width against the bytes present), and
-  the no-trailing-bytes rule are enforced identically on every read path. The plain
-  `MessageChannelReader<TMessage>` (refactored onto the shared framing) and the entire write side are
-  unchanged, and the new pooled rentals are held to the same rent/return ledger balance the reconciliation
-  tier's accountability gate enforces.
+- The offset-anchored sequence strategy certifies removals on both of its axes, closing the same causal-invisibility defect the RGA strategies closed: `offset.v2` removes are dotted events that tick the context (live-tombstone removals as in the RGA mechanism, and base-offset removals through a per-offset remove-dot map), so gossip digests see remove divergence, the stability frontier certifies removals group-wide, and the strategy exposes the causal context and certified projection that make an offset container sealable. Compaction follows a four-way taxonomy: a stable tombstoned element whose remove is not yet certified converts into the new base as a pending-removed entry, never ghost-retained, carrying its remove-dots onto its new offset. The base carries a generation identity (the frontier it was materialized at, stamped only by base-changing compactions) and merges are fenced on it, because certified reclamation would let base value arrays repeat across genuinely different generations. Removed base entries are certified but not yet reclaimed: they stay as hidden ordering placeholders, and reclamation awaits a follow-on that carries a consensus-agreed reclamation set through the seal. Compaction, and therefore sealing an offset container, requires an insert-quiescent frontier that covers every vertex's insert-dot; an unstable vertex fails closed. Deserialization gains full parity validation, including one cross-axis dot pool, so a forged dot aliased between the live and base axes cannot turn an honest live certification into the reclamation of an unremoved base slot.
 
-- Remove-aware (dot-cloud) reconciliation atop the anti-entropy session: an `OrSet` /
-  `DottedVersionVectorSet` reconciles its observed removes as well as its adds, with reconcile-then-apply
-  proven equal to `DottedVersionVectorSet.Merge` while bytes on the wire stay proportional to the
-  divergence. The kernel, encoder, decoder, and symbol stay an unchanged generic digest-set engine;
-  remove-awareness is host-side. The session takes an optional pinned local `VectorClockState`; the
-  initiator projects present `(dot, value)` entries to digests through a new
-  `DottedReconciliationProjection`, decodes the symmetric difference, and classifies each decoded dot
-  against the peer's exchanged causal context by the merge rule — a held dot the peer's context covers is
-  a local drop, an absent dot the initiator's own pre-session context covers is pushed as a drop rather
-  than re-added (the resurrection guard). The genuinely new wire surface is a whole-context exchange
-  (`ReconciliationContext`, shipped whole and never reconciled) and a remove push (`ReconciliationDrop`,
-  dots only); a `null` local context keeps the add-only path byte-identical. Proven against the merge
-  oracle across add-only, remove-only, and mixed divergence including the resurrection case, and end to
-  end over a real localhost socket; the log-plane anti-equivocation seal chain is now proven over a socket
-  as well.
+- The offset strategy's base addressing is generation-exact. `OffsetAddress`, the structural `OffsetAnchor` paired with the base generation it was read at, is the public addressing type on both sides of the surface: `InsertAfter` and `InsertAtHead` return it, and `Remove`, `TranslateAnchor`, and `VisibleElements` carry it, while `OffsetAnchor` stays internal to the strategy and its state model. The state gains a `baseGeneration` ordinal beside `baseFrontier`, stamped only by base-changing compactions and required fail-closed in the JSON. `TranslateAnchor` serves a base address by its generation: identity at the current generation, the base-offset map at exactly the one preceding generation the map serves, and `null` fail-closed for anything older or newer, so a stale or forged generation is refused rather than silently mis-served. Edits at a stale-generation base address fail closed with `ArgumentException`, the generation checked before the range; merges fence on the ordinal alongside the frontier. Head and live-dot addresses stay exact across generations and carry the canonical generation zero. The strategy identifier does not change.
 
-- SIMD acceleration for the reconciliation kernel's hot loops, phase 4 of the anti-entropy tier:
-  the byte-wise XOR folds and neutrality scans behind encoding, peeling, and symbol combination
-  now route through `ReconciliationXor`, a facade over per-width vector backends
-  (`Vector128`/`Vector256`/`Vector512` with a scalar reference) selected by a dispatch that the
-  JIT folds to a direct call. The width tiers are cross-platform — they lower to SSE/AVX2/AVX-512,
-  NEON, and WASM SIMD alike — and the wire contract is provably unchanged: every backend is pinned
-  byte-identical to the scalar reference across edge lengths, and a stream-level agreement test
-  re-derives the encoder's emitted symbols from an independent scalar fold. The benchmarks project
-  gains XOR and encoder throughput benchmarks plus `--reconciliation-overhead`, a seed-pinned
-  measurement of bytes-on-wire against the information-theoretic floor and full-state/hash-list
-  anchor rows (symbols per difference converge to ~1.37x at a thousand-item divergence,
-  three orders of magnitude under either anchor at small differences).
+- Sequence removes are dotted events the group can certify. `Rga<TValue>.Remove` now takes the removing `ReplicaId`, ticks the causal context, and records the minted remove-dot in a tombstone map (`target -> remove-dots`), so a remove enters the gossip digest and the stability frontier like any other event. Waterline compaction's drop gate additionally requires at least one remove-dot at or below the frontier, so a tombstone can no longer be dropped, and later resurrected by a laggard's merge, before every member has seen the removal. The compaction checkpoint is now the certified projection (the visible order filtered to stable insert-dots, excluding only elements whose remove is certified at the frontier), which makes it a pure function of the frontier and identical on every honest member. `Merge` fails closed, in both argument orders, when an operand presents an element live that the other operand's lineage compacted after a universally observed remove: such a state is a stale pre-remove replay and must adopt a current state wholesale. A new `CausalContext` accessor on `Rga<TValue>` (with a `SequenceCausalContextDelegate` seam on the strategy context and `CheckpointedSequence`) serves the digest path, which `ToState` could not on a compacted array. Tombstones loaded from pre-dotted state carry no remove-dot and are retained forever.
 
-- `AntiEntropySession`, phase 3 of the anti-entropy tier: the host-side runner for one
-  point-to-point reconciliation session, in the `RaftRunner` production shape — all inbound work
-  flows through a single-consumer queue, so every state change and every outbound send happens on
-  one loop and transport writes are serialized by construction. A session pins one set version (the
-  item snapshot is copied and encoded at construction); the initiator decodes against its own
-  lockstep encoder, signals done, and classifies the difference through
-  `ResolveReconciliationDifferenceDelegate` into fetches and pushes; the responder streams batches
-  only on host `TriggerBatchAsync` calls (liveness stays external — no timers, no entropy), serves
-  fetches through `ServeReconciliationFetchDelegate` with exact-coverage verification, and applies
-  elements through `ApplyReconciliationElementsDelegate`. Every protocol violation — mismatched
-  offer, out-of-role frame, stream gap, partial fetch answer — fails the session closed.
-  `ReconciliationEnvelope` gains the same exactly-one-payload dispatch guard as the Raft envelope.
-  Proven in memory and over a real localhost socket: convergence of diverged observed-remove sets,
-  then quiescence on the first symbol of a second session. Element-level reconciliation is add-only at
-  this base tier; remove-aware reconciliation over dot-cloud causal contexts is added separately in this
-  release — see the dot-cloud reconciliation entry above.
+- Waterline compaction is driven by a consensus seal. `CheckpointedSequence.Seal` computes the certified projection at a caller-supplied stability frontier through a new strategy seam (`CertifySequenceProjectionDelegate`), proposes a frontier-carrying commitment through the CASPaxos register with a monotone change function (the proposal replaces the recovered commitment only when it is the first seal, strictly dominates the recovered frontier, or repeats it byte-identically; anything behind, concurrent, or equal-with-a-divergent-digest re-proposes the recovered value unchanged), and compacts only when its own proposal was chosen (`Sealed`), returning the container unchanged otherwise so a losing sealer retries above the winner. Committed frontiers therefore form a strictly ascending chain. Non-sealers converge through `ApplyCommittedSeal`, which verifies the member's own certified projection against the committed digest (a distinct diagnostic tells a lagging member to catch up first) and compacts on match. Checkpoints are dotted (`SequenceCheckpointEntry` pairs each value with its element identity), so a commitment is unambiguous under repeated values.
 
-- The reconciliation wire layer, phase 2 of the anti-entropy tier: a `RaftEnvelope`-style
-  one-of-five message family (`ReconciliationEnvelope` carrying offer, symbol batch, done, fetch,
-  or elements) and `ReconciliationJson` codecs following the established fail-closed conventions.
-  The deserializer is verifying: it pins the local `ReconciliationContract` and rejects an offer
-  that does not match it — so a contract mismatch throws before any symbol is absorbed — and
-  validates every hex field's width against that contract. The offer never carries key bytes;
-  it carries a key check (a PRF tag over a fixed public input) so peers with differing checksum
-  keys abort up front instead of failing to peel. Proven end to end over a real localhost socket,
-  plain and padded framing: two observed-remove sets pin contracts both ways, stream symbol
-  batches, decode the difference, exchange the missing elements by digest, converge, and a second
-  session completes on its first symbol with nothing decoded.
+- `AntiEntropySession<TElement>.IsConverged`: a convergence attestation distinct from the terminal state alone. A wind-down before the exchange finishes now lands `AntiEntropySessionState.Interrupted` rather than `Completed`, and `IsConverged` agrees with that terminal split while additionally reading through pre-terminally for a responder still resolving fetches. It is set only on the reconciliation path (for an initiator when the decoder recovered the whole symmetric difference and the resolution finished, for a responder when the peer's done signal attested a complete decode against this session's snapshot) and stays false for a session merely terminated. It is written only by the consumer loop and read with a volatile-safe read, so a host may poll it from another thread alongside `State` to assert the sets actually converged.
 
-- The rateless set-reconciliation kernel, phase 1 of the anti-entropy tier: a replica encodes a set
-  of fixed-width items into an unbounded coded-symbol stream (`ReconciliationEncoder`) whose
-  symbol-wise XOR with a peer's stream is the stream of their symmetric difference, recovered by a
-  peeling decoder (`ReconciliationDecoder`) from a prefix proportional to the difference size —
-  neither side ever sizes the divergence, and an equal-set reconciliation completes on the first
-  symbol. The encoding is a group homomorphism from (sets, symmetric difference) to (streams, XOR),
-  property-tested as such alongside history erasure, decode exactness, quiescence, monotone
-  knowledge, and bit-flip soundness; the index walk and SipHash-2-4 checksum primitives are pinned
-  by byte-precise test vectors. `ReconciliationContract` pins what peers must agree on before
-  subtraction is meaningful (item domain, item width, checksum width and key — checksum width
-  bounds the masquerade probability, and a secret key turns a poisoned stream into
-  detected-and-aborted); injectivity enforcement is local-only
-  (`ReconciliationInjectivityEnforcement`), and `ProjectReconciliationItemsDelegate` is the seam
-  that projects a pinned state snapshot to reconcilable items. Wire codecs, the session runner, and
-  SIMD XOR backends are later phases.
+- The reconciliation decoder's per-decode false-peel bound is now observable. `ReconciliationDecoder.PurityCheckCount` counts every non-neutral purity evaluation a decode runs (the masquerade opportunities, each accepting a mixed cell as pure with probability `2^(-8 * ChecksumWidth)`), and `FalseDecodeProbabilityBound` is that count times the per-cell bound, clamped to one: the operative union-bound figure over the whole decode, distinct from the per-cell probability. A consumer acting on a decode, such as a repair path, should require the bound far below one before trusting the recovered difference; the bound is against random corruption, an adversary holding the checksum key being covered by the contract's key discipline.
+
+- Pool-aware and item-stream wire deserialization, the read-side companions to the message channel. `OwnedMessageChannelReader<TMessage>` deserializes each framed message into an owned, disposable value whose bytes are rented from a required, injected `MemoryPool<byte>` through the new `DeserializeOwnedMessageDelegate<TMessage>` rather than copied to the GC heap; ownership of each yielded value transfers to the consumer, which disposes it. `ItemStreamChannelReader<TItem>` reads a length-prefixed flow of one structured type and drives a per-item handler (`DecodeItemDelegate<TItem>` plus the synchronous `ItemHandlerDelegate<TItem>`) materialising no collection: each item is borrowed for exactly one handler call and the pooled backing the decoder rented for it is released the moment the call returns. Both readers reuse the existing channel's framing, padding, and hostile-frame bounds, now centralised in one internal `FrameReader` (the outer-length cap, the padded inner real-length check, the up-front item-count bound, and the no-trailing-bytes rule). The plain `MessageChannelReader<TMessage>`, refactored onto the shared framing, and the entire write side are unchanged.
+
+- Remove-aware (dot-cloud) reconciliation atop the anti-entropy session: an `OrSet` or `DottedVersionVectorSet` reconciles its observed removes as well as its adds, with reconcile-then-apply equal to `DottedVersionVectorSet.Merge` while bytes on the wire stay proportional to the divergence. The kernel, encoder, decoder, and symbol stay an unchanged generic digest-set engine; remove-awareness is host-side. The session takes an optional pinned local `VectorClockState`; the initiator projects present `(dot, value)` entries to digests through a new `DottedReconciliationProjection`, decodes the symmetric difference, and classifies each decoded dot against the peer's exchanged causal context by the merge rule (a held dot the peer's context covers is a local drop; an absent dot the initiator's own pre-session context covers is pushed as a drop rather than re-added, the resurrection guard). The genuinely new wire surface is a whole-context exchange (`ReconciliationContext`, shipped whole and never reconciled) and a remove push (`ReconciliationDrop`, dots only); a `null` local context keeps the add-only path byte-identical.
+
+- SIMD acceleration for the reconciliation kernel's hot loops: the byte-wise XOR folds and neutrality scans behind encoding, peeling, and symbol combination now route through `ReconciliationXor`, a facade over per-width vector backends (`Vector128`, `Vector256`, `Vector512`, with a scalar reference) selected by a dispatch that the JIT folds to a direct call. The width tiers are cross-platform, lowering to SSE/AVX2/AVX-512, NEON, and WASM SIMD alike, and the wire contract is unchanged: every backend is pinned byte-identical to the scalar reference across edge lengths. The benchmarks project gains XOR and encoder throughput benchmarks plus `--reconciliation-overhead`, a seed-pinned measurement of bytes-on-wire against the information-theoretic floor and full-state and hash-list anchor rows (symbols per difference converge to about 1.37x at a thousand-item divergence, three orders of magnitude under either anchor at small differences).
+
+- `AntiEntropySession`: the host-side runner for one point-to-point reconciliation session, in the `RaftRunner` production shape, where all inbound work flows through a single-consumer queue, so every state change and every outbound send happens on one loop and transport writes are serialized by construction. A session pins one set version (the item snapshot is copied and encoded at construction); the initiator decodes against its own lockstep encoder, signals done, and classifies the difference through `ResolveReconciliationDifferenceDelegate` into fetches and pushes; the responder streams batches only on host `TriggerBatchAsync` calls (liveness stays external, no timers, no entropy), serves fetches through `ServeReconciliationFetchDelegate` with exact-coverage verification, and applies elements through `ApplyReconciliationElementsDelegate`. Every protocol violation (mismatched offer, out-of-role frame, stream gap, partial fetch answer) fails the session closed. `ReconciliationEnvelope` gains the same exactly-one-payload dispatch guard as the Raft envelope. Element-level reconciliation is add-only at this base tier; remove-aware reconciliation over dot-cloud causal contexts is added separately in this release.
+
+- The reconciliation wire layer: a `RaftEnvelope`-style one-of-five message family (`ReconciliationEnvelope` carrying offer, symbol batch, done, fetch, or elements) and `ReconciliationJson` codecs following the established fail-closed conventions. The deserializer is verifying: it pins the local `ReconciliationContract` and rejects an offer that does not match it, so a contract mismatch throws before any symbol is absorbed, and validates every hex field's width against that contract. The offer never carries key bytes; it carries a key check (a PRF tag over a fixed public input) so peers with differing checksum keys abort up front instead of failing to peel.
+
+- The rateless set-reconciliation kernel: a replica encodes a set of fixed-width items into an unbounded coded-symbol stream (`ReconciliationEncoder`) whose symbol-wise XOR with a peer's stream is the stream of their symmetric difference, recovered by a peeling decoder (`ReconciliationDecoder`) from a prefix proportional to the difference size. Neither side ever sizes the divergence, and an equal-set reconciliation completes on the first symbol. The encoding is a group homomorphism from (sets, symmetric difference) to (streams, XOR). `ReconciliationContract` pins what peers must agree on before subtraction is meaningful (item domain, item width, checksum width and key; checksum width bounds the masquerade probability, and a secret key turns a poisoned stream into detected-and-aborted); injectivity enforcement is local-only (`ReconciliationInjectivityEnforcement`), and `ProjectReconciliationItemsDelegate` is the seam that projects a pinned state snapshot to reconcilable items. Wire codecs, the session runner, and SIMD XOR backends are later phases.
 
 ## [0.0.2] - 2026-06-11
 

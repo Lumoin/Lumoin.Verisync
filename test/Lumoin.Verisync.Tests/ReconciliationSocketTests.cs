@@ -256,28 +256,39 @@ internal sealed class ReconciliationSocketTests
         var doneSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Task streamer = StreamSymbolsAsync(items, outbound, doneSignal.Task, cancellationToken);
 
-        await foreach(ReconciliationEnvelope<string> envelope in inbound.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        try
         {
-            if(envelope.Done is not null)
+            await foreach(ReconciliationEnvelope<string> envelope in inbound.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
-                //Stop the streamer and wait it out before handling anything further: the streamer and this
-                //loop share one channel writer, which is not safe for concurrent writes, so the fetch answer
-                //must never overlap an in-flight batch write.
-                doneSignal.TrySetResult();
-                await streamer.ConfigureAwait(false);
-            }
-            else if(envelope.Fetch is not null)
-            {
-                ReconciliationElements<string> answer = BuildElements([.. envelope.Fetch.Items.Select(item => Hex(item.Span))], directory);
-                await outbound.WriteAsync(ReconciliationEnvelope<string>.ForElements(answer), cancellationToken).ConfigureAwait(false);
-            }
-            else if(envelope.Elements is not null)
-            {
-                foreach(ReconciliationElementEntry<string> entry in envelope.Elements.Entries)
+                if(envelope.Done is not null)
                 {
-                    set = set.Add(entry.Element, R3);
+                    //Stop the streamer and wait it out before handling anything further: the streamer and this
+                    //loop share one channel writer, which is not safe for concurrent writes, so the fetch answer
+                    //must never overlap an in-flight batch write.
+                    doneSignal.TrySetResult();
+                    await streamer.ConfigureAwait(false);
+                }
+                else if(envelope.Fetch is not null)
+                {
+                    ReconciliationElements<string> answer = BuildElements([.. envelope.Fetch.Items.Select(item => Hex(item.Span))], directory);
+                    await outbound.WriteAsync(ReconciliationEnvelope<string>.ForElements(answer), cancellationToken).ConfigureAwait(false);
+                }
+                else if(envelope.Elements is not null)
+                {
+                    foreach(ReconciliationElementEntry<string> entry in envelope.Elements.Entries)
+                    {
+                        set = set.Add(entry.Element, R3);
+                    }
                 }
             }
+        }
+        catch(IOException) when(doneSignal.Task.IsCompleted)
+        {
+            //The initiator tears its connection down after done while this side's last streamed batch is
+            //still unread on its socket, which turns the close into a reset instead of a graceful end of
+            //stream — the same benign end-of-session race the streamer tolerates, observed from the read
+            //side. State-affecting envelopes all precede the teardown, and the convergence assertions
+            //below would still catch a genuinely lost message.
         }
 
         doneSignal.TrySetResult();
