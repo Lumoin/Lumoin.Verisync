@@ -68,10 +68,11 @@ namespace Lumoin.Verisync.Core;
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
 public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSequence<TValue>>
 {
-    private OffsetAnchoredSequence(ImmutableArray<TValue> baseSnapshot, VectorClock baseFrontier, FrozenDictionary<int, FrozenSet<Dot>> removedBaseOffsets, VectorClock context, FrozenDictionary<Dot, Vertex> vertices, FrozenDictionary<Dot, FrozenSet<Dot>> tombstones, FrozenDictionary<Dot, OffsetAnchor> compactedDotAnchors, FrozenDictionary<int, OffsetAnchor> compactedBaseOffsets)
+    private OffsetAnchoredSequence(ImmutableArray<TValue> baseSnapshot, VectorClock baseFrontier, int baseGeneration, FrozenDictionary<int, FrozenSet<Dot>> removedBaseOffsets, VectorClock context, FrozenDictionary<Dot, Vertex> vertices, FrozenDictionary<Dot, FrozenSet<Dot>> tombstones, FrozenDictionary<Dot, OffsetAnchor> compactedDotAnchors, FrozenDictionary<int, OffsetAnchor> compactedBaseOffsets)
     {
         Base = baseSnapshot;
         BaseFrontier = baseFrontier;
+        BaseGeneration = baseGeneration;
         RemovedBaseOffsets = removedBaseOffsets;
         Context = context;
         Vertices = vertices;
@@ -82,7 +83,7 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
 
 
     /// <summary>An empty sequence: an empty base and no live edits — the generation before any checkpoint.</summary>
-    public static OffsetAnchoredSequence<TValue> Empty { get; } = new(ImmutableArray<TValue>.Empty, VectorClock.Empty, FrozenDictionary<int, FrozenSet<Dot>>.Empty, VectorClock.Empty, FrozenDictionary<Dot, Vertex>.Empty, FrozenDictionary<Dot, FrozenSet<Dot>>.Empty, FrozenDictionary<Dot, OffsetAnchor>.Empty, FrozenDictionary<int, OffsetAnchor>.Empty);
+    public static OffsetAnchoredSequence<TValue> Empty { get; } = new(ImmutableArray<TValue>.Empty, VectorClock.Empty, 0, FrozenDictionary<int, FrozenSet<Dot>>.Empty, VectorClock.Empty, FrozenDictionary<Dot, Vertex>.Empty, FrozenDictionary<Dot, FrozenSet<Dot>>.Empty, FrozenDictionary<Dot, OffsetAnchor>.Empty, FrozenDictionary<int, OffsetAnchor>.Empty);
 
 
     /// <summary>The agreed base snapshot this generation edits over.</summary>
@@ -91,6 +92,12 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
     //The generation identity: the consensus-agreed stability frontier the base was last materialized at.
     //Only a base-changing compaction advances it; the genesis generation carries the empty clock.
     private VectorClock BaseFrontier { get; }
+
+    //The base-generation ordinal: the count of base-changing compactions this generation descends from,
+    //stamped and inherited only together with the base frontier so honest members at one frontier always
+    //agree on it. Genesis carries zero, exactly when the base frontier is empty; only a base-changing
+    //compaction advances it, and it addresses base anchors across the one-generation translation window.
+    private int BaseGeneration { get; }
 
     //Removed base offset → the dotted remove events that hide it. An empty set is a legacy (v1-loaded)
     //removal: hidden but uncertifiable, so the entry is retained forever.
@@ -135,7 +142,7 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
     /// </remarks>
     public static OffsetAnchoredSequence<TValue> WithBase(ImmutableArray<TValue> baseSnapshot)
     {
-        return new OffsetAnchoredSequence<TValue>(baseSnapshot, VectorClock.Empty, FrozenDictionary<int, FrozenSet<Dot>>.Empty, VectorClock.Empty, FrozenDictionary<Dot, Vertex>.Empty, FrozenDictionary<Dot, FrozenSet<Dot>>.Empty, FrozenDictionary<Dot, OffsetAnchor>.Empty, FrozenDictionary<int, OffsetAnchor>.Empty);
+        return new OffsetAnchoredSequence<TValue>(baseSnapshot, VectorClock.Empty, 0, FrozenDictionary<int, FrozenSet<Dot>>.Empty, VectorClock.Empty, FrozenDictionary<Dot, Vertex>.Empty, FrozenDictionary<Dot, FrozenSet<Dot>>.Empty, FrozenDictionary<Dot, OffsetAnchor>.Empty, FrozenDictionary<int, OffsetAnchor>.Empty);
     }
 
 
@@ -144,9 +151,9 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
     {
         get
         {
-            IReadOnlyList<(OffsetAnchor Anchor, TValue Value)> visible = VisibleElements;
+            IReadOnlyList<(OffsetAddress Anchor, TValue Value)> visible = VisibleElements;
             var result = new List<TValue>(visible.Count);
-            foreach((OffsetAnchor _, TValue value) in visible)
+            foreach((OffsetAddress _, TValue value) in visible)
             {
                 result.Add(value);
             }
@@ -157,20 +164,21 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
 
 
     /// <summary>
-    /// The visible elements in sequence order, each paired with its anchor — what an editor needs to
-    /// address the element it is editing relative to.
+    /// The visible elements in sequence order, each paired with its address — what an editor needs to
+    /// address the element it is editing relative to. A base element carries the current base generation,
+    /// a live element the canonical generation zero, so a freshly captured address is self-describing.
     /// </summary>
-    public IReadOnlyList<(OffsetAnchor Anchor, TValue Value)> VisibleElements
+    public IReadOnlyList<(OffsetAddress Anchor, TValue Value)> VisibleElements
     {
         get
         {
-            var result = new List<(OffsetAnchor, TValue)>(Base.Length + Vertices.Count);
+            var result = new List<(OffsetAddress, TValue)>(Base.Length + Vertices.Count);
             Dictionary<OffsetAnchor, List<Dot>> childrenByAnchor = BuildChildren();
             for(int slot = -1; slot < Base.Length; slot++)
             {
                 if(slot >= 0 && !RemovedBaseOffsets.ContainsKey(slot))
                 {
-                    result.Add((OffsetAnchor.AtBase(slot), Base[slot]));
+                    result.Add((new OffsetAddress(OffsetAnchor.AtBase(slot), BaseGeneration), Base[slot]));
                 }
 
                 AppendSubtree(slot < 0 ? OffsetAnchor.Head : OffsetAnchor.AtBase(slot), childrenByAnchor, result);
@@ -186,28 +194,28 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
     /// </summary>
     /// <param name="value">The value to insert.</param>
     /// <param name="replica">The replica performing the edit.</param>
-    /// <returns>The new sequence and the anchor of the inserted element.</returns>
-    public (OffsetAnchoredSequence<TValue> Result, OffsetAnchor InsertedId) InsertAtHead(TValue value, ReplicaId replica)
+    /// <returns>The new sequence and the address of the inserted element, a live address of canonical generation zero.</returns>
+    public (OffsetAnchoredSequence<TValue> Result, OffsetAddress InsertedId) InsertAtHead(TValue value, ReplicaId replica)
     {
         return Insert(OffsetAnchor.Head, value, replica);
     }
 
 
     /// <summary>
-    /// Inserts <paramref name="value"/> immediately after the element anchored by <paramref name="after"/>.
+    /// Inserts <paramref name="value"/> immediately after the element addressed by <paramref name="after"/>.
     /// </summary>
-    /// <param name="after">The anchor of the element to insert after.</param>
+    /// <param name="after">The address of the element to insert after.</param>
     /// <param name="value">The value to insert.</param>
     /// <param name="replica">The replica performing the edit.</param>
-    /// <returns>The new sequence and the anchor of the inserted element.</returns>
+    /// <returns>The new sequence and the address of the inserted element, a live address of canonical generation zero.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="after"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException">Thrown if <paramref name="after"/> names a base offset outside the base or a live element not in this sequence.</exception>
-    public (OffsetAnchoredSequence<TValue> Result, OffsetAnchor InsertedId) InsertAfter(OffsetAnchor after, TValue value, ReplicaId replica)
+    /// <exception cref="ArgumentException">Thrown if <paramref name="after"/> names a base offset outside the base or a live element not in this sequence, or if it names a base generation other than this sequence's — a stale-generation address must be translated through <see cref="TranslateAnchor"/> first.</exception>
+    public (OffsetAnchoredSequence<TValue> Result, OffsetAddress InsertedId) InsertAfter(OffsetAddress after, TValue value, ReplicaId replica)
     {
         ArgumentNullException.ThrowIfNull(after);
         ValidateAnchor(after);
 
-        return Insert(after, value, replica);
+        return Insert(after.Anchor, value, replica);
     }
 
 
@@ -217,11 +225,11 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
     /// tombstone; both are retained for ordering, and the remove is a first-class event a stability
     /// frontier can certify.
     /// </summary>
-    /// <param name="anchor">The anchor of the element to remove.</param>
+    /// <param name="anchor">The address of the element to remove.</param>
     /// <param name="replica">The replica performing the removal.</param>
     /// <returns>The new sequence; this sequence if the element was already removed.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="anchor"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException">Thrown if <paramref name="anchor"/> is the head or a base offset outside the base.</exception>
+    /// <exception cref="ArgumentException">Thrown if <paramref name="anchor"/> is the head or a base offset outside the base, or if it names a base generation other than this sequence's — a stale-generation address must be translated through <see cref="TranslateAnchor"/> first.</exception>
     /// <exception cref="OverflowException">Thrown when advancing <paramref name="replica"/>'s counter would overflow, propagated from <see cref="VectorClock.Increment(ReplicaId)"/>; this sequence is not modified when the throw occurs.</exception>
     /// <remarks>
     /// <para>
@@ -243,15 +251,16 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
     /// relative order of concurrent siblings can move.
     /// </para>
     /// </remarks>
-    public OffsetAnchoredSequence<TValue> Remove(OffsetAnchor anchor, ReplicaId replica)
+    public OffsetAnchoredSequence<TValue> Remove(OffsetAddress anchor, ReplicaId replica)
     {
         ArgumentNullException.ThrowIfNull(anchor);
-        if(!anchor.IsLive && anchor.BaseOffset < 0)
+        OffsetAnchor bare = anchor.Anchor;
+        if(!bare.IsLive && bare.BaseOffset < 0)
         {
             throw new ArgumentException("The head is a position, not an element.", nameof(anchor));
         }
 
-        if(anchor.LiveId is { } liveId)
+        if(bare.LiveId is { } liveId)
         {
             if(Tombstones.ContainsKey(liveId))
             {
@@ -269,12 +278,12 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
 
             updated[liveId] = FrozenSet.ToFrozenSet([removeDot]);
 
-            return new OffsetAnchoredSequence<TValue>(Base, BaseFrontier, RemovedBaseOffsets, advanced, Vertices, updated.ToFrozenDictionary(), CompactedDotAnchors, CompactedBaseOffsets);
+            return new OffsetAnchoredSequence<TValue>(Base, BaseFrontier, BaseGeneration, RemovedBaseOffsets, advanced, Vertices, updated.ToFrozenDictionary(), CompactedDotAnchors, CompactedBaseOffsets);
         }
 
         ValidateAnchor(anchor);
 
-        if(RemovedBaseOffsets.ContainsKey(anchor.BaseOffset))
+        if(RemovedBaseOffsets.ContainsKey(bare.BaseOffset))
         {
             return this;
         }
@@ -288,9 +297,9 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
             updatedRemoved[entry.Key] = entry.Value;
         }
 
-        updatedRemoved[anchor.BaseOffset] = FrozenSet.ToFrozenSet([baseRemoveDot]);
+        updatedRemoved[bare.BaseOffset] = FrozenSet.ToFrozenSet([baseRemoveDot]);
 
-        return new OffsetAnchoredSequence<TValue>(Base, BaseFrontier, updatedRemoved.ToFrozenDictionary(), advancedForBase, Vertices, Tombstones, CompactedDotAnchors, CompactedBaseOffsets);
+        return new OffsetAnchoredSequence<TValue>(Base, BaseFrontier, BaseGeneration, updatedRemoved.ToFrozenDictionary(), advancedForBase, Vertices, Tombstones, CompactedDotAnchors, CompactedBaseOffsets);
     }
 
 
@@ -305,8 +314,10 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
     /// Thrown when the generation identities differ — two operands are mergeable only within one base
     /// generation, identified by the consensus-agreed frontier the generation was materialized at, because
     /// reclamation lets base value arrays cycle and value equality alone cannot fence a generation. Also
-    /// thrown when same-identity operands carry divergent base values, which no honest history produces.
-    /// Also thrown when an operand is a stale pre-remove state: it presents an element live — untombstoned
+    /// thrown when same-identity operands carry divergent base values or divergent base-generation
+    /// ordinals, which no honest history produces — the frontier and the ordinal are stamped and inherited
+    /// only together, so honest members at one frontier always agree on both. Also thrown when an operand
+    /// is a stale pre-remove state: it presents an element live — untombstoned
     /// on both sides — that the other operand's lineage compacted away after the element's remove was
     /// observed group-wide, witnessed permanently by that operand's translation map. A replica rejoining
     /// after eviction, restore, or replay must adopt a current state wholesale rather than merge; merging a
@@ -343,6 +354,14 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
         if(!BaseEqual(Base, other.Base))
         {
             throw new InvalidOperationException("Cannot merge sequences over different base generations; align the group on the agreed checkpoint first.");
+        }
+
+        //The base-generation ordinal is stamped and inherited only together with the base frontier, so
+        //honest members at one frontier always agree on it; a divergent ordinal behind the fence is forged
+        //or corrupt state.
+        if(BaseGeneration != other.BaseGeneration)
+        {
+            throw new InvalidOperationException("Cannot merge sequences whose base-generation ordinals differ at one base frontier; the ordinal is stamped with the frontier, so a mismatch behind the generation fence is forged or corrupt state.");
         }
 
         //Fail closed on a stale pre-remove operand in either orientation before building anything: an
@@ -440,7 +459,7 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
             mergedBaseOffsets[entry.Key] = entry.Value;
         }
 
-        return new OffsetAnchoredSequence<TValue>(Base, BaseFrontier, mergedRemoved.ToFrozenDictionary(), Context.Merge(other.Context), mergedVertices.ToFrozenDictionary(), mergedTombstones.ToFrozenDictionary(), mergedDotAnchors.ToFrozenDictionary(), mergedBaseOffsets.ToFrozenDictionary());
+        return new OffsetAnchoredSequence<TValue>(Base, BaseFrontier, BaseGeneration, mergedRemoved.ToFrozenDictionary(), Context.Merge(other.Context), mergedVertices.ToFrozenDictionary(), mergedTombstones.ToFrozenDictionary(), mergedDotAnchors.ToFrozenDictionary(), mergedBaseOffsets.ToFrozenDictionary());
     }
 
 
@@ -794,88 +813,111 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
             newDotAnchors[entry.Key] = entry.Value;
         }
 
-        //Only a base-changing compaction advances the generation identity; a drop-only compaction leaves
-        //both the base and its identity untouched.
+        //Only a base-changing compaction advances the generation identity; the base frontier and the
+        //ordinal that counts base changes are stamped together, and a drop-only compaction leaves the base
+        //and both identity fields untouched.
         VectorClock newBaseFrontier = baseChanged ? stabilityFrontier : BaseFrontier;
+        int newBaseGeneration = baseChanged ? BaseGeneration + 1 : BaseGeneration;
 
-        return new OffsetAnchoredSequence<TValue>(newBase.ToImmutableArray(), newBaseFrontier, newRemoved.ToFrozenDictionary(), Context, newVertices.ToFrozenDictionary(), newTombstones.ToFrozenDictionary(), newDotAnchors.ToFrozenDictionary(), baseChanged ? oldToNew.ToFrozenDictionary() : CompactedBaseOffsets);
+        return new OffsetAnchoredSequence<TValue>(newBase.ToImmutableArray(), newBaseFrontier, newBaseGeneration, newRemoved.ToFrozenDictionary(), Context, newVertices.ToFrozenDictionary(), newTombstones.ToFrozenDictionary(), newDotAnchors.ToFrozenDictionary(), baseChanged ? oldToNew.ToFrozenDictionary() : CompactedBaseOffsets);
     }
 
 
     /// <summary>
-    /// Translates an anchor that may name a previous compaction generation into this generation's
-    /// equivalent, or <see langword="null"/> when the anchor is unservable here.
+    /// Translates an <paramref name="address"/> that may name a previous compaction generation into this
+    /// generation's equivalent address, or <see langword="null"/> when it is unservable here.
     /// </summary>
-    /// <param name="anchor">The possibly stale anchor.</param>
-    /// <returns>The current anchor — the input itself when no translation is needed — or <see langword="null"/> when unservable.</returns>
-    /// <exception cref="ArgumentNullException">Thrown if <paramref name="anchor"/> is <see langword="null"/>.</exception>
+    /// <param name="address">The possibly stale address.</param>
+    /// <returns>The current address — the input itself when no translation is needed — or <see langword="null"/> when unservable.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="address"/> is <see langword="null"/>.</exception>
     /// <remarks>
     /// <para>
-    /// A translated anchor at a dropped tombstone or a reclaimed base offset resolves to the gap anchor of
+    /// A translated address at a dropped tombstone or a reclaimed base offset resolves to the gap anchor of
     /// its old position — the nearest preceding checkpoint entry — which can place a later insert ahead of
     /// surviving subtrees the removed element's position would have followed. Convergence is unaffected —
     /// every member translates through the same replica-independent map — and intention degrades only for
-    /// anchors at elements that were already removed.
+    /// addresses at elements that were already removed.
     /// </para>
     /// <para>
-    /// BASE anchors carry no generation tag, so the base-offset map serves the PREVIOUS generation's
-    /// numbering for the one-generation window the stability rule permits: an in-map offset translates as a
-    /// previous-generation anchor, and an unmapped in-range offset translates as itself (it can only name
-    /// the current generation — a base-changing compaction maps every previous slot, and a drop-only
-    /// compaction keeps both the base and the prior map). During that window a caller naming a CURRENT
-    /// slot whose offset collides with a previous-generation key receives the previous generation's
-    /// reading — inherent to untagged integer offsets; callers that must address the current base
-    /// unambiguously during the window use live-dot anchors or re-read positions from
-    /// <see cref="VisibleElements"/>.
+    /// Head and live-dot addresses translate exactly across arbitrarily many generations: the head is the
+    /// same virtual position in every generation, and dots are globally unique with a permanently composing
+    /// map. Every returned address is canonical — a base result carries the current base generation, a head
+    /// or live result carries zero, including a map lookup whose target is the head. A base address is a
+    /// three-way decision on its generation: at the current generation it is its own address when its offset
+    /// is in range and <see langword="null"/> otherwise; at exactly the immediately preceding generation the
+    /// base-offset map serves it, or <see langword="null"/> when the map has no such key; and any older or
+    /// newer generation is <see langword="null"/>, fail closed. The base map serves exactly one generation,
+    /// so a generation it cannot serve is refused rather than guessed.
     /// </para>
     /// </remarks>
-    public OffsetAnchor? TranslateAnchor(OffsetAnchor anchor)
+    public OffsetAddress? TranslateAnchor(OffsetAddress address)
     {
-        ArgumentNullException.ThrowIfNull(anchor);
+        ArgumentNullException.ThrowIfNull(address);
+        OffsetAnchor anchor = address.Anchor;
 
-        //Never compacted: the maps are empty, so the anchor is the identity when it is servable in this
-        //sequence and null otherwise.
+        //Never compacted: the maps are empty, so a servable anchor is its own current address and anything
+        //else is null. The base arm is generation-checked the same way — a never-base-changed sequence is
+        //at generation zero, so the map arm is unreachable and only the identity and fail-closed arms run.
         if(CompactedDotAnchors.Count == 0 && CompactedBaseOffsets.Count == 0)
         {
             if(!anchor.IsLive && anchor.BaseOffset < 0)
             {
-                return OffsetAnchor.Head;
+                return CurrentAddress(OffsetAnchor.Head);
             }
 
             if(anchor.LiveId is { } liveDot)
             {
-                return Vertices.ContainsKey(liveDot) ? anchor : null;
+                return Vertices.ContainsKey(liveDot) ? CurrentAddress(anchor) : null;
             }
 
-            return anchor.BaseOffset < Base.Length ? anchor : null;
+            return ResolveBaseAddress(address);
         }
 
         if(!anchor.IsLive && anchor.BaseOffset < 0)
         {
-            return OffsetAnchor.Head;
+            return CurrentAddress(OffsetAnchor.Head);
         }
 
         if(anchor.LiveId is { } dot)
         {
             if(Vertices.ContainsKey(dot))
             {
-                return anchor;
+                return CurrentAddress(anchor);
             }
 
-            return CompactedDotAnchors.TryGetValue(dot, out OffsetAnchor? translated) ? translated : null;
+            return CompactedDotAnchors.TryGetValue(dot, out OffsetAnchor? translated) ? CurrentAddress(translated) : null;
         }
 
-        if(CompactedBaseOffsets.TryGetValue(anchor.BaseOffset, out OffsetAnchor? target))
+        return ResolveBaseAddress(address);
+    }
+
+
+    //The three-way base-address decision: a current-generation offset is its own address when in range, the
+    //one immediately preceding generation the base-offset map serves is translated through it, and any older
+    //or newer generation fails closed. The base map serves exactly one generation, so a generation it cannot
+    //serve is refused rather than guessed.
+    private OffsetAddress? ResolveBaseAddress(OffsetAddress address)
+    {
+        int offset = address.Anchor.BaseOffset;
+        if(address.Generation == BaseGeneration)
         {
-            return target;
+            return offset < Base.Length ? CurrentAddress(address.Anchor) : null;
         }
 
-        //An unmapped in-range base offset is a CURRENT-generation anchor and translates as itself: a
-        //base-changing compaction maps every previous-generation slot, so a servable previous-generation
-        //anchor is always a key, and a drop-only compaction keeps both the base and the prior map — its
-        //current-generation slots (all of them, when the generation has never base-changed and the kept
-        //map is empty) must not fall through to null just because no walk ever recorded them.
-        return anchor.BaseOffset < Base.Length ? anchor : null;
+        if(address.Generation == BaseGeneration - 1)
+        {
+            return CompactedBaseOffsets.TryGetValue(offset, out OffsetAnchor? target) ? CurrentAddress(target) : null;
+        }
+
+        return null;
+    }
+
+
+    //Stamps a bare current-generation result anchor into its canonical address: a base anchor carries the
+    //current base generation, the head or a live anchor carries zero.
+    private OffsetAddress CurrentAddress(OffsetAnchor anchor)
+    {
+        return anchor.IsLive || anchor.BaseOffset < 0 ? new OffsetAddress(anchor, 0) : new OffsetAddress(anchor, BaseGeneration);
     }
 
 
@@ -930,7 +972,7 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
 
         baseOffsets.Sort(static (left, right) => left.PreviousOffset.CompareTo(right.PreviousOffset));
 
-        return new OffsetAnchoredSequenceState<TValue>(Base, BaseFrontier.ToState(), removedBuilder.ToImmutable(), Context.ToState(), vertexBuilder.ToImmutable(), tombstoneBuilder.ToImmutable(), [.. dotAnchors], [.. baseOffsets]);
+        return new OffsetAnchoredSequenceState<TValue>(Base, BaseFrontier.ToState(), BaseGeneration, removedBuilder.ToImmutable(), Context.ToState(), vertexBuilder.ToImmutable(), tombstoneBuilder.ToImmutable(), [.. dotAnchors], [.. baseOffsets]);
     }
 
 
@@ -950,7 +992,8 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
     /// a vertex dot or any remove-dot is not covered by the context (invariant context-covers-dots — orphan
     /// tombstone targets are exempt, their remove-dots and all base remove-dots are not); the context does
     /// not dominate the base frontier element-wise (the generation identity cannot arrive inconsistent with
-    /// the context that certifies it); a removed base offset is outside <c>[0, Base.Length)</c> or
+    /// the context that certifies it); the base generation is negative, or its genesis disagrees with the
+    /// base frontier — generation zero materializes exactly at the empty frontier; a removed base offset is outside <c>[0, Base.Length)</c> or
     /// duplicated; an anchor (a vertex anchor or a translation target) violates the canonical shape, names
     /// a base offset at or beyond the base, or names a live dot that is not a vertex; the live-anchor graph
     /// contains a cycle; a dot-translation entry's dropped dot is duplicated or is simultaneously a live
@@ -987,6 +1030,20 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
         if(frontierOrder != Causality.After && frontierOrder != Causality.Equal)
         {
             throw new ArgumentException("The context does not dominate the base frontier; a generation identity the context cannot certify is forged or corrupt.", nameof(state));
+        }
+
+        //The base-generation ordinal is a non-negative count stamped together with the base frontier, so it
+        //is genesis exactly when the frontier is: zero at the empty frontier, positive at a base-changed
+        //one. A negative ordinal, or a genesis ordinal at a non-genesis frontier (or the converse), is
+        //forged or corrupt.
+        if(state.BaseGeneration < 0)
+        {
+            throw new ArgumentException($"The base generation {state.BaseGeneration} is negative.", nameof(state));
+        }
+
+        if((state.BaseGeneration == 0) != baseFrontier.Equals(VectorClock.Empty))
+        {
+            throw new ArgumentException("The base generation and the base frontier disagree on genesis; generation zero materializes exactly at the empty frontier.", nameof(state));
         }
 
         var vertices = new Dictionary<Dot, Vertex>(state.Vertices.Length);
@@ -1122,7 +1179,7 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
             }
         }
 
-        return new OffsetAnchoredSequence<TValue>(state.Base, baseFrontier, removedBaseOffsets.ToFrozenDictionary(), context, vertices.ToFrozenDictionary(), tombstones.ToFrozenDictionary(), compactedDotAnchors.ToFrozenDictionary(), compactedBaseOffsets.ToFrozenDictionary());
+        return new OffsetAnchoredSequence<TValue>(state.Base, baseFrontier, state.BaseGeneration, removedBaseOffsets.ToFrozenDictionary(), context, vertices.ToFrozenDictionary(), tombstones.ToFrozenDictionary(), compactedDotAnchors.ToFrozenDictionary(), compactedBaseOffsets.ToFrozenDictionary());
     }
 
 
@@ -1315,6 +1372,7 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
 
         if(!BaseEqual(Base, other.Base)
             || !BaseFrontier.Equals(other.BaseFrontier)
+            || BaseGeneration != other.BaseGeneration
             || !Context.Equals(other.Context)
             || Vertices.Count != other.Vertices.Count
             || Tombstones.Count != other.Tombstones.Count
@@ -1419,11 +1477,11 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
             baseOffsetsHash ^= HashCode.Combine(entry.Key, entry.Value);
         }
 
-        return HashCode.Combine(Base.Length, BaseFrontier, Context, verticesHash, tombstonesHash, removedHash, dotAnchorsHash, baseOffsetsHash);
+        return HashCode.Combine(HashCode.Combine(Base.Length, BaseFrontier, BaseGeneration), Context, verticesHash, tombstonesHash, removedHash, dotAnchorsHash, baseOffsetsHash);
     }
 
 
-    private (OffsetAnchoredSequence<TValue> Result, OffsetAnchor InsertedId) Insert(OffsetAnchor after, TValue value, ReplicaId replica)
+    private (OffsetAnchoredSequence<TValue> Result, OffsetAddress InsertedId) Insert(OffsetAnchor after, TValue value, ReplicaId replica)
     {
         //The new identity must dominate every observed identity so the insert lands immediately after
         //its anchor, ahead of older siblings — the same rule as the RGA strategy.
@@ -1438,14 +1496,16 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
 
         updated[id] = new Vertex(after, value);
 
-        return (new OffsetAnchoredSequence<TValue>(Base, BaseFrontier, RemovedBaseOffsets, advanced, updated.ToFrozenDictionary(), Tombstones, CompactedDotAnchors, CompactedBaseOffsets), OffsetAnchor.AtLive(id));
+        return (new OffsetAnchoredSequence<TValue>(Base, BaseFrontier, BaseGeneration, RemovedBaseOffsets, advanced, updated.ToFrozenDictionary(), Tombstones, CompactedDotAnchors, CompactedBaseOffsets), new OffsetAddress(OffsetAnchor.AtLive(id), 0));
     }
 
 
-    private void ValidateAnchor(OffsetAnchor anchor)
+    private void ValidateAnchor(OffsetAddress anchor)
     {
-        if(anchor.LiveId is { } liveId)
+        OffsetAnchor bare = anchor.Anchor;
+        if(bare.LiveId is { } liveId)
         {
+            //A live address is canonical generation zero by construction, so there is nothing to compare.
             if(!Vertices.ContainsKey(liveId))
             {
                 throw new ArgumentException("The live anchor is not an element of this sequence.", nameof(anchor));
@@ -1454,9 +1514,17 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
             return;
         }
 
-        if(anchor.BaseOffset >= Base.Length)
+        //A base address must name this generation, checked before the range check: a stale offset may be out
+        //of range in the current base for the wrong reason, so the generation mismatch is the truthful
+        //diagnosis. The head is canonical generation zero and has no offset to range-check.
+        if(bare.BaseOffset >= 0 && anchor.Generation != BaseGeneration)
         {
-            throw new ArgumentException($"The base offset {anchor.BaseOffset} is outside the base of {Base.Length} element(s).", nameof(anchor));
+            throw new ArgumentException($"The address names base generation {anchor.Generation} but the sequence is at generation {BaseGeneration}; translate the address through TranslateAnchor before editing at it.", nameof(anchor));
+        }
+
+        if(bare.BaseOffset >= Base.Length)
+        {
+            throw new ArgumentException($"The base offset {bare.BaseOffset} is outside the base of {Base.Length} element(s).", nameof(anchor));
         }
     }
 
@@ -1517,7 +1585,7 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
 
     //Emits the visible members of the live subtree under anchor in canonical order, by explicit stack so a
     //long stable chain cannot overflow the call stack.
-    private void AppendSubtree(OffsetAnchor anchor, Dictionary<OffsetAnchor, List<Dot>> childrenByAnchor, List<(OffsetAnchor, TValue)> result)
+    private void AppendSubtree(OffsetAnchor anchor, Dictionary<OffsetAnchor, List<Dot>> childrenByAnchor, List<(OffsetAddress, TValue)> result)
     {
         var stack = new Stack<Dot>();
         PushChildren(anchor, childrenByAnchor, stack);
@@ -1526,7 +1594,7 @@ public sealed class OffsetAnchoredSequence<TValue>: IEquatable<OffsetAnchoredSeq
             Dot child = stack.Pop();
             if(!Tombstones.ContainsKey(child))
             {
-                result.Add((OffsetAnchor.AtLive(child), Vertices[child].Value));
+                result.Add((new OffsetAddress(OffsetAnchor.AtLive(child), 0), Vertices[child].Value));
             }
 
             PushChildren(OffsetAnchor.AtLive(child), childrenByAnchor, stack);

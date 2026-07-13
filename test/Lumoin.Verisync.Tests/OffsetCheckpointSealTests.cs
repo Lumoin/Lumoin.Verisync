@@ -7,7 +7,8 @@ namespace Lumoin.Verisync.Tests;
 
 /// <summary>
 /// The seal protocol of <see cref="CheckpointedSequence{TSequence, TValue, TAnchor}"/> over the
-/// base-materializing offset strategy. Every seal happens at a FULL-CONTEXT (insert-quiescent)
+/// base-materializing offset strategy, whose public addressing type is <see cref="OffsetAddress"/>.
+/// Every seal happens at a FULL-CONTEXT (insert-quiescent)
 /// frontier except where the test's point is the refusal: sealing an offset document is a
 /// group-quiescent checkpoint, and a straggling writer above the committed frontier recovers by
 /// wholesale adoption plus container merge, verified by the NEXT committed seal. Two offset
@@ -32,9 +33,9 @@ internal sealed class OffsetCheckpointSealTests
     [TestMethod]
     public void ASealCommitsCompactsAndRecordsTheDottedCheckpoint()
     {
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withA, OffsetAnchor anchorA) = Sealable().InsertAtHead("a", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withB, OffsetAnchor anchorB) = withA.InsertAfter(anchorA, "b", R1);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> removed = withB.Remove(anchorB, R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withA, OffsetAddress anchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withB, OffsetAddress anchorB) = withA.InsertAfter(anchorA, "b", R1);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> removed = withB.Remove(anchorB, R1);
 
         VectorClock frontier = removed.CausalContext!;
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
@@ -43,7 +44,7 @@ internal sealed class OffsetCheckpointSealTests
         //surviving element onto a base sentinel, so the post-seal live's projection could never match.
         ImmutableArray<SequenceCheckpointEntry<string>> expectedProjection = removed.Live.CertifiedProjection(frontier);
 
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> afterSeal, _, ChangeOutcome<CheckpointCommitment> outcome, bool wasSealed) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> afterSeal, _, ChangeOutcome<CheckpointCommitment> outcome, bool wasSealed) =
             removed.Seal(register, new Ballot(1, RA), frontier);
 
         Assert.IsTrue(wasSealed);
@@ -55,11 +56,12 @@ internal sealed class OffsetCheckpointSealTests
         //The commitment is keyed to exactly the sealed frontier.
         Assert.AreEqual(frontier, afterSeal.Commitment!.Frontier);
 
-        //The live sequence is compacted: a converts to base slot 0, b's certified remove drops the
-        //vertex, and the dropped anchor still translates — to the gap where it sat.
+        //The live sequence is compacted: a converts to base slot 0 advancing to generation 1, b's
+        //certified remove drops the vertex, and the dropped anchor still translates — to the gap where it
+        //sat, a current-generation base address.
         string[] expectedValues = ["a"];
         CollectionAssert.AreEqual(expectedValues, afterSeal.Values.ToArray());
-        Assert.AreEqual(OffsetAnchor.AtBase(0), afterSeal.Live.TranslateAnchor(anchorB));
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(0), 1), afterSeal.Live.TranslateAnchor(anchorB));
     }
 
 
@@ -68,21 +70,21 @@ internal sealed class OffsetCheckpointSealTests
     [TestMethod]
     public void ANonSealerAppliesTheCommittedSealAndConverges()
     {
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withA, OffsetAnchor anchorA) = Sealable().InsertAtHead("a", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withB, OffsetAnchor anchorB) = withA.InsertAfter(anchorA, "b", R1);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> removed = withB.Remove(anchorB, R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withA, OffsetAddress anchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withB, OffsetAddress anchorB) = withA.InsertAfter(anchorA, "b", R1);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> removed = withB.Remove(anchorB, R1);
 
         VectorClock frontier = removed.CausalContext!;
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
         Ballot ballot = new(1, RA);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> sealer, _, ChangeOutcome<CheckpointCommitment> outcome, _) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> sealer, _, ChangeOutcome<CheckpointCommitment> outcome, _) =
             removed.Seal(register, ballot, frontier);
 
         //A second container over the byte-identical full state applies the committed commitment.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> otherA, OffsetAnchor otherAnchorA) = Sealable().InsertAtHead("a", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> otherB, OffsetAnchor otherAnchorB) = otherA.InsertAfter(otherAnchorA, "b", R1);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> otherRemoved = otherB.Remove(otherAnchorB, R1);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> applied = otherRemoved.ApplyCommittedSeal(outcome.Value!, ballot);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> otherA, OffsetAddress otherAnchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> otherB, OffsetAddress otherAnchorB) = otherA.InsertAfter(otherAnchorA, "b", R1);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> otherRemoved = otherB.Remove(otherAnchorB, R1);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> applied = otherRemoved.ApplyCommittedSeal(outcome.Value!, ballot);
 
         Assert.AreEqual(sealer.Live, applied.Live);
         CollectionAssert.AreEqual(sealer.Checkpoint.ToArray(), applied.Checkpoint.ToArray());
@@ -98,22 +100,22 @@ internal sealed class OffsetCheckpointSealTests
     public void ACompetingSealAbortsUnchangedAndSucceedsAboveTheWinner()
     {
         //Sealer A holds a and b; F1 is its own full context.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> aWithA, OffsetAnchor aAnchorA) = Sealable().InsertAtHead("a", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> aWithB, _) = aWithA.InsertAfter(aAnchorA, "b", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> aWithA, OffsetAddress aAnchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> aWithB, _) = aWithA.InsertAfter(aAnchorA, "b", R1);
         VectorClock f1 = aWithB.CausalContext!;
 
         //Sealer B holds only the byte-identical first edit; F0 is its full context at the attempt.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> bWithA, OffsetAnchor bAnchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> bWithA, OffsetAddress bAnchorA) = Sealable().InsertAtHead("a", R1);
         VectorClock f0 = bWithA.CausalContext!;
 
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> sealedA, CasPaxosRegister<CheckpointCommitment> registerAfterA, _, bool aSealed) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> sealedA, CasPaxosRegister<CheckpointCommitment> registerAfterA, _, bool aSealed) =
             aWithB.Seal(register, new Ballot(1, RA), f1);
         Assert.IsTrue(aSealed);
 
         //B seals at F0, which A's F1 strictly dominates, under a higher ballot: the refusal arm
         //re-proposes A's commitment, so B does not seal and its container is returned unchanged.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> sealedB, CasPaxosRegister<CheckpointCommitment> registerAfterB, ChangeOutcome<CheckpointCommitment> outcomeB, bool bSealed) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> sealedB, CasPaxosRegister<CheckpointCommitment> registerAfterB, ChangeOutcome<CheckpointCommitment> outcomeB, bool bSealed) =
             bWithA.Seal(registerAfterA, new Ballot(2, RB), f0);
         Assert.IsFalse(bSealed);
         Assert.AreEqual(bWithA, sealedB);
@@ -127,8 +129,8 @@ internal sealed class OffsetCheckpointSealTests
 
         //B applies the remaining edits after the abort and seals at F2 — its own grown full context —
         //which strictly dominates F1: the chain ascends and the seal succeeds.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> bWithB, OffsetAnchor bAnchorB) = sealedB.InsertAfter(bAnchorA, "b", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> bWithC, _) = bWithB.InsertAfter(bAnchorB, "c", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> bWithB, OffsetAddress bAnchorB) = sealedB.InsertAfter(bAnchorA, "b", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> bWithC, _) = bWithB.InsertAfter(bAnchorB, "c", R1);
         VectorClock f2 = bWithC.CausalContext!;
         (_, _, ChangeOutcome<CheckpointCommitment> outcomeB2, bool bSealed2) = bWithC.Seal(registerAfterB, new Ballot(3, RB), f2);
         Assert.IsTrue(bSealed2);
@@ -144,20 +146,20 @@ internal sealed class OffsetCheckpointSealTests
     [TestMethod]
     public void AnEqualFrontierResealIsIdempotentFromAnUncompactedPeer()
     {
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1WithA, OffsetAnchor m1AnchorA) = Sealable().InsertAtHead("a", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1WithB, _) = m1WithA.InsertAfter(m1AnchorA, "b", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2WithA, OffsetAnchor m2AnchorA) = Sealable().InsertAtHead("a", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2WithB, _) = m2WithA.InsertAfter(m2AnchorA, "b", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1WithA, OffsetAddress m1AnchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1WithB, _) = m1WithA.InsertAfter(m1AnchorA, "b", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2WithA, OffsetAddress m2AnchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2WithB, _) = m2WithA.InsertAfter(m2AnchorA, "b", R1);
 
         VectorClock frontier = m1WithB.CausalContext!;
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> first, CasPaxosRegister<CheckpointCommitment> registerAfterFirst, _, bool firstSealed) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> first, CasPaxosRegister<CheckpointCommitment> registerAfterFirst, _, bool firstSealed) =
             m1WithB.Seal(register, new Ballot(1, RA), frontier);
         Assert.IsTrue(firstSealed);
 
         //The uncompacted peer's projection still carries the real dots, so the digests coincide: the
         //equal arm seals again and only the recorded ballot advances.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> second, CasPaxosRegister<CheckpointCommitment> registerAfterSecond, _, bool secondSealed) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> second, CasPaxosRegister<CheckpointCommitment> registerAfterSecond, _, bool secondSealed) =
             m2WithB.Seal(registerAfterFirst, new Ballot(2, RB), frontier);
         Assert.IsTrue(secondSealed);
         Assert.AreEqual(first.Live, second.Live);
@@ -167,7 +169,7 @@ internal sealed class OffsetCheckpointSealTests
 
         //The compacted re-seal is refused: the first sealer's projection at the same frontier is now
         //sentinel-re-keyed, the digests diverge at the equal frontier, and the seal aborts unchanged.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> resealed, _, _, bool resealedSealed) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> resealed, _, _, bool resealedSealed) =
             first.Seal(registerAfterSecond, new Ballot(3, RA), frontier);
         Assert.IsFalse(resealedSealed);
         Assert.AreEqual(first, resealed);
@@ -180,13 +182,13 @@ internal sealed class OffsetCheckpointSealTests
     [TestMethod]
     public void ApplyingAStaleEarlierSealFailsClosedByChainOrder()
     {
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withA, OffsetAnchor anchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withA, OffsetAddress anchorA) = Sealable().InsertAtHead("a", R1);
         VectorClock f1 = withA.CausalContext!;
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withB, _) = withA.InsertAfter(anchorA, "b", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withB, _) = withA.InsertAfter(anchorA, "b", R1);
         VectorClock f2 = withB.CausalContext!;
 
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> afterSeal, _, _, bool wasSealed) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> afterSeal, _, _, bool wasSealed) =
             withB.Seal(register, new Ballot(1, RA), f2);
         Assert.IsTrue(wasSealed);
 
@@ -203,8 +205,8 @@ internal sealed class OffsetCheckpointSealTests
     [TestMethod]
     public void ApplyCommittedSealFailsClosedOnADivergentDigest()
     {
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> containerX, _) = Sealable().InsertAtHead("x", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> containerY, _) = Sealable().InsertAtHead("y", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> containerX, _) = Sealable().InsertAtHead("x", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> containerY, _) = Sealable().InsertAtHead("y", R1);
 
         VectorClock frontier = containerX.CausalContext!;
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
@@ -222,35 +224,35 @@ internal sealed class OffsetCheckpointSealTests
     [TestMethod]
     public void ARejoinerAdoptsADonorStateAndAppliesTheCommittedSeal()
     {
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1WithA, OffsetAnchor m1AnchorA) = Sealable().InsertAtHead("a", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1WithB, OffsetAnchor m1AnchorB) = m1WithA.InsertAfter(m1AnchorA, "b", R1);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1Removed = m1WithB.Remove(m1AnchorB, R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1WithA, OffsetAddress m1AnchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1WithB, OffsetAddress m1AnchorB) = m1WithA.InsertAfter(m1AnchorA, "b", R1);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1Removed = m1WithB.Remove(m1AnchorB, R1);
 
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2WithA, OffsetAnchor m2AnchorA) = Sealable().InsertAtHead("a", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2WithB, OffsetAnchor m2AnchorB) = m2WithA.InsertAfter(m2AnchorA, "b", R1);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2Removed = m2WithB.Remove(m2AnchorB, R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2WithA, OffsetAddress m2AnchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2WithB, OffsetAddress m2AnchorB) = m2WithA.InsertAfter(m2AnchorA, "b", R1);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2Removed = m2WithB.Remove(m2AnchorB, R1);
 
         VectorClock frontier = m1Removed.CausalContext!;
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
         Ballot ballot = new(1, RA);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> sealer, _, ChangeOutcome<CheckpointCommitment> outcome, _) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> sealer, _, ChangeOutcome<CheckpointCommitment> outcome, _) =
             m1Removed.Seal(register, ballot, frontier);
 
         //The donor m2 has NOT yet applied: its live is uncompacted, still on the source generation.
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> rejoiner =
-            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Adopt(
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> rejoiner =
+            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress>.Adopt(
                 WellKnownSequenceStrategies.CreateOffset<string>(), Canonicalize, Sha256, m2Removed.Live);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> applied = rejoiner.ApplyCommittedSeal(outcome.Value!, ballot);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> applied = rejoiner.ApplyCommittedSeal(outcome.Value!, ballot);
 
         //Component-wise convergence with the sealer, and with the donor once it applies too.
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2Applied = m2Removed.ApplyCommittedSeal(outcome.Value!, ballot);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2Applied = m2Removed.ApplyCommittedSeal(outcome.Value!, ballot);
         Assert.AreEqual(sealer.Live, applied.Live);
         Assert.AreEqual(m2Applied.Live, applied.Live);
         CollectionAssert.AreEqual(sealer.Checkpoint.ToArray(), applied.Checkpoint.ToArray());
         Assert.AreEqual(sealer.Commitment, applied.Commitment);
         Assert.AreEqual(m2Applied.Commitment, applied.Commitment);
 
-        Assert.ThrowsExactly<ArgumentNullException>(() => CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Adopt(
+        Assert.ThrowsExactly<ArgumentNullException>(() => CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress>.Adopt(
             WellKnownSequenceStrategies.CreateOffset<string>(), Canonicalize, Sha256, null!));
     }
 
@@ -263,9 +265,9 @@ internal sealed class OffsetCheckpointSealTests
     [TestMethod]
     public void ASealWithUnstableEditsPresentFailsClosedBeforeAnyConsensusRound()
     {
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withA, OffsetAnchor anchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withA, OffsetAddress anchorA) = Sealable().InsertAtHead("a", R1);
         VectorClock frontier = withA.CausalContext!;
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withB, _) = withA.InsertAfter(anchorA, "b", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withB, _) = withA.InsertAfter(anchorA, "b", R1);
 
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
 
@@ -290,24 +292,24 @@ internal sealed class OffsetCheckpointSealTests
     public void AStragglingWriterFailsTheCommittedSealAndRecoversByAdoptionAndMerge()
     {
         //All three members hold the byte-identical prefix a=(R1,1), b=(R1,2); F is their common full context.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withA, OffsetAnchor anchorA) = Sealable().InsertAtHead("a", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> shared, OffsetAnchor anchorB) = withA.InsertAfter(anchorA, "b", R1);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1 = shared;
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2 = shared;
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withA, OffsetAddress anchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> shared, OffsetAddress anchorB) = withA.InsertAfter(anchorA, "b", R1);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1 = shared;
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2 = shared;
         VectorClock frontier = shared.CausalContext!;
 
         //The straggler inserts c above F: from context {R1:2} the Lamport mint on R3 yields (R3,3).
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m3, OffsetAnchor anchorC) = shared.InsertAfter(anchorB, "c", R3);
-        Assert.AreEqual(new Dot(R3, 3), anchorC.LiveId);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m3, OffsetAddress anchorC) = shared.InsertAfter(anchorB, "c", R3);
+        Assert.AreEqual(new Dot(R3, 3), anchorC.Anchor.LiveId);
 
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
         Ballot ballot = new(1, RA);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1Sealed, CasPaxosRegister<CheckpointCommitment> registerAfterSeal, ChangeOutcome<CheckpointCommitment> outcome, bool wasSealed) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1Sealed, CasPaxosRegister<CheckpointCommitment> registerAfterSeal, ChangeOutcome<CheckpointCommitment> outcome, bool wasSealed) =
             m1.Seal(register, ballot, frontier);
         Assert.IsTrue(wasSealed);
 
         //A quiescent member applies and converges.
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2Applied = m2.ApplyCommittedSeal(outcome.Value!, ballot);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2Applied = m2.ApplyCommittedSeal(outcome.Value!, ballot);
         Assert.AreEqual(m1Sealed.Live, m2Applied.Live);
         Assert.AreEqual(m1Sealed.Commitment, m2Applied.Commitment);
 
@@ -329,34 +331,34 @@ internal sealed class OffsetCheckpointSealTests
         //THE REGRESSION PIN: the adopted POST-seal donor's projection at F is sentinel-keyed while the
         //commitment's digest was computed over real dots, so re-applying the CURRENT commitment throws
         //on the digest — the shipped rejoin recipe is unrealizable after a base-changing seal.
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> adopted =
-            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Adopt(
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> adopted =
+            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress>.Adopt(
                 WellKnownSequenceStrategies.CreateOffset<string>(), Canonicalize, Sha256, m1Sealed.Live);
         Assert.ThrowsExactly<InvalidOperationException>(() => adopted.ApplyCommittedSeal(outcome.Value!, ballot));
 
         //THE HONEST RECOVERY: the container merge's higher-ballot arm hands checkpoint, commitment,
         //and ballot over to the adopter.
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> inherited = adopted.Merge(m1Sealed);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> inherited = adopted.Merge(m1Sealed);
         Assert.AreEqual(m1Sealed.Commitment, inherited.Commitment);
         Assert.AreEqual(m1Sealed.CheckpointBallot, inherited.CheckpointBallot);
         CollectionAssert.AreEqual(m1Sealed.Checkpoint.ToArray(), inherited.Checkpoint.ToArray());
 
         //The adopted state holds NO vertex for c: the straggler's own edit did not survive adoption.
-        Assert.IsNull(inherited.Live.TranslateAnchor(OffsetAnchor.AtLive(new Dot(R3, 3))));
+        Assert.IsNull(inherited.Live.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtLive(new Dot(R3, 3)), 0)));
         string[] adoptedValues = ["a", "b"];
         CollectionAssert.AreEqual(adoptedValues, inherited.Values.ToArray());
 
         //Re-inserting c's value from context {R1:2} re-mints the SAME dot (R3,3) — the deterministic
         //rebirth is harmless, because every holder of an uncovered vertex must itself adopt.
-        OffsetAnchor? rebirthTarget = inherited.Live.TranslateAnchor(anchorB);
+        OffsetAddress? rebirthTarget = inherited.Live.TranslateAnchor(anchorB);
         Assert.IsNotNull(rebirthTarget);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> recovered, OffsetAnchor reborn) = inherited.InsertAfter(rebirthTarget!, "c", R3);
-        Assert.AreEqual(new Dot(R3, 3), reborn.LiveId);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> recovered, OffsetAddress reborn) = inherited.InsertAfter(rebirthTarget!, "c", R3);
+        Assert.AreEqual(new Dot(R3, 3), reborn.Anchor.LiveId);
 
         //All members converge on the visible values once merged.
         string[] converged = ["a", "b", "c"];
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1Gossiped = m1Sealed.Merge(recovered);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2Gossiped = m2Applied.Merge(recovered);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1Gossiped = m1Sealed.Merge(recovered);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2Gossiped = m2Applied.Merge(recovered);
         CollectionAssert.AreEqual(converged, m1Gossiped.Values.ToArray());
         CollectionAssert.AreEqual(converged, m2Gossiped.Values.ToArray());
         CollectionAssert.AreEqual(converged, recovered.Merge(m1Sealed).Values.ToArray());
@@ -364,10 +366,10 @@ internal sealed class OffsetCheckpointSealTests
         //THE LIFECYCLE CLOSE: gossip covers c, the next seal lands strictly above F, and the recovered
         //straggler applies it — verified by the NEXT committed seal, as the recovery contract instructs.
         VectorClock nextFrontier = m1Gossiped.CausalContext!;
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1SealedNext, _, ChangeOutcome<CheckpointCommitment> outcomeNext, bool nextSealed) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1SealedNext, _, ChangeOutcome<CheckpointCommitment> outcomeNext, bool nextSealed) =
             m1Gossiped.Seal(registerAfterSeal, new Ballot(2, RA), nextFrontier);
         Assert.IsTrue(nextSealed);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> recoveredApplied =
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> recoveredApplied =
             recovered.ApplyCommittedSeal(outcomeNext.Value!, new Ballot(2, RA));
         Assert.AreEqual(m1SealedNext.Live, recoveredApplied.Live);
         CollectionAssert.AreEqual(m1SealedNext.Checkpoint.ToArray(), recoveredApplied.Checkpoint.ToArray());
@@ -384,40 +386,40 @@ internal sealed class OffsetCheckpointSealTests
     [TestMethod]
     public void ATwiceRunRecoveryReMintingTheDotDivergentlyFailsClosedOnMerge()
     {
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withA, OffsetAnchor anchorA) = Sealable().InsertAtHead("a", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> shared, OffsetAnchor anchorB) = withA.InsertAfter(anchorA, "b", R1);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1 = shared;
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2 = shared;
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withA, OffsetAddress anchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> shared, OffsetAddress anchorB) = withA.InsertAfter(anchorA, "b", R1);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1 = shared;
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2 = shared;
         VectorClock frontier = shared.CausalContext!;
 
         //The straggler holds c above F; everyone else seals and applies without it.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m3, OffsetAnchor anchorC) = shared.InsertAfter(anchorB, "c", R3);
-        Assert.AreEqual(new Dot(R3, 3), anchorC.LiveId);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m3, OffsetAddress anchorC) = shared.InsertAfter(anchorB, "c", R3);
+        Assert.AreEqual(new Dot(R3, 3), anchorC.Anchor.LiveId);
 
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
         Ballot ballot = new(1, RA);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1Sealed, _, ChangeOutcome<CheckpointCommitment> outcome, bool wasSealed) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1Sealed, _, ChangeOutcome<CheckpointCommitment> outcome, bool wasSealed) =
             m1.Seal(register, ballot, frontier);
         Assert.IsTrue(wasSealed);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2Applied = m2.ApplyCommittedSeal(outcome.Value!, ballot);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2Applied = m2.ApplyCommittedSeal(outcome.Value!, ballot);
 
         //Both recoveries adopt M1's post-seal live and inherit the commitment by container merge; the adopted
         //state holds no vertex for c, so each re-inserts c's value afresh.
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> inherited =
-            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Adopt(
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> inherited =
+            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress>.Adopt(
                 WellKnownSequenceStrategies.CreateOffset<string>(), Canonicalize, Sha256, m1Sealed.Live).Merge(m1Sealed);
-        Assert.IsNull(inherited.Live.TranslateAnchor(OffsetAnchor.AtLive(new Dot(R3, 3))));
+        Assert.IsNull(inherited.Live.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtLive(new Dot(R3, 3)), 0)));
 
         //Recovery X places c after b, recovery Y after a: both re-mint the SAME (R3,3) from context {R1:2},
         //but the divergent predecessors make the two vertices unequal.
-        OffsetAnchor? afterB = inherited.Live.TranslateAnchor(anchorB);
-        OffsetAnchor? afterA = inherited.Live.TranslateAnchor(anchorA);
+        OffsetAddress? afterB = inherited.Live.TranslateAnchor(anchorB);
+        OffsetAddress? afterA = inherited.Live.TranslateAnchor(anchorA);
         Assert.IsNotNull(afterB);
         Assert.IsNotNull(afterA);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> recoveredAfterB, OffsetAnchor rebornB) = inherited.InsertAfter(afterB!, "c", R3);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> recoveredAfterA, OffsetAnchor rebornA) = inherited.InsertAfter(afterA!, "c", R3);
-        Assert.AreEqual(new Dot(R3, 3), rebornB.LiveId);
-        Assert.AreEqual(new Dot(R3, 3), rebornA.LiveId);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> recoveredAfterB, OffsetAddress rebornB) = inherited.InsertAfter(afterB!, "c", R3);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> recoveredAfterA, OffsetAddress rebornA) = inherited.InsertAfter(afterA!, "c", R3);
+        Assert.AreEqual(new Dot(R3, 3), rebornB.Anchor.LiveId);
+        Assert.AreEqual(new Dot(R3, 3), rebornA.Anchor.LiveId);
 
         //The two divergently-recovered containers fail closed on the equivocation detector in both orders.
         Assert.ThrowsExactly<InvalidOperationException>(() => recoveredAfterB.Merge(recoveredAfterA));
@@ -425,7 +427,7 @@ internal sealed class OffsetCheckpointSealTests
 
         //A single recovery gossiped onward merges cleanly: an independent execution of the SAME after-b
         //recovery re-mints the byte-identical vertex, so the detector stays quiet and every holder converges.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> recoveredAfterBAgain, _) = inherited.InsertAfter(afterB!, "c", R3);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> recoveredAfterBAgain, _) = inherited.InsertAfter(afterB!, "c", R3);
         string[] converged = ["a", "b", "c"];
         CollectionAssert.AreEqual(converged, recoveredAfterB.Merge(recoveredAfterBAgain).Values.ToArray());
         CollectionAssert.AreEqual(converged, recoveredAfterB.Merge(m1Sealed).Values.ToArray());
@@ -441,16 +443,16 @@ internal sealed class OffsetCheckpointSealTests
     public void TheContainerProbeReportsTheGapAndIsNullWithoutTheSeam()
     {
         //An empty offset container probes empty through the wired seam.
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> empty = Sealable();
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> empty = Sealable();
         ImmutableArray<Dot>? emptyProbe = empty.UnstableInserts(VectorClock.Empty);
         Assert.IsNotNull(emptyProbe);
         Assert.IsTrue(emptyProbe!.Value.IsEmpty);
 
         //With vertices on two axes the probe at the empty frontier lists every insert-dot sorted by
         //(Replica, Counter): R1's dots precede R3's by replica byte order, counters ascend within one.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withA, OffsetAnchor anchorA) = empty.InsertAtHead("a", R3);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withB, OffsetAnchor anchorB) = withA.InsertAfter(anchorA, "b", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withC, _) = withB.InsertAfter(anchorB, "c", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withA, OffsetAddress anchorA) = empty.InsertAtHead("a", R3);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withB, OffsetAddress anchorB) = withA.InsertAfter(anchorA, "b", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withC, _) = withB.InsertAfter(anchorB, "c", R1);
         Dot[] expected = [new Dot(R1, 2), new Dot(R1, 3), new Dot(R3, 1)];
         ImmutableArray<Dot>? gapProbe = withC.UnstableInserts(VectorClock.Empty);
         Assert.IsNotNull(gapProbe);
@@ -479,17 +481,17 @@ internal sealed class OffsetCheckpointSealTests
     [TestMethod]
     public void ReapplyingAnAppliedSealFailsClosedForABaseMaterializingStrategy()
     {
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1WithA, OffsetAnchor m1AnchorA) = Sealable().InsertAtHead("a", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1WithB, _) = m1WithA.InsertAfter(m1AnchorA, "b", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2WithA, OffsetAnchor m2AnchorA) = Sealable().InsertAtHead("a", R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2WithB, _) = m2WithA.InsertAfter(m2AnchorA, "b", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1WithA, OffsetAddress m1AnchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1WithB, _) = m1WithA.InsertAfter(m1AnchorA, "b", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2WithA, OffsetAddress m2AnchorA) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2WithB, _) = m2WithA.InsertAfter(m2AnchorA, "b", R1);
 
         VectorClock frontier = m1WithB.CausalContext!;
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
         Ballot ballot = new(1, RA);
         (_, _, ChangeOutcome<CheckpointCommitment> outcome, _) = m1WithB.Seal(register, ballot, frontier);
 
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> applied = m2WithB.ApplyCommittedSeal(outcome.Value!, ballot);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> applied = m2WithB.ApplyCommittedSeal(outcome.Value!, ballot);
 
         Assert.ThrowsExactly<InvalidOperationException>(() => applied.ApplyCommittedSeal(outcome.Value!, ballot));
     }
@@ -500,32 +502,33 @@ internal sealed class OffsetCheckpointSealTests
     //converts a into the base (base-changing); on that generation both members insert a childless x and
     //remove it, and the second seal drops x without touching the base, so the applier's projection at the
     //drop-only frontier — a's slot was already a sentinel — still matches the committed digest and the
-    //re-apply is idempotent, unlike the base-changing arm above.
+    //re-apply is idempotent, unlike the base-changing arm above. On the base generation the inserts name
+    //current-generation offset 0, so their addresses carry generation 1.
     [TestMethod]
     public void ReapplyingADropOnlySealIsIdempotentForTheOffsetStrategy()
     {
         //A first base-changing seal converts a into the base, establishing generation one.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withA, _) = Sealable().InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withA, _) = Sealable().InsertAtHead("a", R1);
         VectorClock f1 = withA.CausalContext!;
         CasPaxosRegister<CheckpointCommitment> register = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
         Ballot firstBallot = new(1, RA);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1Gen1, CasPaxosRegister<CheckpointCommitment> registerAfterF1, ChangeOutcome<CheckpointCommitment> outcomeF1, bool sealedF1) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1Gen1, CasPaxosRegister<CheckpointCommitment> registerAfterF1, ChangeOutcome<CheckpointCommitment> outcomeF1, bool sealedF1) =
             withA.Seal(register, firstBallot, f1);
         Assert.IsTrue(sealedF1);
 
         //A second member applies the first seal, so both sit on the materialized base generation [a].
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> otherA, _) = Sealable().InsertAtHead("a", R1);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2Gen1 = otherA.ApplyCommittedSeal(outcomeF1.Value!, firstBallot);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> otherA, _) = Sealable().InsertAtHead("a", R1);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2Gen1 = otherA.ApplyCommittedSeal(outcomeF1.Value!, firstBallot);
 
         //On the base generation both insert a childless x after a's slot and remove it — a drop-only edit set.
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1WithX, OffsetAnchor x1) = m1Gen1.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1XRemoved = m1WithX.Remove(x1, R1);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2WithX, OffsetAnchor x2) = m2Gen1.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m2XRemoved = m2WithX.Remove(x2, R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1WithX, OffsetAddress x1) = m1Gen1.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 1), "x", R1);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1XRemoved = m1WithX.Remove(x1, R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2WithX, OffsetAddress x2) = m2Gen1.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 1), "x", R1);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2XRemoved = m2WithX.Remove(x2, R1);
 
         VectorClock f2 = m1XRemoved.CausalContext!;
         Ballot secondBallot = new(2, RA);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> m1Sealed2, _, ChangeOutcome<CheckpointCommitment> outcomeF2, bool sealedF2) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1Sealed2, _, ChangeOutcome<CheckpointCommitment> outcomeF2, bool sealedF2) =
             m1XRemoved.Seal(registerAfterF1, secondBallot, f2);
         Assert.IsTrue(sealedF2);
 
@@ -535,16 +538,16 @@ internal sealed class OffsetCheckpointSealTests
 
         //The applier reaches the same state, then re-applies the SAME commitment: the drop-only projection at
         //F2 still matches the digest, so the re-apply succeeds idempotently.
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> applied = m2XRemoved.ApplyCommittedSeal(outcomeF2.Value!, secondBallot);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> applied = m2XRemoved.ApplyCommittedSeal(outcomeF2.Value!, secondBallot);
         Assert.AreEqual(m1Sealed2.Live, applied.Live);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> reapplied = applied.ApplyCommittedSeal(outcomeF2.Value!, secondBallot);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> reapplied = applied.ApplyCommittedSeal(outcomeF2.Value!, secondBallot);
         Assert.AreEqual(applied, reapplied);
     }
 
 
-    private static CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> Sealable()
+    private static CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> Sealable()
     {
-        return CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Create(
+        return CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress>.Create(
             WellKnownSequenceStrategies.CreateOffset<string>(), Canonicalize, Sha256);
     }
 
@@ -560,7 +563,7 @@ internal sealed class OffsetCheckpointSealTests
             builder.Append(entry.Dot.Counter);
             builder.Append(':');
             builder.Append(entry.Value);
-            builder.Append('\u001F');
+            builder.Append('');
         }
 
         return Encoding.UTF8.GetBytes(builder.ToString());

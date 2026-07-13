@@ -5,7 +5,7 @@ using System.Diagnostics.CodeAnalysis;
 namespace Lumoin.Verisync.Core;
 
 /// <summary>
-/// The addressing type of the checkpoint-offset sequence strategy: an element is anchored either at a
+/// The structural anchor of the checkpoint-offset sequence strategy: an element is anchored either at a
 /// position of the agreed base snapshot (<see cref="AtBase(int)"/>, with <see cref="Head"/> as the
 /// virtual position before the first), or at a live element by its <see cref="Dot"/> identity
 /// (<see cref="AtLive(Dot)"/>).
@@ -13,7 +13,10 @@ namespace Lumoin.Verisync.Core;
 /// <remarks>
 /// Offsets into the base are stable because the base is immutable by consensus — they are positions in
 /// an agreed snapshot, not positions in a live view. Live identities are ordinary dots. The two cases
-/// never mix: an anchor is exactly one of them.
+/// never mix: an anchor is exactly one of them. A base offset names a position only WITHIN one base
+/// generation, so the anchor is internal to the strategy and the state model; the public addressing
+/// type that crosses generations is <see cref="OffsetAddress"/>, which carries the generation beside
+/// the anchor.
 /// </remarks>
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
 public sealed class OffsetAnchor: IEquatable<OffsetAnchor>

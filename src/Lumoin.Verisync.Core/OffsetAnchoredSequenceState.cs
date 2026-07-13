@@ -12,6 +12,7 @@ namespace Lumoin.Verisync.Core;
 /// <typeparam name="TValue">The element type.</typeparam>
 /// <param name="Base">The agreed base snapshot this generation edits over.</param>
 /// <param name="BaseFrontier">The serialized generation identity: the consensus-agreed stability frontier the base was last materialized at, empty for a generation that has never base-changed.</param>
+/// <param name="BaseGeneration">The base-generation ordinal counting the base-changing compactions this generation descends from: zero exactly at the empty frontier, stamped together with the frontier so honest members at one frontier always agree on it.</param>
 /// <param name="RemovedBaseOffsets">The removed base entries, each an offset retained for ordering paired with the dotted remove events that hide it.</param>
 /// <param name="Context">The serialized causal context.</param>
 /// <param name="Vertices">The serialized live vertices, visible and tombstoned alike.</param>
@@ -26,6 +27,7 @@ namespace Lumoin.Verisync.Core;
 public sealed record OffsetAnchoredSequenceState<TValue>(
     ImmutableArray<TValue> Base,
     VectorClockState BaseFrontier,
+    int BaseGeneration,
     ImmutableArray<OffsetBaseRemovalEntry> RemovedBaseOffsets,
     VectorClockState Context,
     ImmutableArray<OffsetVertexEntry<TValue>> Vertices,

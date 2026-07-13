@@ -7,17 +7,19 @@ namespace Lumoin.Verisync.Tests;
 
 /// <summary>
 /// Registers the <see cref="WellKnownSequenceStrategies.OffsetV2"/> strategy with the shared law
-/// harness. All generated operands share one base generation — cross-generation merging fails closed
-/// by design and is exercised in the focused tests instead. Compaction requires an insert-quiescent
-/// frontier (offset.v2 §17), so every generated case takes the shared prefix's OWN full context as the
-/// frontier — every insert is certified — and confines divergence to REMOVES-ONLY suffixes: an
-/// above-frontier remove keeps every vertex stable, so both operands stay quiescent and, by the
-/// determinism inclusion, derive the SAME checkpoint at the shared frontier, while a suffix insert would
-/// raise an unstable vertex and Compact would fail closed. Checkpoints are the prefix's certified
-/// projection: real vertex dots for live elements, the full-32-byte sentinel identity for base slots.
+/// harness under its public addressing type <see cref="OffsetAddress"/>. All generated operands share
+/// one base generation — cross-generation merging fails closed by design and is exercised in the
+/// focused tests instead. Compaction requires an insert-quiescent frontier (offset.v2 §17), so every
+/// generated case takes the shared prefix's OWN full context as the frontier — every insert is
+/// certified — and confines divergence to REMOVES-ONLY suffixes: an above-frontier remove keeps every
+/// vertex stable, so both operands stay quiescent and, by the determinism inclusion, derive the SAME
+/// checkpoint at the shared frontier, while a suffix insert would raise an unstable vertex and Compact
+/// would fail closed. Checkpoints are the prefix's certified projection: real vertex dots for live
+/// elements, the full-32-byte sentinel identity for base slots. The anchors law then covers the base
+/// window by right: a visible pre-compaction address is a prior-generation address the map arm serves.
 /// </summary>
 [TestClass]
-internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnchoredSequence<int>, int, OffsetAnchor>
+internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnchoredSequence<int>, int, OffsetAddress>
 {
     //Base values sit in their own range so anchors are recoverable by value in the focused tests; live
     //values use the per-replica ranges of the other generators.
@@ -28,7 +30,7 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     private static ReplicaId R1 { get; } = MakeReplica(1);
 
 
-    protected override SequenceCrdtContext<OffsetAnchoredSequence<int>, int, OffsetAnchor> Context { get; } = WellKnownSequenceStrategies.CreateOffset<int>();
+    protected override SequenceCrdtContext<OffsetAnchoredSequence<int>, int, OffsetAddress> Context { get; } = WellKnownSequenceStrategies.CreateOffset<int>();
 
 
     protected override int FreshValue => -1;
@@ -43,7 +45,7 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     protected override ReplicaId Replica(int replicaIndex) => Replicas[replicaIndex];
 
 
-    protected override OffsetAnchor AnchorOfVisibleElement(OffsetAnchoredSequence<int> sequence, int index)
+    protected override OffsetAddress AnchorOfVisibleElement(OffsetAnchoredSequence<int> sequence, int index)
     {
         return sequence.VisibleElements[index].Anchor;
     }
@@ -84,7 +86,7 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     {
         ImmutableArray<int> singleBase = [9000];
         OffsetAnchoredSequence<int> shared = OffsetAnchoredSequence<int>.WithBase(singleBase);
-        (shared, OffsetAnchor x) = shared.InsertAfter(OffsetAnchor.AtBase(0), 42, R1);
+        (shared, OffsetAddress x) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 42, R1);
         OffsetAnchoredSequence<int> stalePreRemove = shared;
         OffsetAnchoredSequence<int> ghostHolder = shared.Remove(x, R1);
 
@@ -98,20 +100,21 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
 
 
     //The offset-shaped half of LAW-RG under the generic live-survivor construction (empty base, both values
-    //the sentinel): the survivor converts to base offset 0 in BOTH halves, so BOTH stamp the frontier. At
-    //the uncertified frontier the removed element converts pending-removed to offset 1, hidden; at the
-    //certified frontier it drops and the removed anchor translates to the gap at offset 0.
+    //the sentinel): the survivor converts to base offset 0 in BOTH halves, so BOTH stamp the frontier and
+    //advance to generation 1. At the uncertified frontier the removed element converts pending-removed to
+    //offset 1, hidden; at the certified frontier it drops and the removed anchor translates to the gap at
+    //offset 0. Each translated result is a base address of the current generation.
     protected override void AssertRemoveConversionOutcome(
         OffsetAnchoredSequence<int> uncertifiedCompacted,
         OffsetAnchoredSequence<int> certifiedCompacted,
-        OffsetAnchor removedAnchor,
-        OffsetAnchor survivorAnchor,
+        OffsetAddress removedAnchor,
+        OffsetAddress survivorAnchor,
         VectorClock uncertifiedFrontier,
         VectorClock certifiedFrontier)
     {
         int[] uncertifiedBase = [FreshValue, FreshValue];
         CollectionAssert.AreEqual(uncertifiedBase, uncertifiedCompacted.ToState().Base.ToArray());
-        Assert.AreEqual(OffsetAnchor.AtBase(1), uncertifiedCompacted.TranslateAnchor(removedAnchor));
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(1), 1), uncertifiedCompacted.TranslateAnchor(removedAnchor));
         Assert.AreEqual(uncertifiedFrontier, VectorClock.FromState(uncertifiedCompacted.ToState().BaseFrontier));
         OffsetBaseRemovalEntry marking = uncertifiedCompacted.ToState().RemovedBaseOffsets[0];
         Assert.AreEqual(1, marking.Offset);
@@ -119,7 +122,7 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
 
         int[] certifiedBase = [FreshValue];
         CollectionAssert.AreEqual(certifiedBase, certifiedCompacted.ToState().Base.ToArray());
-        Assert.AreEqual(OffsetAnchor.AtBase(0), certifiedCompacted.TranslateAnchor(removedAnchor));
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(0), 1), certifiedCompacted.TranslateAnchor(removedAnchor));
         Assert.AreEqual(certifiedFrontier, VectorClock.FromState(certifiedCompacted.ToState().BaseFrontier));
     }
 
@@ -143,14 +146,15 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
         //The compaction frontier is the prefix's OWN full context, so every insert is certified: the
         //merged state is insert-quiescent, the §17 contract compaction requires. Divergence lands only in
         //the suffixes, which are REMOVES-ONLY — an above-frontier remove keeps every vertex stable, while
-        //a suffix insert would raise an unstable vertex and Compact would fail closed.
+        //a suffix insert would raise an unstable vertex and Compact would fail closed. The prefix is never
+        //compacted while it is built, so its base and head seeds are generation-0 addresses.
         OffsetAnchoredSequence<int> shared = OffsetAnchoredSequence<int>.WithBase(SharedBase);
-        var targets = new List<OffsetAnchor>
+        var targets = new List<OffsetAddress>
         {
-            OffsetAnchor.Head,
-            OffsetAnchor.AtBase(0),
-            OffsetAnchor.AtBase(1),
-            OffsetAnchor.AtBase(2)
+            new OffsetAddress(OffsetAnchor.Head, 0),
+            new OffsetAddress(OffsetAnchor.AtBase(0), 0),
+            new OffsetAddress(OffsetAnchor.AtBase(1), 0),
+            new OffsetAddress(OffsetAnchor.AtBase(2), 0)
         };
         for(int opIndex = 0; opIndex < ops.Length; opIndex++)
         {
@@ -158,12 +162,12 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
             int visibleCount = shared.VisibleElements.Count;
             if(seed % 4 == 0 && visibleCount > 0)
             {
-                OffsetAnchor removeTarget = shared.VisibleElements[seed % visibleCount].Anchor;
+                OffsetAddress removeTarget = shared.VisibleElements[seed % visibleCount].Anchor;
                 shared = shared.Remove(removeTarget, Replicas[replica]);
             }
             else
             {
-                OffsetAnchor inserted;
+                OffsetAddress inserted;
                 (shared, inserted) = shared.InsertAfter(targets[seed % targets.Count], (100 * replica) + opIndex, Replicas[replica]);
                 targets.Add(inserted);
             }
@@ -217,12 +221,12 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     private static OffsetAnchoredSequence<int> Build(int replicaIndex, int[] seeds)
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(SharedBase);
-        var targets = new List<OffsetAnchor>
+        var targets = new List<OffsetAddress>
         {
-            OffsetAnchor.Head,
-            OffsetAnchor.AtBase(0),
-            OffsetAnchor.AtBase(1),
-            OffsetAnchor.AtBase(2)
+            new OffsetAddress(OffsetAnchor.Head, 0),
+            new OffsetAddress(OffsetAnchor.AtBase(0), 0),
+            new OffsetAddress(OffsetAnchor.AtBase(1), 0),
+            new OffsetAddress(OffsetAnchor.AtBase(2), 0)
         };
         int value = replicaIndex * 1000;
 
@@ -236,7 +240,7 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
                 continue;
             }
 
-            OffsetAnchor inserted;
+            OffsetAddress inserted;
             (sequence, inserted) = sequence.InsertAfter(targets[seed % targets.Count], value, Replicas[replicaIndex]);
             targets.Add(inserted);
             value++;
@@ -251,7 +255,7 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     private static (OffsetAnchoredSequence<int> Full, IReadOnlyList<OffsetAnchoredSequence<int>> Snapshots) BuildSnapshots((int Replica, int Seed)[] ops)
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.Empty;
-        var anchors = new List<OffsetAnchor>();
+        var anchors = new List<OffsetAddress>();
         var snapshots = new List<OffsetAnchoredSequence<int>>(ops.Length);
         for(int opIndex = 0; opIndex < ops.Length; opIndex++)
         {
@@ -259,17 +263,17 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
             int visibleCount = sequence.VisibleElements.Count;
             if(seed % 3 == 0 && visibleCount > 0)
             {
-                OffsetAnchor target = sequence.VisibleElements[seed % visibleCount].Anchor;
+                OffsetAddress target = sequence.VisibleElements[seed % visibleCount].Anchor;
                 sequence = sequence.Remove(target, Replicas[replica]);
             }
             else if(anchors.Count == 0)
             {
-                (sequence, OffsetAnchor head) = sequence.InsertAtHead((100 * replica) + opIndex, Replicas[replica]);
+                (sequence, OffsetAddress head) = sequence.InsertAtHead((100 * replica) + opIndex, Replicas[replica]);
                 anchors.Add(head);
             }
             else
             {
-                (sequence, OffsetAnchor inserted) = sequence.InsertAfter(anchors[seed % anchors.Count], (100 * replica) + opIndex, Replicas[replica]);
+                (sequence, OffsetAddress inserted) = sequence.InsertAfter(anchors[seed % anchors.Count], (100 * replica) + opIndex, Replicas[replica]);
                 anchors.Add(inserted);
             }
 

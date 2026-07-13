@@ -116,6 +116,17 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
 
 
     [TestMethod]
+    public void TheAnchorTypeCarriesTheFailClosedNull()
+    {
+        //The translation seam returns TAnchor?, and for an unconstrained type parameter that is a real
+        //nullable only when TAnchor is a reference type: a value-type anchor cannot carry the fail-closed
+        //null through the seam, and every servability null-assertion in this harness would box it and pass
+        //vacuously. Every registered strategy therefore supplies a reference-type anchor.
+        Assert.IsTrue(typeof(TAnchor).IsClass, "The anchor type must be a reference type so the translation seam's null and this harness's null assertions are meaningful.");
+    }
+
+
+    [TestMethod]
     public void CompactionPreservesVisibleValues()
     {
         if(Context.Compact is null)

@@ -13,7 +13,9 @@ namespace Lumoin.Verisync.Tests;
 /// fence or the stale-replay detector. Compaction requires an insert-quiescent frontier (§17): a state
 /// carrying an unstable vertex — the only way to reach the ghost or the retained-child branches — fails
 /// closed, so those branches are exercised here through the guard throw, and the quiescent conversions
-/// and drop through the materialized base.
+/// and drop through the materialized base. The public addressing surface is <see cref="OffsetAddress"/>:
+/// a base address carries the generation its offset belongs to, a live or head address carries the
+/// canonical zero.
 /// </summary>
 [TestClass]
 internal sealed class OffsetAnchoredSequenceTests
@@ -39,7 +41,7 @@ internal sealed class OffsetAnchoredSequenceTests
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
 
-        (OffsetAnchoredSequence<string> inserted, _) = sequence.InsertAfter(OffsetAnchor.AtBase(1), "x", R1);
+        (OffsetAnchoredSequence<string> inserted, _) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(1), 0), "x", R1);
 
         string[] expected = ["b0", "b1", "x", "b2"];
         CollectionAssert.AreEqual(expected, inserted.Values.ToArray());
@@ -62,7 +64,7 @@ internal sealed class OffsetAnchoredSequenceTests
     public void InsertAfterALiveElementChains()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
 
         (OffsetAnchoredSequence<string> chained, _) = sequence.InsertAfter(x, "y", R1);
 
@@ -76,12 +78,12 @@ internal sealed class OffsetAnchoredSequenceTests
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
 
-        OffsetAnchoredSequence<string> removed = sequence.Remove(OffsetAnchor.AtBase(1), R1);
+        OffsetAnchoredSequence<string> removed = sequence.Remove(new OffsetAddress(OffsetAnchor.AtBase(1), 0), R1);
 
         //A base removal is now a dotted event on the remover's axis.
         Assert.AreEqual(1, removed.CausalContext[R1]);
 
-        (OffsetAnchoredSequence<string> inserted, _) = removed.InsertAfter(OffsetAnchor.AtBase(1), "x", R1);
+        (OffsetAnchoredSequence<string> inserted, _) = removed.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(1), 0), "x", R1);
 
         //b1 is hidden yet still anchors: x sits where b1 was, between b0 and b2.
         string[] expected = ["b0", "x", "b2"];
@@ -93,7 +95,7 @@ internal sealed class OffsetAnchoredSequenceTests
     public void RemoveTombstonesALiveElementAndTicksTheContext()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
 
         OffsetAnchoredSequence<string> removed = sequence.Remove(x, R1);
 
@@ -109,8 +111,8 @@ internal sealed class OffsetAnchoredSequenceTests
     public void ConcurrentInsertsAtTheSameBaseAnchorConvergeAcrossReplicas()
     {
         OffsetAnchoredSequence<string> shared = OffsetAnchoredSequence<string>.WithBase(Base);
-        (OffsetAnchoredSequence<string> byFirst, _) = shared.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
-        (OffsetAnchoredSequence<string> bySecond, _) = shared.InsertAfter(OffsetAnchor.AtBase(0), "y", R2);
+        (OffsetAnchoredSequence<string> byFirst, _) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
+        (OffsetAnchoredSequence<string> bySecond, _) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "y", R2);
 
         OffsetAnchoredSequence<string> merged = byFirst.Merge(bySecond);
 
@@ -126,10 +128,10 @@ internal sealed class OffsetAnchoredSequenceTests
         //R1 hangs a chain off base[0]; R2 merges and inserts at base[0]: the fresh Lamport identity
         //dominates the observed chain, so the insert lands immediately after b0.
         OffsetAnchoredSequence<string> shared = OffsetAnchoredSequence<string>.WithBase(Base);
-        (OffsetAnchoredSequence<string> withChain, OffsetAnchor x) = shared.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
+        (OffsetAnchoredSequence<string> withChain, OffsetAddress x) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
         (withChain, _) = withChain.InsertAfter(x, "y", R1);
 
-        (OffsetAnchoredSequence<string> merged, _) = shared.Merge(withChain).InsertAfter(OffsetAnchor.AtBase(0), "z", R2);
+        (OffsetAnchoredSequence<string> merged, _) = shared.Merge(withChain).InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "z", R2);
 
         string[] expected = ["b0", "z", "x", "y", "b1", "b2"];
         CollectionAssert.AreEqual(expected, merged.Values.ToArray());
@@ -154,10 +156,10 @@ internal sealed class OffsetAnchoredSequenceTests
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
         Dot foreign = new(R2, 9);
 
-        Assert.ThrowsExactly<ArgumentException>(() => sequence.InsertAfter(OffsetAnchor.AtBase(3), "x", R1));
-        Assert.ThrowsExactly<ArgumentException>(() => sequence.InsertAfter(OffsetAnchor.AtLive(foreign), "x", R1));
-        Assert.ThrowsExactly<ArgumentException>(() => sequence.Remove(OffsetAnchor.Head, R1));
-        Assert.ThrowsExactly<ArgumentException>(() => sequence.Remove(OffsetAnchor.AtBase(3), R1));
+        Assert.ThrowsExactly<ArgumentException>(() => sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(3), 0), "x", R1));
+        Assert.ThrowsExactly<ArgumentException>(() => sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtLive(foreign), 0), "x", R1));
+        Assert.ThrowsExactly<ArgumentException>(() => sequence.Remove(new OffsetAddress(OffsetAnchor.Head, 0), R1));
+        Assert.ThrowsExactly<ArgumentException>(() => sequence.Remove(new OffsetAddress(OffsetAnchor.AtBase(3), 0), R1));
         Assert.ThrowsExactly<ArgumentNullException>(() => sequence.Remove(null!, R1));
         Assert.ThrowsExactly<ArgumentNullException>(() => sequence.Merge(null!));
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => OffsetAnchor.AtBase(-1));
@@ -165,18 +167,95 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
+    //An address is canonical at construction: the anchor is non-null, a base anchor carries a
+    //non-negative generation, and a live or head anchor carries exactly zero. Record equality is then
+    //meaningful for every shape — two base addresses of one offset differ exactly by their generation,
+    //and two live addresses of one element are equal regardless of when they were read.
+    [TestMethod]
+    public void OffsetAddressConstructionIsCanonicalAndFailClosed()
+    {
+        Dot dot = new(R1, 1);
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => new OffsetAddress(null!, 0));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new OffsetAddress(OffsetAnchor.AtBase(0), -1));
+        Assert.ThrowsExactly<ArgumentException>(() => new OffsetAddress(OffsetAnchor.AtLive(dot), 1));
+        Assert.ThrowsExactly<ArgumentException>(() => new OffsetAddress(OffsetAnchor.Head, 1));
+
+        //The canonical shapes construct and surface both parts: a base address carries its generation, a
+        //live or head address carries the canonical zero.
+        OffsetAddress baseAddress = new(OffsetAnchor.AtBase(0), 3);
+        OffsetAddress liveAddress = new(OffsetAnchor.AtLive(dot), 0);
+        OffsetAddress headAddress = new(OffsetAnchor.Head, 0);
+        Assert.AreEqual(OffsetAnchor.AtBase(0), baseAddress.Anchor);
+        Assert.AreEqual(3, baseAddress.Generation);
+        Assert.AreEqual(0, liveAddress.Generation);
+        Assert.AreEqual(0, headAddress.Generation);
+
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(2), 1), new OffsetAddress(OffsetAnchor.AtBase(2), 1));
+        Assert.AreNotEqual(new OffsetAddress(OffsetAnchor.AtBase(2), 1), new OffsetAddress(OffsetAnchor.AtBase(2), 2));
+        Assert.AreEqual(liveAddress, new OffsetAddress(OffsetAnchor.AtLive(dot), 0));
+    }
+
+
+    //The canonical shape survives the copy path: a with-expression re-validates each changed member
+    //against the retained other, so it can never yield an address the constructor refuses, and a live
+    //address's equality stays generation-invariant.
+    [TestMethod]
+    public void AWithExpressionRevalidatesTheCanonicalShape()
+    {
+        Dot dot = new(R1, 1);
+        OffsetAddress liveAddress = new(OffsetAnchor.AtLive(dot), 0);
+        OffsetAddress baseAddress = new(OffsetAnchor.AtBase(0), 1);
+
+        Assert.ThrowsExactly<ArgumentException>(() => _ = liveAddress with { Generation = 1 });
+        Assert.ThrowsExactly<ArgumentException>(() => _ = new OffsetAddress(OffsetAnchor.Head, 0) with { Generation = 9 });
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = baseAddress with { Generation = -1 });
+        Assert.ThrowsExactly<ArgumentException>(() => _ = baseAddress with { Anchor = OffsetAnchor.AtLive(dot) });
+        Assert.ThrowsExactly<ArgumentNullException>(() => _ = baseAddress with { Anchor = null! });
+
+        Assert.AreEqual(liveAddress, liveAddress with { Generation = 0 });
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(0), 2), baseAddress with { Generation = 2 });
+    }
+
+
     [TestMethod]
     public void VisibleElementsPairEveryValueWithItsAnchor()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
 
-        IReadOnlyList<(OffsetAnchor Anchor, string Value)> visible = sequence.VisibleElements;
+        IReadOnlyList<(OffsetAddress Anchor, string Value)> visible = sequence.VisibleElements;
 
         Assert.HasCount(4, visible);
-        Assert.AreEqual(OffsetAnchor.AtBase(0), visible[0].Anchor);
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(0), 0), visible[0].Anchor);
         Assert.AreEqual(x, visible[1].Anchor);
         Assert.AreEqual("x", visible[1].Value);
+    }
+
+
+    //The projected addresses carry the sequence's current generation: a genesis generation stamps its
+    //base elements with zero, and a base-changing compaction advances the generation so every base
+    //element it projects carries the new one. A live element carries the canonical zero throughout.
+    [TestMethod]
+    public void VisibleElementAddressesCarryTheCurrentGeneration()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
+
+        IReadOnlyList<(OffsetAddress Anchor, string Value)> before = sequence.VisibleElements;
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(0), 0), before[0].Anchor);
+        Assert.AreEqual(x, before[1].Anchor);
+
+        //The compaction converts x into the base, so every visible element is a base slot of generation 1.
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
+        OffsetAnchoredSequence<string> compacted = sequence.Compact(frontier, sequence.CertifiedProjection(frontier));
+
+        IReadOnlyList<(OffsetAddress Anchor, string Value)> after = compacted.VisibleElements;
+        Assert.HasCount(4, after);
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(0), 1), after[0].Anchor);
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(1), 1), after[1].Anchor);
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(2), 1), after[2].Anchor);
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(3), 1), after[3].Anchor);
     }
 
 
@@ -184,9 +263,9 @@ internal sealed class OffsetAnchoredSequenceTests
     public void CompactConvertsStableVisibleVerticesIntoBaseEntries()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
 
-        VectorClock frontier = FrontierCovering(x.LiveId!);
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
         ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
         OffsetAnchoredSequence<string> compacted = sequence.Compact(frontier, checkpoint);
 
@@ -201,12 +280,12 @@ internal sealed class OffsetAnchoredSequenceTests
     public void CompactKeepsAnUncertifiedRemovedBaseEntryHiddenInTheNewBase()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(1), "x", R1);
-        sequence = sequence.Remove(OffsetAnchor.AtBase(1), R2);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(1), 0), "x", R1);
+        sequence = sequence.Remove(new OffsetAddress(OffsetAnchor.AtBase(1), 0), R2);
 
         //The frontier certifies x's insert but not R2's base removal, so the removed slot stays in the
         //certified projection — the determinism inclusion — and in the new base, hidden and re-marked.
-        VectorClock frontier = FrontierCovering(x.LiveId!);
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
         ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
         Assert.HasCount(4, checkpoint);
         Assert.AreEqual("b1", checkpoint[1].Value);
@@ -224,8 +303,8 @@ internal sealed class OffsetAnchoredSequenceTests
     public void CompactWithACheckpointThatDoesNotMatchFailsClosed()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
-        VectorClock frontier = FrontierCovering(x.LiveId!);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
 
         //A checkpoint projected at a different frontier misses the stable x.
         ImmutableArray<SequenceCheckpointEntry<string>> staleCheckpoint = sequence.CertifiedProjection(VectorClock.Empty);
@@ -247,13 +326,13 @@ internal sealed class OffsetAnchoredSequenceTests
     public void CompactFailsClosedOnACertifiedTombstoneThatStillRootsAnUnstableChild()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor parent) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "p", R1);
+        (sequence, OffsetAddress parent) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "p", R1);
         (sequence, _) = sequence.InsertAfter(parent, "c", R1);
         sequence = sequence.Remove(parent, R2);
 
         //The parent's remove is CERTIFIED — R2's first event is the remove-dot — while the child stays
         //above the frontier as an unstable vertex, so the state is not insert-quiescent.
-        VectorClock frontier = FrontierCovering(parent.LiveId!, new Dot(R2, 1));
+        VectorClock frontier = FrontierCovering(parent.Anchor.LiveId!, new Dot(R2, 1));
         ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
         Assert.HasCount(3, checkpoint);
 
@@ -270,18 +349,18 @@ internal sealed class OffsetAnchoredSequenceTests
     public void CompactFailsClosedOnAnUncertifiedTombstoneWithAnUnstableChild()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor parent) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "p", R1);
+        (sequence, OffsetAddress parent) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "p", R1);
         (sequence, _) = sequence.InsertAfter(parent, "c", R1);
         sequence = sequence.Remove(parent, R2);
 
         //The frontier covers p's insert but neither R2's remove nor the child.
-        VectorClock frontier = FrontierCovering(parent.LiveId!);
+        VectorClock frontier = FrontierCovering(parent.Anchor.LiveId!);
         ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
 
         //The uncertified-removed p stays in the projection with its real dot; the checkpoint entry's
         //custom value equality compares the replica bytes by content.
         Assert.HasCount(4, checkpoint);
-        Assert.AreEqual(new SequenceCheckpointEntry<string>(DotStateOf(parent.LiveId!), "p"), checkpoint[1]);
+        Assert.AreEqual(new SequenceCheckpointEntry<string>(DotStateOf(parent.Anchor.LiveId!), "p"), checkpoint[1]);
 
         //The child is unstable, so the base-materializing compaction fails closed.
         Assert.ThrowsExactly<InvalidOperationException>(() => sequence.Compact(frontier, checkpoint));
@@ -292,7 +371,7 @@ internal sealed class OffsetAnchoredSequenceTests
     public void CompactDropsACertifiedTombstoneWithNoRetainedDescendants()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor tombstoned) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "t", R1);
+        (sequence, OffsetAddress tombstoned) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "t", R1);
         sequence = sequence.Remove(tombstoned, R1);
 
         //The state's own context certifies both the insert and the remove.
@@ -306,19 +385,21 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
+    //A prior-generation base address translates through the map: b1 sits at base offset 1 in the
+    //pre-compaction generation and at offset 2 after x converts ahead of it, so the generation-0 address
+    //of offset 1 resolves to the generation-1 address of offset 2 and serves a following insert.
     [TestMethod]
     public void CompactTranslatesPreviousGenerationBaseOffsets()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
 
-        VectorClock frontier = FrontierCovering(x.LiveId!);
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
         ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
         OffsetAnchoredSequence<string> compacted = sequence.Compact(frontier, checkpoint);
 
-        //b1 sat at base offset 1 before compaction and at offset 2 after x converted ahead of it.
-        OffsetAnchor? translated = compacted.TranslateAnchor(OffsetAnchor.AtBase(1));
-        Assert.AreEqual(OffsetAnchor.AtBase(2), translated);
+        OffsetAddress? translated = compacted.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(1), 0));
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(2), 1), translated);
 
         (OffsetAnchoredSequence<string> inserted, _) = compacted.InsertAfter(translated!, "after-b1", R2);
         string[] expected = ["b0", "x", "b1", "after-b1", "b2"];
@@ -330,16 +411,17 @@ internal sealed class OffsetAnchoredSequenceTests
     public void TwoSuccessiveCompactionsStillTranslateAFirstGenerationDot()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
 
         //First compaction folds x at an insert-quiescent frontier.
-        VectorClock firstFrontier = FrontierCovering(x.LiveId!);
+        VectorClock firstFrontier = FrontierCovering(x.Anchor.LiveId!);
         OffsetAnchoredSequence<string> first = sequence.Compact(firstFrontier, sequence.CertifiedProjection(firstFrontier));
 
         //A second generation: y is inserted AFTER the first compaction, then folded at a frontier that
-        //covers it — each compaction stays insert-quiescent, which §17 requires.
-        (OffsetAnchoredSequence<string> withY, OffsetAnchor y) = first.InsertAfter(OffsetAnchor.AtBase(2), "y", R2);
-        VectorClock secondFrontier = FrontierCovering(x.LiveId!, y.LiveId!);
+        //covers it — each compaction stays insert-quiescent, which §17 requires. The insert names a
+        //current-generation offset, so its address carries generation 1.
+        (OffsetAnchoredSequence<string> withY, OffsetAddress y) = first.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(2), 1), "y", R2);
+        VectorClock secondFrontier = FrontierCovering(x.Anchor.LiveId!, y.Anchor.LiveId!);
         OffsetAnchoredSequence<string> second = withY.Compact(secondFrontier, withY.CertifiedProjection(secondFrontier));
 
         //The dot folded away in the first generation is still translatable after the second, by map composition.
@@ -351,9 +433,9 @@ internal sealed class OffsetAnchoredSequenceTests
     public void RepeatedCompactionAtTheSameWaterlineIsANoOp()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
 
-        VectorClock frontier = FrontierCovering(x.LiveId!);
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
         ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = sequence.CertifiedProjection(frontier);
         OffsetAnchoredSequence<string> once = sequence.Compact(frontier, checkpoint);
 
@@ -367,14 +449,14 @@ internal sealed class OffsetAnchoredSequenceTests
     public void IndependentCompactionsAtTheSameWaterlineMergeWhileMixedGenerationsFailClosed()
     {
         OffsetAnchoredSequence<string> shared = OffsetAnchoredSequence<string>.WithBase(Base);
-        (shared, OffsetAnchor x) = shared.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
+        (shared, OffsetAddress x) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
 
         //Both members stay insert-quiescent at the frontier and diverge only by removing different base
         //slots above it — a suffix insert would raise an unstable vertex and fail closed under §17.
-        OffsetAnchoredSequence<string> a = shared.Remove(OffsetAnchor.AtBase(1), R1);
-        OffsetAnchoredSequence<string> b = shared.Remove(OffsetAnchor.AtBase(2), R2);
+        OffsetAnchoredSequence<string> a = shared.Remove(new OffsetAddress(OffsetAnchor.AtBase(1), 0), R1);
+        OffsetAnchoredSequence<string> b = shared.Remove(new OffsetAddress(OffsetAnchor.AtBase(2), 0), R2);
 
-        VectorClock frontier = FrontierCovering(x.LiveId!);
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
         ImmutableArray<SequenceCheckpointEntry<string>> checkpoint = a.CertifiedProjection(frontier);
         OffsetAnchoredSequence<string> compactedA = a.Compact(frontier, checkpoint);
         OffsetAnchoredSequence<string> compactedB = b.Compact(frontier, checkpoint);
@@ -396,7 +478,7 @@ internal sealed class OffsetAnchoredSequenceTests
     public void AStalePreRemoveLaggardFailsClosedAgainstACompactedRemove()
     {
         OffsetAnchoredSequence<string> shared = OffsetAnchoredSequence<string>.WithBase(Base);
-        (OffsetAnchoredSequence<string> withX, OffsetAnchor x) = shared.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
+        (OffsetAnchoredSequence<string> withX, OffsetAddress x) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
         OffsetAnchoredSequence<string> laggard = withX;
         OffsetAnchoredSequence<string> removed = withX.Remove(x, R1);
 
@@ -413,14 +495,14 @@ internal sealed class OffsetAnchoredSequenceTests
     public void TranslateAnchorIsTheIdentityForServableAnchorsOnANeverCompactedSequence()
     {
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), "x", R1);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
         Dot unknown = new(R2, 99);
 
-        Assert.AreEqual(OffsetAnchor.Head, sequence.TranslateAnchor(OffsetAnchor.Head));
-        Assert.AreEqual(OffsetAnchor.AtBase(0), sequence.TranslateAnchor(OffsetAnchor.AtBase(0)));
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.Head, 0), sequence.TranslateAnchor(new OffsetAddress(OffsetAnchor.Head, 0)));
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(0), 0), sequence.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(0), 0)));
         Assert.AreEqual(x, sequence.TranslateAnchor(x));
-        Assert.IsNull(sequence.TranslateAnchor(OffsetAnchor.AtLive(unknown)));
-        Assert.IsNull(sequence.TranslateAnchor(OffsetAnchor.AtBase(99)));
+        Assert.IsNull(sequence.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtLive(unknown), 0)));
+        Assert.IsNull(sequence.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(99), 0)));
     }
 
 
@@ -449,8 +531,8 @@ internal sealed class OffsetAnchoredSequenceTests
 
         //Vertices minted on two axes: R2's head insert comes first in time, R1's dots come first in
         //the probe's replica order, counters ascending within one axis.
-        (OffsetAnchoredSequence<string> withX, OffsetAnchor x) = baseOnly.InsertAtHead("x", R2);
-        (OffsetAnchoredSequence<string> withY, OffsetAnchor y) = withX.InsertAfter(x, "y", R1);
+        (OffsetAnchoredSequence<string> withX, OffsetAddress x) = baseOnly.InsertAtHead("x", R2);
+        (OffsetAnchoredSequence<string> withY, OffsetAddress y) = withX.InsertAfter(x, "y", R1);
         (OffsetAnchoredSequence<string> withZ, _) = withY.InsertAfter(y, "z", R1);
 
         Dot[] expected = [new Dot(R1, 2), new Dot(R1, 3), new Dot(R2, 1)];
@@ -470,8 +552,8 @@ internal sealed class OffsetAnchoredSequenceTests
     [TestMethod]
     public void RemoveDotsAboveTheFrontierNeverBlockInsertQuiescence()
     {
-        (OffsetAnchoredSequence<string> withA, OffsetAnchor a) = OffsetAnchoredSequence<string>.Empty.InsertAtHead("a", R1);
-        (OffsetAnchoredSequence<string> shared, OffsetAnchor b) = withA.InsertAfter(a, "b", R1);
+        (OffsetAnchoredSequence<string> withA, OffsetAddress a) = OffsetAnchoredSequence<string>.Empty.InsertAtHead("a", R1);
+        (OffsetAnchoredSequence<string> shared, OffsetAddress b) = withA.InsertAfter(a, "b", R1);
         OffsetAnchoredSequence<string> m2 = shared;
         OffsetAnchoredSequence<string> m1 = shared.Remove(b, R1);
 
@@ -575,7 +657,7 @@ internal sealed class OffsetAnchoredSequenceTests
     private static (OffsetAnchoredSequence<int> Full, IReadOnlyList<OffsetAnchoredSequence<int>> Snapshots) BuildSnapshots((int Replica, int Seed)[] ops)
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.Empty;
-        var anchors = new List<OffsetAnchor>();
+        var anchors = new List<OffsetAddress>();
         var snapshots = new List<OffsetAnchoredSequence<int>>(ops.Length);
         for(int opIndex = 0; opIndex < ops.Length; opIndex++)
         {
@@ -583,17 +665,17 @@ internal sealed class OffsetAnchoredSequenceTests
             int visibleCount = sequence.VisibleElements.Count;
             if(seed % 3 == 0 && visibleCount > 0)
             {
-                OffsetAnchor target = sequence.VisibleElements[seed % visibleCount].Anchor;
+                OffsetAddress target = sequence.VisibleElements[seed % visibleCount].Anchor;
                 sequence = sequence.Remove(target, HistoryReplicas[replica]);
             }
             else if(anchors.Count == 0)
             {
-                (sequence, OffsetAnchor head) = sequence.InsertAtHead((100 * replica) + opIndex, HistoryReplicas[replica]);
+                (sequence, OffsetAddress head) = sequence.InsertAtHead((100 * replica) + opIndex, HistoryReplicas[replica]);
                 anchors.Add(head);
             }
             else
             {
-                (sequence, OffsetAnchor inserted) = sequence.InsertAfter(anchors[seed % anchors.Count], (100 * replica) + opIndex, HistoryReplicas[replica]);
+                (sequence, OffsetAddress inserted) = sequence.InsertAfter(anchors[seed % anchors.Count], (100 * replica) + opIndex, HistoryReplicas[replica]);
                 anchors.Add(inserted);
             }
 

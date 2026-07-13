@@ -306,6 +306,21 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   a forged dot aliased between the live and base axes could otherwise turn an honest live
   certification into the reclamation of an unremoved base slot.
 
+- The offset strategy's base addressing is generation-exact. `OffsetAddress` — the structural
+  `OffsetAnchor` paired with the base generation it was read at — is the public addressing type on both
+  sides of the surface: `InsertAfter` and `InsertAtHead` return it, and `Remove`, `TranslateAnchor`, and
+  `VisibleElements` carry it, while `OffsetAnchor` stays internal to the strategy and its state model. The
+  state gains a `baseGeneration` ordinal beside `baseFrontier`, stamped only by base-changing compactions
+  and required fail-closed in the JSON. `TranslateAnchor` serves a base address by its generation —
+  identity at the current generation, the base-offset map at exactly the one preceding generation the map
+  serves, and `null` fail-closed for anything older or newer — instead of guessing by an offset's
+  membership in the map, so a stale or forged generation is refused rather than silently mis-served. Edits
+  at a stale-generation base address fail closed with `ArgumentException`, the generation checked before
+  the range so a stale address that is also out of range reports the generation; merges fence on the
+  ordinal alongside the frontier. Head and live-dot addresses stay exact across generations and carry the
+  canonical generation zero. The strategy identifier does not change — offset.v2 is unreleased, and this
+  is its first shipped shape.
+
 - Sequence removes are dotted events the group can certify. `Rga<TValue>.Remove` now takes the
   removing `ReplicaId`, ticks the causal context, and records the minted remove-dot in a tombstone
   map (`target -> remove-dots`), so a remove enters the gossip digest and the stability frontier like

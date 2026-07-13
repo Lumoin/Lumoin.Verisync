@@ -34,7 +34,10 @@ public static class WellKnownSequenceStrategies
     /// insert-quiescent frontier that covers every vertex's insert-dot, an honest restriction of the
     /// base-materializing model and enforced fail-closed. Merging is fenced by the base-generation
     /// identity — the consensus-agreed frontier the base was materialized at, stamped only by
-    /// base-changing compactions.
+    /// base-changing compactions. The addressing type is <see cref="OffsetAddress"/>: the structural
+    /// <see cref="OffsetAnchor"/> paired with the base generation it was read at, so a base address is
+    /// served exactly by its generation and a stale one fails closed rather than being guessed. The
+    /// strategy identifier does not change — offset.v2 is unreleased, and this is its first shipped shape.
     /// </remarks>
     public const string OffsetV2 = "verisync.sequence.offset.v2";
 
@@ -113,9 +116,9 @@ public static class WellKnownSequenceStrategies
     /// dotted checkpoint directly and asserts it against the strategy's own certified projection on both
     /// dot and value, with base elements carried under deterministic sentinel identities.
     /// </remarks>
-    public static SequenceCrdtContext<OffsetAnchoredSequence<TValue>, TValue, OffsetAnchor> CreateOffset<TValue>()
+    public static SequenceCrdtContext<OffsetAnchoredSequence<TValue>, TValue, OffsetAddress> CreateOffset<TValue>()
     {
-        return new SequenceCrdtContext<OffsetAnchoredSequence<TValue>, TValue, OffsetAnchor>
+        return new SequenceCrdtContext<OffsetAnchoredSequence<TValue>, TValue, OffsetAddress>
         {
             StrategyId = OffsetV2,
             Empty = OffsetAnchoredSequence<TValue>.Empty,

@@ -13,7 +13,8 @@ namespace Lumoin.Verisync.Tests;
 /// shape a future consensus-carried follow-on emits, and asserts the codecs fail closed with
 /// <see cref="MessageDeserializationException"/> on hand-authored payloads that mutate one field of the
 /// wire format at a time. The codec validates shape only; model-level invariants (dot pools, coverage,
-/// W-shapes) surface at <c>FromState</c> and are covered there.
+/// W-shapes) surface at <c>FromState</c> and are covered there. The offset wire shape carries a required
+/// <c>baseGeneration</c> beside <c>baseFrontier</c>.
 /// </summary>
 [TestClass]
 internal sealed class CompactionStateJsonTests
@@ -43,7 +44,8 @@ internal sealed class CompactionStateJsonTests
 
 
     //A compacted offset sequence carrying both translation maps and the stamped generation identity
-    //round-trips through the JSON codec with its servability intact.
+    //round-trips through the JSON codec with its servability intact, and the base generation survives the
+    //round-trip.
     [TestMethod]
     public void CompactedOffsetSequenceRoundTripsThroughTheJsonCodec()
     {
@@ -56,7 +58,8 @@ internal sealed class CompactionStateJsonTests
         OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(reloaded);
 
         Assert.AreEqual(compacted, back);
-        Assert.IsNotNull(back.TranslateAnchor(OffsetAnchor.AtBase(1)));
+        Assert.AreEqual(1, reloaded.BaseGeneration);
+        Assert.IsNotNull(back.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(1), 0)));
     }
 
 
@@ -81,7 +84,8 @@ internal sealed class CompactionStateJsonTests
     //A reclaimed generation — a dropped base offset served by the Head gap anchor through the
     //anchor-typed base-offset translation map — is a future consensus-carried follow-on's output, not
     //Compact's, which defers reclamation; the shape stays legal on the wire, so it is hand-built through
-    //FromState and must round-trip with its servability intact.
+    //FromState and must round-trip with its servability intact. Its prior-generation offset-0 address maps
+    //to the head.
     [TestMethod]
     public void AReclaimedOffsetSequenceRoundTripsThroughTheJsonCodec()
     {
@@ -95,7 +99,7 @@ internal sealed class CompactionStateJsonTests
 
         Assert.AreEqual(reclaimed, back);
         Assert.HasCount(0, back.Values);
-        Assert.AreEqual(OffsetAnchor.Head, back.TranslateAnchor(OffsetAnchor.AtBase(0)));
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.Head, 0), back.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(0), 0)));
     }
 
 
@@ -227,9 +231,32 @@ internal sealed class CompactionStateJsonTests
         string json = """
         {
           "base":[10],
+          "baseFrontier":{"entries":[]},
+          "baseGeneration":0,
           "removedBaseOffsets":[{"offset":-1,"removeDots":[]}],
           "context":{"entries":[]},
+          "vertices":[],
+          "tombstones":[],
+          "compactedDotAnchors":[],
+          "compactedBaseOffsets":[]
+        }
+        """;
+
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeOffset(json));
+    }
+
+
+    //The generation ordinal is a required field beside the frontier: a payload omitting it fails closed on
+    //the wire, distinct from an explicitly genesis zero.
+    [TestMethod]
+    public void OffsetDeserializerRejectsAMissingBaseGeneration()
+    {
+        string json = """
+        {
+          "base":[10],
           "baseFrontier":{"entries":[]},
+          "removedBaseOffsets":[],
+          "context":{"entries":[]},
           "vertices":[],
           "tombstones":[],
           "compactedDotAnchors":[],
@@ -248,9 +275,10 @@ internal sealed class CompactionStateJsonTests
         string json = $$$"""
         {
           "base":[10],
+          "baseFrontier":{"entries":[]},
+          "baseGeneration":0,
           "removedBaseOffsets":[],
           "context":{"entries":[]},
-          "baseFrontier":{"entries":[]},
           "vertices":[],
           "tombstones":[{"target":{"replica":"{{{Hex(R1)}}}","counter":1},"removeDots":[{"replica":"{{{Hex(R2)}}}","counter":0}]}],
           "compactedDotAnchors":[],
@@ -268,9 +296,10 @@ internal sealed class CompactionStateJsonTests
         string json = $$$"""
         {
           "base":[10],
+          "baseFrontier":{"entries":[]},
+          "baseGeneration":0,
           "removedBaseOffsets":[{"offset":0,"removeDots":[{"replica":"{{{Hex(R2)}}}","counter":0}]}],
           "context":{"entries":[]},
-          "baseFrontier":{"entries":[]},
           "vertices":[],
           "tombstones":[],
           "compactedDotAnchors":[],
@@ -290,9 +319,10 @@ internal sealed class CompactionStateJsonTests
         string json = $$$$"""
         {
           "base":[10],
+          "baseFrontier":{"entries":[]},
+          "baseGeneration":0,
           "removedBaseOffsets":[],
           "context":{"entries":[]},
-          "baseFrontier":{"entries":[]},
           "vertices":[],
           "tombstones":[],
           "compactedDotAnchors":[],
@@ -431,9 +461,10 @@ internal sealed class CompactionStateJsonTests
         return $$"""
         {
           "base":[10],
+          "baseFrontier":{"entries":[]},
+          "baseGeneration":0,
           "removedBaseOffsets":[],
           "context":{"entries":[]},
-          "baseFrontier":{"entries":[]},
           "vertices":[{{vertex}}],
           "tombstones":[],
           "compactedDotAnchors":[],
@@ -460,9 +491,9 @@ internal sealed class CompactionStateJsonTests
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
         (sequence, _) = sequence.InsertAtHead(40, R1);
-        (sequence, OffsetAnchor atBase) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R2);
-        (sequence, OffsetAnchor chained) = sequence.InsertAfter(atBase, 60, R1);
-        sequence = sequence.Remove(OffsetAnchor.AtBase(2), R1);
+        (sequence, OffsetAddress atBase) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R2);
+        (sequence, OffsetAddress chained) = sequence.InsertAfter(atBase, 60, R1);
+        sequence = sequence.Remove(new OffsetAddress(OffsetAnchor.AtBase(2), 0), R1);
 
         return sequence.Remove(chained, R2);
     }
@@ -471,12 +502,13 @@ internal sealed class CompactionStateJsonTests
     //A compacted offset generation carrying both translation maps and the stamped identity: a converted
     //vertex that shifts the base (populating the base-offset map) and a dropped certified tombstone
     //(populating the dot map). The frontier is insert-quiescent — it certifies both inserts and the
-    //remove-dot — as §17 requires of any compaction.
+    //remove-dot — as §17 requires of any compaction. The compaction is base-changing, so the generation
+    //is generation 1.
     private static OffsetAnchoredSequence<int> CompactedWithBothMaps()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
-        (sequence, _) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R1);
-        (sequence, OffsetAnchor dropped) = sequence.InsertAfter(OffsetAnchor.AtBase(1), 60, R1);
+        (sequence, _) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R1);
+        (sequence, OffsetAddress dropped) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(1), 0), 60, R1);
         sequence = sequence.Remove(dropped, R2);
 
         VectorClock frontier = sequence.CausalContext;
@@ -490,10 +522,10 @@ internal sealed class CompactionStateJsonTests
     private static OffsetAnchoredSequence<int> PendingRemoved()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R1);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R1);
         sequence = sequence.Remove(x, R2);
 
-        VectorClock frontier = FrontierCovering(x.LiveId!);
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
 
         return sequence.Compact(frontier, sequence.CertifiedProjection(frontier));
     }
@@ -501,7 +533,7 @@ internal sealed class CompactionStateJsonTests
 
     //The reclaimed wire shape, hand-built: an empty base whose previous generation's only slot was
     //dropped, its offset served by the Head gap anchor, the generation identity stamped by the frontier
-    //that certified the removal.
+    //that certified the removal — a single base change, so generation 1.
     private static OffsetAnchoredSequenceState<int> ReclaimedShape()
     {
         VectorClockState identity = VectorClock.Empty.Increment(R1).ToState();
@@ -509,6 +541,7 @@ internal sealed class CompactionStateJsonTests
         return new OffsetAnchoredSequenceState<int>(
             [],
             identity,
+            1,
             [],
             identity,
             [],

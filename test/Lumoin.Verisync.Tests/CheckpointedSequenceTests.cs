@@ -87,19 +87,19 @@ internal sealed class CheckpointedSequenceTests
 
         //offset.v2 advertises a live causal context too, and its dotted removes tick it through the
         //container wiring: one insert plus one remove reads two on R1's axis.
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> offset =
-            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Create(
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> offset =
+            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress>.Create(
                 WellKnownSequenceStrategies.CreateOffset<string>(), Canonicalize, Sha256);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withOffsetA, OffsetAnchor offsetAnchor) = offset.InsertAtHead("A", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withOffsetA, OffsetAddress offsetAnchor) = offset.InsertAtHead("A", R1);
         Assert.IsNotNull(withOffsetA.CausalContext);
         Assert.AreEqual(1, withOffsetA.CausalContext![R1]);
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> offsetRemoved = withOffsetA.Remove(offsetAnchor, R1);
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> offsetRemoved = withOffsetA.Remove(offsetAnchor, R1);
         Assert.AreEqual(2, offsetRemoved.CausalContext![R1]);
 
         //A context built WITHOUT the delegate advertises none.
-        SequenceCrdtContext<OffsetAnchoredSequence<string>, string, OffsetAnchor> wired = WellKnownSequenceStrategies.CreateOffset<string>();
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> bare =
-            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Create(new SequenceCrdtContext<OffsetAnchoredSequence<string>, string, OffsetAnchor>
+        SequenceCrdtContext<OffsetAnchoredSequence<string>, string, OffsetAddress> wired = WellKnownSequenceStrategies.CreateOffset<string>();
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> bare =
+            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress>.Create(new SequenceCrdtContext<OffsetAnchoredSequence<string>, string, OffsetAddress>
             {
                 StrategyId = wired.StrategyId,
                 Empty = wired.Empty,

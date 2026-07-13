@@ -292,12 +292,12 @@ internal sealed class CheckpointSealTests
             CheckpointedSequence<Rga<string>, string, Dot>.Create(WellKnownSequenceStrategies.CreateRga<string>(), Canonicalize, Sha256);
         Assert.ThrowsExactly<InvalidOperationException>(() => plainRga.Seal(register, new Ballot(1, RA), VectorClock.Empty));
 
-        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> offset =
-            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor>.Create(
+        CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> offset =
+            CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress>.Create(
                 WellKnownSequenceStrategies.CreateOffset<string>(), Canonicalize, Sha256);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> withA, _) = offset.InsertAtHead("a", R1);
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> withA, _) = offset.InsertAtHead("a", R1);
         CasPaxosRegister<CheckpointCommitment> offsetRegister = CasPaxosRegister<CheckpointCommitment>.WithAcceptors(3);
-        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAnchor> sealedOffset, _, ChangeOutcome<CheckpointCommitment> outcome, bool wasSealed) =
+        (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> sealedOffset, _, ChangeOutcome<CheckpointCommitment> outcome, bool wasSealed) =
             withA.Seal(offsetRegister, new Ballot(1, RA), withA.CausalContext!);
         Assert.IsTrue(wasSealed);
         Assert.IsTrue(outcome.IsChosen);

@@ -420,6 +420,8 @@ public static class CrdtStateJson
             writer.WritePropertyName("baseFrontier");
             WriteVectorClockState(writer, state.BaseFrontier);
 
+            writer.WriteNumber("baseGeneration", state.BaseGeneration);
+
             writer.WriteStartArray("removedBaseOffsets");
             foreach(OffsetBaseRemovalEntry removal in state.RemovedBaseOffsets)
             {
@@ -586,6 +588,7 @@ public static class CrdtStateJson
             return new OffsetAnchoredSequenceState<TValue>(
                 baseValues.ToImmutable(),
                 ReadVectorClockState(RequireProperty(root, "baseFrontier", "An offset-anchored sequence")),
+                ReadNonNegative(RequireProperty(root, "baseGeneration", "An offset-anchored sequence"), "A base generation"),
                 removed.ToImmutable(),
                 ReadVectorClockState(RequireProperty(root, "context", "An offset-anchored sequence")),
                 vertices.ToImmutable(),

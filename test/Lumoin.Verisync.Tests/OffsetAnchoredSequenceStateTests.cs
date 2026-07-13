@@ -12,7 +12,8 @@ namespace Lumoin.Verisync.Tests;
 /// ordering of <c>ToState</c>; and every fail-closed guard <c>FromState</c> raises against state no honest
 /// history produces — one DISTINCT discriminating case per validation clause, each crafted so no earlier
 /// guard masks the one under test. Valid state records are obtained from real sequences and then mutated
-/// one field at a time with <c>with</c> expressions.
+/// one field at a time with <c>with</c> expressions. The base generation ordinal is genesis exactly when
+/// the base frontier is empty, so a compacted fixture carries generation 1 and a genesis fixture carries 0.
 /// </summary>
 /// <remarks>
 /// <c>ToState</c> determinism is asserted over the canonical serialized bytes rather than raw record
@@ -82,8 +83,8 @@ internal sealed class OffsetAnchoredSequenceStateTests
 
         Assert.AreEqual(compacted, back);
 
-        //The maps survived: a previous-generation base anchor still translates.
-        Assert.IsNotNull(back.TranslateAnchor(OffsetAnchor.AtBase(1)));
+        //The maps survived: a previous-generation base address still translates through the map arm.
+        Assert.IsNotNull(back.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(1), 0)));
     }
 
 
@@ -112,7 +113,7 @@ internal sealed class OffsetAnchoredSequenceStateTests
     public void ALegacyStateRoundTripsAndIsRetainedForever()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R1);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R1);
         OffsetAnchoredSequenceState<int> legacy = sequence.ToState() with
         {
             Tombstones = [new OffsetTombstoneEntry(new DotState(R1Bytes, 1), [])],
@@ -170,8 +171,8 @@ internal sealed class OffsetAnchoredSequenceStateTests
     public void MergeCommutativityPairYieldsEqualStates()
     {
         OffsetAnchoredSequence<int> shared = OffsetAnchoredSequence<int>.WithBase(BaseValues);
-        (OffsetAnchoredSequence<int> byFirst, _) = shared.InsertAfter(OffsetAnchor.AtBase(0), 100, R1);
-        (OffsetAnchoredSequence<int> bySecond, _) = shared.InsertAfter(OffsetAnchor.AtBase(0), 200, R2);
+        (OffsetAnchoredSequence<int> byFirst, _) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 100, R1);
+        (OffsetAnchoredSequence<int> bySecond, _) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 200, R2);
 
         OffsetAnchoredSequence<int> oneWay = byFirst.Merge(bySecond);
         OffsetAnchoredSequence<int> otherWay = bySecond.Merge(byFirst);
@@ -643,6 +644,23 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
+    //§5: the base generation ordinal is genesis EXACTLY when the base frontier is empty, and is never
+    //negative. A genesis frontier paired with a non-zero generation, a non-genesis frontier paired with
+    //the genesis generation, and a negative generation are each forged and fail closed.
+    [TestMethod]
+    public void FromStateRejectsABaseGenerationInconsistentWithItsFrontier()
+    {
+        //Edited never compacts, so its base frontier is empty and its generation is genesis.
+        OffsetAnchoredSequenceState<int> genesisFrontier = Edited().ToState();
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(genesisFrontier with { BaseGeneration = 1 }));
+
+        //The compacted fixture carries a non-genesis frontier and generation 1.
+        OffsetAnchoredSequenceState<int> nonGenesisFrontier = CompactedWithBothMaps().ToState();
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(nonGenesisFrontier with { BaseGeneration = 0 }));
+        Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(nonGenesisFrontier with { BaseGeneration = -1 }));
+    }
+
+
     //An edited generation: a head insert, a base-anchored insert, a live-anchored insert chained off it, a
     //dotted base removal by R1, and a dotted live removal by R2 — every anchor kind plus both removal
     //kinds. Context {R1:4, R2:3}; vertices (R1,1), (R2,2), (R1,3); remove-dots (R1,4) and (R2,3), leaving
@@ -651,9 +669,9 @@ internal sealed class OffsetAnchoredSequenceStateTests
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
         (sequence, _) = sequence.InsertAtHead(40, R1);
-        (sequence, OffsetAnchor atBase) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R2);
-        (sequence, OffsetAnchor chained) = sequence.InsertAfter(atBase, 60, R1);
-        sequence = sequence.Remove(OffsetAnchor.AtBase(2), R1);
+        (sequence, OffsetAddress atBase) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R2);
+        (sequence, OffsetAddress chained) = sequence.InsertAfter(atBase, 60, R1);
+        sequence = sequence.Remove(new OffsetAddress(OffsetAnchor.AtBase(2), 0), R1);
 
         return sequence.Remove(chained, R2);
     }
@@ -663,12 +681,13 @@ internal sealed class OffsetAnchoredSequenceStateTests
     //live edit: the converted vertex 50 shifts the base so CompactedBaseOffsets is non-empty, the certified
     //tombstone 60 drops so CompactedDotAnchors is non-empty, the frontier is insert-quiescent as §17
     //requires, and a fresh insert 70=(R2,3) lands live in the new generation AFTER the compaction — the
-    //retained live vertex the W-shape fixture references.
+    //retained live vertex the W-shape fixture references. The compaction is base-changing, so the sealed
+    //generation is generation 1 and the post-seal base address of offset 3 carries that generation.
     private static OffsetAnchoredSequence<int> CompactedWithBothMaps()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
-        (sequence, _) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R1);
-        (sequence, OffsetAnchor dropped) = sequence.InsertAfter(OffsetAnchor.AtBase(1), 60, R1);
+        (sequence, _) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R1);
+        (sequence, OffsetAddress dropped) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(1), 0), 60, R1);
         sequence = sequence.Remove(dropped, R2);
 
         //The frontier certifies both inserts and the remove-dot, so the state is insert-quiescent.
@@ -676,7 +695,7 @@ internal sealed class OffsetAnchoredSequenceStateTests
         OffsetAnchoredSequence<int> compacted = sequence.Compact(frontier, sequence.CertifiedProjection(frontier));
 
         //A fresh insert after the seal lands live in the new generation: 70=(R2,3).
-        (compacted, _) = compacted.InsertAfter(OffsetAnchor.AtBase(3), 70, R2);
+        (compacted, _) = compacted.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(3), 1), 70, R2);
 
         return compacted;
     }
@@ -687,11 +706,11 @@ internal sealed class OffsetAnchoredSequenceStateTests
     private static OffsetAnchoredSequence<int> PendingRemoved()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
-        (sequence, OffsetAnchor x) = sequence.InsertAfter(OffsetAnchor.AtBase(0), 50, R1);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R1);
         sequence = sequence.Remove(x, R2);
 
         //The frontier covers the insert but not R2's remove.
-        VectorClock frontier = FrontierCovering(x.LiveId!);
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
 
         return sequence.Compact(frontier, sequence.CertifiedProjection(frontier));
     }
@@ -702,7 +721,7 @@ internal sealed class OffsetAnchoredSequenceStateTests
     private static OffsetAnchoredSequence<int> GhostWitnessMerge()
     {
         OffsetAnchoredSequence<int> shared = OffsetAnchoredSequence<int>.WithBase(BaseValues);
-        (OffsetAnchoredSequence<int> withX, OffsetAnchor x) = shared.InsertAfter(OffsetAnchor.AtBase(0), 50, R1);
+        (OffsetAnchoredSequence<int> withX, OffsetAddress x) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 50, R1);
         OffsetAnchoredSequence<int> ghostHolder = withX.Remove(x, R1);
 
         VectorClock frontier = ghostHolder.CausalContext;
