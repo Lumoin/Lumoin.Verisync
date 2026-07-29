@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Security
 -->
 
+## [0.0.7] - 2026-07-29
+
+### Changed
+
+- Dependency refresh across the toolchain; no library code or wire-format changes. The packages now depend on `Lumoin.Base` 0.0.8 (from 0.0.6), and `Lumoin.Verisync.Cbor` on `System.Formats.Cbor` 10.0.10. The build moves to .NET SDK 10.0.302 and MSTest.Sdk 4.3.3; because MSTest.Sdk 4.3.x injects its own central `PackageVersion` items, the MSTest and `Microsoft.Testing.Extensions.*` pins move out of `Directory.Packages.props` and are steered through the SDK version properties in the test project. `Microsoft.CodeAnalysis.BannedApiAnalyzers` moves from the 3.12 beta line to the stable 5.6.0, the `Microsoft.Extensions.*.Testing` packages to 10.8.0, the code-coverage extension and `dotnet-coverage` tool to 18.9.0, and the CI action pins to their current releases (`actions/checkout` v7.0.1, `actions/setup-dotnet` v6.0.0, `step-security/harden-runner` v2.20.0, `NuGet/login` v1.2.0). The test suite adopts the MSTest 4.3.3 assertion surface (`Assert.AreSequenceEqual`/`AreNotSequenceEqual`/`HasCount`) in place of `CollectionAssert`.
+
+### Security
+
+- The pinned `System.Security.Cryptography.Xml` transitive override rises from 10.0.9 to 10.0.10, clearing the high-severity advisories published against 10.0.9 (GHSA-23rf-6693-g89p, GHSA-8q5v-6pqq-x66h, GHSA-cvvh-rhrc-wg4q, GHSA-g8r8-53c2-pm3f, GHSA-mmjf-rqrv-855v) that `NuGetAudit` fails the restore on.
+
 ## [0.0.6] - 2026-07-13
 
 ### Changed
