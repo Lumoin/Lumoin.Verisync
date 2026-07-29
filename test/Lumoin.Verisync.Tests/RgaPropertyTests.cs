@@ -54,7 +54,7 @@ internal sealed class RgaPropertyTests
             Rga<int> order2 = triple.c.Merge(triple.a).Merge(triple.b);
 
             Assert.AreEqual(order1, order2);
-            CollectionAssert.AreEqual(order1.Values.ToArray(), order2.Values.ToArray());
+            Assert.AreSequenceEqual(order1.Values.ToArray(), order2.Values.ToArray());
         });
     }
 

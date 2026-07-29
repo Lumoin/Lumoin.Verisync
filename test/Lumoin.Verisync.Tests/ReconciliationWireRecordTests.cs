@@ -30,7 +30,7 @@ internal sealed class ReconciliationWireRecordTests
         ReconciliationOffer offer = ReconciliationOffer.FromContract(WellKnownContract);
 
         //The key never travels; the offer carries only the eight-byte key-check tag pinned for the well-known key.
-        CollectionAssert.AreEqual(WellKnownKeyCheck, offer.KeyCheck.ToArray());
+        Assert.AreSequenceEqual(WellKnownKeyCheck, offer.KeyCheck.ToArray());
         Assert.AreEqual(ReconciliationItemDomain.ContentHash, offer.ItemDomain);
         Assert.AreEqual(32, offer.ItemWidth);
         Assert.AreEqual(8, offer.ChecksumWidth);
@@ -113,7 +113,7 @@ internal sealed class ReconciliationWireRecordTests
         byte[] mutable = [.. one];
         ReconciliationFetch fetch = new([mutable, two]);
         mutable[0] = 0xFF;
-        CollectionAssert.AreEqual(one, fetch.Items[0].ToArray());
+        Assert.AreSequenceEqual(one, fetch.Items[0].ToArray());
 
         ReconciliationFetch same = new([one.ToArray(), two.ToArray()]);
         Assert.AreEqual(fetch, same);

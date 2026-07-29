@@ -77,7 +77,7 @@ internal sealed class CompactionStateJsonTests
         OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(reloaded);
 
         Assert.AreEqual(pending, back);
-        CollectionAssert.AreEqual(BaseValues.ToArray(), back.Values.ToArray());
+        Assert.AreSequenceEqual(BaseValues.ToArray(), back.Values.ToArray());
     }
 
 

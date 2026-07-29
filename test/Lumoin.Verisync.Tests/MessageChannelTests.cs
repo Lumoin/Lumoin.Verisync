@@ -32,7 +32,7 @@ internal sealed class MessageChannelTests
         List<string> received = await ReadAll(reader).ConfigureAwait(false);
 
         string[] expected = ["alpha", "", "a longer message with spaces"];
-        CollectionAssert.AreEqual(expected, received.ToArray());
+        Assert.AreSequenceEqual(expected, received.ToArray());
     }
 
 
@@ -179,7 +179,7 @@ internal sealed class MessageChannelTests
 
         List<string> received = await ReadAll(roundTripReader).ConfigureAwait(false);
 
-        CollectionAssert.AreEqual(messages, received.ToArray());
+        Assert.AreSequenceEqual(messages, received.ToArray());
     }
 
 

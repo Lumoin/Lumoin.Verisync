@@ -401,10 +401,10 @@ internal sealed class RaftNodeTests
         List<string> follower2Applied = CommittedCommands(follower2);
         List<string> follower3Applied = CommittedCommands(follower3);
 
-        CollectionAssert.AreEqual(leaderApplied, follower2Applied);
-        CollectionAssert.AreEqual(leaderApplied, follower3Applied);
+        Assert.AreSequenceEqual(leaderApplied, follower2Applied);
+        Assert.AreSequenceEqual(leaderApplied, follower3Applied);
         string[] expected = ["alpha", "beta", "gamma"];
-        CollectionAssert.AreEqual(expected, leaderApplied);
+        Assert.AreSequenceEqual(expected, leaderApplied);
     }
 
 

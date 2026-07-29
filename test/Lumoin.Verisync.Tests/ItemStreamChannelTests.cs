@@ -63,7 +63,7 @@ internal sealed class ItemStreamChannelTests
 
         string[] expected = [.. items.Select(Convert.ToHexString)];
         string[] actual = [.. received.Select(Convert.ToHexString)];
-        CollectionAssert.AreEqual(expected, actual);
+        Assert.AreSequenceEqual(expected, actual);
     }
 
 
@@ -87,7 +87,7 @@ internal sealed class ItemStreamChannelTests
 
         string[] expected = [.. first.Concat(second).Select(Convert.ToHexString)];
         string[] actual = [.. received.Select(Convert.ToHexString)];
-        CollectionAssert.AreEqual(expected, actual);
+        Assert.AreSequenceEqual(expected, actual);
     }
 
 
@@ -240,7 +240,7 @@ internal sealed class ItemStreamChannelTests
 
         string[] expected = [.. items.Select(Convert.ToHexString)];
         string[] actual = [.. received.Select(Convert.ToHexString)];
-        CollectionAssert.AreEqual(expected, actual);
+        Assert.AreSequenceEqual(expected, actual);
     }
 
 

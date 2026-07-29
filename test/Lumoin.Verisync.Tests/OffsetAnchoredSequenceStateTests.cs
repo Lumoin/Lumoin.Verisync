@@ -98,7 +98,7 @@ internal sealed class OffsetAnchoredSequenceStateTests
         OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(pending.ToState());
 
         Assert.AreEqual(pending, back);
-        CollectionAssert.AreEqual(BaseValues.ToArray(), back.Values.ToArray());
+        Assert.AreSequenceEqual(BaseValues.ToArray(), back.Values.ToArray());
 
         OffsetBaseRemovalEntry marking = back.ToState().RemovedBaseOffsets[0];
         Assert.AreEqual(1, marking.Offset);
@@ -122,7 +122,7 @@ internal sealed class OffsetAnchoredSequenceStateTests
 
         OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(legacy);
         int[] hidden = [10, 20];
-        CollectionAssert.AreEqual(hidden, back.Values.ToArray());
+        Assert.AreSequenceEqual(hidden, back.Values.ToArray());
         Assert.AreEqual(back, OffsetAnchoredSequence<int>.FromState(back.ToState()));
         Assert.AreEqual(x, back.TranslateAnchor(x));
 
@@ -130,7 +130,7 @@ internal sealed class OffsetAnchoredSequenceStateTests
         //reclaimable: the tombstone converts pending-removed carrying its empty set, the slot stays.
         VectorClock frontier = back.CausalContext;
         OffsetAnchoredSequence<int> compacted = back.Compact(frontier, back.CertifiedProjection(frontier));
-        CollectionAssert.AreEqual(hidden, compacted.Values.ToArray());
+        Assert.AreSequenceEqual(hidden, compacted.Values.ToArray());
         ImmutableArray<OffsetBaseRemovalEntry> markings = compacted.ToState().RemovedBaseOffsets;
         Assert.HasCount(2, markings);
         Assert.AreEqual(1, markings[0].Offset);
@@ -159,7 +159,7 @@ internal sealed class OffsetAnchoredSequenceStateTests
     {
         OffsetAnchoredSequence<int> sequence = Edited();
 
-        CollectionAssert.AreEqual(Encode(sequence.ToState()), Encode(sequence.ToState()));
+        Assert.AreSequenceEqual(Encode(sequence.ToState()), Encode(sequence.ToState()));
     }
 
 
@@ -477,7 +477,7 @@ internal sealed class OffsetAnchoredSequenceStateTests
             Tombstones = [.. valid.Tombstones, new OffsetTombstoneEntry(new DotState(R3Bytes, 50), [new DotState(R2Bytes, 1)])]
         };
         OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(accepted);
-        CollectionAssert.AreEqual(Edited().Values.ToArray(), back.Values.ToArray());
+        Assert.AreSequenceEqual(Edited().Values.ToArray(), back.Values.ToArray());
 
         OffsetAnchoredSequenceState<int> rejected = valid with
         {

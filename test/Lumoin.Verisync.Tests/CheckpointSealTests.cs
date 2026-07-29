@@ -44,7 +44,7 @@ internal sealed class CheckpointSealTests
         //The checkpoint is the dotted certified projection at the frontier: b's remove is certified, so only
         //a survives, carrying its real vertex dot.
         ImmutableArray<SequenceCheckpointEntry<string>> expectedProjection = removed.Live.CertifiedProjection(frontier);
-        CollectionAssert.AreEqual(expectedProjection.ToArray(), afterSeal.Checkpoint.ToArray());
+        Assert.AreSequenceEqual(expectedProjection.ToArray(), afterSeal.Checkpoint.ToArray());
         Assert.HasCount(1, afterSeal.Checkpoint);
         Assert.AreEqual("a", afterSeal.Checkpoint[0].Value);
 
@@ -53,7 +53,7 @@ internal sealed class CheckpointSealTests
 
         //The live sequence is compacted: b is dropped and served through the translation map onto a.
         string[] expectedValues = ["a"];
-        CollectionAssert.AreEqual(expectedValues, afterSeal.Values.ToArray());
+        Assert.AreSequenceEqual(expectedValues, afterSeal.Values.ToArray());
         Assert.AreEqual(idA, afterSeal.Live.TranslateAnchor(idB));
     }
 
@@ -80,7 +80,7 @@ internal sealed class CheckpointSealTests
         CheckpointedSequence<Rga<string>, string, Dot> applied = otherRemoved.ApplyCommittedSeal(outcome.Value!, ballot);
 
         Assert.AreEqual(sealer.Live, applied.Live);
-        CollectionAssert.AreEqual(sealer.Checkpoint.ToArray(), applied.Checkpoint.ToArray());
+        Assert.AreSequenceEqual(sealer.Checkpoint.ToArray(), applied.Checkpoint.ToArray());
         Assert.AreEqual(sealer.Commitment, applied.Commitment);
     }
 
@@ -174,7 +174,7 @@ internal sealed class CheckpointSealTests
 
         Assert.IsTrue(secondSealed);
         Assert.AreEqual(first.Live, second.Live);
-        CollectionAssert.AreEqual(first.Checkpoint.ToArray(), second.Checkpoint.ToArray());
+        Assert.AreSequenceEqual(first.Checkpoint.ToArray(), second.Checkpoint.ToArray());
         Assert.AreEqual(first.Commitment, second.Commitment);
         Assert.AreEqual(new Ballot(2, RA), second.CheckpointBallot);
     }
@@ -254,7 +254,7 @@ internal sealed class CheckpointSealTests
         CheckpointedSequence<Rga<string>, string, Dot> applied = rejoiner.ApplyCommittedSeal(outcome.Value!, ballot);
 
         Assert.AreEqual(sealer.Live, applied.Live);
-        CollectionAssert.AreEqual(sealer.Checkpoint.ToArray(), applied.Checkpoint.ToArray());
+        Assert.AreSequenceEqual(sealer.Checkpoint.ToArray(), applied.Checkpoint.ToArray());
         Assert.AreEqual(sealer.Commitment, applied.Commitment);
 
         Assert.ThrowsExactly<ArgumentNullException>(() => CheckpointedSequence<Rga<string>, string, Dot>.Adopt(
@@ -321,7 +321,7 @@ internal sealed class CheckpointSealTests
 
         Assert.IsTrue(firstSealed);
         string[] excludesUnstable = ["a"];
-        CollectionAssert.AreEqual(excludesUnstable, ProjectValues(first.Checkpoint));
+        Assert.AreSequenceEqual(excludesUnstable, ProjectValues(first.Checkpoint));
 
         //A later seal at F2, which covers the previously unstable edit, seals again and captures it.
         VectorClock f2 = FrontierTo(2);
@@ -330,7 +330,7 @@ internal sealed class CheckpointSealTests
 
         Assert.IsTrue(secondSealed);
         string[] coversBoth = ["a", "b"];
-        CollectionAssert.AreEqual(coversBoth, ProjectValues(second.Checkpoint));
+        Assert.AreSequenceEqual(coversBoth, ProjectValues(second.Checkpoint));
     }
 
 

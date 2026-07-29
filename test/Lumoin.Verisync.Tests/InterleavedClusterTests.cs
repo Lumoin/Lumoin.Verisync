@@ -16,7 +16,7 @@ internal sealed class InterleavedClusterTests
         (IReadOnlyList<string> firstTrace, string firstValue) = await RunContendedScenarioAsync(seed: 42).ConfigureAwait(false);
         (IReadOnlyList<string> secondTrace, string secondValue) = await RunContendedScenarioAsync(seed: 42).ConfigureAwait(false);
 
-        CollectionAssert.AreEqual(firstTrace.ToList(), secondTrace.ToList());
+        Assert.AreSequenceEqual(firstTrace.ToList(), secondTrace.ToList());
         Assert.AreEqual(firstValue, secondValue);
     }
 

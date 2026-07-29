@@ -60,7 +60,7 @@ internal sealed class PeerGenerationBindingProbeTests
 
         string[] expected = [.. Hex([.. leftOnly, .. rightOnly])];
         string[] decoded = [.. decoder.DecodedItems.Select(item => Convert.ToHexString(item.Span)).Order()];
-        CollectionAssert.AreEqual(expected, decoded);
+        Assert.AreSequenceEqual(expected, decoded);
     }
 
 

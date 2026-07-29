@@ -56,16 +56,16 @@ internal sealed class AntiEntropySocketTests
         //Round one: the add-only divergence converges through one full session over a fresh socket.
         RoundOutcome first = await RunRoundAsync(initiatorSet, responderSet).ConfigureAwait(false);
 
-        CollectionAssert.AreEqual(ExpectedConverged, Sorted(first.InitiatorSet));
-        CollectionAssert.AreEqual(ExpectedConverged, Sorted(first.ResponderSet));
+        Assert.AreSequenceEqual(ExpectedConverged, Sorted(first.InitiatorSet));
+        Assert.AreSequenceEqual(ExpectedConverged, Sorted(first.ResponderSet));
         Assert.AreEqual(3, first.DecodedCount);
 
         //Round two: a fresh session over the converged sets reaches quiescence with zero decoded after one batch.
         RoundOutcome second = await RunRoundAsync(first.InitiatorSet, first.ResponderSet).ConfigureAwait(false);
 
         Assert.AreEqual(0, second.DecodedCount);
-        CollectionAssert.AreEqual(ExpectedConverged, Sorted(second.InitiatorSet));
-        CollectionAssert.AreEqual(ExpectedConverged, Sorted(second.ResponderSet));
+        Assert.AreSequenceEqual(ExpectedConverged, Sorted(second.InitiatorSet));
+        Assert.AreSequenceEqual(ExpectedConverged, Sorted(second.ResponderSet));
     }
 
 

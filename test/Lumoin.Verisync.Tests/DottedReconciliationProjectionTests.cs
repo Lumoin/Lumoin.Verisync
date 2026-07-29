@@ -66,7 +66,7 @@ internal sealed class DottedReconciliationProjectionTests
         Assert.HasCount(projection.Count, projection.Items);
         foreach(ReadOnlyMemory<byte> item in projection.Items)
         {
-            Assert.AreEqual(ContentHashContract.ItemWidth, item.Length);
+            Assert.HasCount(ContentHashContract.ItemWidth, item);
         }
 
         //Every produced item resolves back to a present entry; the resolved entry is one of the state's own.

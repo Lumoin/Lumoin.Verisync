@@ -81,11 +81,11 @@ internal sealed class ReconciliationSocketTests
 
         string[] expectedLacks = [Hex(Digest("zeta").Span)];
         string[] expectedSurplus = [.. new[] { Hex(Digest("delta").Span), Hex(Digest("epsilon").Span) }.Order(StringComparer.Ordinal)];
-        CollectionAssert.AreEqual(expectedLacks, first.Lacks);
-        CollectionAssert.AreEqual(expectedSurplus, first.Surplus);
+        Assert.AreSequenceEqual(expectedLacks, first.Lacks);
+        Assert.AreSequenceEqual(expectedSurplus, first.Surplus);
 
-        CollectionAssert.AreEqual(expectedConverged, Sorted(first.SideA));
-        CollectionAssert.AreEqual(expectedConverged, Sorted(first.SideB));
+        Assert.AreSequenceEqual(expectedConverged, Sorted(first.SideA));
+        Assert.AreSequenceEqual(expectedConverged, Sorted(first.SideB));
 
         //Round two: a fresh session over the converged sets must reach quiescence. A's decoder is complete
         //after exactly one absorbed symbol with no decoded items, so A sends done(1) and nothing else flows.
@@ -95,8 +95,8 @@ internal sealed class ReconciliationSocketTests
         Assert.AreEqual(0, second.DecodedCount);
         Assert.HasCount(0, second.Lacks);
         Assert.HasCount(0, second.Surplus);
-        CollectionAssert.AreEqual(expectedConverged, Sorted(second.SideA));
-        CollectionAssert.AreEqual(expectedConverged, Sorted(second.SideB));
+        Assert.AreSequenceEqual(expectedConverged, Sorted(second.SideA));
+        Assert.AreSequenceEqual(expectedConverged, Sorted(second.SideB));
     }
 
 

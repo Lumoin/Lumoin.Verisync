@@ -140,9 +140,9 @@ internal sealed class RgaRemoveCertificationLawTests
         //place UNDER the ghost — after d, not before it. A covered-absent re-parent would produce [1, 4, 3].
         Rga<int> reference = observed.Merge(r3State).Compact(frontier, checkpoint);
         int[] expected = [1, 3, 4];
-        CollectionAssert.AreEqual(expected, reference.Values.ToArray());
-        CollectionAssert.AreEqual(expected, peer.Merge(r3State).Values.ToArray());
-        CollectionAssert.AreEqual(expected, r3State.Merge(peer).Values.ToArray());
+        Assert.AreSequenceEqual(expected, reference.Values.ToArray());
+        Assert.AreSequenceEqual(expected, peer.Merge(r3State).Values.ToArray());
+        Assert.AreSequenceEqual(expected, r3State.Merge(peer).Values.ToArray());
     }
 
 
@@ -203,8 +203,8 @@ internal sealed class RgaRemoveCertificationLawTests
 
         //a, d, and c are visible with c under the ghost x; x re-enters hidden.
         int[] expected = [1, 3, 4];
-        CollectionAssert.AreEqual(expected, forward.Values.ToArray());
-        CollectionAssert.AreEqual(expected, backward.Values.ToArray());
+        Assert.AreSequenceEqual(expected, forward.Values.ToArray());
+        Assert.AreSequenceEqual(expected, backward.Values.ToArray());
         Assert.AreEqual(3, forward.Count);
         Assert.AreEqual(3, backward.Count);
     }
@@ -238,7 +238,7 @@ internal sealed class RgaRemoveCertificationLawTests
         Rga<int> compacted = sequence.Compact(frontier, checkpoint);
 
         int[] expected = [0];
-        CollectionAssert.AreEqual(expected, compacted.Values.ToArray());
+        Assert.AreSequenceEqual(expected, compacted.Values.ToArray());
 
         bool everyDroppedDotTranslatesToHead = true;
         for(int i = 1; i <= Depth; i++)
@@ -279,8 +279,8 @@ internal sealed class RgaRemoveCertificationLawTests
 
         //The orphan masks an honest ghost re-add: merging the ghost-holder keeps b hidden in both orders.
         int[] masked = [1];
-        CollectionAssert.AreEqual(masked, compactedAgain.Merge(ghostHolder).Values.ToArray());
-        CollectionAssert.AreEqual(masked, ghostHolder.Merge(compactedAgain).Values.ToArray());
+        Assert.AreSequenceEqual(masked, compactedAgain.Merge(ghostHolder).Values.ToArray());
+        Assert.AreSequenceEqual(masked, ghostHolder.Merge(compactedAgain).Values.ToArray());
         Assert.AreEqual(1, compactedAgain.Merge(ghostHolder).Count);
     }
 
@@ -298,8 +298,8 @@ internal sealed class RgaRemoveCertificationLawTests
         (Rga<string> r10NoRemove, _) = withA.InsertAfter(idA, "C1", R10);
         (Rga<string> r5NoRemove, _) = withA.InsertAfter(idA, "C2", R5);
         string[] withoutRemove = ["A", "C1", "C2"];
-        CollectionAssert.AreEqual(withoutRemove, r10NoRemove.Merge(r5NoRemove).Values.ToArray());
-        CollectionAssert.AreEqual(withoutRemove, r5NoRemove.Merge(r10NoRemove).Values.ToArray());
+        Assert.AreSequenceEqual(withoutRemove, r10NoRemove.Merge(r5NoRemove).Values.ToArray());
+        Assert.AreSequenceEqual(withoutRemove, r5NoRemove.Merge(r10NoRemove).Values.ToArray());
 
         //With the remove: R5 removes A first (Increment mints remove-dot (R5,2), raising the max to 2), then
         //inserts C2 after the tombstoned A (IncrementPastAll mints (R5,3)), which now outranks C1=(R10,2).
@@ -307,8 +307,8 @@ internal sealed class RgaRemoveCertificationLawTests
         (Rga<string> r5WithC2, _) = r5Removed.InsertAfter(idA, "C2", R5);
         (Rga<string> r10WithC1, _) = withA.InsertAfter(idA, "C1", R10);
         string[] withRemove = ["C2", "C1"];
-        CollectionAssert.AreEqual(withRemove, r5WithC2.Merge(r10WithC1).Values.ToArray());
-        CollectionAssert.AreEqual(withRemove, r10WithC1.Merge(r5WithC2).Values.ToArray());
+        Assert.AreSequenceEqual(withRemove, r5WithC2.Merge(r10WithC1).Values.ToArray());
+        Assert.AreSequenceEqual(withRemove, r10WithC1.Merge(r5WithC2).Values.ToArray());
     }
 
 

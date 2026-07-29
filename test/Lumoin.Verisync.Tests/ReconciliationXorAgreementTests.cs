@@ -54,7 +54,7 @@ internal sealed class ReconciliationXorAgreementTests
         }
 
         ReconciliationXorScalarBackend.Fold(destination, source);
-        CollectionAssert.AreEqual(expectedFold, destination);
+        Assert.AreSequenceEqual(expectedFold, destination);
 
         //Combine writes left ^ right into a separate destination.
         byte[] left = Fill(33, FillSeeds[0]);
@@ -67,12 +67,12 @@ internal sealed class ReconciliationXorAgreementTests
         }
 
         ReconciliationXorScalarBackend.Combine(left, right, combined);
-        CollectionAssert.AreEqual(expectedCombine, combined);
+        Assert.AreSequenceEqual(expectedCombine, combined);
 
         //Combine may alias an input: Combine(x, y, x) leaves the same left ^ right bytes in x.
         byte[] aliasLeft = Fill(33, FillSeeds[0]);
         ReconciliationXorScalarBackend.Combine(aliasLeft, right, aliasLeft);
-        CollectionAssert.AreEqual(expectedCombine, aliasLeft);
+        Assert.AreSequenceEqual(expectedCombine, aliasLeft);
 
         //IsNeutral is true on an all-zero span and on an empty span.
         Assert.IsTrue(ReconciliationXorScalarBackend.IsNeutral(new byte[33]));
@@ -217,8 +217,8 @@ internal sealed class ReconciliationXorAgreementTests
         for(int n = 0; n < symbolCount; n++)
         {
             ReconciliationSymbol symbol = encoder.ProduceNext();
-            CollectionAssert.AreEqual(referenceSum[n], symbol.Sum.ToArray());
-            CollectionAssert.AreEqual(referenceChecksum[n], symbol.Checksum.ToArray());
+            Assert.AreSequenceEqual(referenceSum[n], symbol.Sum.ToArray());
+            Assert.AreSequenceEqual(referenceChecksum[n], symbol.Checksum.ToArray());
         }
 
         //Re-assert the four pinned non-neutral stream rows byte-for-byte: symbols 0, 2, 3 share a1's row,
@@ -229,14 +229,14 @@ internal sealed class ReconciliationXorAgreementTests
         byte[] row1Sum = Convert.FromHexString("2020202020202020");
         byte[] row1Checksum = Convert.FromHexString("7D042E94AE36B153");
 
-        CollectionAssert.AreEqual(row0Sum, referenceSum[0]);
-        CollectionAssert.AreEqual(row0Checksum, referenceChecksum[0]);
-        CollectionAssert.AreEqual(row1Sum, referenceSum[1]);
-        CollectionAssert.AreEqual(row1Checksum, referenceChecksum[1]);
-        CollectionAssert.AreEqual(row0Sum, referenceSum[2]);
-        CollectionAssert.AreEqual(row0Checksum, referenceChecksum[2]);
-        CollectionAssert.AreEqual(row0Sum, referenceSum[3]);
-        CollectionAssert.AreEqual(row0Checksum, referenceChecksum[3]);
+        Assert.AreSequenceEqual(row0Sum, referenceSum[0]);
+        Assert.AreSequenceEqual(row0Checksum, referenceChecksum[0]);
+        Assert.AreSequenceEqual(row1Sum, referenceSum[1]);
+        Assert.AreSequenceEqual(row1Checksum, referenceChecksum[1]);
+        Assert.AreSequenceEqual(row0Sum, referenceSum[2]);
+        Assert.AreSequenceEqual(row0Checksum, referenceChecksum[2]);
+        Assert.AreSequenceEqual(row0Sum, referenceSum[3]);
+        Assert.AreSequenceEqual(row0Checksum, referenceChecksum[3]);
     }
 
 
@@ -253,7 +253,7 @@ internal sealed class ReconciliationXorAgreementTests
 
                 fold(tierDestination, source);
                 ReconciliationXorScalarBackend.Fold(scalarDestination, source);
-                CollectionAssert.AreEqual(scalarDestination, tierDestination);
+                Assert.AreSequenceEqual(scalarDestination, tierDestination);
 
                 //Combine agrees byte-for-byte with the scalar backend.
                 byte[] left = Fill(length, seed);
@@ -263,7 +263,7 @@ internal sealed class ReconciliationXorAgreementTests
 
                 combine(left, right, tierCombine);
                 ReconciliationXorScalarBackend.Combine(left, right, scalarCombine);
-                CollectionAssert.AreEqual(scalarCombine, tierCombine);
+                Assert.AreSequenceEqual(scalarCombine, tierCombine);
 
                 //IsNeutral agrees on the all-zero span.
                 byte[] zero = new byte[length];

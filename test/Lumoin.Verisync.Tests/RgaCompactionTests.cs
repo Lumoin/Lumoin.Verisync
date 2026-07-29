@@ -38,12 +38,12 @@ internal sealed class RgaCompactionTests
         Rga<int> compacted = removed.Compact(frontier, checkpoint);
 
         int[] expectedValues = [1];
-        CollectionAssert.AreEqual(expectedValues, compacted.Values.ToArray());
+        Assert.AreSequenceEqual(expectedValues, compacted.Values.ToArray());
         Assert.AreEqual(idA, compacted.TranslateAnchor(idB));
 
         (Rga<int> inserted, _) = compacted.InsertAfter(compacted.TranslateAnchor(idB)!, 9, R2);
         int[] expectedAfterInsert = [1, 9];
-        CollectionAssert.AreEqual(expectedAfterInsert, inserted.Values.ToArray());
+        Assert.AreSequenceEqual(expectedAfterInsert, inserted.Values.ToArray());
     }
 
 
@@ -65,7 +65,7 @@ internal sealed class RgaCompactionTests
         Rga<int> compacted = removed.Compact(frontier, checkpoint);
 
         int[] expectedValues = [1, 3];
-        CollectionAssert.AreEqual(expectedValues, compacted.Values.ToArray());
+        Assert.AreSequenceEqual(expectedValues, compacted.Values.ToArray());
         Assert.AreEqual(idParent, compacted.TranslateAnchor(idParent));
 
         Dot childPredecessor = PredecessorOf(compacted, idChild);
@@ -91,7 +91,7 @@ internal sealed class RgaCompactionTests
 
         (Rga<int> inserted, _) = compacted.InsertAfter(idHead, 9, R2);
         int[] expected = [9];
-        CollectionAssert.AreEqual(expected, inserted.Values.ToArray());
+        Assert.AreSequenceEqual(expected, inserted.Values.ToArray());
     }
 
 
@@ -110,7 +110,7 @@ internal sealed class RgaCompactionTests
         Rga<int> compacted = removed.Compact(frontier, checkpoint);
 
         int[] expectedValues = [1];
-        CollectionAssert.AreEqual(expectedValues, compacted.Values.ToArray());
+        Assert.AreSequenceEqual(expectedValues, compacted.Values.ToArray());
         Assert.AreEqual(idA, compacted.TranslateAnchor(idT1));
         Assert.AreEqual(idA, compacted.TranslateAnchor(idT2));
     }
@@ -195,13 +195,13 @@ internal sealed class RgaCompactionTests
         //ghost hidden (never live) and the stale-replay detector must not fire in either direction.
         Rga<int> merged = compacted.Merge(laggard);
         int[] expectedValues = [1];
-        CollectionAssert.AreEqual(expectedValues, merged.Values.ToArray());
-        CollectionAssert.AreEqual(laggard.Values.ToArray(), merged.Values.ToArray());
-        CollectionAssert.AreEqual(expectedValues, laggard.Merge(compacted).Values.ToArray());
+        Assert.AreSequenceEqual(expectedValues, merged.Values.ToArray());
+        Assert.AreSequenceEqual(laggard.Values.ToArray(), merged.Values.ToArray());
+        Assert.AreSequenceEqual(expectedValues, laggard.Merge(compacted).Values.ToArray());
 
         //A repeat compaction at the same waterline drops it again, back to the compacted state.
         Rga<int> recompacted = merged.Compact(frontier, checkpoint);
-        CollectionAssert.AreEqual(expectedValues, recompacted.Values.ToArray());
+        Assert.AreSequenceEqual(expectedValues, recompacted.Values.ToArray());
         Assert.AreEqual(compacted, recompacted);
     }
 
@@ -220,7 +220,7 @@ internal sealed class RgaCompactionTests
         RgaRunState<int> runState = removed.ToRunState();
         Assert.HasCount(1, runState.Runs);
         int[] expectedRunValues = [1, 2, 3, 4];
-        CollectionAssert.AreEqual(expectedRunValues, runState.Runs[0].Values.ToArray());
+        Assert.AreSequenceEqual(expectedRunValues, runState.Runs[0].Values.ToArray());
         Assert.IsNull(runState.Runs[0].Predecessor);
         Assert.HasCount(1, runState.TombstoneSpans);
         RgaTombstoneSpan span = runState.TombstoneSpans[0];

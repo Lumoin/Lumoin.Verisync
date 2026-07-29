@@ -33,7 +33,7 @@ internal sealed class MerkleFrontierTests
 
         byte[] actual = MerkleFrontier.Empty.ComputeRoot(Sha256).ToArray();
 
-        CollectionAssert.AreEqual(expected, actual);
+        Assert.AreSequenceEqual(expected, actual);
     }
 
 
@@ -48,7 +48,7 @@ internal sealed class MerkleFrontierTests
 
         byte[] actual = frontier.ComputeRoot(Sha256).ToArray();
 
-        CollectionAssert.AreEqual(expected, actual);
+        Assert.AreSequenceEqual(expected, actual);
     }
 
 
@@ -62,7 +62,7 @@ internal sealed class MerkleFrontierTests
         MerkleFrontier frontier = MerkleFrontier.Empty;
 
         //Size 0: both are empty before any append.
-        CollectionAssert.AreEqual(tree.ComputeRoot(Sha256).ToArray(), frontier.ComputeRoot(Sha256).ToArray(), "root for n = 0");
+        Assert.AreSequenceEqual(tree.ComputeRoot(Sha256).ToArray(), frontier.ComputeRoot(Sha256).ToArray(), "root for n = 0");
 
         for(int n = 1; n <= 64; n++)
         {
@@ -75,7 +75,7 @@ internal sealed class MerkleFrontierTests
             byte[] treeRoot = tree.ComputeRoot(Sha256).ToArray();
             byte[] frontierRoot = frontier.ComputeRoot(Sha256).ToArray();
 
-            CollectionAssert.AreEqual(treeRoot, frontierRoot, $"root for n = {n}");
+            Assert.AreSequenceEqual(treeRoot, frontierRoot, $"root for n = {n}");
         }
     }
 
@@ -102,7 +102,7 @@ internal sealed class MerkleFrontierTests
         _ = original.Append(new byte[] { 3 }, Sha256);
 
         Assert.AreEqual(countBefore, original.Count);
-        CollectionAssert.AreEqual(rootBefore, original.ComputeRoot(Sha256).ToArray());
+        Assert.AreSequenceEqual(rootBefore, original.ComputeRoot(Sha256).ToArray());
     }
 
 
@@ -119,7 +119,7 @@ internal sealed class MerkleFrontierTests
         Assert.AreEqual(2, shared.Count);
         Assert.AreEqual(3, withThree.Count);
         Assert.AreEqual(3, withFour.Count);
-        CollectionAssert.AreNotEqual(withThree.ComputeRoot(Sha256).ToArray(), withFour.ComputeRoot(Sha256).ToArray());
+        Assert.AreNotSequenceEqual(withThree.ComputeRoot(Sha256).ToArray(), withFour.ComputeRoot(Sha256).ToArray());
     }
 
 

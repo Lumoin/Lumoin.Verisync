@@ -979,8 +979,8 @@ internal sealed class RemoveAwareReconciliationLawTests
         await Task.WhenAll(initiatorRun, responderRun).ConfigureAwait(false);
 
         string[] expected = ExpectedSixElements;
-        CollectionAssert.AreEqual(expected, initiatorElements.Order().ToArray());
-        CollectionAssert.AreEqual(expected, responderElements.Order().ToArray());
+        Assert.AreSequenceEqual(expected, initiatorElements.Order().ToArray());
+        Assert.AreSequenceEqual(expected, responderElements.Order().ToArray());
         Assert.HasCount(3, initiator.DecodedItems);
 
         //A null local context is the add-only path: no context frame and no drop frame crosses in either direction.

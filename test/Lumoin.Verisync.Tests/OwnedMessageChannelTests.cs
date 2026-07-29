@@ -66,7 +66,7 @@ internal sealed class OwnedMessageChannelTests
 
         string[] expected = [.. messages.Select(Convert.ToHexString)];
         string[] actual = [.. received.Select(Convert.ToHexString)];
-        CollectionAssert.AreEqual(expected, actual);
+        Assert.AreSequenceEqual(expected, actual);
     }
 
 
@@ -192,7 +192,7 @@ internal sealed class OwnedMessageChannelTests
 
         string[] expected = [.. messages.Select(Convert.ToHexString)];
         string[] actual = [.. received.Select(Convert.ToHexString)];
-        CollectionAssert.AreEqual(expected, actual);
+        Assert.AreSequenceEqual(expected, actual);
     }
 
 

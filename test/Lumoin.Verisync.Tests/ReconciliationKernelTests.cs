@@ -227,7 +227,7 @@ internal sealed class ReconciliationKernelTests
 
         Assert.IsTrue(unkeyed.IsComplete);
         Assert.HasCount(1, unkeyed.DecodedItems);
-        CollectionAssert.AreEqual(Xor(x, collidingY), unkeyed.DecodedItems[0].ToArray());
+        Assert.AreSequenceEqual(Xor(x, collidingY), unkeyed.DecodedItems[0].ToArray());
 
         //The same construction under a secret key refuses the crafted collision: not complete after symbol 0.
         ReconciliationContract toySecret = ReconciliationContract.ForAdversarialTesting(ReconciliationItemDomain.Structural, 8, 1, 0x0123456789ABCDEFUL, 0xFEDCBA9876543210UL);
@@ -268,7 +268,7 @@ internal sealed class ReconciliationKernelTests
 
         string[] expectedDifference = [.. SymmetricDifference(left.Elements, right.Elements).Select(e => Convert.ToHexString(Digest(e).Span)).Order()];
         string[] decodedDifference = [.. Reconcile(contract, leftItems, rightItems).Select(item => Convert.ToHexString(item.Span)).Order()];
-        CollectionAssert.AreEqual(expectedDifference, decodedDifference);
+        Assert.AreSequenceEqual(expectedDifference, decodedDifference);
 
         //Merge both ways, re-project, reconcile again: complete at the first symbol with zero decoded items.
         OrSet<string> mergedLeft = left.Merge(right);
