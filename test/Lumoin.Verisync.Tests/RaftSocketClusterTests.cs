@@ -50,7 +50,7 @@ internal sealed class RaftSocketClusterTests
         string[] expected = ["a", "b", "c"];
         foreach(ReplicaId id in mesh.Members)
         {
-            CollectionAssert.AreEqual(expected, Commands(mesh.Applied(id)));
+            Assert.AreSequenceEqual(expected, Commands(mesh.Applied(id)));
         }
     }
 
@@ -78,8 +78,8 @@ internal sealed class RaftSocketClusterTests
         await DriveUntilAsync(mesh, () => Commands(mesh.Applied(follower)).Length >= 2, TestContext.CancellationToken).ConfigureAwait(false);
 
         string[] expected = ["x", "y"];
-        CollectionAssert.AreEqual(expected, Commands(mesh.Applied(follower)));
-        CollectionAssert.AreEqual(expected, Commands(mesh.Applied(leader)));
+        Assert.AreSequenceEqual(expected, Commands(mesh.Applied(follower)));
+        Assert.AreSequenceEqual(expected, Commands(mesh.Applied(leader)));
 
         //The persist hook fired on the restored node too: a durable host always saw the state before output.
         Assert.IsGreaterThan(0, mesh.PersistCount(follower));

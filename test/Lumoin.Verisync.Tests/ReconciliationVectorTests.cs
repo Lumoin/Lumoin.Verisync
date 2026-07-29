@@ -67,17 +67,17 @@ internal sealed class ReconciliationVectorTests
         Span<byte> width8 = stackalloc byte[8];
         ReconciliationChecksum.Write(checksum, width8);
         byte[] expected8 = [0xCC, 0x67, 0x98, 0x3F, 0x94, 0x9B, 0x84, 0xDF];
-        CollectionAssert.AreEqual(expected8, width8.ToArray());
+        Assert.AreSequenceEqual(expected8, width8.ToArray());
 
         Span<byte> width4 = stackalloc byte[4];
         ReconciliationChecksum.Write(checksum, width4);
         byte[] expected4 = [0xCC, 0x67, 0x98, 0x3F];
-        CollectionAssert.AreEqual(expected4, width4.ToArray());
+        Assert.AreSequenceEqual(expected4, width4.ToArray());
 
         Span<byte> width1 = stackalloc byte[1];
         ReconciliationChecksum.Write(checksum, width1);
         byte[] expected1 = [0xCC];
-        CollectionAssert.AreEqual(expected1, width1.ToArray());
+        Assert.AreSequenceEqual(expected1, width1.ToArray());
     }
 
 
@@ -173,7 +173,7 @@ internal sealed class ReconciliationVectorTests
 
         string[] expectedSet = [.. new[] { A2, A3, B1 }.Select(Convert.ToHexString).Order()];
         string[] decodedSet = [.. decoder.DecodedItems.Select(item => Convert.ToHexString(item.Span)).Order()];
-        CollectionAssert.AreEqual(expectedSet, decodedSet);
+        Assert.AreSequenceEqual(expectedSet, decodedSet);
     }
 
 
@@ -194,7 +194,7 @@ internal sealed class ReconciliationVectorTests
         //The cell is not neutral and its Sum coincides with a1's bytes, yet the cell is impure: the
         //checksum field is the XOR of three item checksums, so a correct purity test rejects it.
         Assert.IsFalse(cellZero.IsNeutral);
-        CollectionAssert.AreEqual(W3, cellZero.Sum.ToArray());
+        Assert.AreSequenceEqual(W3, cellZero.Sum.ToArray());
 
         using ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared);
         decoder.Absorb(cellZero);
@@ -217,13 +217,13 @@ internal sealed class ReconciliationVectorTests
             indices[i] = position.Index;
         }
 
-        CollectionAssert.AreEqual(expectedIndices, indices);
+        Assert.AreSequenceEqual(expectedIndices, indices);
     }
 
 
     private static void AssertSymbol(string expectedSumHex, string expectedChecksumHex, ReconciliationSymbol symbol)
     {
-        CollectionAssert.AreEqual(Convert.FromHexString(expectedSumHex), symbol.Sum.ToArray());
-        CollectionAssert.AreEqual(Convert.FromHexString(expectedChecksumHex), symbol.Checksum.ToArray());
+        Assert.AreSequenceEqual(Convert.FromHexString(expectedSumHex), symbol.Sum.ToArray());
+        Assert.AreSequenceEqual(Convert.FromHexString(expectedChecksumHex), symbol.Checksum.ToArray());
     }
 }

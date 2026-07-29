@@ -76,7 +76,7 @@ internal sealed class RaftRunnerTests
         Assert.AreEqual(3, await third.ConfigureAwait(false));
 
         (long Index, string Command)[] expected = [(1, "alpha"), (2, "beta"), (3, "gamma")];
-        CollectionAssert.AreEqual(expected, runner.Applied.ToArray());
+        Assert.AreSequenceEqual(expected, runner.Applied.ToArray());
     }
 
 
@@ -143,7 +143,7 @@ internal sealed class RaftRunnerTests
 
         long[] indices = runner.Applied.Select(entry => entry.Index).ToArray();
         long[] expected = [1, 2, 3, 4, 5];
-        CollectionAssert.AreEqual(expected, indices);
+        Assert.AreSequenceEqual(expected, indices);
     }
 
 
@@ -166,7 +166,7 @@ internal sealed class RaftRunnerTests
             await original.SubmitAsync(RaftEnvelope<string>.ForAppendRequest(N1, new AppendEntriesRequest<string>(1, N1, 0, 0, entries, 2))).ConfigureAwait(false);
             await original.DrainAsync().ConfigureAwait(false);
 
-            CollectionAssert.AreEqual(expected, original.Applied.ToArray());
+            Assert.AreSequenceEqual(expected, original.Applied.ToArray());
             persisted = original.LastPersisted ?? throw new InvalidOperationException("The follower never persisted a state to restart from.");
         }
 
@@ -179,7 +179,7 @@ internal sealed class RaftRunnerTests
             await restarted.SubmitAsync(RaftEnvelope<string>.ForAppendRequest(N1, new AppendEntriesRequest<string>(1, N1, 2, 1, [], 2))).ConfigureAwait(false);
             await restarted.DrainAsync().ConfigureAwait(false);
 
-            CollectionAssert.AreEqual(expected, restarted.Applied.ToArray());
+            Assert.AreSequenceEqual(expected, restarted.Applied.ToArray());
         }
     }
 

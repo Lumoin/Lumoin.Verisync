@@ -58,8 +58,13 @@ internal sealed class VerisyncTagsTests
     [TestMethod]
     public void TagsAreSharedSingletons()
     {
-        Assert.AreSame(VerisyncTags.ReplicaId, VerisyncTags.ReplicaId);
-        Assert.AreSame(VerisyncTags.GossipDigest, VerisyncTags.GossipDigest);
+        Tag firstReplicaId = VerisyncTags.ReplicaId;
+        Tag secondReplicaId = VerisyncTags.ReplicaId;
+        Tag firstGossipDigest = VerisyncTags.GossipDigest;
+        Tag secondGossipDigest = VerisyncTags.GossipDigest;
+
+        Assert.AreSame(firstReplicaId, secondReplicaId);
+        Assert.AreSame(firstGossipDigest, secondGossipDigest);
     }
 
 

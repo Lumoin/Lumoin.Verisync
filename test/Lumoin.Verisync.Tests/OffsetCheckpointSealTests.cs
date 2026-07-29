@@ -49,7 +49,7 @@ internal sealed class OffsetCheckpointSealTests
 
         Assert.IsTrue(wasSealed);
         Assert.IsTrue(outcome.IsChosen);
-        CollectionAssert.AreEqual(expectedProjection.ToArray(), afterSeal.Checkpoint.ToArray());
+        Assert.AreSequenceEqual(expectedProjection.ToArray(), afterSeal.Checkpoint.ToArray());
         Assert.HasCount(1, afterSeal.Checkpoint);
         Assert.AreEqual("a", afterSeal.Checkpoint[0].Value);
 
@@ -60,7 +60,7 @@ internal sealed class OffsetCheckpointSealTests
         //certified remove drops the vertex, and the dropped anchor still translates — to the gap where it
         //sat, a current-generation base address.
         string[] expectedValues = ["a"];
-        CollectionAssert.AreEqual(expectedValues, afterSeal.Values.ToArray());
+        Assert.AreSequenceEqual(expectedValues, afterSeal.Values.ToArray());
         Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(0), 1), afterSeal.Live.TranslateAnchor(anchorB));
     }
 
@@ -87,7 +87,7 @@ internal sealed class OffsetCheckpointSealTests
         CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> applied = otherRemoved.ApplyCommittedSeal(outcome.Value!, ballot);
 
         Assert.AreEqual(sealer.Live, applied.Live);
-        CollectionAssert.AreEqual(sealer.Checkpoint.ToArray(), applied.Checkpoint.ToArray());
+        Assert.AreSequenceEqual(sealer.Checkpoint.ToArray(), applied.Checkpoint.ToArray());
         Assert.AreEqual(sealer.Commitment, applied.Commitment);
     }
 
@@ -163,7 +163,7 @@ internal sealed class OffsetCheckpointSealTests
             m2WithB.Seal(registerAfterFirst, new Ballot(2, RB), frontier);
         Assert.IsTrue(secondSealed);
         Assert.AreEqual(first.Live, second.Live);
-        CollectionAssert.AreEqual(first.Checkpoint.ToArray(), second.Checkpoint.ToArray());
+        Assert.AreSequenceEqual(first.Checkpoint.ToArray(), second.Checkpoint.ToArray());
         Assert.AreEqual(first.Commitment, second.Commitment);
         Assert.AreEqual(new Ballot(2, RB), second.CheckpointBallot);
 
@@ -248,7 +248,7 @@ internal sealed class OffsetCheckpointSealTests
         CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2Applied = m2Removed.ApplyCommittedSeal(outcome.Value!, ballot);
         Assert.AreEqual(sealer.Live, applied.Live);
         Assert.AreEqual(m2Applied.Live, applied.Live);
-        CollectionAssert.AreEqual(sealer.Checkpoint.ToArray(), applied.Checkpoint.ToArray());
+        Assert.AreSequenceEqual(sealer.Checkpoint.ToArray(), applied.Checkpoint.ToArray());
         Assert.AreEqual(sealer.Commitment, applied.Commitment);
         Assert.AreEqual(m2Applied.Commitment, applied.Commitment);
 
@@ -318,14 +318,14 @@ internal sealed class OffsetCheckpointSealTests
         Dot[] expectedGap = [new Dot(R3, 3)];
         ImmutableArray<Dot>? probe = m3.UnstableInserts(frontier);
         Assert.IsNotNull(probe);
-        CollectionAssert.AreEqual(expectedGap, probe!.Value.ToArray());
+        Assert.AreSequenceEqual(expectedGap, probe!.Value.ToArray());
 
         //The two upstream checks provably pass, so the throw below can only be the probe layer: the
         //straggler's context strictly dominates F, and its own canonicalized certified projection at F is
         //byte-equal to the committed digest.
         Assert.AreEqual(Causality.After, m3.CausalContext!.Compare(frontier));
         ReadOnlyMemory<byte> stragglerDigest = Sha256(Canonicalize(m3.Live.CertifiedProjection(frontier)));
-        CollectionAssert.AreEqual(stragglerDigest.ToArray(), outcome.Value!.Digest.ToArray());
+        Assert.AreSequenceEqual(stragglerDigest.ToArray(), outcome.Value!.Digest.ToArray());
         Assert.ThrowsExactly<InvalidOperationException>(() => m3.ApplyCommittedSeal(outcome.Value!, ballot));
 
         //THE REGRESSION PIN: the adopted POST-seal donor's projection at F is sentinel-keyed while the
@@ -341,12 +341,12 @@ internal sealed class OffsetCheckpointSealTests
         CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> inherited = adopted.Merge(m1Sealed);
         Assert.AreEqual(m1Sealed.Commitment, inherited.Commitment);
         Assert.AreEqual(m1Sealed.CheckpointBallot, inherited.CheckpointBallot);
-        CollectionAssert.AreEqual(m1Sealed.Checkpoint.ToArray(), inherited.Checkpoint.ToArray());
+        Assert.AreSequenceEqual(m1Sealed.Checkpoint.ToArray(), inherited.Checkpoint.ToArray());
 
         //The adopted state holds NO vertex for c: the straggler's own edit did not survive adoption.
         Assert.IsNull(inherited.Live.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtLive(new Dot(R3, 3)), 0)));
         string[] adoptedValues = ["a", "b"];
-        CollectionAssert.AreEqual(adoptedValues, inherited.Values.ToArray());
+        Assert.AreSequenceEqual(adoptedValues, inherited.Values.ToArray());
 
         //Re-inserting c's value from context {R1:2} re-mints the SAME dot (R3,3) — the deterministic
         //rebirth is harmless, because every holder of an uncovered vertex must itself adopt.
@@ -359,9 +359,9 @@ internal sealed class OffsetCheckpointSealTests
         string[] converged = ["a", "b", "c"];
         CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m1Gossiped = m1Sealed.Merge(recovered);
         CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> m2Gossiped = m2Applied.Merge(recovered);
-        CollectionAssert.AreEqual(converged, m1Gossiped.Values.ToArray());
-        CollectionAssert.AreEqual(converged, m2Gossiped.Values.ToArray());
-        CollectionAssert.AreEqual(converged, recovered.Merge(m1Sealed).Values.ToArray());
+        Assert.AreSequenceEqual(converged, m1Gossiped.Values.ToArray());
+        Assert.AreSequenceEqual(converged, m2Gossiped.Values.ToArray());
+        Assert.AreSequenceEqual(converged, recovered.Merge(m1Sealed).Values.ToArray());
 
         //THE LIFECYCLE CLOSE: gossip covers c, the next seal lands strictly above F, and the recovered
         //straggler applies it — verified by the NEXT committed seal, as the recovery contract instructs.
@@ -372,7 +372,7 @@ internal sealed class OffsetCheckpointSealTests
         CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> recoveredApplied =
             recovered.ApplyCommittedSeal(outcomeNext.Value!, new Ballot(2, RA));
         Assert.AreEqual(m1SealedNext.Live, recoveredApplied.Live);
-        CollectionAssert.AreEqual(m1SealedNext.Checkpoint.ToArray(), recoveredApplied.Checkpoint.ToArray());
+        Assert.AreSequenceEqual(m1SealedNext.Checkpoint.ToArray(), recoveredApplied.Checkpoint.ToArray());
         Assert.AreEqual(m1SealedNext.Commitment, recoveredApplied.Commitment);
     }
 
@@ -429,9 +429,9 @@ internal sealed class OffsetCheckpointSealTests
         //recovery re-mints the byte-identical vertex, so the detector stays quiet and every holder converges.
         (CheckpointedSequence<OffsetAnchoredSequence<string>, string, OffsetAddress> recoveredAfterBAgain, _) = inherited.InsertAfter(afterB!, "c", R3);
         string[] converged = ["a", "b", "c"];
-        CollectionAssert.AreEqual(converged, recoveredAfterB.Merge(recoveredAfterBAgain).Values.ToArray());
-        CollectionAssert.AreEqual(converged, recoveredAfterB.Merge(m1Sealed).Values.ToArray());
-        CollectionAssert.AreEqual(converged, m2Applied.Merge(recoveredAfterB).Values.ToArray());
+        Assert.AreSequenceEqual(converged, recoveredAfterB.Merge(recoveredAfterBAgain).Values.ToArray());
+        Assert.AreSequenceEqual(converged, recoveredAfterB.Merge(m1Sealed).Values.ToArray());
+        Assert.AreSequenceEqual(converged, m2Applied.Merge(recoveredAfterB).Values.ToArray());
     }
 
 
@@ -456,7 +456,7 @@ internal sealed class OffsetCheckpointSealTests
         Dot[] expected = [new Dot(R1, 2), new Dot(R1, 3), new Dot(R3, 1)];
         ImmutableArray<Dot>? gapProbe = withC.UnstableInserts(VectorClock.Empty);
         Assert.IsNotNull(gapProbe);
-        CollectionAssert.AreEqual(expected, gapProbe!.Value.ToArray());
+        Assert.AreSequenceEqual(expected, gapProbe!.Value.ToArray());
 
         //The member's own full context covers every insert, so the probe reads empty there.
         ImmutableArray<Dot>? coveredProbe = withC.UnstableInserts(withC.CausalContext!);
@@ -534,7 +534,7 @@ internal sealed class OffsetCheckpointSealTests
 
         //The drop-only seal keeps the base [a] and drops x — nothing converted.
         string[] baseOnly = ["a"];
-        CollectionAssert.AreEqual(baseOnly, m1Sealed2.Values.ToArray());
+        Assert.AreSequenceEqual(baseOnly, m1Sealed2.Values.ToArray());
 
         //The applier reaches the same state, then re-applies the SAME commitment: the drop-only projection at
         //F2 still matches the digest, so the re-apply succeeds idempotently.

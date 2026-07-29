@@ -141,7 +141,7 @@ internal sealed class StateCodecTests
 
         Assert.AreEqual(array, back);
         string[] expected = ["a", "c"];
-        CollectionAssert.AreEqual(expected, back.Values.ToArray());
+        Assert.AreSequenceEqual(expected, back.Values.ToArray());
 
         //The tombstone survived, so merging the pre-removal array does not resurrect the element.
         Assert.HasCount(2, back.Merge(array).Values);
@@ -151,7 +151,7 @@ internal sealed class StateCodecTests
         //"b" and its subtree, and converges on merge.
         (Rga<string> extended, _) = back.InsertAfter(first, "d", R2);
         string[] expectedExtended = ["a", "d", "c"];
-        CollectionAssert.AreEqual(expectedExtended, extended.Values.ToArray());
+        Assert.AreSequenceEqual(expectedExtended, extended.Values.ToArray());
         Assert.AreEqual(extended, extended.Merge(array));
     }
 
@@ -169,7 +169,7 @@ internal sealed class StateCodecTests
 
         Assert.AreEqual(array, back);
         string[] expected = ["a", "b"];
-        CollectionAssert.AreEqual(expected, back.Values.ToArray());
+        Assert.AreSequenceEqual(expected, back.Values.ToArray());
     }
 
 

@@ -60,16 +60,16 @@ internal sealed class OffsetRemoveCertificationLawTests
             new SequenceCheckpointEntry<string>(SentinelDot(0), "b0"),
             new SequenceCheckpointEntry<string>(DotStateOf(x.Anchor.LiveId!), "x")
         ];
-        CollectionAssert.AreEqual(expectedProjection, m1Projection.ToArray());
-        CollectionAssert.AreEqual(expectedProjection, m2Projection.ToArray());
+        Assert.AreSequenceEqual(expectedProjection, m1Projection.ToArray());
+        Assert.AreSequenceEqual(expectedProjection, m2Projection.ToArray());
 
         OffsetAnchoredSequence<string> m1Compacted = m1.Compact(frontier, m1Projection);
         OffsetAnchoredSequence<string> m2Compacted = m2.Compact(frontier, m2Projection);
 
         //Byte-identical base value arrays: M1 converts x pending-removed, M2 converts it visible.
         string[] expectedBase = ["b0", "x"];
-        CollectionAssert.AreEqual(expectedBase, m1Compacted.ToState().Base.ToArray());
-        CollectionAssert.AreEqual(expectedBase, m2Compacted.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(expectedBase, m1Compacted.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(expectedBase, m2Compacted.ToState().Base.ToArray());
 
         //Identical generation identity: both compactions changed the base, so both stamp the frontier.
         Assert.AreEqual(frontier, VectorClock.FromState(m1Compacted.ToState().BaseFrontier));
@@ -107,15 +107,15 @@ internal sealed class OffsetRemoveCertificationLawTests
             new SequenceCheckpointEntry<string>(SentinelDot(1), "b1"),
             new SequenceCheckpointEntry<string>(SentinelDot(2), "b2")
         ];
-        CollectionAssert.AreEqual(expectedUncertified, projectionUncertified.ToArray());
+        Assert.AreSequenceEqual(expectedUncertified, projectionUncertified.ToArray());
 
         //x converts into the base ahead of the removed slot, so the kept slot shifts and its marking
         //rides along to the new offset. b1's prior-generation address maps to its shifted current offset.
         OffsetAnchoredSequence<string> kept = removed.Compact(uncertified, projectionUncertified);
         string[] keptBase = ["b0", "x", "b1", "b2"];
         string[] visible = ["b0", "x", "b2"];
-        CollectionAssert.AreEqual(keptBase, kept.ToState().Base.ToArray());
-        CollectionAssert.AreEqual(visible, kept.Values.ToArray());
+        Assert.AreSequenceEqual(keptBase, kept.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(visible, kept.Values.ToArray());
         Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(2), 1), kept.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(1), 0)));
         OffsetBaseRemovalEntry riddenMarking = kept.ToState().RemovedBaseOffsets[0];
         Assert.AreEqual(2, riddenMarking.Offset);
@@ -131,11 +131,11 @@ internal sealed class OffsetRemoveCertificationLawTests
             new SequenceCheckpointEntry<string>(DotStateOf(x.Anchor.LiveId!), "x"),
             new SequenceCheckpointEntry<string>(SentinelDot(2), "b2")
         ];
-        CollectionAssert.AreEqual(expectedCertified, projectionCertified.ToArray());
+        Assert.AreSequenceEqual(expectedCertified, projectionCertified.ToArray());
 
         OffsetAnchoredSequence<string> stillKept = removed.Compact(certified, projectionCertified);
-        CollectionAssert.AreEqual(keptBase, stillKept.ToState().Base.ToArray());
-        CollectionAssert.AreEqual(visible, stillKept.Values.ToArray());
+        Assert.AreSequenceEqual(keptBase, stillKept.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(visible, stillKept.Values.ToArray());
         Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(2), 1), stillKept.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(1), 0)));
         OffsetBaseRemovalEntry certifiedMarking = stillKept.ToState().RemovedBaseOffsets[0];
         Assert.AreEqual(2, certifiedMarking.Offset);
@@ -167,8 +167,8 @@ internal sealed class OffsetRemoveCertificationLawTests
         OffsetAnchoredSequence<string> gen1 = removed.Compact(frontier, checkpoint);
         string[] gen1Base = ["b0", "x", "b1", "b2"];
         string[] gen1Visible = ["b0", "x", "b2"];
-        CollectionAssert.AreEqual(gen1Base, gen1.ToState().Base.ToArray());
-        CollectionAssert.AreEqual(gen1Visible, gen1.Values.ToArray());
+        Assert.AreSequenceEqual(gen1Base, gen1.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(gen1Visible, gen1.Values.ToArray());
         Assert.AreEqual(frontier, VectorClock.FromState(gen1.ToState().BaseFrontier));
         OffsetBaseRemovalEntry carried = gen1.ToState().RemovedBaseOffsets[0];
         Assert.AreEqual(2, carried.Offset);
@@ -180,8 +180,8 @@ internal sealed class OffsetRemoveCertificationLawTests
         OffsetAnchoredSequence<string> forward = gen1.Merge(peer);
         OffsetAnchoredSequence<string> backward = peer.Merge(gen1);
         string[] merged = ["b0", "b2"];
-        CollectionAssert.AreEqual(merged, forward.Values.ToArray());
-        CollectionAssert.AreEqual(merged, backward.Values.ToArray());
+        Assert.AreSequenceEqual(merged, forward.Values.ToArray());
+        Assert.AreSequenceEqual(merged, backward.Values.ToArray());
         Assert.AreEqual(forward, backward);
 
         //A previous-generation operand cannot re-enter to resurrect the value: the fence throws, both orders.
@@ -223,15 +223,15 @@ internal sealed class OffsetRemoveCertificationLawTests
             new SequenceCheckpointEntry<string>(SentinelDot(0), "b0"),
             new SequenceCheckpointEntry<string>(SentinelDot(2), "b2")
         ];
-        CollectionAssert.AreEqual(expectedProjection, forwardProjection.ToArray());
-        CollectionAssert.AreEqual(expectedProjection, backward.CertifiedProjection(frontier).ToArray());
+        Assert.AreSequenceEqual(expectedProjection, forwardProjection.ToArray());
+        Assert.AreSequenceEqual(expectedProjection, backward.CertifiedProjection(frontier).ToArray());
 
         //Compaction keeps the certified-removed slot as the hidden ordering placeholder in either order.
         OffsetAnchoredSequence<string> forwardCompacted = forward.Compact(frontier, forwardProjection);
         OffsetAnchoredSequence<string> backwardCompacted = backward.Compact(frontier, backward.CertifiedProjection(frontier));
         string[] visible = ["b0", "b2"];
-        CollectionAssert.AreEqual(TripleBase.ToArray(), forwardCompacted.ToState().Base.ToArray());
-        CollectionAssert.AreEqual(visible, forwardCompacted.Values.ToArray());
+        Assert.AreSequenceEqual(TripleBase.ToArray(), forwardCompacted.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(visible, forwardCompacted.Values.ToArray());
         Assert.AreEqual(forwardCompacted, backwardCompacted);
     }
 
@@ -267,7 +267,7 @@ internal sealed class OffsetRemoveCertificationLawTests
         });
 
         //The value arrays are EQUAL; only the generation identity discriminates them.
-        CollectionAssert.AreEqual(stale.ToState().Base.ToArray(), cycled.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(stale.ToState().Base.ToArray(), cycled.ToState().Base.ToArray());
         Assert.ThrowsExactly<InvalidOperationException>(() => stale.Merge(cycled));
         Assert.ThrowsExactly<InvalidOperationException>(() => cycled.Merge(stale));
 
@@ -282,7 +282,7 @@ internal sealed class OffsetRemoveCertificationLawTests
         OffsetAnchoredSequence<string> ghostRemoved = withGhost.Remove(g, R1);
         VectorClock dropFrontier = FrontierOf(ghostRemoved.CausalContext, ghostRemoved.CausalContext);
         OffsetAnchoredSequence<string> dropped = ghostRemoved.Compact(dropFrontier, ghostRemoved.CertifiedProjection(dropFrontier));
-        CollectionAssert.AreEqual(equalBase.ToArray(), dropped.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(equalBase.ToArray(), dropped.ToState().Base.ToArray());
         Assert.AreEqual(new OffsetAddress(OffsetAnchor.Head, 0), dropped.TranslateAnchor(g));
         Assert.AreEqual(VectorClock.Empty, VectorClock.FromState(dropped.ToState().BaseFrontier));
     }
@@ -326,7 +326,7 @@ internal sealed class OffsetRemoveCertificationLawTests
         VectorClock f1 = FrontierOf(withH.CausalContext, withH.CausalContext);
         OffsetAnchoredSequence<string> gen1 = withH.Compact(f1, withH.CertifiedProjection(f1));
         string[] gen1Base = ["h", "b0"];
-        CollectionAssert.AreEqual(gen1Base, gen1.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(gen1Base, gen1.ToState().Base.ToArray());
         Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(1), 1), gen1.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(0), 0)));
 
         //On the new generation the only below-line live vertex is a childless x that is certified-removed, so
@@ -338,7 +338,7 @@ internal sealed class OffsetRemoveCertificationLawTests
         OffsetAnchoredSequence<string> dropped = withXRemoved.Compact(f2, withXRemoved.CertifiedProjection(f2));
 
         //The base is untouched and the prior base-offset map still serves the previous generation's address.
-        CollectionAssert.AreEqual(gen1Base, dropped.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(gen1Base, dropped.ToState().Base.ToArray());
         Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(1), 1), dropped.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(0), 0)));
 
         //The generation did not advance: the base identity is carried unchanged, so the drop-only result
@@ -367,7 +367,7 @@ internal sealed class OffsetRemoveCertificationLawTests
         VectorClock f1 = FrontierOf(withH.CausalContext, withH.CausalContext);
         OffsetAnchoredSequence<string> gen1 = withH.Compact(f1, withH.CertifiedProjection(f1));
         string[] gen1Base = ["h", "a", "b"];
-        CollectionAssert.AreEqual(gen1Base, gen1.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(gen1Base, gen1.ToState().Base.ToArray());
 
         //The exactness contrast: offsets 0 and 1 as CURRENT-generation addresses are the identity, and as
         //PRIOR-generation addresses map through to offsets 1 and 2.
@@ -389,14 +389,14 @@ internal sealed class OffsetRemoveCertificationLawTests
 
         //Offset 2 is still unmapped in the kept map, so the current-generation address still translates to
         //itself rather than to null.
-        CollectionAssert.AreEqual(gen1Base, dropped.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(gen1Base, dropped.ToState().Base.ToArray());
         Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(2), 1), dropped.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(2), 1)));
 
         //The current-generation address still serves an insert: z lands immediately after b.
         OffsetAddress translated = dropped.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(2), 1))!;
         (OffsetAnchoredSequence<string> withZ, _) = dropped.InsertAfter(translated, "z", R3);
         string[] withZVisible = ["h", "a", "b", "z"];
-        CollectionAssert.AreEqual(withZVisible, withZ.Values.ToArray());
+        Assert.AreSequenceEqual(withZVisible, withZ.Values.ToArray());
 
         //Flavor two: a genesis generation (base, empty frontier, no maps) does a drop-only compaction; the
         //kept base-offset map is EMPTY, so every current-generation base address relies on the identity
@@ -409,7 +409,7 @@ internal sealed class OffsetRemoveCertificationLawTests
 
         //The base is untouched and the kept base-offset map is empty, yet every in-range base address still
         //translates as itself.
-        CollectionAssert.AreEqual(TripleBase.ToArray(), genesisDropped.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(TripleBase.ToArray(), genesisDropped.ToState().Base.ToArray());
         for(int offset = 0; offset < TripleBase.Length; offset++)
         {
             Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(offset), 0), genesisDropped.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(offset), 0)));
@@ -419,7 +419,7 @@ internal sealed class OffsetRemoveCertificationLawTests
         OffsetAddress translatedGenesis = genesisDropped.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(1), 0))!;
         (OffsetAnchoredSequence<string> withY, _) = genesisDropped.InsertAfter(translatedGenesis, "y", R2);
         string[] withYVisible = ["b0", "b1", "y", "b2"];
-        CollectionAssert.AreEqual(withYVisible, withY.Values.ToArray());
+        Assert.AreSequenceEqual(withYVisible, withY.Values.ToArray());
     }
 
 
@@ -465,7 +465,7 @@ internal sealed class OffsetRemoveCertificationLawTests
         VectorClock frontier = FrontierOf(withH.CausalContext, withH.CausalContext);
         OffsetAnchoredSequence<string> gen1 = withH.Compact(frontier, withH.CertifiedProjection(frontier));
         string[] gen1Base = ["h", "b0"];
-        CollectionAssert.AreEqual(gen1Base, gen1.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(gen1Base, gen1.ToState().Base.ToArray());
 
         //A generation-0 address of offset 0 is in range in the current base yet stale, so both edit paths
         //refuse it — only the generation check produces a refusal for an in-range offset.
@@ -475,10 +475,10 @@ internal sealed class OffsetRemoveCertificationLawTests
         //The current-generation address of the same offset works on both paths.
         (OffsetAnchoredSequence<string> inserted, _) = gen1.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 1), "z", R2);
         string[] withZ = ["h", "z", "b0"];
-        CollectionAssert.AreEqual(withZ, inserted.Values.ToArray());
+        Assert.AreSequenceEqual(withZ, inserted.Values.ToArray());
         OffsetAnchoredSequence<string> removed = gen1.Remove(new OffsetAddress(OffsetAnchor.AtBase(0), 1), R2);
         string[] withoutH = ["b0"];
-        CollectionAssert.AreEqual(withoutH, removed.Values.ToArray());
+        Assert.AreSequenceEqual(withoutH, removed.Values.ToArray());
 
         //A stale address whose offset is also out of range in the current base is refused for the
         //generation, and a current-generation address out of range is refused for the range. The messages
@@ -544,7 +544,7 @@ internal sealed class OffsetRemoveCertificationLawTests
         //the visible order: x drops childless, a and d convert in place.
         OffsetAnchoredSequence<int> peer = observed.Compact(frontier, checkpoint);
         int[] peerVisible = [1, 3];
-        CollectionAssert.AreEqual(peerVisible, peer.Values.ToArray());
+        Assert.AreSequenceEqual(peerVisible, peer.Values.ToArray());
 
         //The laggard and the merged state each carry an unstable vertex, so the base-materializing
         //compaction fails closed — the guard forecloses the ghost-region reorder the old test measured.
@@ -613,7 +613,7 @@ internal sealed class OffsetRemoveCertificationLawTests
         VectorClock quiescent = FrontierOf(seq.CausalContext, seq.CausalContext);
         OffsetAnchoredSequence<string> compacted = seq.Compact(quiescent, seq.CertifiedProjection(quiescent));
         string[] order = ["V", "U"];
-        CollectionAssert.AreEqual(order, compacted.Values.ToArray());
+        Assert.AreSequenceEqual(order, compacted.Values.ToArray());
     }
 
 
@@ -653,12 +653,12 @@ internal sealed class OffsetRemoveCertificationLawTests
 
         //Enumerating the visible walk crosses the hidden chain — the ordering walk must be iterative too.
         int[] expected = [0];
-        CollectionAssert.AreEqual(expected, sequence.Values.ToArray());
+        Assert.AreSequenceEqual(expected, sequence.Values.ToArray());
 
         VectorClock frontier = FrontierOf(sequence.CausalContext, sequence.CausalContext);
         ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = sequence.CertifiedProjection(frontier);
         OffsetAnchoredSequence<int> compacted = sequence.Compact(frontier, checkpoint);
-        CollectionAssert.AreEqual(expected, compacted.Values.ToArray());
+        Assert.AreSequenceEqual(expected, compacted.Values.ToArray());
 
         //The chain drops without converting, so the base [0] is unchanged and every dropped dot translates
         //to the generation-0 address of the slot it hung under.
@@ -695,8 +695,8 @@ internal sealed class OffsetRemoveCertificationLawTests
         //The conversion carried the value into the base, hidden, with the remove-dot keyed to the slot.
         string[] pendingBase = ["b0", "x"];
         string[] hidden = ["b0"];
-        CollectionAssert.AreEqual(pendingBase, generationOne.ToState().Base.ToArray());
-        CollectionAssert.AreEqual(hidden, generationOne.Values.ToArray());
+        Assert.AreSequenceEqual(pendingBase, generationOne.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(hidden, generationOne.Values.ToArray());
         Assert.AreEqual(frontier, VectorClock.FromState(generationOne.ToState().BaseFrontier));
         OffsetBaseRemovalEntry marking = generationOne.ToState().RemovedBaseOffsets[0];
         Assert.AreEqual(1, marking.Offset);
@@ -708,14 +708,14 @@ internal sealed class OffsetRemoveCertificationLawTests
         VectorClock certified = FrontierOf(removed.CausalContext, removed.CausalContext);
         ImmutableArray<SequenceCheckpointEntry<string>> certifiedProjection = generationOne.CertifiedProjection(certified);
         SequenceCheckpointEntry<string>[] expectedCertified = [new SequenceCheckpointEntry<string>(SentinelDot(0), "b0")];
-        CollectionAssert.AreEqual(expectedCertified, certifiedProjection.ToArray());
+        Assert.AreSequenceEqual(expectedCertified, certifiedProjection.ToArray());
 
         //Compaction at the certifying frontier keeps the slot: the base, the marking, and the hidden
         //ordering placeholder all persist, and the converted dot keeps translating to the kept slot.
         OffsetAnchoredSequence<string> laterGeneration = generationOne.Compact(certified, certifiedProjection);
         Assert.AreEqual(generationOne, laterGeneration);
-        CollectionAssert.AreEqual(pendingBase, laterGeneration.ToState().Base.ToArray());
-        CollectionAssert.AreEqual(hidden, laterGeneration.Values.ToArray());
+        Assert.AreSequenceEqual(pendingBase, laterGeneration.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(hidden, laterGeneration.Values.ToArray());
         OffsetBaseRemovalEntry persisted = laterGeneration.ToState().RemovedBaseOffsets[0];
         Assert.AreEqual(1, persisted.Offset);
         Assert.HasCount(1, persisted.RemoveDots);
@@ -747,7 +747,7 @@ internal sealed class OffsetRemoveCertificationLawTests
         ImmutableArray<SequenceCheckpointEntry<string>> m2Projection = m2.CertifiedProjection(frontier);
 
         //The unrestricted projection agrees across the two members despite their divergent unstable children.
-        CollectionAssert.AreEqual(m1Projection.ToArray(), m2Projection.ToArray());
+        Assert.AreSequenceEqual(m1Projection.ToArray(), m2Projection.ToArray());
 
         //But s, u1, and u2 all sit above the frontier, so the base-materializing compaction fails closed
         //on either member — the guard forecloses the re-anchor determinism hazard entirely.

@@ -139,7 +139,7 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
         {
             TSequence compacted = Context.Compact(input.Sequence, input.Frontier, input.Checkpoint);
 
-            CollectionAssert.AreEqual(ToArray(Context.Values(input.Sequence)), ToArray(Context.Values(compacted)));
+            Assert.AreSequenceEqual(ToArray(Context.Values(input.Sequence)), ToArray(Context.Values(compacted)));
         });
     }
 
@@ -182,7 +182,7 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
                 Context.Compact(input.A, input.Frontier, input.Checkpoint),
                 Context.Compact(input.B, input.Frontier, input.Checkpoint));
 
-            CollectionAssert.AreEqual(ToArray(Context.Values(compactThenMerge)), ToArray(Context.Values(mergeOfCompactions)));
+            Assert.AreSequenceEqual(ToArray(Context.Values(compactThenMerge)), ToArray(Context.Values(mergeOfCompactions)));
         });
     }
 
@@ -259,7 +259,7 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
             TSequence order2 = Context.Merge(triple.c, Context.Merge(triple.a, triple.b));
 
             Assert.AreEqual(order1, order2);
-            CollectionAssert.AreEqual(ToArray(Context.Values(order1)), ToArray(Context.Values(order2)));
+            Assert.AreSequenceEqual(ToArray(Context.Values(order1)), ToArray(Context.Values(order2)));
         });
     }
 
@@ -319,7 +319,7 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
             Assert.HasCount(before.Count - 1, after);
             var expected = new List<TValue>(before);
             expected.RemoveAt(targetIndex);
-            CollectionAssert.AreEqual(ToArray(expected), ToArray(after));
+            Assert.AreSequenceEqual(ToArray(expected), ToArray(after));
         });
     }
 
@@ -332,10 +332,10 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
         GenFullAndBehindHistory.Sample(input =>
         {
             TValue[] full = ToArray(Context.Values(input.Full));
-            CollectionAssert.AreEqual(full, ToArray(Context.Values(Context.Merge(input.Full, Context.Empty))));
-            CollectionAssert.AreEqual(full, ToArray(Context.Values(Context.Merge(Context.Empty, input.Full))));
-            CollectionAssert.AreEqual(full, ToArray(Context.Values(Context.Merge(input.Full, input.Behind))));
-            CollectionAssert.AreEqual(full, ToArray(Context.Values(Context.Merge(input.Behind, input.Full))));
+            Assert.AreSequenceEqual(full, ToArray(Context.Values(Context.Merge(input.Full, Context.Empty))));
+            Assert.AreSequenceEqual(full, ToArray(Context.Values(Context.Merge(Context.Empty, input.Full))));
+            Assert.AreSequenceEqual(full, ToArray(Context.Values(Context.Merge(input.Full, input.Behind))));
+            Assert.AreSequenceEqual(full, ToArray(Context.Values(Context.Merge(input.Behind, input.Full))));
         });
     }
 
@@ -376,13 +376,13 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
         ImmutableArray<SequenceCheckpointEntry<TValue>> projectionAtF2 = certifyProjection(withRemove, f2);
         TValue[] bothValues = [FreshValue, FreshValue];
         TValue[] survivorOnly = [FreshValue];
-        CollectionAssert.AreEqual(bothValues, ProjectionValues(projectionAtF1));
-        CollectionAssert.AreEqual(survivorOnly, ProjectionValues(projectionAtF2));
+        Assert.AreSequenceEqual(bothValues, ProjectionValues(projectionAtF1));
+        Assert.AreSequenceEqual(survivorOnly, ProjectionValues(projectionAtF2));
 
         TSequence compactedAtF1 = compact(withRemove, f1, projectionAtF1);
         TSequence compactedAtF2 = compact(withRemove, f2, projectionAtF2);
-        CollectionAssert.AreEqual(survivorOnly, ToArray(Context.Values(compactedAtF1)));
-        CollectionAssert.AreEqual(survivorOnly, ToArray(Context.Values(compactedAtF2)));
+        Assert.AreSequenceEqual(survivorOnly, ToArray(Context.Values(compactedAtF1)));
+        Assert.AreSequenceEqual(survivorOnly, ToArray(Context.Values(compactedAtF2)));
         Assert.IsNotNull(translateAnchor(compactedAtF1, anchorB));
         Assert.IsNotNull(translateAnchor(compactedAtF2, anchorB));
 
@@ -408,8 +408,8 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
         TSequence y = scenario.GhostHolder;
 
         TValue[] visible = ToArray(Context.Values(x));
-        CollectionAssert.AreEqual(visible, ToArray(Context.Values(Context.Merge(x, y))));
-        CollectionAssert.AreEqual(visible, ToArray(Context.Values(Context.Merge(y, x))));
+        Assert.AreSequenceEqual(visible, ToArray(Context.Values(Context.Merge(x, y))));
+        Assert.AreSequenceEqual(visible, ToArray(Context.Values(Context.Merge(y, x))));
         Assert.AreEqual(x, compact(Context.Merge(x, y), scenario.Frontier, scenario.Checkpoint));
         Assert.AreEqual(x, compact(Context.Merge(y, x), scenario.Frontier, scenario.Checkpoint));
     }
@@ -436,8 +436,8 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
 
         //The honest ghost-holder is not stale: it re-enters the ghost with its tombstone and never throws.
         TValue[] visible = ToArray(Context.Values(x));
-        CollectionAssert.AreEqual(visible, ToArray(Context.Values(Context.Merge(x, y))));
-        CollectionAssert.AreEqual(visible, ToArray(Context.Values(Context.Merge(y, x))));
+        Assert.AreSequenceEqual(visible, ToArray(Context.Values(Context.Merge(x, y))));
+        Assert.AreSequenceEqual(visible, ToArray(Context.Values(Context.Merge(y, x))));
     }
 
 

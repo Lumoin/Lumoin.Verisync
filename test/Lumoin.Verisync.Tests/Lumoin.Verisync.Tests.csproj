@@ -14,11 +14,11 @@
     <TestingExtensionsProfile>AllMicrosoft</TestingExtensionsProfile>
     <IsTestApplication>true</IsTestApplication>
     <MSTestAnalysisMode>Recommended</MSTestAnalysisMode>
-    <!-- MSTest.Sdk injects its extension references after the project body, so their versions are
-         steered through these SDK-recognized properties; PackageReference Update blocks never match
-         the injected items. Keep Directory.Packages.props in step — verify-packages.ps1 checks the
-         signatures of exactly the versions listed there. -->
-    <MicrosoftTestingExtensionsCodeCoverageVersion>18.8.0</MicrosoftTestingExtensionsCodeCoverageVersion>
+    <!-- MSTest.Sdk injects its extension references (and, under central package management,
+         their PackageVersion items) after the project body, so their versions are steered
+         through these SDK-recognized properties; PackageReference/PackageVersion Update blocks
+         never match the injected items. Only deviations from the Sdk defaults are set here. -->
+    <MicrosoftTestingExtensionsCodeCoverageVersion>18.9.0</MicrosoftTestingExtensionsCodeCoverageVersion>
     <!-- Tests define source-generated JSON contexts and CBOR encoders to exercise the serialization
          adapters, so they opt out of the serialization banlist. -->
     <EnableSerializationBan>false</EnableSerializationBan>

@@ -156,7 +156,7 @@ internal sealed class CrdtStateJsonTests
 
         Assert.AreEqual(source, back);
         string[] expected = ["a", "c"];
-        CollectionAssert.AreEqual(expected, back.Values.ToArray());
+        Assert.AreSequenceEqual(expected, back.Values.ToArray());
     }
 
 

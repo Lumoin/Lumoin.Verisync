@@ -282,8 +282,8 @@ internal sealed class ReconciliationMemoryAccountabilityTests
 
             //The exchange converges, which proves the pooled cell backings carried the reconciliation correctly,
             //not merely that they balanced.
-            CollectionAssert.AreEqual(ExpectedConverged, Sorted(initiatorResult));
-            CollectionAssert.AreEqual(ExpectedConverged, Sorted(responderResult));
+            Assert.AreSequenceEqual(ExpectedConverged, Sorted(initiatorResult));
+            Assert.AreSequenceEqual(ExpectedConverged, Sorted(responderResult));
             Assert.HasCount(3, initiator.DecodedItems);
         }
 

@@ -143,8 +143,8 @@ internal sealed class AntiEntropySessionTests
         responder.Complete();
         await Task.WhenAll(initiatorRun, responderRun).ConfigureAwait(false);
 
-        CollectionAssert.AreEqual(ExpectedConverged, Sorted(initiatorResult));
-        CollectionAssert.AreEqual(ExpectedConverged, Sorted(responderResult));
+        Assert.AreSequenceEqual(ExpectedConverged, Sorted(initiatorResult));
+        Assert.AreSequenceEqual(ExpectedConverged, Sorted(responderResult));
         Assert.HasCount(3, initiator.DecodedItems);
         Assert.IsTrue(initiatorRun.IsCompletedSuccessfully);
         Assert.IsTrue(responderRun.IsCompletedSuccessfully);
@@ -596,8 +596,8 @@ internal sealed class AntiEntropySessionTests
         responder.Complete();
         await Task.WhenAll(initiatorRun, responderRun).ConfigureAwait(false);
 
-        CollectionAssert.AreEqual(ExpectedConverged, Sorted(initiatorResult));
-        CollectionAssert.AreEqual(ExpectedConverged, Sorted(responderResult));
+        Assert.AreSequenceEqual(ExpectedConverged, Sorted(initiatorResult));
+        Assert.AreSequenceEqual(ExpectedConverged, Sorted(responderResult));
         Assert.HasCount(3, initiator.DecodedItems);
     }
 

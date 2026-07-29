@@ -53,12 +53,12 @@ internal sealed class RaftNodeStateTests
         //index rediscovered from zero and no known leader (Figure 2: commit index is not durable).
         RaftNodeState<string> restoredState = restored.ToState();
         Assert.AreEqual(snapshot.CurrentTerm, restoredState.CurrentTerm);
-        CollectionAssert.AreEqual(snapshot.VotedFor.ToArray(), restoredState.VotedFor.ToArray());
+        Assert.AreSequenceEqual(snapshot.VotedFor.ToArray(), restoredState.VotedFor.ToArray());
         Assert.HasCount(snapshot.Log.Length, restoredState.Log);
         Assert.AreEqual(RaftRole.Follower, restored.Role);
         Assert.AreEqual(0, restored.CommitIndex);
         Assert.IsNull(restored.LeaderId);
-        CollectionAssert.AreEqual(Members.ToArray(), restored.Members.ToArray());
+        Assert.AreSequenceEqual(Members.ToArray(), restored.Members.ToArray());
     }
 
 

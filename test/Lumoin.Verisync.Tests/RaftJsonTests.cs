@@ -68,7 +68,7 @@ internal sealed class RaftJsonTests
         Assert.AreEqual(request.LeaderCommit, back.AppendRequest.LeaderCommit);
 
         //The record's ImmutableArray member compares by reference, so the entries are compared by content.
-        CollectionAssert.AreEqual(ToEntryArray(request.Entries), ToEntryArray(back.AppendRequest.Entries));
+        Assert.AreSequenceEqual(ToEntryArray(request.Entries), ToEntryArray(back.AppendRequest.Entries));
     }
 
 
@@ -113,7 +113,7 @@ internal sealed class RaftJsonTests
         RaftNodeState<int> back = RoundTripState(state);
 
         Assert.AreEqual(state.CurrentTerm, back.CurrentTerm);
-        CollectionAssert.AreEqual(state.VotedFor.ToArray(), back.VotedFor.ToArray());
+        Assert.AreSequenceEqual(state.VotedFor.ToArray(), back.VotedFor.ToArray());
         Assert.HasCount(2, back.Log);
         Assert.AreEqual(9, back.Log[1].Command);
     }

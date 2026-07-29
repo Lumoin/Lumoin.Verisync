@@ -56,7 +56,7 @@ internal sealed class LogCommitmentSocketTests
         Assert.IsTrue(received[2].PreviousSealDigest!.Value.Span.SequenceEqual(received[1].Digest.Span));
 
         //The attestation proofs rode along with the seal and arrived in order.
-        CollectionAssert.AreEqual(third.Proofs.ToArray(), received[2].Proofs.ToArray());
+        Assert.AreSequenceEqual(third.Proofs.ToArray(), received[2].Proofs.ToArray());
     }
 
 

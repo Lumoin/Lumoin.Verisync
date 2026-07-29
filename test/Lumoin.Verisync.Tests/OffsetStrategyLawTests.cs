@@ -113,7 +113,7 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
         VectorClock certifiedFrontier)
     {
         int[] uncertifiedBase = [FreshValue, FreshValue];
-        CollectionAssert.AreEqual(uncertifiedBase, uncertifiedCompacted.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(uncertifiedBase, uncertifiedCompacted.ToState().Base.ToArray());
         Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(1), 1), uncertifiedCompacted.TranslateAnchor(removedAnchor));
         Assert.AreEqual(uncertifiedFrontier, VectorClock.FromState(uncertifiedCompacted.ToState().BaseFrontier));
         OffsetBaseRemovalEntry marking = uncertifiedCompacted.ToState().RemovedBaseOffsets[0];
@@ -121,7 +121,7 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
         Assert.HasCount(1, marking.RemoveDots);
 
         int[] certifiedBase = [FreshValue];
-        CollectionAssert.AreEqual(certifiedBase, certifiedCompacted.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(certifiedBase, certifiedCompacted.ToState().Base.ToArray());
         Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(0), 1), certifiedCompacted.TranslateAnchor(removedAnchor));
         Assert.AreEqual(certifiedFrontier, VectorClock.FromState(certifiedCompacted.ToState().BaseFrontier));
     }

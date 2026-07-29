@@ -60,7 +60,7 @@ internal sealed class CheckpointedSequenceTests
         (CheckpointedSequence<Rga<string>, string, Dot> withB, _) = withA.InsertAfter(idA, "B", R1);
 
         string[] expected = ["A", "B"];
-        CollectionAssert.AreEqual(expected, withB.Values.ToArray());
+        Assert.AreSequenceEqual(expected, withB.Values.ToArray());
         Assert.HasCount(0, withB.Checkpoint);
     }
 
@@ -127,8 +127,8 @@ internal sealed class CheckpointedSequenceTests
 
         string[] liveExpected = ["A", "B", "C"];
         string[] checkpointExpected = ["A", "B"];
-        CollectionAssert.AreEqual(liveExpected, edited.Values.ToArray());
-        CollectionAssert.AreEqual(checkpointExpected, CheckpointValues(edited.Checkpoint));
+        Assert.AreSequenceEqual(liveExpected, edited.Values.ToArray());
+        Assert.AreSequenceEqual(checkpointExpected, CheckpointValues(edited.Checkpoint));
     }
 
 
@@ -161,7 +161,7 @@ internal sealed class CheckpointedSequenceTests
 
         Assert.AreEqual(new Ballot(2, R1), merged.CheckpointBallot);
         string[] expected = ["A", "B"];
-        CollectionAssert.AreEqual(expected, CheckpointValues(merged.Checkpoint));
+        Assert.AreSequenceEqual(expected, CheckpointValues(merged.Checkpoint));
         Assert.AreEqual(later.Commitment, merged.Commitment);
     }
 

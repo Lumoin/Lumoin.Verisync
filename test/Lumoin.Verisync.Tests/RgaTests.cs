@@ -26,7 +26,7 @@ internal sealed class RgaTests
         (Rga<string> rga, _) = Rga<string>.Empty.InsertAtHead("A", R1);
 
         string[] expected = ["A"];
-        CollectionAssert.AreEqual(expected, rga.Values.ToArray());
+        Assert.AreSequenceEqual(expected, rga.Values.ToArray());
     }
 
 
@@ -37,7 +37,7 @@ internal sealed class RgaTests
         (Rga<string> withB, _) = withA.InsertAfter(idA, "B", R1);
 
         string[] expected = ["A", "B"];
-        CollectionAssert.AreEqual(expected, withB.Values.ToArray());
+        Assert.AreSequenceEqual(expected, withB.Values.ToArray());
     }
 
 
@@ -89,7 +89,7 @@ internal sealed class RgaTests
         _ = withA.Remove(idA, R1);
 
         string[] expected = ["A"];
-        CollectionAssert.AreEqual(expected, withA.Values.ToArray());
+        Assert.AreSequenceEqual(expected, withA.Values.ToArray());
     }
 
 
@@ -105,7 +105,7 @@ internal sealed class RgaTests
         //Truly concurrent inserts over the same observed state mint equal counters (both 2), so the
         //replica id breaks the tie deterministically: R2 orders above R1.
         string[] expected = ["A", "C", "B"];
-        CollectionAssert.AreEqual(expected, merged.Values.ToArray());
+        Assert.AreSequenceEqual(expected, merged.Values.ToArray());
     }
 
 
@@ -120,8 +120,8 @@ internal sealed class RgaTests
         (Rga<string> merged, _) = Rga<string>.Empty.Merge(withB).InsertAfter(idA, "C", R2);
 
         string[] expected = ["A", "C", "B"];
-        CollectionAssert.AreEqual(expected, merged.Values.ToArray());
-        CollectionAssert.AreEqual(expected, withB.Merge(merged).Values.ToArray());
+        Assert.AreSequenceEqual(expected, merged.Values.ToArray());
+        Assert.AreSequenceEqual(expected, withB.Merge(merged).Values.ToArray());
     }
 
 
@@ -132,7 +132,7 @@ internal sealed class RgaTests
         (Rga<string> withB, _) = withA.InsertAfter(idA, "B", R1);
         (Rga<string> withC, _) = withA.InsertAfter(idA, "C", R2);
 
-        CollectionAssert.AreEqual(withB.Merge(withC).Values.ToArray(), withC.Merge(withB).Values.ToArray());
+        Assert.AreSequenceEqual(withB.Merge(withC).Values.ToArray(), withC.Merge(withB).Values.ToArray());
     }
 
 
@@ -147,7 +147,7 @@ internal sealed class RgaTests
 
         //B is hidden but retained for ordering; D inserts after it with the higher counter.
         string[] expected = ["A", "D", "C"];
-        CollectionAssert.AreEqual(expected, withD.Values.ToArray());
+        Assert.AreSequenceEqual(expected, withD.Values.ToArray());
     }
 
 
@@ -201,7 +201,7 @@ internal sealed class RgaTests
 
         Assert.AreEqual(1, reconstructed.Count);
         string[] expected = ["A"];
-        CollectionAssert.AreEqual(expected, reconstructed.Values.ToArray());
+        Assert.AreSequenceEqual(expected, reconstructed.Values.ToArray());
     }
 
 

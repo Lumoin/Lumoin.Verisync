@@ -46,7 +46,7 @@ internal sealed class ConsensusNodeTests
 
         await node.RunAsync(requests.Reader.ReadAllAsync(TestContext.CancellationToken), SendReply, persist, TestContext.CancellationToken).ConfigureAwait(false);
 
-        CollectionAssert.AreEqual(ExpectedPersistThenReplyEvents, events);
+        Assert.AreSequenceEqual(ExpectedPersistThenReplyEvents, events);
 
         //Each persisted state is the new acceptor state for that request: the promise, then the accept.
         Assert.AreEqual(FastBallot.Classic(2, R1), persisted[0].Promised);

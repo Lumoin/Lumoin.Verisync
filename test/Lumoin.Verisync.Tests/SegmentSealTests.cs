@@ -28,8 +28,8 @@ internal sealed class SegmentSealTests
             0, 0, 0, 2,                                     //Commitment length 2.
             0xAA, 0xBB                                      //Commitment.
         ];
-        CollectionAssert.AreEqual(expected, seal.CanonicalBytes.ToArray());
-        CollectionAssert.AreEqual(SHA256.HashData(seal.CanonicalBytes.Span), seal.Digest.ToArray());
+        Assert.AreSequenceEqual(expected, seal.CanonicalBytes.ToArray());
+        Assert.AreSequenceEqual(SHA256.HashData(seal.CanonicalBytes.Span), seal.Digest.ToArray());
     }
 
 
@@ -45,7 +45,7 @@ internal sealed class SegmentSealTests
         Assert.AreEqual(1UL, ReadUInt64(canonical, 1));
         Assert.AreEqual(3UL, ReadUInt64(canonical, 9));
         Assert.AreEqual(32, ReadInt32(canonical, 17));
-        CollectionAssert.AreEqual(first.Digest.ToArray(), canonical[21..53]);
+        Assert.AreSequenceEqual(first.Digest.ToArray(), canonical[21..53]);
         Assert.AreEqual(1, ReadInt32(canonical, 53));
         Assert.AreEqual(0x22, canonical[57]);
         Assert.HasCount(58, canonical);
@@ -74,8 +74,8 @@ internal sealed class SegmentSealTests
 
         SegmentSeal<string> attested = unattested.WithProofs(Proof);
 
-        CollectionAssert.AreEqual(unattested.CanonicalBytes.ToArray(), attested.CanonicalBytes.ToArray());
-        CollectionAssert.AreEqual(unattested.Digest.ToArray(), attested.Digest.ToArray());
+        Assert.AreSequenceEqual(unattested.CanonicalBytes.ToArray(), attested.CanonicalBytes.ToArray());
+        Assert.AreSequenceEqual(unattested.Digest.ToArray(), attested.Digest.ToArray());
         Assert.HasCount(1, attested.Proofs);
         Assert.AreEqual(unattested, attested);
     }

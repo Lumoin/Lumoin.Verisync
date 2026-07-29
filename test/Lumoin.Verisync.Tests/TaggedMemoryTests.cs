@@ -45,7 +45,7 @@ internal sealed class TaggedMemoryTests
         byte[] expected = [1, 2, 3, 4];
         using TestTaggedMemory instance = CreateInstance(expected, VerisyncTags.ReplicaId);
 
-        CollectionAssert.AreEqual(expected, instance.AsReadOnlySpan().ToArray());
+        Assert.AreSequenceEqual(expected, instance.AsReadOnlySpan().ToArray());
     }
 
 
@@ -55,7 +55,7 @@ internal sealed class TaggedMemoryTests
         byte[] expected = [5, 6, 7, 8];
         using TestTaggedMemory instance = CreateInstance(expected, VerisyncTags.ReplicaId);
 
-        CollectionAssert.AreEqual(expected, instance.AsReadOnlyMemory().ToArray());
+        Assert.AreSequenceEqual(expected, instance.AsReadOnlyMemory().ToArray());
     }
 
 

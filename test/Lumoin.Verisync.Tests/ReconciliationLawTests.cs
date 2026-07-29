@@ -122,7 +122,7 @@ internal sealed class ReconciliationLawTests
 
             string[] expected = [.. HexSet([.. difference.LeftOnly, .. difference.RightOnly])];
             string[] decoded = [.. decoder.DecodedItems.Select(item => Convert.ToHexString(item.Span)).Order()];
-            CollectionAssert.AreEqual(expected, decoded);
+            Assert.AreSequenceEqual(expected, decoded);
         });
     }
 
@@ -174,7 +174,7 @@ internal sealed class ReconciliationLawTests
 
             Assert.IsTrue(decoder.IsComplete);
             string[] after = [.. decoder.DecodedItems.Select(item => Convert.ToHexString(item.Span)).Order()];
-            CollectionAssert.AreEqual(before, after);
+            Assert.AreSequenceEqual(before, after);
         });
     }
 
@@ -218,7 +218,7 @@ internal sealed class ReconciliationLawTests
             {
                 string[] expected = [.. HexSet([.. input.difference.LeftOnly, .. input.difference.RightOnly])];
                 string[] decoded = [.. decoder.DecodedItems.Select(item => Convert.ToHexString(item.Span)).Order()];
-                CollectionAssert.AreEqual(expected, decoded);
+                Assert.AreSequenceEqual(expected, decoded);
             }
         });
     }
@@ -248,7 +248,7 @@ internal sealed class ReconciliationLawTests
 
             //Restarting from the same bytes reproduces the identical sequence (pure function of item bytes).
             long[] second = WalkIndices(item, 12);
-            CollectionAssert.AreEqual(first, second);
+            Assert.AreSequenceEqual(first, second);
         });
     }
 

@@ -364,7 +364,7 @@ internal sealed class SocketClusterTests
             List<int> outerLengths = await ReadRawOuterFrameLengths(PipeReader.Create(server.GetStream())).ConfigureAwait(false);
 
             int[] expected = messages.Select(m => padding.PaddedLength(Encoding.UTF8.GetByteCount(m))).ToArray();
-            CollectionAssert.AreEqual(expected, outerLengths.ToArray());
+            Assert.AreSequenceEqual(expected, outerLengths.ToArray());
         }
         finally
         {

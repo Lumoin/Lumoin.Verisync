@@ -32,7 +32,7 @@ internal sealed class OffsetAnchoredSequenceTests
         OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
 
         string[] expected = ["b0", "b1", "b2"];
-        CollectionAssert.AreEqual(expected, sequence.Values.ToArray());
+        Assert.AreSequenceEqual(expected, sequence.Values.ToArray());
     }
 
 
@@ -44,7 +44,7 @@ internal sealed class OffsetAnchoredSequenceTests
         (OffsetAnchoredSequence<string> inserted, _) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(1), 0), "x", R1);
 
         string[] expected = ["b0", "b1", "x", "b2"];
-        CollectionAssert.AreEqual(expected, inserted.Values.ToArray());
+        Assert.AreSequenceEqual(expected, inserted.Values.ToArray());
     }
 
 
@@ -56,7 +56,7 @@ internal sealed class OffsetAnchoredSequenceTests
         (OffsetAnchoredSequence<string> inserted, _) = sequence.InsertAtHead("x", R1);
 
         string[] expected = ["x", "b0", "b1", "b2"];
-        CollectionAssert.AreEqual(expected, inserted.Values.ToArray());
+        Assert.AreSequenceEqual(expected, inserted.Values.ToArray());
     }
 
 
@@ -69,7 +69,7 @@ internal sealed class OffsetAnchoredSequenceTests
         (OffsetAnchoredSequence<string> chained, _) = sequence.InsertAfter(x, "y", R1);
 
         string[] expected = ["b0", "x", "y", "b1", "b2"];
-        CollectionAssert.AreEqual(expected, chained.Values.ToArray());
+        Assert.AreSequenceEqual(expected, chained.Values.ToArray());
     }
 
 
@@ -87,7 +87,7 @@ internal sealed class OffsetAnchoredSequenceTests
 
         //b1 is hidden yet still anchors: x sits where b1 was, between b0 and b2.
         string[] expected = ["b0", "x", "b2"];
-        CollectionAssert.AreEqual(expected, inserted.Values.ToArray());
+        Assert.AreSequenceEqual(expected, inserted.Values.ToArray());
     }
 
 
@@ -103,7 +103,7 @@ internal sealed class OffsetAnchoredSequenceTests
         Assert.AreEqual(2, removed.CausalContext[R1]);
 
         string[] expected = ["b0", "b1", "b2"];
-        CollectionAssert.AreEqual(expected, removed.Values.ToArray());
+        Assert.AreSequenceEqual(expected, removed.Values.ToArray());
     }
 
 
@@ -116,7 +116,7 @@ internal sealed class OffsetAnchoredSequenceTests
 
         OffsetAnchoredSequence<string> merged = byFirst.Merge(bySecond);
 
-        CollectionAssert.AreEqual(merged.Values.ToArray(), bySecond.Merge(byFirst).Values.ToArray());
+        Assert.AreSequenceEqual(merged.Values.ToArray(), bySecond.Merge(byFirst).Values.ToArray());
         Assert.HasCount(5, merged.Values);
         Assert.AreEqual("b0", merged.Values[0]);
     }
@@ -134,7 +134,7 @@ internal sealed class OffsetAnchoredSequenceTests
         (OffsetAnchoredSequence<string> merged, _) = shared.Merge(withChain).InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "z", R2);
 
         string[] expected = ["b0", "z", "x", "y", "b1", "b2"];
-        CollectionAssert.AreEqual(expected, merged.Values.ToArray());
+        Assert.AreSequenceEqual(expected, merged.Values.ToArray());
     }
 
 
@@ -271,8 +271,8 @@ internal sealed class OffsetAnchoredSequenceTests
 
         //The visible values are unchanged and x now lives in the base at its linearization position.
         string[] expectedValues = ["b0", "x", "b1", "b2"];
-        CollectionAssert.AreEqual(expectedValues, compacted.Values.ToArray());
-        CollectionAssert.AreEqual(expectedValues, compacted.Base.ToArray());
+        Assert.AreSequenceEqual(expectedValues, compacted.Values.ToArray());
+        Assert.AreSequenceEqual(expectedValues, compacted.Base.ToArray());
     }
 
 
@@ -294,8 +294,8 @@ internal sealed class OffsetAnchoredSequenceTests
 
         string[] expectedBase = ["b0", "b1", "x", "b2"];
         string[] expectedValues = ["b0", "x", "b2"];
-        CollectionAssert.AreEqual(expectedBase, compacted.Base.ToArray());
-        CollectionAssert.AreEqual(expectedValues, compacted.Values.ToArray());
+        Assert.AreSequenceEqual(expectedBase, compacted.Base.ToArray());
+        Assert.AreSequenceEqual(expectedValues, compacted.Values.ToArray());
     }
 
 
@@ -403,7 +403,7 @@ internal sealed class OffsetAnchoredSequenceTests
 
         (OffsetAnchoredSequence<string> inserted, _) = compacted.InsertAfter(translated!, "after-b1", R2);
         string[] expected = ["b0", "x", "b1", "after-b1", "b2"];
-        CollectionAssert.AreEqual(expected, inserted.Values.ToArray());
+        Assert.AreSequenceEqual(expected, inserted.Values.ToArray());
     }
 
 
@@ -463,7 +463,7 @@ internal sealed class OffsetAnchoredSequenceTests
 
         OffsetAnchoredSequence<string> merged = compactedA.Merge(compactedB);
 
-        CollectionAssert.AreEqual(merged.Values.ToArray(), compactedB.Merge(compactedA).Values.ToArray());
+        Assert.AreSequenceEqual(merged.Values.ToArray(), compactedB.Merge(compactedA).Values.ToArray());
         Assert.AreEqual(merged, compactedB.Merge(compactedA));
 
         //An uncompacted operand carries the previous generation identity, which the fence rejects.
@@ -536,7 +536,7 @@ internal sealed class OffsetAnchoredSequenceTests
         (OffsetAnchoredSequence<string> withZ, _) = withY.InsertAfter(y, "z", R1);
 
         Dot[] expected = [new Dot(R1, 2), new Dot(R1, 3), new Dot(R2, 1)];
-        CollectionAssert.AreEqual(expected, withZ.UnstableInserts(VectorClock.Empty).ToArray());
+        Assert.AreSequenceEqual(expected, withZ.UnstableInserts(VectorClock.Empty).ToArray());
 
         //The state's own context covers every insert-dot, so the probe reads empty there.
         Assert.IsTrue(withZ.UnstableInserts(withZ.CausalContext).IsEmpty);
@@ -566,16 +566,16 @@ internal sealed class OffsetAnchoredSequenceTests
         //The determinism inclusion: the projection carries the locally hidden b, identically on both.
         ImmutableArray<SequenceCheckpointEntry<string>> m1Projection = m1.CertifiedProjection(frontier);
         ImmutableArray<SequenceCheckpointEntry<string>> m2Projection = m2.CertifiedProjection(frontier);
-        CollectionAssert.AreEqual(m2Projection.ToArray(), m1Projection.ToArray());
+        Assert.AreSequenceEqual(m2Projection.ToArray(), m1Projection.ToArray());
 
         OffsetAnchoredSequence<string> m1Compacted = m1.Compact(frontier, m1Projection);
         OffsetAnchoredSequence<string> m2Compacted = m2.Compact(frontier, m2Projection);
         string[] expectedBase = ["a", "b"];
         string[] m1Visible = ["a"];
-        CollectionAssert.AreEqual(expectedBase, m1Compacted.ToState().Base.ToArray());
-        CollectionAssert.AreEqual(expectedBase, m2Compacted.ToState().Base.ToArray());
-        CollectionAssert.AreEqual(m1Visible, m1Compacted.Values.ToArray());
-        CollectionAssert.AreEqual(expectedBase, m2Compacted.Values.ToArray());
+        Assert.AreSequenceEqual(expectedBase, m1Compacted.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(expectedBase, m2Compacted.ToState().Base.ToArray());
+        Assert.AreSequenceEqual(m1Visible, m1Compacted.Values.ToArray());
+        Assert.AreSequenceEqual(expectedBase, m2Compacted.Values.ToArray());
 
         //The remover's marking rides at offset 1 carrying exactly the remove-dot (R1,3); the laggard
         //never observed the remove and carries no marking.
@@ -630,7 +630,7 @@ internal sealed class OffsetAnchoredSequenceTests
         Assert.AreEqual(probe.IsEmpty, compactionPassed);
 
         //The completeness oracle: the probe equals the naively recomputed uncovered set, in order.
-        CollectionAssert.AreEqual(NaiveUncoveredInsertDots(full, frontier), probe.ToArray());
+        Assert.AreSequenceEqual(NaiveUncoveredInsertDots(full, frontier), probe.ToArray());
     }
 
 

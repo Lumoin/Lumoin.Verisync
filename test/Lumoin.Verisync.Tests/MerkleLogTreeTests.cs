@@ -38,7 +38,7 @@ internal sealed class MerkleLogTreeTests
 
         byte[] actual = MerkleLogTree.Empty.ComputeRoot(Sha256).ToArray();
 
-        CollectionAssert.AreEqual(expected, actual);
+        Assert.AreSequenceEqual(expected, actual);
     }
 
 
@@ -50,7 +50,7 @@ internal sealed class MerkleLogTreeTests
 
         byte[] actual = MerkleLogTree.Empty.ComputeRoot(Sha256).ToArray();
 
-        CollectionAssert.AreEqual(expected, actual);
+        Assert.AreSequenceEqual(expected, actual);
     }
 
 
@@ -65,7 +65,7 @@ internal sealed class MerkleLogTreeTests
 
         byte[] actual = tree.ComputeRoot(Sha256).ToArray();
 
-        CollectionAssert.AreEqual(expected, actual);
+        Assert.AreSequenceEqual(expected, actual);
     }
 
 
@@ -79,7 +79,7 @@ internal sealed class MerkleLogTreeTests
         _ = original.Append(new byte[] { 3 });
 
         Assert.AreEqual(countBefore, original.Count);
-        CollectionAssert.AreEqual(rootBefore, original.ComputeRoot(Sha256).ToArray());
+        Assert.AreSequenceEqual(rootBefore, original.ComputeRoot(Sha256).ToArray());
     }
 
 
@@ -103,7 +103,7 @@ internal sealed class MerkleLogTreeTests
 
         //A two-leaf tree of identical leaves still differs from the single-leaf tree:
         //MTH(D[2]) = H(0x01 || leafHash || leafHash) != leafHash.
-        CollectionAssert.AreNotEqual(one.ComputeRoot(Sha256).ToArray(), two.ComputeRoot(Sha256).ToArray());
+        Assert.AreNotSequenceEqual(one.ComputeRoot(Sha256).ToArray(), two.ComputeRoot(Sha256).ToArray());
     }
 
 
@@ -130,7 +130,7 @@ internal sealed class MerkleLogTreeTests
             MerkleLogTree tree = Build(CorpusLeaves(n));
             byte[] expected = FromHex(expectedRoots[n]);
 
-            CollectionAssert.AreEqual(expected, tree.ComputeRoot(Sha256).ToArray(), $"root for n = {n}");
+            Assert.AreSequenceEqual(expected, tree.ComputeRoot(Sha256).ToArray(), $"root for n = {n}");
         }
     }
 
@@ -165,7 +165,7 @@ internal sealed class MerkleLogTreeTests
             MerkleInclusionProof proof = tree.ProveInclusion(leafIndex, Sha256);
 
             string[] actualHex = proof.Path.Select(static h => ToHex(h.Span)).ToArray();
-            CollectionAssert.AreEqual(expectedPaths[leafIndex], actualHex, $"path for leaf {leafIndex}");
+            Assert.AreSequenceEqual(expectedPaths[leafIndex], actualHex, $"path for leaf {leafIndex}");
 
             Assert.IsTrue(proof.Verify(CorpusLeaves(7)[leafIndex], root, Sha256), $"verify for leaf {leafIndex}");
         }
@@ -196,7 +196,7 @@ internal sealed class MerkleLogTreeTests
             MerkleConsistencyProof proof = tree.ProveConsistency(oldSize, Sha256);
 
             string[] actualHex = proof.Path.Select(static h => ToHex(h.Span)).ToArray();
-            CollectionAssert.AreEqual(expectedProofs[oldSize], actualHex, $"consistency proof for oldSize = {oldSize}");
+            Assert.AreSequenceEqual(expectedProofs[oldSize], actualHex, $"consistency proof for oldSize = {oldSize}");
 
             byte[] oldRoot = Build(CorpusLeaves(oldSize)).ComputeRoot(Sha256).ToArray();
             Assert.IsTrue(proof.Verify(oldRoot, newRoot, Sha256), $"verify consistency for oldSize = {oldSize}");
@@ -214,7 +214,7 @@ internal sealed class MerkleLogTreeTests
 
             byte[] expected = Oracle.Mth(leaves);
 
-            CollectionAssert.AreEqual(expected, tree.ComputeRoot(Sha256).ToArray(), $"root for n = {n}");
+            Assert.AreSequenceEqual(expected, tree.ComputeRoot(Sha256).ToArray(), $"root for n = {n}");
         }
     }
 
@@ -640,7 +640,7 @@ internal sealed class MerkleLogTreeTests
         Assert.HasCount(expected.Count, actual, $"path length mismatch: {because}");
         for(int i = 0; i < expected.Count; i++)
         {
-            CollectionAssert.AreEqual(expected[i], actual[i].ToArray(), $"path element {i}: {because}");
+            Assert.AreSequenceEqual(expected[i], actual[i].ToArray(), $"path element {i}: {because}");
         }
     }
 

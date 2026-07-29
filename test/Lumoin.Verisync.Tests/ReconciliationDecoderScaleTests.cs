@@ -69,7 +69,7 @@ internal sealed class ReconciliationDecoderScaleTests
 
                 string[] expected = [.. HexSet([.. leftOnly, .. rightOnly])];
                 string[] decoded = [.. decoder.DecodedItems.Select(item => Convert.ToHexString(item.Span)).Order()];
-                CollectionAssert.AreEqual(expected, decoded);
+                Assert.AreSequenceEqual(expected, decoded);
             }
         }
     }
@@ -103,7 +103,7 @@ internal sealed class ReconciliationDecoderScaleTests
 
         string[] decodedOne = [.. decoderOne.DecodedItems.Select(item => Convert.ToHexString(item.Span)).Order()];
         string[] decodedTwo = [.. decoderTwo.DecodedItems.Select(item => Convert.ToHexString(item.Span)).Order()];
-        CollectionAssert.AreEqual(decodedOne, decodedTwo);
+        Assert.AreSequenceEqual(decodedOne, decodedTwo);
     }
 
 
@@ -148,7 +148,7 @@ internal sealed class ReconciliationDecoderScaleTests
 
         string[] expected = [.. HexSet([A2, A3, B1])];
         string[] decoded = [.. decoder.DecodedItems.Select(item => Convert.ToHexString(item.Span)).Order()];
-        CollectionAssert.AreEqual(expected, decoded);
+        Assert.AreSequenceEqual(expected, decoded);
     }
 
 

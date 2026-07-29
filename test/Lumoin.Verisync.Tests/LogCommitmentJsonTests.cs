@@ -70,7 +70,7 @@ internal sealed class LogCommitmentJsonTests
         SegmentSeal<string> back = RoundTripSeal(seal);
 
         Assert.AreEqual(seal, back);
-        CollectionAssert.AreEqual(seal.Proofs.ToArray(), back.Proofs.ToArray());
+        Assert.AreSequenceEqual(seal.Proofs.ToArray(), back.Proofs.ToArray());
     }
 
 

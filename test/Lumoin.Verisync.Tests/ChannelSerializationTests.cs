@@ -28,7 +28,7 @@ internal sealed class ChannelSerializationTests
 
         List<SampleMessage> received = await RoundTripOverPipe(serialize, deserialize).ConfigureAwait(false);
 
-        CollectionAssert.AreEqual(Messages, received);
+        Assert.AreSequenceEqual(Messages, received);
     }
 
 
@@ -40,7 +40,7 @@ internal sealed class ChannelSerializationTests
 
         List<SampleMessage> received = await RoundTripOverPipe(serialize, deserialize).ConfigureAwait(false);
 
-        CollectionAssert.AreEqual(Messages, received);
+        Assert.AreSequenceEqual(Messages, received);
     }
 
 
@@ -81,7 +81,7 @@ internal sealed class ChannelSerializationTests
 
         await writeTask.ConfigureAwait(false);
 
-        CollectionAssert.AreEqual(Messages, received);
+        Assert.AreSequenceEqual(Messages, received);
     }
 
 

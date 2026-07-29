@@ -23,7 +23,7 @@ internal sealed class ReplicaIdTests
 
         ReplicaId id = ReplicaId.FromSpan(bytes);
 
-        CollectionAssert.AreEqual(bytes, id.AsSpan().ToArray());
+        Assert.AreSequenceEqual(bytes, id.AsSpan().ToArray());
     }
 
 
@@ -100,7 +100,7 @@ internal sealed class ReplicaIdTests
     {
         ReplicaId id = ReplicaId.Generate(FillSequential);
 
-        Assert.AreEqual(ReplicaId.Size, id.AsSpan().Length);
+        Assert.HasCount(ReplicaId.Size, id.AsSpan());
         Assert.AreEqual(0, id.AsSpan()[0]);
         Assert.AreEqual(1, id.AsSpan()[1]);
     }
