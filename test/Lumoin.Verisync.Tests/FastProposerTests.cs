@@ -52,6 +52,69 @@ internal sealed class FastProposerTests
 
 
     [TestMethod]
+    public async Task RecoveryReportsTheAcceptCount()
+    {
+        ConsensusNode<string>[] nodes = CreateNodes(5);
+        FastProposer<string> proposer = new(nodes.Select(DirectEndpoint).ToArray());
+
+        ChangeOutcome<string> outcome = await proposer.RecoverAsync(FastBallot.Classic(1, R1), _ => "x", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.IsTrue(outcome.IsChosen);
+        Assert.AreEqual(5, outcome.AcceptedCount);
+    }
+
+
+    [TestMethod]
+    public async Task RecoveryUnderPartitionReportsTheReducedCount()
+    {
+        ConsensusNode<string>[] nodes = CreateNodes(5);
+        var endpoints = new ConsensusEndpointDelegate<string>[5];
+        for(int i = 0; i < 5; i++)
+        {
+            int index = i;
+            endpoints[i] = index >= 3
+                ? (_, _) => throw new IOException($"acceptor {index} is partitioned")
+                : DirectEndpoint(nodes[index]);
+        }
+
+        FastProposer<string> proposer = new(endpoints);
+
+        ChangeOutcome<string> outcome = await proposer.RecoverAsync(FastBallot.Classic(1, R1), _ => "x", TestContext.CancellationToken).ConfigureAwait(false);
+
+        //The change is chosen on the classic quorum of three, but three is below the fast quorum of four, so
+        //this is the arming rule's negative case: a next fast ballot piggybacked here would arm a round no
+        //fast quorum could ever complete.
+        Assert.IsTrue(outcome.IsChosen);
+        Assert.AreEqual(3, outcome.AcceptedCount);
+        Assert.IsLessThan(proposer.FastQuorum, outcome.AcceptedCount);
+    }
+
+
+    [TestMethod]
+    public async Task AFailedPrepareQuorumReportsNoAccepts()
+    {
+        ConsensusNode<string>[] nodes = CreateNodes(5);
+        var endpoints = new ConsensusEndpointDelegate<string>[5];
+        for(int i = 0; i < 5; i++)
+        {
+            int index = i;
+            endpoints[i] = index >= 2
+                ? (_, _) => throw new IOException($"acceptor {index} is partitioned")
+                : DirectEndpoint(nodes[index]);
+        }
+
+        FastProposer<string> proposer = new(endpoints);
+
+        ChangeOutcome<string> outcome = await proposer.RecoverAsync(FastBallot.Classic(1, R1), _ => "x", TestContext.CancellationToken).ConfigureAwait(false);
+
+        //Two promises fall short of the classic quorum, so no accept was ever sent and the count reports the
+        //absence rather than a failure to reach a quorum with accepts in flight.
+        Assert.IsFalse(outcome.IsChosen);
+        Assert.AreEqual(0, outcome.AcceptedCount);
+    }
+
+
+    [TestMethod]
     public async Task FastWriteCommitsOverAsyncChannelTransport()
     {
         const int count = 5;

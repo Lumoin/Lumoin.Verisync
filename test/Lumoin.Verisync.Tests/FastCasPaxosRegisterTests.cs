@@ -93,6 +93,7 @@ internal sealed class FastCasPaxosRegisterTests
 
         Assert.IsTrue(outcome.IsChosen);
         Assert.AreEqual("first", outcome.Value);
+        Assert.AreEqual(3, outcome.AcceptedCount);
     }
 
 
