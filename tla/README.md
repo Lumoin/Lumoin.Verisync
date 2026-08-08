@@ -2,9 +2,9 @@
 
 Model-checked specifications for the protocol tiers this repository ships or is deciding whether to
 ship: the anti-entropy session pair with the completion frame, the consensus-anchored checkpoint
-seal, QuePaxa, and Raft's leader election. The session pair, the seal and the election model the code
-as it is. QuePaxa models the published protocol before any code exists, which is the point of
-ordering it that way. The abstraction decisions are
+seal, QuePaxa, and Raft's leader election and log rules. The session pair, the seal, the election and the
+log model the code as it is. QuePaxa models the published protocol before any code exists, which is the
+point of ordering it that way. The abstraction decisions are
 documented in each module's header comment.
 
 ## Negative models
@@ -131,6 +131,35 @@ before the tally is enough for election safety, and `MCRaftElectionOutsiderGuard
 `NoTermInflation` still fails there: a stranger that can never complete a quorum can raise a member's term
 and unseat a leader the cluster agreed on. Filtering before the term rule closes that, and it costs nothing
 for member traffic, because the filter admits every member unconditionally.
+
+## The Raft log matrix
+
+`RaftLog` models the two rules that govern the log: the Figure 8 commit restriction and the
+persist-before-reply obligation. Each is a constant, so the model is what says the rule is load-bearing
+rather than tidy. Elections are collapsed into a single `Elect` action that raises the term against the
+paper's election restriction, because running the votes message by message adds only interleavings that
+reach the same leader states, and `RaftElection` already carries the message-level election with the sender
+identity a tally must filter. Replication copies the leader's whole log, which is where the consistency
+check and conflict truncation converge; it over-approximates only how fast a follower catches up.
+
+| Configuration | Module | What it models | Expected |
+| --- | --- | --- | --- |
+| `MCRaftLogVolatileReplicas` | RaftLog | negative model: a commit may count a replica holding the entry only in memory, and the crash that follows takes it back | red (required) |
+| `MCRaftLogDurable` | RaftLog | both rules in force with crashes enabled, so no crash takes back what a commit was counted on | green |
+| `MCRaftLogFigure8Withdrawn` | RaftLog | negative model: the Figure 8 restriction withdrawn, so a leader commits an inherited entry a quorum happens to hold and a server that never held it still wins a later term | red (required) |
+| `MCRaftLogFigure8` | RaftLog | the restriction in force, where an inherited entry commits only as a side effect of one above it | green |
+
+Both pairs run at five servers and differ in exactly one constant, which is what makes each positive mean
+something. Five is not a comfort setting: both hazards need a minority replication that a later term
+revisits, and at three servers the minority is one and neither scenario can be written down at all. The
+Figure 8 pair also needs `MaxTerm = 5`; at three the negative runs green, which is the failure the bounds
+rule above describes.
+
+A crash clears the leadership when the crashed server holds it. The role is volatile by Figure 2 and
+`RaftNode.FromState` restores a follower, so a model that leaves a crashed leader leading reports a
+`LeaderCompleteness` violation for a leader no deployment still has: the counterexample is a leader whose
+own copy of an entry is still volatile while three followers have made it durable, which is a lawful commit
+the leader is not itself counted in.
 
 ## Scope notes (what a green run does not certify)
 

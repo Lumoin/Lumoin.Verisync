@@ -8,7 +8,8 @@ $sany = "C:\tools\tlaplus\sany.cmd"
 $tlc = "C:\tools\tlaplus\tlc.cmd"
 
 $modules = @(
-    ".\RaftElection.tla"
+    ".\RaftElection.tla",
+    ".\RaftLog.tla"
 )
 
 # Expected 'red' runs are the negative models; a green negative means the model
@@ -20,7 +21,16 @@ $runs = @(
     @{ Config = ".\MCRaftElectionOutsiderUnguarded.cfg"; Spec = ".\RaftElection.tla"; Expect = "red"; Invariant = "ElectionSafety" },
     @{ Config = ".\MCRaftElectionOutsiderGuarded.cfg";   Spec = ".\RaftElection.tla"; Expect = "green" },
     @{ Config = ".\MCRaftElectionTermInflation.cfg";     Spec = ".\RaftElection.tla"; Expect = "red"; Invariant = "NoTermInflation" },
-    @{ Config = ".\MCRaftElectionFilterFirst.cfg";       Spec = ".\RaftElection.tla"; Expect = "green" }
+    @{ Config = ".\MCRaftElectionFilterFirst.cfg";       Spec = ".\RaftElection.tla"; Expect = "green" },
+
+    # Each log pair is a negative and the positive it licenses, at identical
+    # constants. MCRaftLogFigure8 runs for around forty minutes at four workers
+    # and dominates this script; the bound it needs is the one its own negative
+    # goes red at, so it cannot be shortened without making the pair meaningless.
+    @{ Config = ".\MCRaftLogVolatileReplicas.cfg";       Spec = ".\RaftLog.tla";      Expect = "red"; Invariant = "CommittedIsDurableAtAQuorum" },
+    @{ Config = ".\MCRaftLogDurable.cfg";                Spec = ".\RaftLog.tla";      Expect = "green" },
+    @{ Config = ".\MCRaftLogFigure8Withdrawn.cfg";       Spec = ".\RaftLog.tla";      Expect = "red"; Invariant = "LeaderCompleteness" },
+    @{ Config = ".\MCRaftLogFigure8.cfg";                Spec = ".\RaftLog.tla";      Expect = "green" }
 )
 
 Push-Location $PSScriptRoot
