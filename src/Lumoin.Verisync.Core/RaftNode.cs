@@ -51,10 +51,8 @@ public sealed class RaftNode<TCommand>
 
     //Leader-only volatile bookkeeping, reinitialized each time the node becomes leader. Indexed by position
     //in the membership rather than keyed by identity, so a replica outside the membership has no slot to
-    //write to and cannot be recorded at all. For member i: nextIndex[i] is the next log index the leader
-    //will send, matchIndex[i] is the highest index known replicated on it.
-    private readonly long[] nextIndex;
-    private readonly long[] matchIndex;
+    //write to and cannot be recorded at all.
+    private readonly FollowerProgress[] progress;
 
     //Votes collected in the current candidacy, including the implicit self-vote. Cleared on every term change.
     private readonly HashSet<ReplicaId> votesReceived = [];
@@ -88,8 +86,7 @@ public sealed class RaftNode<TCommand>
 
         Id = id;
         this.members = members;
-        nextIndex = new long[members.Length];
-        matchIndex = new long[members.Length];
+        progress = new FollowerProgress[members.Length];
         selfIndex = IndexOf(id);
     }
 
@@ -400,7 +397,7 @@ public sealed class RaftNode<TCommand>
 
         //The leader trivially matches its own log; keep matchIndex consistent for commit counting, including
         //the single-node case where the leader is the whole majority and there is no peer reply to wait for.
-        matchIndex[selfIndex] = index;
+        progress[selfIndex] = progress[selfIndex].Confirmed(index);
         TryAdvanceCommitIndex();
 
         return index;
@@ -432,7 +429,7 @@ public sealed class RaftNode<TCommand>
             throw new ArgumentException("A request can only be built for a member of the cluster.", nameof(follower));
         }
 
-        long next = nextIndex[followerIndex];
+        long next = progress[followerIndex].NextIndex;
         long prevLogIndex = next - 1;
         long prevLogTerm = prevLogIndex >= 1 && prevLogIndex <= log.Count ? log[(int)(prevLogIndex - 1)].Term : 0;
 
@@ -578,21 +575,15 @@ public sealed class RaftNode<TCommand>
 
         if(reply.Success)
         {
-            //Out-of-order replies must not regress what we already know is replicated.
-            if(reply.MatchIndex > matchIndex[fromIndex])
-            {
-                matchIndex[fromIndex] = reply.MatchIndex;
-            }
-
-            nextIndex[fromIndex] = reply.MatchIndex + 1;
+            progress[fromIndex] = progress[fromIndex].Confirmed(reply.MatchIndex);
             TryAdvanceCommitIndex();
 
             return;
         }
 
-        //Same-term failure: the consistency check missed, so retreat nextIndex by one (never below 1) and
-        //the next CreateAppendEntries will probe a longer prefix.
-        nextIndex[fromIndex] = Math.Max(1, nextIndex[fromIndex] - 1);
+        //Same-term failure: the consistency check missed, so the next CreateAppendEntries probes a longer
+        //prefix.
+        progress[fromIndex] = progress[fromIndex].Retreated();
     }
 
 
@@ -649,22 +640,21 @@ public sealed class RaftNode<TCommand>
 
     /// <summary>
     /// Transitions a winning candidate to leader and initializes per-peer replication state: every peer's
-    /// <c>nextIndex</c> to the entry just past the leader's log, its <c>matchIndex</c> to zero.
+    /// <see cref="FollowerProgress"/> to the entry just past the leader's log with nothing known replicated.
     /// </summary>
     private void BecomeLeader()
     {
         Role = RaftRole.Leader;
         LeaderId = Id;
 
-        long initialNext = LastLogIndex + 1;
+        FollowerProgress initial = FollowerProgress.StartingFrom(LastLogIndex);
         for(int i = 0; i < members.Length; i++)
         {
-            nextIndex[i] = initialNext;
-            matchIndex[i] = 0;
+            progress[i] = initial;
         }
 
         //The leader always matches its own complete log; this seeds the majority count for commit decisions.
-        matchIndex[selfIndex] = LastLogIndex;
+        progress[selfIndex] = initial.Confirmed(LastLogIndex);
     }
 
 
@@ -710,7 +700,7 @@ public sealed class RaftNode<TCommand>
             int replicatedCount = 0;
             for(int i = 0; i < members.Length; i++)
             {
-                if(matchIndex[i] >= candidate)
+                if(progress[i].MatchIndex >= candidate)
                 {
                     replicatedCount++;
                 }
