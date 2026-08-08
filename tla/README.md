@@ -15,6 +15,21 @@ abstract to trust and its positive runs prove nothing. The runners (`Run-Session
 `Run-QuePaxa.ps1` and `Run-Raft.ps1`) enforce the expected outcome of every configuration in the
 matrices below and fail on any deviation. A configuration that no runner pins does not belong in this directory.
 
+A bound is derived from what the property needs to express, not from what finishes quickly. A
+constant chosen for cost can leave the hazard unwritable rather than unreached: a scenario that
+turns on a minority replication a later majority revisits needs a membership whose minority is at
+least two, so at three servers, where the minority is one, the sequence cannot be constructed at
+all and the configuration goes green over a state space in which the defect does not exist. That
+green is indistinguishable from the green a sound bound produces, which is what makes the rule
+worth stating rather than inferring.
+
+The test that settles a bound follows from it: a positive is only meaningful at a bound where its
+paired negative is red. Pinning both arms at the same constants is what shows the bound admits the
+hazard, and only then does the positive beside them carry the claim that the guard excludes it.
+`RaftElection` runs at `MaxTerm = 1` on that basis rather than as a concession to run time, because
+both of its negatives are red there; a positive checked at a looser bound than its negative
+certifies nothing about the states between them.
+
 ## Toolchain
 
 `C:\tools\tlaplus` with a portable Temurin 21 JRE, current `tla2tools.jar`, and `sany.cmd` /
