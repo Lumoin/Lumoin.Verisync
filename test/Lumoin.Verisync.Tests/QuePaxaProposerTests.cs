@@ -922,29 +922,4 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //Xorshift64 rather than the cryptographic source: every priority in a run is reproducible from its seed,
-    //so a failing scenario replays the identical draws on any runtime.
-    private sealed class SeededPrioritySource
-    {
-        private ulong state;
-
-        public SeededPrioritySource(ulong seed) => state = seed == 0 ? 0x9E3779B97F4A7C15UL : seed;
-
-
-        public int DrawCount { get; private set; }
-
-
-        public ProposalPriority Next()
-        {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            DrawCount++;
-
-            //The two reserved endpoints are excluded, so the source honours the delegate's contract exactly.
-            ulong value = state == 0 || state == ulong.MaxValue ? 0x0123_4567_89AB_CDEFUL : state;
-
-            return new ProposalPriority(value);
-        }
-    }
 }

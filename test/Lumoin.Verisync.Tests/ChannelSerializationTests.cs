@@ -152,6 +152,21 @@ internal sealed class ChannelSerializationTests
     }
 
 
+    [TestMethod]
+    public void CborDeserializerRejectsTrailingDataAsTheUniformException()
+    {
+        //Surplus bytes after a complete message are refused rather than ignored, matching the JSON side.
+        //Allowing them would let several distinct byte sequences decode to one message, which is the
+        //canonical-bytes assumption the deterministic conformance mode exists to hold. Frames carry their own
+        //length, so anything past the message is slack the sender chose to add.
+        byte[] message = [0x82, 0x01, 0x63, 0x6F, 0x6E, 0x65];
+        byte[] withTrailingByte = [.. message, 0x01];
+
+        Assert.AreEqual(new SampleMessage(1, "one"), DeserializeCbor(message));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeCbor(withTrailingByte));
+    }
+
+
     private static SampleMessage DeserializeJson(string json)
     {
         DeserializeMessageDelegate<SampleMessage> deserialize = JsonChannelSerialization.CreateDeserializer(SampleJsonContext.Default.SampleMessage);
