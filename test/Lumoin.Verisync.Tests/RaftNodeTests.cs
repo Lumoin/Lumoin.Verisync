@@ -84,6 +84,35 @@ internal sealed class RaftNodeTests
     }
 
 
+    //Membership is fixed, so every identity that arrives from the wire is filtered against it. A vote for a
+    //non-member is the sharpest case: FromState refuses to restore one, so granting it would put the node in
+    //a state its own restore path rejects. Entries from a non-member leader would replicate a log no quorum
+    //agreed on, and a non-member reply would seed per-follower bookkeeping the leader never sends to.
+    [TestMethod]
+    public void EveryWireIdentityIsFilteredAgainstTheMembership()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> node = new(N1, members);
+
+        RequestVoteReply refusedVote = node.HandleRequestVote(new RequestVoteRequest(1, Stranger, 0, 0));
+
+        Assert.IsFalse(refusedVote.VoteGranted, "A non-member was granted a vote.");
+        Assert.IsNull(node.VotedFor);
+
+        //The same request from a member is granted, so the refusal is about membership and not the log rule.
+        Assert.IsTrue(node.HandleRequestVote(new RequestVoteRequest(1, N2, 0, 0)).VoteGranted);
+        Assert.AreEqual(N2, node.VotedFor);
+
+        RaftNode<string> follower = new(N1, members);
+        AppendEntriesReply refusedAppend = follower.HandleAppendEntries(
+            new AppendEntriesRequest<string>(1, Stranger, 0, 0, [new RaftLogEntry<string>(1, "x")], 0));
+
+        Assert.IsFalse(refusedAppend.Success, "A non-member leader appended entries.");
+        Assert.IsEmpty(follower.Log);
+        Assert.IsNull(follower.LeaderId);
+    }
+
+
     [TestMethod]
     public void ElectionSafetyHoldsWhenTwoCandidatesSplitTheVote()
     {

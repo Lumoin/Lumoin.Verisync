@@ -266,6 +266,12 @@ public sealed class RaftNode<TCommand>
     /// <param name="request">The vote request to evaluate.</param>
     /// <returns>The reply, carrying this node's (possibly updated) term and whether the vote was granted.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="request"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// A candidate outside <see cref="Members"/> is never granted a vote, because only a member can win an
+    /// election over this membership and <see cref="FromState"/> refuses to restore a vote that names a
+    /// non-member. Granting one would put the node in a state its own restore path rejects. The term rule
+    /// still applies first, since a higher term is a fact about the cluster rather than a vote.
+    /// </remarks>
     public RequestVoteReply HandleRequestVote(RequestVoteRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -278,6 +284,11 @@ public sealed class RaftNode<TCommand>
         if(request.Term > CurrentTerm)
         {
             StepDownTo(request.Term);
+        }
+
+        if(!members.Contains(request.CandidateId))
+        {
+            return new RequestVoteReply(CurrentTerm, false);
         }
 
         bool canVote = VotedFor is null || VotedFor.Value.Equals(request.CandidateId);
@@ -436,6 +447,13 @@ public sealed class RaftNode<TCommand>
     /// <param name="request">The append request to apply.</param>
     /// <returns>The reply, carrying this node's term, whether the append succeeded, and the resulting match index.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="request"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// A request naming a leader outside <see cref="Members"/> is refused before it can touch the log or
+    /// <see cref="LeaderId"/>. Only a member can win an election over this membership, so no such request
+    /// comes from a leader this cluster elected, and appending its entries would replicate a log no quorum
+    /// ever agreed on. The term rule still applies first, since a higher term is a fact about the cluster
+    /// rather than an instruction from the sender.
+    /// </remarks>
     public AppendEntriesReply HandleAppendEntries(AppendEntriesRequest<TCommand> request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -451,6 +469,11 @@ public sealed class RaftNode<TCommand>
         if(request.Term > CurrentTerm)
         {
             StepDownTo(request.Term);
+        }
+
+        if(!members.Contains(request.LeaderId))
+        {
+            return new AppendEntriesReply(CurrentTerm, false, 0);
         }
 
         Role = RaftRole.Follower;
@@ -512,7 +535,10 @@ public sealed class RaftNode<TCommand>
     /// <remarks>
     /// A reply whose term exceeds this node's term forces a step-down; a stale reply (from an old term, or
     /// arriving when this node is no longer the leader) is ignored. The commit advance applies the Figure 8
-    /// rule and is the only place <see cref="CommitIndex"/> moves on the leader.
+    /// rule and is the only place <see cref="CommitIndex"/> moves on the leader. A reply from a replica
+    /// outside <see cref="Members"/> is discarded before any bookkeeping: the per-follower indices are keyed
+    /// by peer, and <paramref name="from"/> is wire data, so seeding them from anywhere else would grow them
+    /// without bound on identities the leader never sends to.
     /// </remarks>
     public void ReceiveAppendEntriesReply(ReplicaId from, AppendEntriesReply reply)
     {
@@ -522,6 +548,11 @@ public sealed class RaftNode<TCommand>
         {
             StepDownTo(reply.Term);
 
+            return;
+        }
+
+        if(!members.Contains(from))
+        {
             return;
         }
 
