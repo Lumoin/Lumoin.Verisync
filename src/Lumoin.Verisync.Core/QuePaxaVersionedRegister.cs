@@ -158,11 +158,8 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
     private PublishCommittedRecordDelegate<TValue>? PublishCommittedRecord { get; }
 
-    /// <summary>The version <see cref="NextLane"/> counts within, which is <see cref="RegisterVersion.Unwritten"/> before the first proposal.</summary>
-    private RegisterVersion LanedVersion { get; set; }
-
-    /// <summary>The next unused lane number at <see cref="LanedVersion"/>.</summary>
-    private int NextLane { get; set; }
+    /// <summary>The lane counter this register allocates its own proposals from.</summary>
+    private LaneAllocation Lanes { get; set; } = LaneAllocation.None;
 
 
     /// <summary>
@@ -433,13 +430,11 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// </remarks>
     private ProposerLane AllocateLane(RegisterVersion version)
     {
-        if(version != LanedVersion)
-        {
-            LanedVersion = version;
-            NextLane = 0;
-        }
+        Lanes = Lanes.At(version);
+        var lane = new ProposerLane(Self, Lanes.NextLane);
+        Lanes = Lanes.Advanced();
 
-        return new ProposerLane(Self, NextLane++);
+        return lane;
     }
 
 

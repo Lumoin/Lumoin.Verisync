@@ -57,7 +57,7 @@ internal sealed class WanFastRoundContentionProbe
     ];
 
     //The three sites forming the co-located majority in the clustered placement.
-    private static ImmutableArray<int> ClusteredMajority { get; } = [0, 1, 2];
+    private static ImmutableHashSet<int> ClusteredMajority { get; } = [0, 1, 2];
 
     private const int SiteCount = 5;
     private const int WriterCount = 3;
@@ -257,7 +257,7 @@ internal sealed class WanFastRoundContentionProbe
             var accepts = new int[writerCount];
             foreach((int _, int writer, int acceptor) in arrivals)
             {
-                ImmutableArray<int> target = [acceptor];
+                ImmutableHashSet<int> target = [acceptor];
                 (register, int accepted) = register.ProposeFastReaching(FastBallot.Fast(1), Value(writer), target);
                 accepts[writer] += accepted;
             }

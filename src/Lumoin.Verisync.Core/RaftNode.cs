@@ -54,8 +54,9 @@ public sealed class RaftNode<TCommand>
     //write to and cannot be recorded at all.
     private readonly FollowerProgress[] progress;
 
-    //Votes collected in the current candidacy, including the implicit self-vote. Cleared on every term change.
-    private readonly HashSet<ReplicaId> votesReceived = [];
+    //Votes collected in the current candidacy, including the implicit self-vote, indexed by position in the
+    //membership so a replica outside it has no slot to grant one. Cleared on every term change.
+    private readonly bool[] votesGranted;
 
     //This node's own position in the membership, which the constructor establishes is present.
     private readonly int selfIndex;
@@ -87,6 +88,7 @@ public sealed class RaftNode<TCommand>
         Id = id;
         this.members = members;
         progress = new FollowerProgress[members.Length];
+        votesGranted = new bool[members.Length];
         selfIndex = IndexOf(id);
     }
 
@@ -248,13 +250,13 @@ public sealed class RaftNode<TCommand>
         CurrentTerm++;
         Role = RaftRole.Candidate;
         VotedFor = Id;
-        votesReceived.Clear();
-        votesReceived.Add(Id);
+        ClearVotes();
+        votesGranted[selfIndex] = true;
 
         var request = new RequestVoteRequest(CurrentTerm, Id, LastLogIndex, LastLogTerm);
 
         //A lone node is its own majority; with no peers to reply there is no later ReceiveVote to win on.
-        if(votesReceived.Count >= Quorum)
+        if(VoteCount >= Quorum)
         {
             BecomeLeader();
         }
@@ -337,9 +339,10 @@ public sealed class RaftNode<TCommand>
     {
         ArgumentNullException.ThrowIfNull(reply);
 
-        //A non-member cannot contribute to a majority of the membership the quorum is computed from, and it
-        //must not move this node's term either, so it is discarded before the term rule rather than after.
-        if(!members.Contains(from))
+        //A non-member holds no position in the tally, so it cannot contribute to a majority of the membership
+        //the quorum is computed from. It is looked up before the term rule so it cannot move the term either.
+        int fromIndex = IndexOf(from);
+        if(fromIndex < 0)
         {
             return false;
         }
@@ -357,9 +360,9 @@ public sealed class RaftNode<TCommand>
             return false;
         }
 
-        bool alreadyHadMajority = votesReceived.Count >= Quorum;
-        votesReceived.Add(from);
-        bool nowHasMajority = votesReceived.Count >= Quorum;
+        bool alreadyHadMajority = VoteCount >= Quorum;
+        votesGranted[fromIndex] = true;
+        bool nowHasMajority = VoteCount >= Quorum;
 
         if(nowHasMajority && !alreadyHadMajority)
         {
@@ -634,8 +637,30 @@ public sealed class RaftNode<TCommand>
         CurrentTerm = newTerm;
         Role = RaftRole.Follower;
         VotedFor = null;
-        votesReceived.Clear();
+        ClearVotes();
     }
+
+
+    /// <summary>The number of members that have granted this node a vote in the current candidacy.</summary>
+    private int VoteCount
+    {
+        get
+        {
+            int granted = 0;
+            for(int i = 0; i < votesGranted.Length; i++)
+            {
+                if(votesGranted[i])
+                {
+                    granted++;
+                }
+            }
+
+            return granted;
+        }
+    }
+
+
+    private void ClearVotes() => Array.Clear(votesGranted);
 
 
     /// <summary>
