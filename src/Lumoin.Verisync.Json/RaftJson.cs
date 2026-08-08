@@ -16,10 +16,12 @@ namespace Lumoin.Verisync.Json;
 /// The encoding mirrors <see cref="ConsensusMessageJson"/>: hand-written and explicit — no reflection, AOT-
 /// and trim-safe — with a <c>type</c> discriminator on the envelope and hex-encoded replica ids. The caller
 /// supplies how to read and write <c>TCommand</c>, since the command is application-defined. The decoders
-/// validate fail-closed (<see cref="JsonException"/>) on anything no honest sender produces — an unknown
-/// type, malformed or wrong-length replica ids, negative terms or indices, log entry terms below one, or a
-/// negative match index; relational rules (decreasing log terms, a vote that is not a member) stay in
-/// <see cref="RaftNode{TCommand}.FromState"/>, the single place that owns them.
+/// validate fail-closed (<see cref="JsonException"/>) on anything no honest sender produces: an unknown
+/// type, malformed or wrong-length replica ids, and log entry terms below one. A negative term or index is
+/// refused by <see cref="Term"/> and <see cref="LogIndex"/> themselves, whose constructors run here on every
+/// value that arrives from the wire, so the codec neither duplicates nor weakens the rule. Relational rules
+/// (decreasing log terms, a vote that is not a member) stay in <see cref="RaftNode{TCommand}.FromState"/>,
+/// the single place that owns them.
 /// </remarks>
 public static class RaftJson
 {
@@ -125,7 +127,7 @@ public static class RaftJson
         {
             using var writer = new Utf8JsonWriter(output);
             writer.WriteStartObject();
-            writer.WriteNumber("currentTerm", state.CurrentTerm);
+            writer.WriteNumber("currentTerm", state.CurrentTerm.Value);
 
             if(state.VotedFor.IsDefaultOrEmpty)
             {
@@ -155,7 +157,7 @@ public static class RaftJson
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
-            long currentTerm = ReadNonNegativeLong(RequireProperty(root, "currentTerm", "A Raft node state"), "A current term");
+            Term currentTerm = ReadTerm(RequireProperty(root, "currentTerm", "A Raft node state"));
 
             JsonElement votedForElement = RequireProperty(root, "votedFor", "A Raft node state");
             ImmutableArray<byte> votedFor = votedForElement.ValueKind == JsonValueKind.Null
@@ -170,10 +172,10 @@ public static class RaftJson
     private static void WriteVoteRequest(Utf8JsonWriter writer, RequestVoteRequest request)
     {
         writer.WriteStartObject();
-        writer.WriteNumber("term", request.Term);
+        writer.WriteNumber("term", request.Term.Value);
         writer.WriteString("candidateId", Convert.ToHexStringLower(request.CandidateId.AsSpan()));
-        writer.WriteNumber("lastLogIndex", request.LastLogIndex);
-        writer.WriteNumber("lastLogTerm", request.LastLogTerm);
+        writer.WriteNumber("lastLogIndex", request.LastLogIndex.Value);
+        writer.WriteNumber("lastLogTerm", request.LastLogTerm.Value);
         writer.WriteEndObject();
     }
 
@@ -181,17 +183,17 @@ public static class RaftJson
     private static RequestVoteRequest ReadVoteRequest(JsonElement element)
     {
         return new RequestVoteRequest(
-            ReadNonNegativeLong(RequireProperty(element, "term", "A vote request"), "A term"),
+            ReadTerm(RequireProperty(element, "term", "A vote request")),
             ReadReplica(RequireProperty(element, "candidateId", "A vote request")),
-            ReadNonNegativeLong(RequireProperty(element, "lastLogIndex", "A vote request"), "A last log index"),
-            ReadNonNegativeLong(RequireProperty(element, "lastLogTerm", "A vote request"), "A last log term"));
+            ReadLogIndex(RequireProperty(element, "lastLogIndex", "A vote request")),
+            ReadTerm(RequireProperty(element, "lastLogTerm", "A vote request")));
     }
 
 
     private static void WriteVoteReply(Utf8JsonWriter writer, RequestVoteReply reply)
     {
         writer.WriteStartObject();
-        writer.WriteNumber("term", reply.Term);
+        writer.WriteNumber("term", reply.Term.Value);
         writer.WriteBoolean("voteGranted", reply.VoteGranted);
         writer.WriteEndObject();
     }
@@ -200,7 +202,7 @@ public static class RaftJson
     private static RequestVoteReply ReadVoteReply(JsonElement element)
     {
         return new RequestVoteReply(
-            ReadNonNegativeLong(RequireProperty(element, "term", "A vote reply"), "A term"),
+            ReadTerm(RequireProperty(element, "term", "A vote reply")),
             RequireProperty(element, "voteGranted", "A vote reply").GetBoolean());
     }
 
@@ -208,10 +210,10 @@ public static class RaftJson
     private static void WriteAppendRequest<TCommand>(Utf8JsonWriter writer, AppendEntriesRequest<TCommand> request, Action<Utf8JsonWriter, TCommand> writeCommand)
     {
         writer.WriteStartObject();
-        writer.WriteNumber("term", request.Term);
+        writer.WriteNumber("term", request.Term.Value);
         writer.WriteString("leaderId", Convert.ToHexStringLower(request.LeaderId.AsSpan()));
-        writer.WriteNumber("prevLogIndex", request.PrevLogIndex);
-        writer.WriteNumber("prevLogTerm", request.PrevLogTerm);
+        writer.WriteNumber("prevLogIndex", request.PrevLogIndex.Value);
+        writer.WriteNumber("prevLogTerm", request.PrevLogTerm.Value);
 
         writer.WriteStartArray("entries");
         foreach(RaftLogEntry<TCommand> entry in request.Entries)
@@ -221,7 +223,7 @@ public static class RaftJson
 
         writer.WriteEndArray();
 
-        writer.WriteNumber("leaderCommit", request.LeaderCommit);
+        writer.WriteNumber("leaderCommit", request.LeaderCommit.Value);
         writer.WriteEndObject();
     }
 
@@ -229,21 +231,21 @@ public static class RaftJson
     private static AppendEntriesRequest<TCommand> ReadAppendRequest<TCommand>(JsonElement element, Func<JsonElement, TCommand> readCommand)
     {
         return new AppendEntriesRequest<TCommand>(
-            ReadNonNegativeLong(RequireProperty(element, "term", "An append request"), "A term"),
+            ReadTerm(RequireProperty(element, "term", "An append request")),
             ReadReplica(RequireProperty(element, "leaderId", "An append request")),
-            ReadNonNegativeLong(RequireProperty(element, "prevLogIndex", "An append request"), "A previous log index"),
-            ReadNonNegativeLong(RequireProperty(element, "prevLogTerm", "An append request"), "A previous log term"),
+            ReadLogIndex(RequireProperty(element, "prevLogIndex", "An append request")),
+            ReadTerm(RequireProperty(element, "prevLogTerm", "An append request")),
             ReadEntries(RequireProperty(element, "entries", "An append request"), readCommand),
-            ReadNonNegativeLong(RequireProperty(element, "leaderCommit", "An append request"), "A leader commit index"));
+            ReadLogIndex(RequireProperty(element, "leaderCommit", "An append request")));
     }
 
 
     private static void WriteAppendReply(Utf8JsonWriter writer, AppendEntriesReply reply)
     {
         writer.WriteStartObject();
-        writer.WriteNumber("term", reply.Term);
+        writer.WriteNumber("term", reply.Term.Value);
         writer.WriteBoolean("success", reply.Success);
-        writer.WriteNumber("matchIndex", reply.MatchIndex);
+        writer.WriteNumber("matchIndex", reply.MatchIndex.Value);
         writer.WriteEndObject();
     }
 
@@ -251,9 +253,9 @@ public static class RaftJson
     private static AppendEntriesReply ReadAppendReply(JsonElement element)
     {
         return new AppendEntriesReply(
-            ReadNonNegativeLong(RequireProperty(element, "term", "An append reply"), "A term"),
+            ReadTerm(RequireProperty(element, "term", "An append reply")),
             RequireProperty(element, "success", "An append reply").GetBoolean(),
-            ReadNonNegativeLong(RequireProperty(element, "matchIndex", "An append reply"), "A match index"));
+            ReadLogIndex(RequireProperty(element, "matchIndex", "An append reply")));
     }
 
 
@@ -275,7 +277,7 @@ public static class RaftJson
     private static void WriteLogEntry<TCommand>(Utf8JsonWriter writer, RaftLogEntry<TCommand> entry, Action<Utf8JsonWriter, TCommand> writeCommand)
     {
         writer.WriteStartObject();
-        writer.WriteNumber("term", entry.Term);
+        writer.WriteNumber("term", entry.Term.Value);
         writer.WritePropertyName("command");
         writeCommand(writer, entry.Command);
         writer.WriteEndObject();
@@ -293,7 +295,7 @@ public static class RaftJson
                 throw new JsonException($"A log entry term is at least one, got {term}.");
             }
 
-            entries.Add(new RaftLogEntry<TCommand>(term, readCommand(RequireProperty(entry, "command", "A log entry"))));
+            entries.Add(new RaftLogEntry<TCommand>(new Term(term), readCommand(RequireProperty(entry, "command", "A log entry"))));
         }
 
         return entries.MoveToImmutable();
@@ -314,15 +316,36 @@ public static class RaftJson
     }
 
 
-    private static long ReadNonNegativeLong(JsonElement element, string label)
+    private static Term ReadTerm(JsonElement element)
     {
         long value = element.GetInt64();
-        if(value < 0)
-        {
-            throw new JsonException($"{label} cannot be negative, got {value}.");
-        }
 
-        return value;
+        return Construct(() => new Term(value));
+    }
+
+
+    private static LogIndex ReadLogIndex(JsonElement element)
+    {
+        long value = element.GetInt64();
+
+        return Construct(() => new LogIndex(value));
+    }
+
+
+    private static T Construct<T>(Func<T> construct)
+    {
+        //A value arriving from the wire has not been through a constructor, so every domain validator runs
+        //here and none is duplicated: the codec adds no rule of its own. The argument exception a validator
+        //raises is wrapped so the failure reaches a reader as a JSON fault, with the validator's own message
+        //preserved as the inner exception.
+        try
+        {
+            return construct();
+        }
+        catch(ArgumentException exception)
+        {
+            throw new JsonException("The payload carries values a Raft message rejects.", exception);
+        }
     }
 
 

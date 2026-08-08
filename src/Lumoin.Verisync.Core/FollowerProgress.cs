@@ -7,8 +7,11 @@ namespace Lumoin.Verisync.Core;
 /// A leader's replication position for one follower: the next log index it will send, and the highest index
 /// it knows replicated there.
 /// </summary>
-/// <param name="NextIndex">The next log index the leader will send. Must be at least one.</param>
-/// <param name="MatchIndex">The highest index known replicated on the follower, which is zero when none is.</param>
+/// <param name="NextIndex">The next log index the leader will send. Must be <see cref="LogIndex.First"/> or above.</param>
+/// <param name="MatchIndex">
+/// The highest index known replicated on the follower, which is <see cref="LogIndex.BeforeFirst"/> when none
+/// is.
+/// </param>
 /// <remarks>
 /// <para>
 /// The two move together and mean nothing apart, which is why they are one value rather than two arrays a
@@ -20,34 +23,23 @@ namespace Lumoin.Verisync.Core;
 /// </para>
 /// </remarks>
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
-public readonly record struct FollowerProgress(long NextIndex, long MatchIndex)
+public readonly record struct FollowerProgress(LogIndex NextIndex, LogIndex MatchIndex)
 {
     /// <summary>
     /// The next log index the leader will send. It is validated on construction and on a <c>with</c>
     /// expression alike, because the initializer writes the backing field directly and no accessor runs
-    /// for it.
+    /// for it. <see cref="LogIndex"/> carries non-negativity, so the floor at <see cref="LogIndex.First"/>
+    /// is the only rule left here: the empty prefix is a position every log matches rather than one a leader
+    /// can send from.
     /// </summary>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown if the value is below one.</exception>
-    public long NextIndex { get; init { field = ValidateNext(value); } } = ValidateNext(NextIndex);
-
-    /// <summary>
-    /// The highest index known replicated on the follower. It is validated on construction and on a
-    /// <c>with</c> expression alike, for the same reason.
-    /// </summary>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown if the value is negative.</exception>
-    public long MatchIndex { get; init { field = ValidateMatch(value); } } = ValidateMatch(MatchIndex);
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if the value is below <see cref="LogIndex.First"/>.</exception>
+    public LogIndex NextIndex { get; init { field = ValidateNext(value); } } = ValidateNext(NextIndex);
 
 
-    /// <summary>The position a leader starts a follower at, which is one past a log of <paramref name="lastLogIndex"/> entries with nothing known replicated.</summary>
-    /// <param name="lastLogIndex">The leader's last log index, or zero when its log is empty.</param>
+    /// <summary>The position a leader starts a follower at, which is one past <paramref name="lastLogIndex"/> with nothing known replicated.</summary>
+    /// <param name="lastLogIndex">The leader's last log index, or <see cref="LogIndex.BeforeFirst"/> when its log is empty.</param>
     /// <returns>The initial progress.</returns>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="lastLogIndex"/> is negative.</exception>
-    public static FollowerProgress StartingFrom(long lastLogIndex)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegative(lastLogIndex);
-
-        return new FollowerProgress(lastLogIndex + 1, 0);
-    }
+    public static FollowerProgress StartingFrom(LogIndex lastLogIndex) => new(lastLogIndex.Next(), LogIndex.BeforeFirst);
 
 
     /// <summary>
@@ -55,18 +47,12 @@ public readonly record struct FollowerProgress(long NextIndex, long MatchIndex)
     /// </summary>
     /// <param name="matchIndex">The index the follower reported replicated.</param>
     /// <returns>The advanced progress.</returns>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="matchIndex"/> is negative.</exception>
     /// <remarks>
     /// The match index never regresses, because replies arrive out of order and an older one carries a
     /// shorter prefix the follower has not lost. The next index follows the report rather than the retained
     /// maximum, which is what makes a reply that arrived late cost one probe rather than a wrong prefix.
     /// </remarks>
-    public FollowerProgress Confirmed(long matchIndex)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegative(matchIndex);
-
-        return new FollowerProgress(matchIndex + 1, Math.Max(MatchIndex, matchIndex));
-    }
+    public FollowerProgress Confirmed(LogIndex matchIndex) => new(matchIndex.Next(), LogIndex.Max(MatchIndex, matchIndex));
 
 
     /// <summary>
@@ -74,28 +60,21 @@ public readonly record struct FollowerProgress(long NextIndex, long MatchIndex)
     /// </summary>
     /// <returns>The retreated progress.</returns>
     /// <remarks>
-    /// The retreat stops at one, because index zero is the empty-prefix sentinel and every log matches there.
+    /// The retreat stops at <see cref="LogIndex.First"/>, because the empty prefix below it is the position
+    /// every log matches.
     /// </remarks>
-    public FollowerProgress Retreated() => new(Math.Max(1, NextIndex - 1), MatchIndex);
+    public FollowerProgress Retreated() => new(LogIndex.Max(LogIndex.First, NextIndex.Previous()), MatchIndex);
 
 
-    private static long ValidateNext(long value)
+    private static LogIndex ValidateNext(LogIndex value)
     {
         //The parameter name is stated rather than inferred, because the caller sees a position and not the
         //validator's own parameter.
-        ArgumentOutOfRangeException.ThrowIfLessThan(value, 1, nameof(NextIndex));
+        ArgumentOutOfRangeException.ThrowIfLessThan(value, LogIndex.First, nameof(NextIndex));
 
         return value;
     }
 
 
-    private static long ValidateMatch(long value)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegative(value, nameof(MatchIndex));
-
-        return value;
-    }
-
-
-    private string DebuggerDisplay => $"FollowerProgress: next={NextIndex}, match={MatchIndex}";
+    private string DebuggerDisplay => $"FollowerProgress: next={NextIndex.Value}, match={MatchIndex.Value}";
 }

@@ -10,7 +10,7 @@ namespace Lumoin.Verisync.Core;
 /// stream the log defines.
 /// </summary>
 /// <typeparam name="TCommand">The application command type replicated by the log.</typeparam>
-/// <param name="index">The 1-based protocol index of the committed entry.</param>
+/// <param name="index">The protocol index of the committed entry.</param>
 /// <param name="command">The committed command to apply.</param>
 /// <param name="cancellationToken">The cancellation token.</param>
 /// <returns>A task that completes once the command has been applied.</returns>
@@ -28,4 +28,4 @@ namespace Lumoin.Verisync.Core;
 /// continue.
 /// </para>
 /// </remarks>
-public delegate ValueTask ApplyCommittedDelegate<TCommand>(long index, TCommand command, CancellationToken cancellationToken);
+public delegate ValueTask ApplyCommittedDelegate<TCommand>(LogIndex index, TCommand command, CancellationToken cancellationToken);

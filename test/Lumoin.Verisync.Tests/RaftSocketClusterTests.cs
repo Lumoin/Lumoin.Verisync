@@ -127,7 +127,7 @@ internal sealed class RaftSocketClusterTests
 
     //Collapses the applied entries to one command per committed index, in index order: apply is at-least-once
     //across a restart, so de-duplicating by index keeps the comparison about converged content, not counts.
-    private static string[] Commands(IReadOnlyCollection<(long Index, string Command)> applied)
+    private static string[] Commands(IReadOnlyCollection<(LogIndex Index, string Command)> applied)
     {
         return applied
             .GroupBy(entry => entry.Index)
@@ -155,7 +155,7 @@ internal sealed class RaftSocketClusterTests
         private readonly Dictionary<ReplicaId, RaftNode<string>> nodes = [];
         private readonly Dictionary<ReplicaId, RaftRunner<string>> runners = [];
         private readonly Dictionary<ReplicaId, Task> runTasks = [];
-        private readonly Dictionary<ReplicaId, ConcurrentQueue<(long Index, string Command)>> applied = [];
+        private readonly Dictionary<ReplicaId, ConcurrentQueue<(LogIndex Index, string Command)>> applied = [];
         private readonly Dictionary<ReplicaId, RaftNodeState<string>> lastPersisted = [];
         private readonly Dictionary<ReplicaId, int> persistCounts = [];
         private readonly Dictionary<(ReplicaId From, ReplicaId To), MessageChannelWriter<RaftEnvelope<string>>> outbound = [];
@@ -177,7 +177,7 @@ internal sealed class RaftSocketClusterTests
         public RaftRunner<string> Runner(ReplicaId id) => runners[id];
 
 
-        public ConcurrentQueue<(long Index, string Command)> Applied(ReplicaId id) => applied[id];
+        public ConcurrentQueue<(LogIndex Index, string Command)> Applied(ReplicaId id) => applied[id];
 
 
         public int PersistCount(ReplicaId id) => persistCounts[id];
@@ -215,7 +215,7 @@ internal sealed class RaftSocketClusterTests
             RaftNodeState<string> state = lastPersisted[id];
             nodes[id] = RaftNode<string>.FromState(id, members, state);
             runners[id] = new RaftRunner<string>(nodes[id]);
-            applied[id] = new ConcurrentQueue<(long, string)>();
+            applied[id] = new ConcurrentQueue<(LogIndex, string)>();
             runTasks[id] = runners[id].RunAsync(MakeSend(id), MakePersist(id), MakeApply(id), token);
         }
 
@@ -327,7 +327,7 @@ internal sealed class RaftSocketClusterTests
                 ReplicaId id = members[i];
                 nodes[id] = new RaftNode<string>(id, members);
                 runners[id] = new RaftRunner<string>(nodes[id]);
-                applied[id] = new ConcurrentQueue<(long, string)>();
+                applied[id] = new ConcurrentQueue<(LogIndex, string)>();
                 persistCounts[id] = 0;
             }
 
@@ -392,7 +392,7 @@ internal sealed class RaftSocketClusterTests
 
         private ApplyCommittedDelegate<string> MakeApply(ReplicaId id)
         {
-            ConcurrentQueue<(long Index, string Command)> sink = applied[id];
+            ConcurrentQueue<(LogIndex Index, string Command)> sink = applied[id];
 
             return (index, command, _) =>
             {

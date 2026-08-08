@@ -18,4 +18,4 @@ namespace Lumoin.Verisync.Core;
 /// conflict is the only way an already-stored index changes, and only on a follower reconciling with a
 /// newer leader.
 /// </remarks>
-public sealed record RaftLogEntry<TCommand>(long Term, TCommand Command);
+public sealed record RaftLogEntry<TCommand>(Term Term, TCommand Command);
