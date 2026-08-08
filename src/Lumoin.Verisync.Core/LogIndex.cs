@@ -7,11 +7,17 @@ namespace Lumoin.Verisync.Core;
 /// A position in a Raft replicated log. Protocol indices are 1-based: index <c>i</c> is the entry at
 /// zero-based position <c>i - 1</c>.
 /// </summary>
-/// <param name="Value">The index. Must not be negative.</param>
+/// <param name="Value">The index. Must lie between zero and the value of <see cref="MaxValue"/>.</param>
 /// <remarks>
 /// <para>
 /// An index is a distinct type from <see cref="Term"/> for the reason <see cref="Term"/> states: the Figure 2
 /// messages carry an index and a term side by side, and two bare integers there exchange silently.
+/// </para>
+/// <para>
+/// The upper bound is the one <see cref="Term"/> takes and for the same reason: an index crosses JSON as a
+/// bare number, and above two to the fifty-third a double-parsing consumer reads two indices as one. The
+/// consequence is the consistency check's rather than the term rule's - a previous log index that arrives as
+/// its neighbour matches the wrong entry - and the cap removes it for every representable value.
 /// </para>
 /// <para>
 /// The <see langword="default"/> value is <see cref="BeforeFirst"/>, the empty prefix ahead of the first
@@ -23,11 +29,14 @@ namespace Lumoin.Verisync.Core;
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
 public readonly record struct LogIndex(long Value): IComparable<LogIndex>
 {
+    private const long MaxIndexValue = (1L << 53) - 1;
+
+
     /// <summary>
     /// The index. It is validated on construction and on a <c>with</c> expression alike, because the
     /// initializer writes the backing field directly and no accessor runs for it.
     /// </summary>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown if the value is negative.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if the value is negative or above the value of <see cref="MaxValue"/>.</exception>
     public long Value { get; init { field = Validate(value); } } = Validate(Value);
 
 
@@ -37,9 +46,15 @@ public readonly record struct LogIndex(long Value): IComparable<LogIndex>
     /// <summary>The index of the first entry a log can hold.</summary>
     public static LogIndex First { get; } = new(1);
 
+    /// <summary>The highest representable index, which is one below two to the fifty-third.</summary>
+    public static LogIndex MaxValue { get; } = new(MaxIndexValue);
+
 
     /// <summary>Whether this is the empty prefix, so that it names no entry.</summary>
     public bool IsBeforeFirst => Value == 0;
+
+    /// <summary>Whether this is the last representable index, so that no successor exists.</summary>
+    public bool IsExhausted => Value == MaxIndexValue;
 
     /// <summary>
     /// The zero-based position of this entry in the log's backing storage.
@@ -62,8 +77,21 @@ public readonly record struct LogIndex(long Value): IComparable<LogIndex>
 
     /// <summary>The index of the entry after this one.</summary>
     /// <returns>The successor index.</returns>
-    /// <exception cref="OverflowException">Thrown if the index range is spent.</exception>
-    public LogIndex Next() => new(checked(Value + 1));
+    /// <exception cref="InvalidOperationException">Thrown if this is <see cref="MaxValue"/>.</exception>
+    /// <remarks>
+    /// The throw is the fail-closed backstop for a caller that did not test <see cref="IsExhausted"/> first. A
+    /// log that has spent the range is compacted or the cluster reconfigured rather than wrapped, because a
+    /// wrapped index would name an entry the log already holds.
+    /// </remarks>
+    public LogIndex Next()
+    {
+        if(IsExhausted)
+        {
+            throw new InvalidOperationException("The index range is spent; the last representable index has no successor.");
+        }
+
+        return new LogIndex(Value + 1);
+    }
 
 
     /// <summary>The index of the entry before this one.</summary>
@@ -83,8 +111,11 @@ public readonly record struct LogIndex(long Value): IComparable<LogIndex>
     /// <summary>The index <paramref name="count"/> entries past this one.</summary>
     /// <param name="count">How many entries to advance by. Must not be negative.</param>
     /// <returns>The advanced index, which is this one when <paramref name="count"/> is zero.</returns>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="count"/> is negative.</exception>
-    /// <exception cref="OverflowException">Thrown if the index range is spent.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown if <paramref name="count"/> is negative, and if the result lies above <see cref="MaxValue"/>,
+    /// which is attributed to the resulting index rather than to the count that produced it.
+    /// </exception>
+    /// <exception cref="OverflowException">Thrown if the sum does not fit the underlying range at all.</exception>
     public LogIndex Advance(long count)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
@@ -130,6 +161,7 @@ public readonly record struct LogIndex(long Value): IComparable<LogIndex>
     {
         //The exception must name the public property, not the validator's parameter.
         ArgumentOutOfRangeException.ThrowIfNegative(value, nameof(Value));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(value, MaxIndexValue, nameof(Value));
 
         return value;
     }

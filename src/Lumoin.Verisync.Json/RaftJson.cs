@@ -16,12 +16,13 @@ namespace Lumoin.Verisync.Json;
 /// The encoding mirrors <see cref="ConsensusMessageJson"/>: hand-written and explicit — no reflection, AOT-
 /// and trim-safe — with a <c>type</c> discriminator on the envelope and hex-encoded replica ids. The caller
 /// supplies how to read and write <c>TCommand</c>, since the command is application-defined. The decoders
-/// validate fail-closed (<see cref="JsonException"/>) on anything no honest sender produces: an unknown
-/// type, malformed or wrong-length replica ids, and log entry terms below one. A negative term or index is
-/// refused by <see cref="Term"/> and <see cref="LogIndex"/> themselves, whose constructors run here on every
-/// value that arrives from the wire, so the codec neither duplicates nor weakens the rule. Relational rules
-/// (decreasing log terms, a vote that is not a member) stay in <see cref="RaftNode{TCommand}.FromState"/>,
-/// the single place that owns them.
+/// validate fail-closed (<see cref="JsonException"/>) on the two things only the encoding can be wrong
+/// about, an unknown envelope type and a malformed or wrong-length replica id, and add no rule of their own.
+/// Every other value is handed to its domain constructor here, so an out-of-range term or index is refused by
+/// <see cref="Term"/> and <see cref="LogIndex"/> and a log entry tagged below <see cref="Term.First"/> by
+/// <see cref="RaftLogEntry{TCommand}"/>, each surfacing with the validator's own message as the inner
+/// exception. Relational rules (decreasing log terms, a vote that is not a member) stay in
+/// <see cref="RaftNode{TCommand}.FromState"/>, the single place that owns them.
 /// </remarks>
 public static class RaftJson
 {
@@ -290,12 +291,9 @@ public static class RaftJson
         foreach(JsonElement entry in element.EnumerateArray())
         {
             long term = RequireProperty(entry, "term", "A log entry").GetInt64();
-            if(term < 1)
-            {
-                throw new JsonException($"A log entry term is at least one, got {term}.");
-            }
+            TCommand command = readCommand(RequireProperty(entry, "command", "A log entry"));
 
-            entries.Add(new RaftLogEntry<TCommand>(new Term(term), readCommand(RequireProperty(entry, "command", "A log entry"))));
+            entries.Add(Construct(() => new RaftLogEntry<TCommand>(new Term(term), command)));
         }
 
         return entries.MoveToImmutable();

@@ -107,12 +107,14 @@ internal sealed class RaftNodeStateTests
 
 
     [TestMethod]
-    public void FromStateRejectsALogEntryTermBelowOne()
+    public void ALogEntryCannotExpressATermBelowOne()
     {
-        //Entry terms start at one; term zero is the empty-prefix sentinel and never tags a real entry.
-        RaftNodeState<string> state = new(Term.First, [], [new RaftLogEntry<string>(Term.Zero, "x")]);
+        //Entry terms start at one, because only an elected leader creates an entry and term zero is the term
+        //a node holds before any election. The rejection belongs to the entry rather than to FromState, so no
+        //log carrying one can be assembled to be refused.
+        ArgumentOutOfRangeException thrown = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = new RaftLogEntry<string>(Term.Zero, "x"));
 
-        Assert.ThrowsExactly<ArgumentException>(() => RaftNode<string>.FromState(N1, Members, state));
+        Assert.AreEqual("Term", thrown.ParamName);
     }
 
 

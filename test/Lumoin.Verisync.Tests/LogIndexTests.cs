@@ -100,13 +100,36 @@ internal sealed class LogIndexTests
     }
 
 
+    //THE BOUND IS THE ONE A TERM TAKES AND FOR THE SAME REASON, an index being a bare JSON number too. Here
+    //the consequence is the consistency check's: a previous log index that arrives as its neighbour matches
+    //the wrong entry.
     [TestMethod]
-    public void TheSuccessorOfTheLastRepresentableIndexOverflowsRatherThanWrapping()
+    public void TheIndexRangeStopsAtTheLargestValueAJsonReaderReadsExactly()
     {
-        LogIndex last = new(long.MaxValue);
+        Assert.AreEqual(9007199254740991L, LogIndex.MaxValue.Value);
+        Assert.IsTrue(LogIndex.MaxValue.IsExhausted);
+        Assert.IsFalse(new LogIndex(9007199254740990L).IsExhausted);
 
-        Assert.ThrowsExactly<OverflowException>(() => _ = last.Next());
-        Assert.ThrowsExactly<OverflowException>(() => _ = last.Advance(1));
+        ArgumentOutOfRangeException thrown = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = new LogIndex(9007199254740992L));
+
+        Assert.AreEqual("Value", thrown.ParamName);
+    }
+
+
+    [TestMethod]
+    public void TheSuccessorOfTheLastRepresentableIndexFailsClosed()
+    {
+        Assert.ThrowsExactly<InvalidOperationException>(() => _ = LogIndex.MaxValue.Next());
+
+        //Advancing attributes the overrun to the resulting index rather than to the count, because the count
+        //itself was legal and it is the sum that leaves the range.
+        ArgumentOutOfRangeException thrown = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = LogIndex.MaxValue.Advance(1));
+
+        Assert.AreEqual("Value", thrown.ParamName);
+
+        //A count large enough to leave the underlying range at all is caught before the validator sees a
+        //wrapped negative it would report as a negative index.
+        Assert.ThrowsExactly<OverflowException>(() => _ = LogIndex.MaxValue.Advance(long.MaxValue));
     }
 
 

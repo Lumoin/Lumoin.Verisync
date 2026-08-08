@@ -176,10 +176,29 @@ internal sealed class RaftJsonTests
     [TestMethod]
     public void ZeroLogEntryTermIsRejected()
     {
-        //A real log entry's term is at least one; term zero is the empty-prefix sentinel, never an entry.
+        //A real log entry's term is at least one; term zero is the term a node holds before any election. The
+        //codec carries no rule of its own here, so this pins that RaftLogEntry's own validator runs on the
+        //decode path and reaches a reader as the uniform failure.
         string json = """{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"appendRequest","payload":{"term":2,"leaderId":"0100000000000000000000000000000000000000000000000000000000000000","prevLogIndex":0,"prevLogTerm":0,"entries":[{"term":0,"command":1}],"leaderCommit":0}}""";
 
         Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope(json));
+    }
+
+
+    [TestMethod]
+    public void ATermAboveTheExactlyRepresentableRangeIsRejected()
+    {
+        //Two to the fifty-third and above cannot survive a double-parsing consumer intact, and a term that
+        //two readers disagree about is one a comparison rule reads differently at either end of the wire.
+        string json = """{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"voteReply","payload":{"term":9007199254740992,"voteGranted":true}}""";
+
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope(json));
+
+        //One below the bound is legal and decodes, so the refusal above is the cap and not a width limit the
+        //accessor imposes.
+        string atBound = """{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"voteReply","payload":{"term":9007199254740991,"voteGranted":true}}""";
+
+        Assert.AreEqual(Term.MaxValue, DeserializeEnvelope(atBound).VoteReply!.Term);
     }
 
 

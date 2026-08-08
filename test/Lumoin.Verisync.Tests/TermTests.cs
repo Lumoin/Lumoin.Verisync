@@ -55,15 +55,31 @@ internal sealed class TermTests
     }
 
 
-    //THE SUCCESSOR FAILS CLOSED RATHER THAN WRAPPING. An unchecked increment at the top of the range yields
-    //long.MinValue, which the non-negativity validator would then reject with a message about a negative term
-    //and hide the exhaustion that actually happened.
+    //THE BOUND IS THE WIRE'S AND NOT THE ARITHMETIC'S. A term crosses JSON as a bare number, and two terms
+    //above two to the fifty-third reach a double-parsing consumer as one value; every term rule in Figure 2
+    //is a comparison, so two terms that arrive equal let a stale request pass the staleness test.
     [TestMethod]
-    public void TheSuccessorOfTheLastRepresentableTermOverflowsRatherThanWrapping()
+    public void TheTermRangeStopsAtTheLargestValueAJsonReaderReadsExactly()
     {
-        Term last = new(long.MaxValue);
+        //The bound is read back through the term rather than off a constant, because an assertion whose
+        //operands are both compile-time constants is folded and stops testing anything.
+        Assert.AreEqual(9007199254740991L, Term.MaxValue.Value);
+        Assert.IsTrue(Term.MaxValue.IsExhausted);
+        Assert.IsFalse(new Term(9007199254740990L).IsExhausted);
 
-        Assert.ThrowsExactly<OverflowException>(() => _ = last.Next());
+        ArgumentOutOfRangeException thrown = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = new Term(9007199254740992L));
+
+        Assert.AreEqual("Value", thrown.ParamName);
+    }
+
+
+    //THE SUCCESSOR FAILS CLOSED RATHER THAN WRAPPING. Incrementing past the top of the range would otherwise
+    //be caught by the range validator, whose message names the value rather than the exhaustion that actually
+    //happened, and a wrapped term would name an epoch that has already elected a leader.
+    [TestMethod]
+    public void TheSuccessorOfTheLastRepresentableTermFailsClosed()
+    {
+        Assert.ThrowsExactly<InvalidOperationException>(() => _ = Term.MaxValue.Next());
     }
 
 

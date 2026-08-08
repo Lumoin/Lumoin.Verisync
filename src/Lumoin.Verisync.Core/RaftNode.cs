@@ -162,11 +162,13 @@ public sealed class RaftNode<TCommand>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
     /// Thrown by the constructor when <paramref name="members"/> is empty or omits <paramref name="id"/>, and
-    /// when the durable state is internally impossible: a
+    /// when the durable state is internally impossible in a way only the whole state shows: a
     /// <see cref="RaftNodeState{TCommand}.VotedFor"/> that is neither empty nor exactly
-    /// <see cref="ReplicaId.Size"/> bytes; a non-empty vote that is not a member; a log entry with a term below
-    /// one; log terms that decrease; or a last log term above the current term. A negative term or index is
-    /// refused by <see cref="Term"/> and <see cref="LogIndex"/> before a state can be built at all.
+    /// <see cref="ReplicaId.Size"/> bytes; a non-empty vote that is not a member; log terms that decrease; or
+    /// a last log term above the current term. Everything a single value can be wrong about is refused before
+    /// a state can be built at all: an out-of-range term or index by <see cref="Term"/> and
+    /// <see cref="LogIndex"/>, and a log entry tagged below <see cref="Term.First"/> by
+    /// <see cref="RaftLogEntry{TCommand}"/>.
     /// </exception>
     public static RaftNode<TCommand> FromState(ReplicaId id, ImmutableArray<ReplicaId> members, RaftNodeState<TCommand> state)
     {
@@ -197,11 +199,6 @@ public sealed class RaftNode<TCommand>
         for(int i = 0; i < log.Length; i++)
         {
             Term entryTerm = log[i].Term;
-            if(entryTerm < Term.First)
-            {
-                throw new ArgumentException($"A restored log entry term is at least one, got {entryTerm.Value} at index {i + 1}.", nameof(state));
-            }
-
             if(entryTerm < previousTerm)
             {
                 throw new ArgumentException($"Restored log terms cannot decrease, got {entryTerm.Value} after {previousTerm.Value} at index {i + 1}.", nameof(state));
@@ -229,6 +226,10 @@ public sealed class RaftNode<TCommand>
     /// members.
     /// </summary>
     /// <returns>The vote request to broadcast.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when <see cref="CurrentTerm"/> is <see cref="Term.MaxValue"/> and the term range is therefore
+    /// spent. A cluster that has held two to the fifty-third elections is reconfigured rather than wrapped.
+    /// </exception>
     /// <remarks>
     /// <para>
     /// This is the sole entry point for liveness. The node never calls it itself; the host invokes it when
