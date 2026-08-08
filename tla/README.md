@@ -2,17 +2,18 @@
 
 Model-checked specifications for the protocol tiers this repository ships or is deciding whether to
 ship: the anti-entropy session pair with the completion frame, the consensus-anchored checkpoint
-seal, and QuePaxa. The first two model the code as it is. QuePaxa models the published protocol
-before any code exists, which is the point of ordering it that way. The abstraction decisions are
+seal, QuePaxa, and Raft's leader election. The session pair, the seal and the election model the code
+as it is. QuePaxa models the published protocol before any code exists, which is the point of
+ordering it that way. The abstraction decisions are
 documented in each module's header comment.
 
 ## Negative models
 
 A negative model is a configuration that enables a forbidden behavior (or removes a shipped
 guard) and whose TLC run MUST report a violation. A green negative run means the model is too
-abstract to trust and its positive runs prove nothing. The runners (`Run-SessionAndSeal.ps1` and
-`Run-QuePaxa.ps1`) enforce the expected outcome of every configuration in the matrices below and
-fail on any deviation. A configuration that no runner pins does not belong in this directory.
+abstract to trust and its positive runs prove nothing. The runners (`Run-SessionAndSeal.ps1`,
+`Run-QuePaxa.ps1` and `Run-Raft.ps1`) enforce the expected outcome of every configuration in the
+matrices below and fail on any deviation. A configuration that no runner pins does not belong in this directory.
 
 ## Toolchain
 
@@ -23,6 +24,7 @@ fail on any deviation. A configuration that no runner pins does not belong in th
     C:\tools\tlaplus\tlc.cmd -workers 4 -checkpoint 0 -config .\MCSessionPairSafety.cfg .\SessionPair.tla
     .\Run-SessionAndSeal.ps1
     .\Run-QuePaxa.ps1
+    .\Run-Raft.ps1
 
 ## The session and seal matrix
 
@@ -87,6 +89,33 @@ to the step the fast path is read at makes the mixed configuration safe, and
 `MCConcreteSplitLeadersNarrowDowngrade` is the control showing the narrowing does not weaken the defence it
 narrows. The shipped recorder downgrades at every step, so the pair bounds what the second key rather than
 the non-uniform configuration itself is responsible for.
+
+## The Raft election matrix
+
+`RaftElection` models leader election over a fixed membership. It exists for a hazard no conventional Raft
+specification can express: a specification that quantifies messages over the server set makes every sender a
+member by construction, so the question of a message from somewhere else cannot be asked. A deployment
+cannot assume it, because the sender identity arrives from the wire and a codec that validates field shapes
+does not know the membership. `Outsiders` is the set of identities outside the membership that may inject a
+well-formed message, and it is empty in the closed-cluster configuration.
+
+Logs are not modelled here. Election safety follows from one vote per term and majority intersection alone,
+and the election restriction that compares logs only ever refuses votes, so a model without it admits every
+interleaving a model with it admits and more.
+
+| Configuration | Module | What it models | Expected |
+| --- | --- | --- | --- |
+| `MCRaftElectionClosed` | RaftElection | the closed cluster, where every message comes from a member | green |
+| `MCRaftElectionOutsiderUnguarded` | RaftElection | negative model: the tally counts a granted reply from an outsider, so two candidates complete a majority count in one term | red (required) |
+| `MCRaftElectionOutsiderGuarded` | RaftElection | the same outsider against the shipped filter, which restores election safety | green |
+| `MCRaftElectionTermInflation` | RaftElection | negative model: the filter placed after the term rule, where an outsider that cannot win still moves a member's term | red (required) |
+| `MCRaftElectionFilterFirst` | RaftElection | the shipped placement, with the filter before the term rule, which closes the inflation lever | green |
+
+The last two are the pair that decided the placement rather than recording it. Discarding a non-member
+before the tally is enough for election safety, and `MCRaftElectionOutsiderGuarded` is green on it, but
+`NoTermInflation` still fails there: a stranger that can never complete a quorum can raise a member's term
+and unseat a leader the cluster agreed on. Filtering before the term rule closes that, and it costs nothing
+for member traffic, because the filter admits every member unconditionally.
 
 ## Scope notes (what a green run does not certify)
 

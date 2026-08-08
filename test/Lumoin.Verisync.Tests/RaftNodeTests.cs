@@ -113,6 +113,38 @@ internal sealed class RaftNodeTests
     }
 
 
+    //The filter runs before the term rule, so a non-member cannot raise this node's term either. It is the
+    //weaker lever and the one a tally-only filter leaves open: a stranger that can never complete a quorum
+    //could still unseat a leader the cluster agreed on by making every member adopt a higher term.
+    [TestMethod]
+    public void ANonMemberCannotRaiseTheTerm()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> leader = new(N1, members);
+
+        _ = leader.StartElection();
+        _ = leader.ReceiveVote(N2, new RequestVoteReply(leader.CurrentTerm, true));
+
+        Assert.AreEqual(RaftRole.Leader, leader.Role);
+
+        long term = leader.CurrentTerm;
+
+        _ = leader.HandleRequestVote(new RequestVoteRequest(term + 5, Stranger, 0, 0));
+        _ = leader.HandleAppendEntries(new AppendEntriesRequest<string>(term + 5, Stranger, 0, 0, [], 0));
+        _ = leader.ReceiveVote(Stranger, new RequestVoteReply(term + 5, false));
+        leader.ReceiveAppendEntriesReply(Stranger, new AppendEntriesReply(term + 5, false, 0));
+
+        Assert.AreEqual(term, leader.CurrentTerm, "A non-member raised the term.");
+        Assert.AreEqual(RaftRole.Leader, leader.Role, "A non-member unseated the leader.");
+
+        //The same higher term from a member does step the leader down, so the refusal is about membership.
+        _ = leader.HandleAppendEntries(new AppendEntriesRequest<string>(term + 5, N2, 0, 0, [], 0));
+
+        Assert.AreEqual(term + 5, leader.CurrentTerm);
+        Assert.AreEqual(RaftRole.Follower, leader.Role);
+    }
+
+
     [TestMethod]
     public void ElectionSafetyHoldsWhenTwoCandidatesSplitTheVote()
     {
