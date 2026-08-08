@@ -12,28 +12,22 @@ namespace Lumoin.Verisync.Core;
 /// <param name="Proposal">The proposal to record. Must not be <see langword="null"/> and must not carry <see cref="ProposalPriority.None"/>.</param>
 /// <remarks>
 /// <para>
-/// THERE IS NO ABSTRACT BASE MESSAGE. The Fast CASPaxos family has
-/// <see cref="ConsensusRequest{TValue}"/> because there are two request kinds to discriminate; QuePaxa has
-/// one in each direction, so a base would exist only to be downcast.
-/// </para>
-/// <para>
-/// VALIDATION HAPPENS AT CONSTRUCTION BECAUSE THIS TYPE IS THE WIRE BOUNDARY. <see cref="RecorderStep"/>
+/// Validation happens at construction because this type is the wire boundary. <see cref="RecorderStep"/>
 /// already refuses a value outside its own range, so the only illegal decoded step is one below round one
 /// phase zero, and refusing it here means
 /// <see cref="QuePaxaNode{TValue}.Handle(RecordRequest{TValue})"/> can trust its input and
 /// <see cref="QuePaxaRecorder{TValue}.Record(RecorderStep, PrioritizedProposal{TValue})"/>'s own floor check
 /// is a backstop rather than a live path. The absent priority is refused because it is the aggregate fold's
 /// identity: it is never drawn and never sent, and a request carrying it would put the identity element on
-/// the wire. <see cref="ProposalPrioritySourceDelegate"/> states that contract against the draw, and stating
-/// it on the message makes it true of everything that reaches a recorder.
+/// the wire. <see cref="ProposalPrioritySourceDelegate"/> states the same contract against the draw.
 /// </para>
 /// <para>
-/// A RESERVED PRIORITY ABOVE ROUND ONE PHASE ZERO IS LEGAL AND MUST NOT BE VALIDATED AWAY. It looks wrong and
-/// it is not: when the fast path fails, the phase-zero template becomes the best of the first proposals,
-/// which may be the leader's own reserved-priority proposal, and phases one to three then send that template
-/// untouched. The model does exactly this, because its <c>ProposalFor(j)</c> is the working template whenever
-/// <c>randomizes</c> is false and that template can be the best of the gathered first proposals. A validator
-/// refusing it would deadlock the protocol on its own most common contended path.
+/// A reserved priority above round one phase zero is legal and must not be validated away. When the fast path
+/// fails, the phase-zero template becomes the best of the first proposals, which may be the leader's own
+/// reserved-priority proposal, and phases one to three then send that template untouched. The model does the
+/// same, because its <c>ProposalFor(j)</c> is the working template whenever <c>randomizes</c> is false and
+/// that template can be the best of the gathered first proposals. A validator refusing it would deadlock the
+/// protocol on its own most common contended path.
 /// </para>
 /// </remarks>
 public sealed record RecordRequest<TValue>(RecorderStep Step, PrioritizedProposal<TValue> Proposal)

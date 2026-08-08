@@ -5,8 +5,7 @@ namespace Lumoin.Verisync.Core;
 
 /// <summary>
 /// Sends a record request to a single recorder and awaits its reply. This is the proposer's only view of a
-/// recorder — the transport behind it may be an in-process call, an in-memory channel, or a socket, which is
-/// what makes the proposer transport-agnostic.
+/// recorder; the transport behind it may be an in-process call, an in-memory channel, or a socket.
 /// </summary>
 /// <typeparam name="TValue">The register value type.</typeparam>
 /// <param name="request">The request to send.</param>
@@ -14,19 +13,18 @@ namespace Lumoin.Verisync.Core;
 /// <returns>The recorder's reply.</returns>
 /// <remarks>
 /// <para>
-/// A TRANSPORT BEHIND THIS DELEGATE MAY RETRANSMIT FREELY. A second delivery of one identical request is the
+/// A transport behind this delegate may retransmit freely. A second delivery of one identical request is the
 /// identity on the recorder: the first delivery already moved the register to at least the request's step, so
 /// the duplicate reaches only the same-step branch, where the fold keeps the incumbent on an exact key tie
 /// and touches neither the step nor the first proposal, or the below-step branch, where nothing is written at
 /// all. The downgrade cannot differ between the two deliveries either, because the recorder's configured
-/// leader is fixed for the instance and the proposal is identical. A transport that retransmits is therefore
-/// invisible above this delegate.
+/// leader is fixed for the instance and the proposal is identical.
 /// </para>
 /// <para>
-/// AN IMPLEMENTATION MUST COMPLETE WHEN <paramref name="cancellationToken"/> IS SIGNALLED, with a result, a
+/// An implementation must complete when <paramref name="cancellationToken"/> is signalled, with a result, a
 /// fault or a cancellation. The proposer waits on <see cref="Task.WhenAny(Task[])"/>, which takes no
-/// cancellation token, so it cannot interrupt its own wait; an endpoint that ignores the token blocks a
-/// cancelled proposal indefinitely, and that is the transport's defect rather than the proposer's.
+/// cancellation token, so it cannot interrupt its own wait, and an endpoint that ignores the token blocks a
+/// cancelled proposal indefinitely.
 /// </para>
 /// <para>
 /// An implementation that imposes its own deadline through a linked token may end its task cancelled or
@@ -35,15 +33,15 @@ namespace Lumoin.Verisync.Core;
 /// abandoning the proposal.
 /// </para>
 /// <para>
-/// CORRELATION IS PER CALL AND NEVER PER RECORDER. The proposer abandons rather than cancels the endpoints
+/// Correlation is per call and never per recorder. The proposer abandons rather than cancels the endpoints
 /// still outstanding once a quorum has answered, and the next step calls every recorder again, so two calls to
 /// one recorder can be outstanding at once. A reply carries the recorder's own step rather than the step of
 /// the request it answers, so a transport holding a single slot per recorder would hand the older call's reply
-/// to the newer call and nothing above it could tell. An implementation must therefore correlate each reply to
-/// the call it answers.
+/// to the newer call and nothing above it could tell. An implementation must correlate each reply to the call
+/// it answers.
 /// </para>
 /// <para>
-/// AN IMPLEMENTATION MUST NOT COMPLETE THE RETURNED OPERATION WHILE HOLDING A LOCK THIS DELEGATE ITSELF NEEDS.
+/// An implementation must not complete the returned operation while holding a lock this delegate itself needs.
 /// The proposer resumes on whichever thread completed the operation and may issue that recorder's next send
 /// synchronously from it, so a transport that completes a reply from inside its receive loop while holding the
 /// connection's send lock deadlocks against its own retransmission. Completing through a task built with

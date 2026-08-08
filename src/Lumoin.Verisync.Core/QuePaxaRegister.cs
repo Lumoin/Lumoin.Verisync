@@ -13,27 +13,26 @@ namespace Lumoin.Verisync.Core;
 /// <remarks>
 /// <para>
 /// The register is an immutable value in the same idiom as <see cref="FastCasPaxosRegister{TValue}"/>:
-/// every step returns a new register alongside its outcome. Being synchronous is what makes an interleaving
-/// harness possible, because a caller drives one protocol step at a time against a chosen subset of
-/// recorders and can therefore interleave two proposers in an arbitrary order.
+/// every step returns a new register alongside its outcome. Because it is synchronous, a caller drives one
+/// protocol step at a time against a chosen subset of recorders and can therefore interleave two proposers
+/// in an arbitrary order.
 /// </para>
 /// <para>
-/// THE PROTOCOL RULES DO NOT LIVE HERE. This type is one of two drivers over
+/// The protocol rules do not live here. This type is one of two drivers over
 /// <see cref="QuePaxaRound{TValue}"/>: it decides which recorders a step reaches and records against them in
 /// memory, and <see cref="QuePaxaRound{TValue}.NextSend"/> and <see cref="QuePaxaRound{TValue}.Conclude"/>
 /// supply what a send carries and what a majority of answers concludes.
 /// <see cref="QuePaxaProposer{TValue}"/> is the other driver and runs the identical rules over a transport.
 /// </para>
 /// <para>
-/// TWO DEFENCES AGAINST THE RESERVED-PRIORITY DIVERGENCE HAZARD ARE IMPLEMENTED AND THERE IS NO THIRD. The
+/// Two defences against the reserved-priority divergence hazard are implemented and there is no third. The
 /// whole-proposal identical test lives in <see cref="QuePaxaRound{TValue}.Conclude"/>'s phase zero and is
-/// defence in depth. The downgrade
-/// lives in <see cref="QuePaxaRecorder{TValue}.Record(RecorderStep, PrioritizedProposal{TValue})"/> and is
-/// the one that carries safety on its own. In particular the proposer never checks the winning proposal's
-/// owner against its own believed leader: that check is not redundant but harmful, because it fires exactly
-/// when a proposer's belief differs from the recorders' configuration, which is a state the checked green
-/// configurations reach constantly, and refusing the decision there continues into a global state the
-/// checker never visited.
+/// defence in depth. The downgrade lives in
+/// <see cref="QuePaxaRecorder{TValue}.Record(RecorderStep, PrioritizedProposal{TValue})"/> and is the one
+/// that carries safety on its own. The proposer must not check the winning proposal's owner against its own
+/// believed leader: such a check is harmful, because it fires exactly when a proposer's belief differs from
+/// the recorders' configuration, which is a state a correct deployment reaches constantly, and refusing the
+/// decision there steps outside the behaviour safety was established for.
 /// </para>
 /// </remarks>
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
@@ -69,8 +68,8 @@ public sealed class QuePaxaRegister<TValue>
     /// <returns>A new register.</returns>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="recorderCount"/> is less than one.</exception>
     /// <remarks>
-    /// Recorders that agree on the leader is the deployment obligation the downgrade rule places on the host;
-    /// recorders that disagree reproduce the divergence hazard exactly.
+    /// Agreement on the leader is the deployment obligation the downgrade rule places on the host; recorders
+    /// that disagree reproduce the divergence hazard.
     /// </remarks>
     public static QuePaxaRegister<TValue> LedBy(int recorderCount, ProposerLane leader)
     {
@@ -91,8 +90,8 @@ public sealed class QuePaxaRegister<TValue>
     /// <returns>A new register.</returns>
     /// <exception cref="ArgumentException">Thrown if <paramref name="recorders"/> is default or empty.</exception>
     /// <remarks>
-    /// This is what lets a caller build a register whose recorders are configured with different leaders,
-    /// which is the misconfiguration the downgrade rule fails under and which a negative test pins.
+    /// This lets a caller build a register whose recorders are configured with different leaders, which is
+    /// the misconfiguration the downgrade rule fails under.
     /// </remarks>
     public static QuePaxaRegister<TValue> FromRecorders(ImmutableArray<QuePaxaRecorder<TValue>> recorders)
     {
@@ -113,10 +112,9 @@ public sealed class QuePaxaRegister<TValue>
 
     /// <summary>The quorum size, which is a strict majority.</summary>
     /// <remarks>
-    /// A strict majority is exactly what the proofs need: the map's section 3 records that Lemma B.4 asks for
-    /// sets exceeding half the replicas, and its sections 2 and 4 record that Lemmas C.5 and C.6 discharge the
-    /// two threshold-broadcast properties from majority quorums. A deployment sized above the minimum may use larger quorums and
-    /// stays safe; it is never required to.
+    /// A strict majority is what the proofs need: Lemma B.4 asks for sets exceeding half the replicas, and
+    /// Lemmas C.5 and C.6 discharge the two threshold-broadcast properties from majority quorums. A
+    /// deployment sized above the minimum may use larger quorums and stays safe; it is never required to.
     /// </remarks>
     public int Quorum => (Recorders.Length / 2) + 1;
 
@@ -127,9 +125,9 @@ public sealed class QuePaxaRegister<TValue>
     /// </summary>
     /// <param name="round">The proposer's current round.</param>
     /// <param name="recorderIndices">
-    /// The indices of the recorders this step reaches, in the order it reaches them. An EMPTY but
+    /// The indices of the recorders this step reaches, in the order it reaches them. An empty but
     /// non-default array is legal and falls through to a missed quorum; it models a step whose every message
-    /// was lost, which is a state the protocol must tolerate rather than an argument error.
+    /// was lost, which is a state the protocol must tolerate.
     /// </param>
     /// <param name="drawPriority">The source of the phase-zero priority draw.</param>
     /// <returns>The register after the step and the step's outcome.</returns>
@@ -147,20 +145,19 @@ public sealed class QuePaxaRegister<TValue>
     /// A duplicate index is refused because it would double-count toward the quorum.
     /// </para>
     /// <para>
-    /// THE DRAW IS PER RECORDER, not per step. The map, section 4, is explicit that phase zero redraws the
-    /// priority per recorder, and a single draw shared across recorders would collapse the independence the
-    /// liveness argument rests on. The iteration order is part of the contract rather than an implementation
-    /// detail, because it is what makes a seeded priority source reproduce a run exactly.
+    /// The draw is per recorder, not per step. Phase zero redraws the priority for each recorder, and a
+    /// single draw shared across recorders would collapse the independence the liveness argument rests on.
+    /// The iteration order is part of the contract, because it is what makes a seeded priority source
+    /// reproduce a run exactly.
     /// </para>
     /// <para>
-    /// EVERY REACHED RECORDER HAS RECORDED, whatever happens next. A message that arrives is recorded even
-    /// when the proposer never assembles a quorum, which is the behaviour Lemma C.5's second case turns on;
-    /// the map, section 6, records that the model keeps the register update for a request the proposer has
-    /// already stepped past for the same reason. A caller that discarded the mutated recorders on a missed
-    /// quorum would break that.
+    /// Every reached recorder has recorded, whatever happens next. A message that arrives is recorded even
+    /// when the proposer never assembles a quorum, which is the behaviour Lemma C.5's second case turns on,
+    /// and the register update is kept even for a request the proposer has already stepped past. A caller
+    /// that discarded the mutated recorders on a missed quorum would break that.
     /// </para>
     /// <para>
-    /// A ROUND VALUE IS STEPPED AT MOST ONCE. Stepping one round value twice is outside the checked
+    /// A round value is stepped at most once. Stepping one round value twice is outside the supported
     /// behaviour: a phase-zero re-step redraws priorities, so one proposer would hold two distinct keys at
     /// one step, with the recorders it reached twice folding both and the recorders it reached once holding
     /// the stale draw.
@@ -232,11 +229,10 @@ public sealed class QuePaxaRegister<TValue>
     /// recorder, a missed quorum never arises.
     /// </para>
     /// <para>
-    /// WHAT THIS DOES AND DOES NOT DEMONSTRATE. With no contention it decides at the first step when the
-    /// caller is the configured leader and believes it, and at the third step otherwise, which is one round
-    /// trip and one round respectively. It cannot demonstrate anything about contention, because a single
-    /// synchronous proposer never observes a split; that is what stepping a round against chosen recorder
-    /// subsets is for.
+    /// With no contention this decides at the first step when the caller is the configured leader and
+    /// believes it, and at the third step otherwise, which is one round trip and one round respectively. It
+    /// demonstrates nothing about contention, because a single synchronous proposer never observes a split;
+    /// stepping a round against chosen recorder subsets is what covers that.
     /// </para>
     /// </remarks>
     public (QuePaxaRegister<TValue> Register, QuePaxaOutcome<TValue> Outcome) Propose(

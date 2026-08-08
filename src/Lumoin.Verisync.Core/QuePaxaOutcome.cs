@@ -7,7 +7,7 @@ namespace Lumoin.Verisync.Core;
 /// <param name="IsDecided"><see langword="true"/> when a value was decided.</param>
 /// <param name="Value">The decided value when <paramref name="IsDecided"/> is <see langword="true"/>; otherwise the default.</param>
 /// <param name="DecidedBy">
-/// The OWNER OF THE DECIDED PROPOSAL, which is not necessarily the proposer that drove this attempt.
+/// The owner of the decided proposal, which is not necessarily the proposer that drove this attempt.
 /// </param>
 /// <param name="DecidedAt">
 /// The step the decision was taken at, or <see cref="RecorderStep.Zero"/> when nothing was decided. Zero is a
@@ -17,13 +17,12 @@ namespace Lumoin.Verisync.Core;
 /// <remarks>
 /// <para>
 /// A decided outcome whose owner is not the caller's own lane means someone else's value was chosen; the
-/// caller must re-read and re-propose rather than treat its own value as committed. That distinction is why
-/// this outcome type exists instead of the CASPaxos change outcome being reused.
+/// caller must re-read and re-propose rather than treat its own value as committed.
 /// </para>
 /// <para>
 /// An undecided outcome is not evidence that the proposer's value was not chosen. Every recorder a step
 /// reached still recorded, so the proposal may be carried by another proposer and decided later. Not decided
-/// means not KNOWN decided.
+/// means not known decided.
 /// </para>
 /// </remarks>
 public sealed record QuePaxaOutcome<TValue>(

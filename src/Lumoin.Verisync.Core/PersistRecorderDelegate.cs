@@ -15,27 +15,25 @@ namespace Lumoin.Verisync.Core;
 /// <returns>A task that completes once <paramref name="recorder"/> is durable.</returns>
 /// <remarks>
 /// <para>
-/// WHAT MUST BE DURABLE BEFORE A REPLY ESCAPES IS THE RECORDER'S STEP AND ITS FIRST PROPOSAL AT THAT STEP.
-/// Lemma C.10's argument that the first proposal of a step is never overwritten is what the fast path rests
-/// on, and a restarted recorder that came back at <see cref="RecorderStep.Zero"/> would take a fresh first
-/// proposal for a step whose original first proposal a proposer has already read. Holding the reply until
-/// this delegate returns closes that window.
+/// The recorder's step and its first proposal at that step must be durable before a reply escapes. The fast
+/// path rests on Lemma C.10's argument that the first proposal of a step is never overwritten, and a
+/// restarted recorder that came back at <see cref="RecorderStep.Zero"/> would take a fresh first proposal for
+/// a step whose original first proposal a proposer has already read. Holding the reply until this delegate
+/// returns closes that window.
 /// </para>
 /// <para>
 /// A request that changes nothing is not persisted, and the reply is still sent. The recorder returns its own
 /// instance exactly when no field would have changed, which is the case for a record below its step and for
-/// an identical same-step record, so a retransmission costs no <c>fsync</c> that would make nothing durable.
+/// an identical same-step record, so a retransmission costs no <c>fsync</c>.
 /// </para>
 /// <para>
-/// Throwing prevents the reply from being sent, which is the correct fail-closed behavior: a recorded
-/// proposal that is not durable must never be observable, so a host whose durable store is unavailable should
-/// throw rather than let the reply escape. The exception then propagates out of
-/// <see cref="QuePaxaNode{TValue}.RunAsync"/>.
+/// Throwing prevents the reply from being sent and so fails closed: a recorded proposal that is not durable
+/// must never be observable, so a host whose durable store is unavailable should throw rather than let the
+/// reply escape. The exception then propagates out of <see cref="QuePaxaNode{TValue}.RunAsync"/>.
 /// </para>
 /// <para>
-/// The trivial no-durability implementation — <c>(recorder, cancellationToken) =&gt; ValueTask.CompletedTask</c>
-/// — reproduces the in-memory behavior, which is suitable for tests and ephemeral clusters that need not
-/// survive a restart.
+/// The trivial no-durability implementation, <c>(recorder, cancellationToken) =&gt; ValueTask.CompletedTask</c>,
+/// reproduces the in-memory behavior and suits tests and ephemeral clusters that need not survive a restart.
 /// </para>
 /// </remarks>
 public delegate ValueTask PersistRecorderDelegate<TValue>(QuePaxaRecorder<TValue> recorder, CancellationToken cancellationToken);

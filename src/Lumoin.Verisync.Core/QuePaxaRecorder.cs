@@ -10,28 +10,16 @@ namespace Lumoin.Verisync.Core;
 /// <typeparam name="TValue">The register value type.</typeparam>
 /// <remarks>
 /// <para>
-/// A recorder is an immutable value, exactly as <see cref="FastAcceptor{TValue}"/> is:
+/// A recorder is an immutable value in the same idiom as <see cref="FastAcceptor{TValue}"/>:
 /// <see cref="Record(RecorderStep, PrioritizedProposal{TValue})"/> returns a new recorder alongside the
-/// summary it answers with. It holds ONE instance; indexing recorders by instance belongs with the stateful
+/// summary it answers with. It holds one instance; indexing recorders by instance belongs with the stateful
 /// node above the core, because an instance index carries a lifetime and a resource bound the pure core
 /// cannot enforce.
 /// </para>
 /// <para>
-/// THE RESERVED-PRIORITY DOWNGRADE IS THE WHOLE OF THIS SLICE'S SAFETY. Of the three candidate defences
-/// against the reserved-priority divergence hazard, only one holds on its own: the recorder honours the
-/// reserved priority solely from the instance's configured leader. Neither of the other two holds alone.
-/// The identical-key check on the fast path does not remove a disagreement, it converts a
-/// fast-against-fast one into a fast-against-phase-two one, because the proposer whose replies are not
-/// uniform falls through to the best of the first proposals and, with two reserved-priority proposals in
-/// play, that best is settled by the proposer identifier rather than by which proposal a majority actually
-/// recorded first. Binding the first claimant fails because the binding is per recorder and nothing makes
-/// the recorders agree on whom they bound. The downgrade is the only one of the three that stops two
-/// reserved-priority proposals from coexisting at all.
-/// </para>
-/// <para>
-/// WHAT THE RULE COSTS THE DEPLOYMENT is that the recorders must agree on
-/// <see cref="ConfiguredLeader"/>. Recorders that disagree reproduce the hazard exactly. The agreement is
-/// available without a message, because a deterministic function of committed state such as
+/// The downgrade rule obliges the deployment to keep the recorders in agreement on
+/// <see cref="ConfiguredLeader"/>, because recorders that disagree reproduce the reserved-priority
+/// divergence hazard. The agreement needs no message: a deterministic function of committed state such as
 /// <see cref="HedgingSchedule.RotateTo(ReplicaId)"/> over the previously committed writer lets every
 /// recorder derive the same leader for the next version independently.
 /// </para>
@@ -88,12 +76,11 @@ public sealed class QuePaxaRecorder<TValue>
     /// step above its own maximum.
     /// </para>
     /// <para>
-    /// DOWNGRADE, NOT DROP. The map, section 5, records the paper's own phrasing that a recorder declining to
-    /// honour the reserved priority records the proposal at the lowest ordinary priority and lets the round
-    /// proceed through the ordinary phases. That keeps the register free of holes and the protocol free of
-    /// deadlocks; dropping would be a liveness hole and would leave a recorder with no first proposal at a
-    /// step a proposer is about to read. The leaderless case is included: with no configured leader, every
-    /// reserved claim is declined.
+    /// A declined reserved claim is downgraded, not dropped: the proposal is recorded at the lowest ordinary
+    /// priority and the round proceeds through the ordinary phases, which keeps the register free of holes
+    /// and the protocol free of deadlocks. Dropping would leave a recorder with no first proposal at a step a
+    /// proposer is about to read. The leaderless case is included: with no configured leader, every reserved
+    /// claim is declined.
     /// </para>
     /// </remarks>
     public (QuePaxaRecorder<TValue> Recorder, RecordSummary<TValue> Summary) Record(RecorderStep step, PrioritizedProposal<TValue> proposal)

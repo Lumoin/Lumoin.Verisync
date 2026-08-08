@@ -14,43 +14,38 @@ namespace Lumoin.Verisync.Core;
 /// <typeparam name="TValue">The register value type.</typeparam>
 /// <remarks>
 /// <para>
-/// This is the second driver over <see cref="QuePaxaRound{TValue}"/> and it holds no protocol rule of its
-/// own: <see cref="QuePaxaRound{TValue}.NextSend"/> produces what each send carries and
-/// <see cref="QuePaxaRound{TValue}.Conclude"/> decides what a majority of answers means, exactly as they do
-/// for the synchronous <see cref="QuePaxaRegister{TValue}"/>. What belongs here is asynchrony: which
-/// endpoints are outstanding, which have answered, and which are worth asking again.
+/// The protocol rules live in <see cref="QuePaxaRound{TValue}"/>:
+/// <see cref="QuePaxaRound{TValue}.NextSend"/> produces what each send carries and
+/// <see cref="QuePaxaRound{TValue}.Conclude"/> decides what a majority of answers means. What belongs here is
+/// asynchrony: which endpoints are outstanding, which have answered, and which are worth asking again.
 /// </para>
 /// <para>
-/// IT ACTS ON THE FIRST QUORUM AND DOES NOT WAIT FOR THE REMAINING ENDPOINTS. That is quorum latency rather
-/// than total latency, and it is the arc's whole quantitative claim — a majority-sized quorum against Fast
-/// CASPaxos's supermajority. It stays inside the model, whose proposer acts on ANY majority subset of the
-/// replies it holds, so acting on the first majority to arrive is one of the choices the adversary is given.
-/// <see cref="FastProposer{TValue}"/> waits for every acceptor because it needs a count from all of them,
-/// and that is precisely the shape this type must not copy.
+/// It acts on the first quorum and does not wait for the remaining endpoints, which is quorum latency rather
+/// than total latency. The model's proposer acts on any majority subset of the replies it holds, so acting on
+/// the first majority to arrive is one of the choices it admits.
 /// </para>
 /// <para>
-/// A REQUEST MAY BE RE-DELIVERED AND MUST THEN BE IDENTICAL. Each step draws its per-recorder proposals once
+/// A request may be re-delivered and must then be identical. Each step draws its per-recorder proposals once
 /// and retains the resulting requests for the lifetime of that step, so a recorder that faulted is asked
 /// again with the very same step, proposal and priority. A second identical record is the identity on the
 /// recorder, while a re-draw would put two distinct proposal keys at one recorder and step, which is the one
-/// state the model does not admit. The retention is a discipline held by one method's structure rather than
-/// a guarantee this type's shape can give, which is why it is pinned by a test rather than merely written
-/// down here.
+/// state the model does not admit. The retention is a discipline of the step's send path rather than a
+/// guarantee this type's shape can give.
 /// </para>
 /// <para>
-/// ONE RECORDER CONTRIBUTES AT MOST ONE ANSWER PER STEP, BY CONSTRUCTION. Within one step at most one call
+/// One recorder contributes at most one answer per step, by construction. Within one step at most one call
 /// per recorder is outstanding, and a recorder that has answered is never called again during that step, so a
 /// second answer from one recorder is unreachable rather than discarded. The model's majority test counts
 /// reply records rather than recorders, so this is what keeps the quorum arithmetic honest;
 /// <see cref="QuePaxaRound{TValue}.Conclude"/> re-checks it for a host that assembles an answer array itself.
 /// </para>
 /// <para>
-/// CALLS FOR CONSECUTIVE STEPS DO OVERLAP, and a transport must be built for it. Once a quorum answers, the
+/// Calls for consecutive steps do overlap, and a transport must be built for it. Once a quorum answers, the
 /// endpoints still outstanding are abandoned rather than cancelled, and the next step calls every recorder
 /// again, so one recorder can hold an abandoned call from the previous step and a live one from this step at
 /// the same moment. A reply carries the recorder's own step rather than the step of the request it answers, so
 /// nothing above the transport can tell the two apart; the transport therefore owes per-call correlation and
-/// must never route a reply by a single per-recorder slot. A reply that does arrive from below the step being
+/// must never route a reply by a single per-recorder slot. A reply that arrives from below the step being
 /// gathered is discarded here, which is the model's own filter over the replies a proposer may act on.
 /// </para>
 /// </remarks>
@@ -76,10 +71,10 @@ public sealed class QuePaxaProposer<TValue>
     /// <exception cref="ArgumentException">Thrown if <paramref name="recorders"/> is empty.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="attemptsPerRecorder"/> is less than one.</exception>
     /// <remarks>
-    /// <paramref name="attemptsPerRecorder"/> HAS NO DEFAULT ON PURPOSE. The right value is a property of the
-    /// transport, and a default of one would make the re-send path unreachable and therefore untested.
-    /// The budget is spent per STEP rather than per round: a recorder abandoned at one step is asked again at
-    /// the next one with a full budget, because a transport fault at one step says nothing about the next.
+    /// <paramref name="attemptsPerRecorder"/> has no default, because the right value is a property of the
+    /// transport. The budget is spent per step rather than per round: a recorder abandoned at one step is
+    /// asked again at the next one with a full budget, because a transport fault at one step says nothing
+    /// about the next.
     /// </remarks>
     public QuePaxaProposer(
         IReadOnlyList<RecorderEndpointDelegate<TValue>> recorders,
@@ -108,10 +103,9 @@ public sealed class QuePaxaProposer<TValue>
 
     /// <summary>The quorum size, which is a strict majority.</summary>
     /// <remarks>
-    /// A strict majority is exactly what the proofs need: the map's section 3 records that Lemma B.4 asks for
-    /// sets exceeding half the replicas, and its sections 2 and 4 record that Lemmas C.5 and C.6 discharge the
-    /// two threshold-broadcast properties from majority quorums. A deployment sized above the minimum may use
-    /// larger quorums and stays safe; it is never required to.
+    /// A strict majority is what the proofs need: Lemma B.4 asks for sets exceeding half the replicas, and
+    /// Lemmas C.5 and C.6 discharge the two threshold-broadcast properties from majority quorums. A deployment
+    /// sized above the minimum may use larger quorums and stays safe; it is never required to.
     /// </remarks>
     public int Quorum => (Recorders.Count / 2) + 1;
 
@@ -142,28 +136,26 @@ public sealed class QuePaxaProposer<TValue>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled.</exception>
     /// <remarks>
     /// <para>
-    /// THIS PROPOSER IS ONE-SHOT AND THIS CALL LATCHES. A second call, concurrent or sequential, throws. The
-    /// reason is the re-send rule: re-entering round one phase zero on the same lane redraws the priority, so
-    /// the recorders reached by both attempts would hold two distinct proposal keys at one step from one
-    /// proposer, which is the state the model's one-send-per-step flag forbids. THE DOCUMENTED RECOVERY IS A
-    /// FRESH <see cref="ProposerLane"/> ON A FRESH PROPOSER. That is not a workaround but the correct
-    /// protocol reading: an attempt under a new lane is a different proposer identity, which the model
-    /// already handles as a second proposer, and it is also what <see cref="ProposalKey"/>'s uniqueness
-    /// contract asks for.
+    /// This proposer is one-shot and this call latches: a second call, concurrent or sequential, throws.
+    /// Re-entering round one phase zero on the same lane redraws the priority, so the recorders reached by
+    /// both attempts would hold two distinct proposal keys at one step from one proposer, which is the state
+    /// the model's one-send-per-step flag forbids. The recovery is a fresh <see cref="ProposerLane"/> on a
+    /// fresh proposer: an attempt under a new lane is a different proposer identity, which the model already
+    /// handles as a second proposer, and it is also what <see cref="ProposalKey"/>'s uniqueness contract asks
+    /// for.
     /// </para>
     /// <para>
-    /// Termination is the same argument the synchronous driver makes: advancing raises the step by exactly
-    /// one, catching up raises it further, and the last representable step bounds the loop. Unlike the
-    /// synchronous driver a missed quorum IS reachable here, because endpoints fault and attempts are
-    /// bounded, and it terminates the loop because a missed quorum carries no successor round.
+    /// The loop terminates because advancing raises the step by exactly one, catching up raises it further,
+    /// and the last representable step bounds the loop. A missed quorum is reachable here, because endpoints
+    /// fault and attempts are bounded, and it terminates the loop because a missed quorum carries no successor
+    /// round.
     /// </para>
     /// <para>
     /// An undecided outcome is not evidence that this proposer's value was not chosen. Every recorder a step
     /// reached still recorded, so the proposal may be carried by another proposer and decided later.
     /// </para>
     /// <para>
-    /// CANCELLATION IS CLASSIFIED RATHER THAN RETHROWN BLINDLY, AND THIS DEVIATES FROM
-    /// <see cref="FastProposer{TValue}"/>. An endpoint that ends cancelled or throws
+    /// Cancellation is classified rather than rethrown blindly. An endpoint that ends cancelled or throws
     /// <see cref="OperationCanceledException"/> is treated as a transport fault and retried while
     /// <paramref name="cancellationToken"/> is unsignalled, so an endpoint imposing its own deadline through
     /// a linked token does not kill a proposal the caller never cancelled; the cancellation propagates only

@@ -14,37 +14,32 @@ namespace Lumoin.Verisync.Core;
 /// <param name="Proposal">The working proposal template.</param>
 /// <remarks>
 /// <para>
-/// <paramref name="BelievedLeader"/> IS THE PROPOSER'S OWN BELIEF AND NOTHING ELSE. It acts through one
-/// comparison only, against the proposer's own lane: <see cref="Begin"/> makes it to choose the template's
+/// <paramref name="BelievedLeader"/> is the proposer's own belief and nothing else. It acts through one
+/// comparison only, against the proposer's own lane: <see cref="Begin"/> uses it to choose the template's
 /// starting priority, and <see cref="ClaimsLeadership"/> reports it. That comparison decides whether the
-/// first step claims the reserved
-/// priority or draws an ordinary one. It is never consulted on the fast path, and it must never be read as
-/// the register's knowledge of who leads, because a real proposer talks to remote recorders and cannot see
-/// what they are configured with.
+/// first step claims the reserved priority or draws an ordinary one. It is never consulted on the fast path,
+/// and it must never be read as the register's knowledge of who leads, because a real proposer talks to
+/// remote recorders and cannot see what they are configured with.
 /// </para>
 /// <para>
-/// Its whole job is LIVENESS, not safety. A proposer that does not believe it leads must draw an ordinary
-/// priority rather than claim the reserved one and be downgraded, because the downgrade lands every declined
-/// claim on the same fixed lowest priority and would destroy the randomization the liveness argument depends
-/// on. Safety is the recorder's business, and the belief only keeps the entropy alive.
+/// Its job is liveness, not safety. A proposer that does not believe it leads must draw an ordinary priority
+/// rather than claim the reserved one and be downgraded, because the downgrade lands every declined claim on
+/// the same fixed lowest priority and would destroy the randomization the liveness argument depends on.
 /// </para>
 /// <para>
 /// This type carries the whole of the protocol's step rules — <see cref="RedrawsPriority"/>,
 /// <see cref="NextSend"/> and <see cref="Conclude"/> — so that the synchronous
 /// <see cref="QuePaxaRegister{TValue}"/> and the asynchronous <see cref="QuePaxaProposer{TValue}"/> drive one
-/// implementation rather than two. Whether a send redraws, what it carries and what a majority of answers
-/// concludes are facts about the protocol position and not about the driver, and two drivers computing them
-/// independently is how the two would drift.
+/// implementation rather than two.
 /// </para>
 /// <para>
-/// A ROUND VALUE IS STEPPED AT MOST ONCE, AND THE TWO DRIVERS CLOSE THAT DIFFERENTLY. The model enforces one
+/// A round value is stepped at most once, and the two drivers close that differently. The model enforces one
 /// send per proposer per step through a flag cleared only by an action that decides or advances. This type is
 /// an immutable value and cannot stop a caller stepping it twice on its own:
-/// <see cref="QuePaxaProposer{TValue}"/> closes it on its own surface, because
 /// <see cref="QuePaxaProposer{TValue}.ProposeAsync"/> latches and a second call throws, while
-/// <see cref="QuePaxaRegister{TValue}.Step"/> is public by design and closes it by written contract only, so
-/// stepping one round value twice there is outside the checked behaviour. Re-delivering one identical request
-/// is a different thing and is permitted; what is forbidden is a second send at one step under a fresh draw.
+/// <see cref="QuePaxaRegister{TValue}.Step"/> is public and closes it by written contract only, so stepping
+/// one round value twice there is outside the checked behaviour. Re-delivering one identical request is
+/// permitted; what is forbidden is a second send at one step under a fresh draw.
 /// </para>
 /// </remarks>
 public sealed record QuePaxaRound<TValue>(ProposerLane Proposer, ProposerLane? BelievedLeader, RecorderStep Step, PrioritizedProposal<TValue> Proposal)
@@ -79,24 +74,17 @@ public sealed record QuePaxaRound<TValue>(ProposerLane Proposer, ProposerLane? B
     /// template untouched.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// This is the model's <c>randomizes</c> exactly: a phase-zero step randomizes unless it is the first
     /// step of a proposer that believes it leads, which is the one send that keeps the reserved priority its
     /// template started with. The reserved priority is therefore claimed only at the first step and only by a
     /// proposer that believes it leads; every other phase-zero send carries a fresh draw, including the
     /// leader's own sends in every later round.
-    /// </para>
-    /// <para>
-    /// THE ABOVE-FIRST-STEP ARM IS EXERCISED BY NO CHECKED CONFIGURATION. Every concrete configuration bounds
-    /// the step count below the second round, so no checked run ever reaches a later phase zero and the arm
-    /// that redraws for a leader above the first step rests on a directed test rather than on the model.
-    /// </para>
     /// </remarks>
     public bool RedrawsPriority => Step.Phase == 0 && (Step > RecorderStep.RoundOnePhaseZero || !ClaimsLeadership);
 
 
     /// <summary>
-    /// Produces the proposal ONE recorder's send carries, drawing a fresh priority when this position
+    /// Produces the proposal one recorder's send carries, drawing a fresh priority when this position
     /// redraws.
     /// </summary>
     /// <param name="drawPriority">The source of the phase-zero priority draw.</param>
@@ -105,11 +93,11 @@ public sealed record QuePaxaRound<TValue>(ProposerLane Proposer, ProposerLane? B
     /// <exception cref="InvalidOperationException">Thrown if <paramref name="drawPriority"/> returns a priority that is not ordinary.</exception>
     /// <remarks>
     /// <para>
-    /// ONE CALL IS ONE RECORDER'S SEND. Calling this once per step and broadcasting the result is a protocol
-    /// defect rather than an optimization: the map, section 4, has phase zero redraw the priority per
-    /// recorder, and a single draw shared across recorders collapses the independence the liveness argument
-    /// rests on. A caller's recorder iteration order is therefore part of its contract rather than an
-    /// implementation detail, because it is what makes a seeded priority source reproduce a run exactly.
+    /// One call is one recorder's send. Calling this once per step and broadcasting the result is a protocol
+    /// defect: phase zero redraws the priority per recorder, and a single draw shared across recorders
+    /// collapses the independence the liveness argument rests on. A caller's recorder iteration order is
+    /// therefore part of its contract, because it is what makes a seeded priority source reproduce a run
+    /// exactly.
     /// </para>
     /// <para>
     /// A caller that re-delivers a request to one recorder re-sends the proposal this method already
@@ -151,16 +139,15 @@ public sealed record QuePaxaRound<TValue>(ProposerLane Proposer, ProposerLane? B
     /// <exception cref="InvalidOperationException">Thrown if a recorder above step zero answered with no first proposal.</exception>
     /// <remarks>
     /// <para>
-    /// THE QUORUM IS DERIVED FROM <paramref name="recorderCount"/> AND IS NEVER SUPPLIED. The model's sole
-    /// guard on a proposer acting is that the reply set it acts on is a majority, so a method taking a
-    /// caller-supplied quorum would erase that guard: a sub-majority set reaches the phase-two decision on
-    /// replies that need not intersect another proposer's, and two proposers then decide different values
-    /// without the two-majorities-intersect step Lemmas C.5 and C.9 rest on. A strict majority is also
-    /// exactly what the proofs need, per the map's section 3. Supplying MORE answers than the majority is
-    /// normal and unaffected, because the arithmetic only sets a floor.
+    /// The quorum is derived from <paramref name="recorderCount"/> and is never supplied. The model's sole
+    /// guard on a proposer acting is that the reply set it acts on is a majority: a sub-majority set reaches
+    /// the phase-two decision on replies that need not intersect another proposer's, and two proposers then
+    /// decide different values without the two-majorities-intersect step Lemmas C.5 and C.9 rest on. A strict
+    /// majority is also what the proofs need. Supplying more answers than the majority is normal and
+    /// unaffected, because the arithmetic only sets a floor.
     /// </para>
     /// <para>
-    /// A DUPLICATE RECORDER INDEX IS REFUSED HERE AND THAT IS NOT REDUNDANT WITH THE REQUEST-SIDE CHECK. The
+    /// A duplicate recorder index is refused here, which is not redundant with the request-side check. The
     /// model's majority test counts reply records rather than recorders, so one recorder contributing two
     /// answers would double-count toward the quorum. This method is public and a host may assemble the answer
     /// array itself, so the answer-side check is what the quorum arithmetic actually needs;
@@ -168,16 +155,9 @@ public sealed record QuePaxaRound<TValue>(ProposerLane Proposer, ProposerLane? B
     /// for the driver it guards.
     /// </para>
     /// <para>
-    /// EVERY REACHED RECORDER HAS RECORDED BEFORE THIS RUNS, whatever this concludes. A message that arrives
+    /// Every reached recorder has recorded before this runs, whatever this concludes. A message that arrives
     /// is recorded even when the proposer never assembles a quorum, which is the behaviour Lemma C.5's second
-    /// case turns on; the map, section 6, records that the model keeps the register update for a request the
-    /// proposer has already stepped past for the same reason. A caller that discarded the mutated recorders
-    /// on a missed quorum would break that.
-    /// </para>
-    /// <para>
-    /// This method is PUBLIC because the arc commits to a first-class surface a host can drive: a host
-    /// writing its own transport needs the conclusion without needing either of the two drivers. Being public
-    /// is exactly why its validation is not optional.
+    /// case turns on. A caller that discarded the mutated recorders on a missed quorum would break that.
     /// </para>
     /// </remarks>
     public QuePaxaStepOutcome<TValue> Conclude(ImmutableArray<RecorderAnswer<TValue>> answers, int recorderCount)

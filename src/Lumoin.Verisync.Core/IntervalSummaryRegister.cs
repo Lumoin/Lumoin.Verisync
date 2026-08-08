@@ -11,24 +11,20 @@ namespace Lumoin.Verisync.Core;
 /// <typeparam name="TValue">The register value type.</typeparam>
 /// <remarks>
 /// <para>
-/// The register is an immutable value, exactly as <see cref="FastAcceptor{TValue}"/> is:
-/// <see cref="Record(RecorderStep, PrioritizedProposal{TValue})"/> returns a new register alongside the
-/// summary it answers with. Its space is constant no matter how many proposals it folds, which is the whole
-/// point of the structure and the reason it cannot police the key uniqueness contract described on
+/// The register is an immutable value: <see cref="Record(RecorderStep, PrioritizedProposal{TValue})"/> returns
+/// a new register alongside the summary it answers with. Its space is constant no matter how many proposals it
+/// folds, and for that reason it cannot police the key uniqueness contract described on
 /// <see cref="ProposalKey"/>.
 /// </para>
 /// <para>
-/// THE INVARIANT THAT REPLACES A DEFENSIVE CLAUSE: a register driven through
-/// <see cref="QuePaxaRecorder{TValue}"/> and standing above <see cref="RecorderStep.Zero"/> always has a
-/// non-null <see cref="First"/>. The initial register sits at step zero and the recorder refuses any request
-/// below round one phase zero, so the first record such a register ever takes lands on the advancing branch
-/// and sets <see cref="First"/>; the same-step branch can then never see a null. This type itself imposes no
-/// floor, because Algorithm 3 has none: recorded at step zero directly it will fold an aggregate while
-/// <see cref="First"/> stays null, which is faithful to the algorithm and outside every state the protocol
-/// reaches. Tolerating a null there
-/// would deviate from Algorithm 3 and from the model for a case that cannot arise, and would paper over a
-/// corrupt restored snapshot instead of reporting it. The obligation to reject such a snapshot belongs to
-/// whatever layer restores one.
+/// A register driven through <see cref="QuePaxaRecorder{TValue}"/> and standing above
+/// <see cref="RecorderStep.Zero"/> always has a non-null <see cref="First"/>. The initial register sits at
+/// step zero and the recorder refuses any request below round one phase zero, so the first record such a
+/// register ever takes lands on the advancing branch and sets <see cref="First"/>; the same-step branch can
+/// then never see a null. This type itself imposes no floor, because Algorithm 3 has none: recorded at step
+/// zero directly it will fold an aggregate while <see cref="First"/> stays null, which is faithful to the
+/// algorithm and outside every state the protocol reaches. The obligation to reject a corrupt restored
+/// snapshot belongs to whatever layer restores one.
 /// </para>
 /// </remarks>
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
@@ -70,30 +66,29 @@ public sealed class IntervalSummaryRegister<TValue>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="proposal"/> is <see langword="null"/>.</exception>
     /// <remarks>
     /// <para>
-    /// The three cases are Algorithm 3 literally. At the register's own step the current aggregate folds the
-    /// proposal in and <see cref="First"/> IS NOT TOUCHED, because the paper assigns the first-proposal field
-    /// only on the advancing branch and the model's serve action does the same. Above the register's step the
-    /// prior aggregate takes the current one when the advance is by exactly one and is cleared otherwise,
-    /// which is the skipped-step rule, and then the step, the first proposal and the current aggregate all
-    /// take the incoming proposal. Below the register's step nothing changes, because a value tagged below
-    /// the current step is obsolete while the register still answers with its summary.
+    /// The three cases follow Algorithm 3. At the register's own step the current aggregate folds the proposal
+    /// in and <see cref="First"/> is not touched, because the first-proposal field is assigned only on the
+    /// advancing branch. Above the register's step the prior aggregate takes the current one when the advance
+    /// is by exactly one and is cleared otherwise, which is the skipped-step rule, and then the step, the
+    /// first proposal and the current aggregate all take the incoming proposal. Below the register's step
+    /// nothing changes, because a value tagged below the current step is obsolete, while the register still
+    /// answers with its summary.
     /// </para>
     /// <para>
-    /// THE SAME INSTANCE IS RETURNED EXACTLY WHEN NO FIELD WOULD HAVE CHANGED. That is the predicate this
-    /// type guarantees, and it holds in two cases rather than one: a record below the register's step, which
-    /// writes nothing at all, and a same-step record the fold keeps the incumbent against, which is what an
-    /// identical re-delivery of one request produces. Reference identity is therefore an exact
-    /// "the state changed" test for every layer above, which is what lets
-    /// <see cref="QuePaxaRecorder{TValue}"/> carry the fact upward and lets
-    /// <see cref="QuePaxaNode{TValue}"/> decide from it whether a reply needs an <c>fsync</c> before it
-    /// escapes. Under a specified re-send an identical same-step record is the common case on a lossy link,
-    /// so allocating there would make every retransmission pay for durability that makes nothing durable.
+    /// The same instance is returned exactly when no field would have changed, which holds in two cases: a
+    /// record below the register's step, which writes nothing at all, and a same-step record the fold keeps
+    /// the incumbent against, which is what an identical re-delivery of one request produces. Reference
+    /// identity is therefore an exact "the state changed" test for every layer above, which lets
+    /// <see cref="QuePaxaRecorder{TValue}"/> carry the fact upward and lets <see cref="QuePaxaNode{TValue}"/>
+    /// decide from it whether a reply needs an <c>fsync</c> before it escapes. An identical same-step record
+    /// is the common case on a lossy link, so allocating there would make every retransmission pay for
+    /// durability that makes nothing durable.
     /// </para>
     /// <para>
-    /// The fold keeps the incumbent on an exact key tie. That is what makes it order-independent under
-    /// <see cref="ProposalKey"/>'s uniqueness contract, and order-dependent without it. It is also what makes
-    /// an identical re-delivery the identity here: the first delivery already folded the proposal in, so the
-    /// second finds an aggregate that is at least as great and keeps it.
+    /// The fold keeps the incumbent on an exact key tie. It is therefore order-independent under
+    /// <see cref="ProposalKey"/>'s uniqueness contract, and order-dependent without it. That is also what
+    /// makes an identical re-delivery the identity here: the first delivery already folded the proposal in, so
+    /// the second finds an aggregate that is at least as great and keeps it.
     /// </para>
     /// </remarks>
     public (IntervalSummaryRegister<TValue> Register, RecordSummary<TValue> Summary) Record(RecorderStep step, PrioritizedProposal<TValue> proposal)

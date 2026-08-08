@@ -15,38 +15,27 @@ namespace Lumoin.Verisync.Core;
 /// </param>
 /// <remarks>
 /// <para>
-/// THERE IS NO REJECTION FIELD, AND THAT ABSENCE IS THE PROTOCOL'S RESULT RATHER THAN AN OMISSION. Every
-/// request a recorder receives is served: a reserved-priority claim from a proposer that is not the
-/// configured leader is recorded at the lowest ordinary priority and the round proceeds through the ordinary
-/// phases. The map, section 5, records that this is the paper's own phrasing and that it is what keeps the
-/// register free of holes and the protocol free of deadlocks. A reviewer arriving from the Fast CASPaxos
-/// family, where <see cref="AcceptReply{TValue}.Accepted"/> and <see cref="PrepareReply{TValue}.Promised"/>
-/// are the load-bearing fields, will expect the symmetry and there is none to find.
+/// There is no rejection field. Every request a recorder receives is served: a reserved-priority claim from a
+/// proposer that is not the configured leader is recorded at the lowest ordinary priority and the round
+/// proceeds through the ordinary phases. Serving every request is what keeps the register free of holes and
+/// the protocol free of deadlocks.
 /// </para>
 /// <para>
-/// IT RESTATES <see cref="RecordSummary{TValue}"/> RATHER THAN WRAPPING IT, which is the house precedent
-/// already: <see cref="FastPrepareResponse{TValue}"/> is the acceptor's answer value and
-/// <see cref="PrepareReply{TValue}"/> is the message carrying the same fields, and
-/// <see cref="ConsensusNode{TValue}.Handle(ConsensusRequest{TValue})"/> translates one into the other. The
-/// message is a wire type and the summary is a core type, and they are allowed to diverge.
-/// </para>
-/// <para>
-/// <paramref name="First"/> IS NON-NULLABLE AND <paramref name="Step"/> IS VALIDATED, AND THE STATE THAT
-/// WOULD NEED THE NULL IS UNREACHABLE. <see cref="QuePaxaNode{TValue}.Handle(RecordRequest{TValue})"/> calls
+/// <paramref name="First"/> is non-nullable and <paramref name="Step"/> is validated, and the state that
+/// would need the null is unreachable. <see cref="QuePaxaNode{TValue}.Handle(RecordRequest{TValue})"/> calls
 /// <see cref="QuePaxaRecorder{TValue}.Record(RecorderStep, PrioritizedProposal{TValue})"/>, which refuses any
 /// step below round one phase zero; an initial register sits at step zero, so the first request it ever takes
 /// lands on the advancing branch and sets the first proposal, and every later branch either leaves it alone
 /// or advances and resets it. Validating here keeps
-/// <see cref="QuePaxaRound{TValue}.Conclude"/>'s corrupt-state check a genuine backstop rather than the place
-/// a malformed decoded message aborts a proposal. <paramref name="PriorAggregate"/> stays nullable, because a
+/// <see cref="QuePaxaRound{TValue}.Conclude"/>'s corrupt-state check a backstop rather than the place a
+/// malformed decoded message aborts a proposal. <paramref name="PriorAggregate"/> stays nullable, because a
 /// skipped step legitimately clears it.
 /// </para>
 /// <para>
-/// A LYING RECORDER IS OUT OF SCOPE AND NO BOUND HERE COULD HELP. A reply carrying
+/// A lying recorder is out of scope and no bound here could help. A reply carrying
 /// <see cref="RecorderStep.MaxValue"/> makes any proposer catch up to the last representable step and report
-/// an exhausted budget on its next step, which is the step bound behaving as designed against a faulty
-/// recorder. QuePaxa's model assumes crash faults rather than Byzantine ones, and a recorder that fabricates
-/// steps can stall a proposer whatever this type validates.
+/// an exhausted budget on its next step. QuePaxa's model assumes crash faults rather than Byzantine ones, and
+/// a recorder that fabricates steps can stall a proposer whatever this type validates.
 /// </para>
 /// </remarks>
 public sealed record RecordReply<TValue>(RecorderStep Step, PrioritizedProposal<TValue> First, PrioritizedProposal<TValue>? PriorAggregate)

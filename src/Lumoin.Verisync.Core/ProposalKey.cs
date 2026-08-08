@@ -11,18 +11,17 @@ namespace Lumoin.Verisync.Core;
 /// <param name="Owner">The proposer lane the proposal is attributed to.</param>
 /// <remarks>
 /// <para>
-/// The order is lexicographic, priority first and owner second, which is the paper's Appendix A tiebreaking
-/// approach and the model's <c>Tiebreak</c>. It is total whenever the identities are distinct, and the
-/// abstract layer's agreement argument is a corollary of the cross-node subset property plus untied
-/// priorities, so the tiebreak is what earns the untiedness the proofs assume.
+/// The order is lexicographic, priority first and owner second, matching the paper's Appendix A tiebreaking.
+/// It is total whenever the proposer identities are distinct, and the agreement argument assumes untied
+/// priorities, which the tiebreak supplies.
 /// </para>
 /// <para>
-/// THE UNIQUENESS CONTRACT. Within one consensus instance a key identifies at most one value. The aggregate
-/// fold keeps the incumbent on an exact key tie, so two proposals sharing a key and differing in value fold
-/// differently at recorders that saw them in a different order, and the resulting disagreement is
-/// unrecoverable once it has spread. Nothing in the core enforces this, because a constant-space register
-/// retains only two proposals and cannot see a third; it is a surface contract that the caller keeps by
-/// allocating a fresh <see cref="ProposerLane"/> per concurrent proposal.
+/// Within one consensus instance a key identifies at most one value. The aggregate fold keeps the incumbent
+/// on an exact key tie, so two proposals sharing a key and differing in value fold differently at recorders
+/// that saw them in a different order, and the disagreement is unrecoverable once it has spread. Nothing in
+/// the core enforces this, because a constant-space register retains only two proposals and cannot see a
+/// third. The caller keeps the contract by allocating a fresh <see cref="ProposerLane"/> per concurrent
+/// proposal.
 /// </para>
 /// </remarks>
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
@@ -32,8 +31,8 @@ public readonly record struct ProposalKey(ProposalPriority Priority, ProposerLan
     /// <param name="priority">The new priority.</param>
     /// <returns>The re-prioritized key.</returns>
     /// <remarks>
-    /// Re-prioritizing never restamps the owner, because the protocol's phase-zero redraw changes only the
-    /// priority of the working proposal and leaves the proposer identity attached to it.
+    /// Re-prioritizing never restamps the owner, because the phase-zero redraw changes only the priority of
+    /// the working proposal and leaves the proposer identity attached to it.
     /// </remarks>
     public ProposalKey WithPriority(ProposalPriority priority) => new(priority, Owner);
 

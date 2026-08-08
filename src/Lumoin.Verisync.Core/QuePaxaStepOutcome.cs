@@ -11,21 +11,19 @@ namespace Lumoin.Verisync.Core;
 /// </param>
 /// <param name="DecidedValue">The decided value; meaningful only for <see cref="QuePaxaStepKind.Decided"/>.</param>
 /// <param name="DecidedBy">
-/// The OWNER OF THE DECIDED PROPOSAL, which is not necessarily the proposer that observed the decision and
+/// The owner of the decided proposal, which is not necessarily the proposer that observed the decision and
 /// is the same lane whenever an uncontended attempt carries its own value through; meaningful only
 /// for <see cref="QuePaxaStepKind.Decided"/>.
 /// </param>
 /// <param name="DecidedAt">
 /// The step the decision was taken at, or <see cref="RecorderStep.Zero"/> when the step did not decide. Zero
-/// is a step no request ever carries, so it cannot be mistaken for a real decision step, and the field stays
-/// non-nullable.
+/// is a step no request ever carries, so it cannot be mistaken for a real decision step.
 /// </param>
 /// <param name="SummaryCount">The number of recorders that answered.</param>
 /// <remarks>
 /// <para>
-/// <paramref name="SummaryCount"/> is a breadth measurement and never a decision witness, in the same
-/// relationship to <paramref name="Kind"/> that a change outcome's accepted count has to whether the change
-/// was chosen. <paramref name="Kind"/> alone reports what happened.
+/// <paramref name="SummaryCount"/> is a breadth measurement and never a decision witness.
+/// <paramref name="Kind"/> alone reports what happened.
 /// </para>
 /// <para>
 /// <paramref name="DecidedBy"/> is the field a caller reads to learn whose value won. A decided outcome whose
@@ -33,9 +31,9 @@ namespace Lumoin.Verisync.Core;
 /// re-propose rather than treat its own value as committed.
 /// </para>
 /// <para>
-/// A missed quorum is NOT evidence that the proposer's value was not chosen. Every recorder the step reached
+/// A missed quorum is not evidence that the proposer's value was not chosen. Every recorder the step reached
 /// still recorded, so that proposal may be carried by another proposer and decided later. Not decided means
-/// not KNOWN decided, exactly as not chosen means not known chosen in the CASPaxos surface.
+/// not known decided.
 /// </para>
 /// </remarks>
 public sealed record QuePaxaStepOutcome<TValue>(

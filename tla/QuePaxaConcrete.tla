@@ -65,10 +65,12 @@ CONSTANTS
     Prefers,                  \* Each proposer's input value.
     Leaders,                  \* The proposers that believe they lead round one.
     ConfiguredLeader,         \* The proposer the recorders were told leads, or NoProposer.
+    RecorderLeader,           \* The leader each recorder honours, which need not be uniform.
     MaxStep,                  \* The last step a proposer runs.
     IdenticalKeyFastPath,     \* Defence: the fast path needs one proposal, not one priority.
-    ReservedFromLeaderOnly,   \* Defence: recorders honour H only from the configured leader.
+    ReservedFromLeaderOnly,   \* Defence: a recorder honours H only from the leader it holds.
     RecorderBindsLeader,      \* Defence: recorders bind the first claimant of H.
+    DowngradeAtFirstStepOnly, \* Whether the downgrade applies only where the fast path reads it.
     DeclaredScheduleBinds,    \* Defence: recorders bind the first declared schedule and refuse others.
     NoValue                   \* The sentinel for a proposer that has not decided.
 
@@ -82,6 +84,14 @@ ASSUME Prefers \in [Proposers -> Values]
 ASSUME Leaders \subseteq Proposers
 ASSUME ConfiguredLeader \in Proposers \union {NoProposer}
 ASSUME NoValue \notin Values
+
+\* The leader is per recorder rather than a single scalar, because a deployment
+\* derives it from committed state and two recorders that have learned different
+\* amounts would otherwise be unrepresentable. A uniform configuration is the
+\* constant function UniformLeader, which is what a configuration names when the
+\* whole recorder set honours one leader.
+ASSUME RecorderLeader \in [Recorders -> Proposers \union {NoProposer}]
+ASSUME DowngradeAtFirstStepOnly \in BOOLEAN
 
 \* NoProposer marks a recorder that has bound no declaration yet, so a
 \* configuration running the declared-schedule defence must name a real proposer
@@ -197,14 +207,27 @@ Send(i) ==
 \* that does not carry the reserved priority is never affected.
 Honoured(j, p) ==
     \/ p.priority # H
-    \/ /\ (ReservedFromLeaderOnly => p.proposer = ConfiguredLeader)
+    \/ /\ (ReservedFromLeaderOnly => p.proposer = RecorderLeader[j])
        /\ (RecorderBindsLeader => rbound[j] \in {NoProposer, p.proposer})
 
 \* What the register actually takes in. A proposal whose reserved priority is not
 \* honoured is recorded at the lowest ordinary priority, so the round proceeds
 \* through the ordinary phases instead of losing the proposal.
-Admitted(j, p) ==
-    IF Honoured(j, p) THEN p ELSE [p EXCEPT !.priority = MinPriority]
+\*
+\* DowngradeAtFirstStepOnly narrows where the rule applies. The reserved
+\* priority earns a decision only at the round's first step, which is the only
+\* step FastPath is consulted at, so downgrading above that step defends nothing
+\* by itself. It does cost something: a downgrade rewrites the priority, so a
+\* recorder that declines a claim its neighbours honour records the same logical
+\* proposal under a second key, and a quorum holding only the rewritten copy can
+\* carry an ordinary proposal past it. Restricting the rule to the first step is
+\* what makes a non-uniform RecorderLeader survivable, which the configurations
+\* naming this constant are what establish.
+Admitted(j, p, s) ==
+    IF \/ Honoured(j, p)
+       \/ (DowngradeAtFirstStepOnly /\ s > 4)
+    THEN p
+    ELSE [p EXCEPT !.priority = MinPriority]
 
 \* Whether recorder j refuses this request outright, which it does only when it
 \* has already bound a different declared schedule for the instance. Like the
@@ -236,7 +259,7 @@ Refuse(j, q) ==
    register update happens either way, which is what makes a late request still
    count. *)
 Serve(j, q) ==
-    LET p == Admitted(j, q.proposal)
+    LET p == Admitted(j, q.proposal, q.step)
         \* The binding is only tracked where a defence reads it. Recording it
         \* anyway would split states that no configuration can tell apart. It
         \* binds on the claim rather than on the register having accepted it,
@@ -285,6 +308,29 @@ Serve(j, q) ==
 \* configuration file cannot write a function down.
 DistinctPreferences ==
     CHOOSE f \in [Proposers -> Values] : \A i, k \in Proposers : i # k => f[i] # f[k]
+
+\* The three recorder-leader assignments the configurations name, for the same
+\* reason DistinctPreferences is named: a configuration file cannot write a
+\* function down. UniformLeader is the agreed deployment, where every recorder
+\* honours the same leader. The other two are the misconfigurations a versioned
+\* register must make unreachable, and both break agreement under the downgrade
+\* the library applies, which is the one at every step.
+UniformLeader == [j \in Recorders |-> ConfiguredLeader]
+
+\* One recorder has not learned the previous version and so honours no leader,
+\* while the others honour the agreed one. It looks harmless and is not: the
+\* downgrade rewrites the priority at every step, so the leader's one proposal
+\* exists under two keys, and a quorum holding only the downgraded copy can
+\* carry an ordinary proposal past it.
+MixedLeaderless ==
+    [j \in Recorders |-> IF j = 3 THEN NoProposer ELSE ConfiguredLeader]
+
+\* Two recorders honour the agreed leader and one honours a different proposer,
+\* which puts two reserved-priority proposals in play at the step the fast path
+\* reads rather than one proposal under two keys.
+SplitLeaders ==
+    [j \in Recorders |->
+        IF j = 3 THEN (CHOOSE i \in Proposers : i # ConfiguredLeader) ELSE ConfiguredLeader]
 
 \* The replies proposer i can act on, which are the ones answering the request
 \* it sent at the step it is on.

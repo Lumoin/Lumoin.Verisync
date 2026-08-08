@@ -70,6 +70,23 @@ paper section and lemma behind every invariant it checks and every modelling dec
 | `MCConcreteTwoLeadersGuarded` | QuePaxaConcrete | the same two believed leaders with all three defences in force | green |
 | `MCConcreteDeclaredScheduleBinds` | QuePaxaConcrete | the declared-schedule defence alone, where each recorder binds the first leader a request names and refuses any request naming another | green |
 | `MCConcreteSingleLeaderDeclaredSchedule` | QuePaxaConcrete | the declared-schedule defence with the schedule agreed, which must match `MCConcreteSingleLeader` state for state | green |
+| `MCConcreteMixedLeaderless` | QuePaxaConcrete | negative model: one recorder honours no leader while the others honour the agreed one, which is the state a host reaches before it has learned the version the leader is derived from | red (required) |
+| `MCConcreteSplitLeaders` | QuePaxaConcrete | negative model: the recorders disagree about whom the defence protects, with the defence in force at every one of them | red (required) |
+| `MCConcreteSplitLeadersNarrowDowngrade` | QuePaxaConcrete | negative model: the same split with the downgrade narrowed to the round's first step, which must not rescue it | red (required) |
+| `MCConcreteMixedLeaderlessNarrowDowngrade` | QuePaxaConcrete | the mixed configuration with the downgrade narrowed to the round's first step, which is where the reserved priority is read | green |
+
+The last four exist because a versioned register derives the leader from committed state, so two recorders
+that have learned different amounts would otherwise be unrepresentable. `RecorderLeader` is therefore a
+function over the recorders rather than a single scalar, and `ConfiguredLeader` remains for the
+declared-schedule arm. The three reds are what makes the deployment obligation a checked fact rather than
+prose: a recorder that cannot derive the instance's leader must not serve the instance, because the
+downgrade rewrites a declined claim's priority and the leader's one proposal then exists under two keys.
+
+`MCConcreteMixedLeaderlessNarrowDowngrade` pins a rule the library does not apply. Narrowing the downgrade
+to the step the fast path is read at makes the mixed configuration safe, and
+`MCConcreteSplitLeadersNarrowDowngrade` is the control showing the narrowing does not weaken the defence it
+narrows. The shipped recorder downgrades at every step, so the pair bounds what the second key rather than
+the non-uniform configuration itself is responsible for.
 
 ## Scope notes (what a green run does not certify)
 

@@ -8,14 +8,12 @@ namespace Lumoin.Verisync.Core;
 /// <para>
 /// A source that returns <see cref="ProposalPriority.None"/> or <see cref="ProposalPriority.Reserved"/> is a
 /// protocol violation and the caller refuses to send it. Returning the reserved priority forges a leader
-/// claim, and returning the absent one puts the aggregate's identity element on the wire, so neither can be
-/// tolerated silently.
+/// claim, and returning the absent one puts the aggregate's identity element on the wire.
 /// </para>
 /// <para>
-/// The production source is <see cref="ProposalPriority.Cryptographic"/>. A deterministic source exists so
-/// that a test can construct a specific ordering rather than wait for one, and the priority draw is
-/// per recorder, so a seeded source reproduces a run exactly only while the caller keeps its recorder
-/// iteration order.
+/// The production source is <see cref="ProposalPriority.Cryptographic"/>. A deterministic source lets a test
+/// construct a specific ordering, and the priority draw is per recorder, so a seeded source reproduces a run
+/// exactly only while the caller keeps its recorder iteration order.
 /// </para>
 /// </remarks>
 public delegate ProposalPriority ProposalPrioritySourceDelegate();

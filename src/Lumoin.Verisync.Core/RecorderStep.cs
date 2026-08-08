@@ -10,12 +10,12 @@ namespace Lumoin.Verisync.Core;
 /// <param name="Value">The step value. Must lie between zero and the value of <see cref="MaxValue"/>.</param>
 /// <remarks>
 /// <para>
-/// The step is bounded rather than open-ended, and the bound is not a tuning parameter. A step arrives from
-/// the network once the core is wrapped in a transport, so an unbounded clock is an attacker-controlled
-/// field; and a slot that survives <see cref="MaxRound"/> complete rounds is a deployment that should
-/// checkpoint or reconfigure rather than keep counting. Both reference implementations take the same bound.
-/// The type is backed by an <see cref="int"/> because the cap makes every arithmetic operation in it unable
-/// to overflow, and the wire field is then a bounded 32-bit integer validated on the way in.
+/// The step is bounded, and the bound is not a tuning parameter. A step arrives from the network once the
+/// core is wrapped in a transport, so an unbounded clock is an attacker-controlled field, and a slot that
+/// survives <see cref="MaxRound"/> complete rounds is a deployment that should checkpoint or reconfigure
+/// rather than keep counting. The type is backed by an <see cref="int"/> because the cap makes every
+/// arithmetic operation in it unable to overflow, and the wire field is then a bounded 32-bit integer
+/// validated on the way in.
 /// </para>
 /// <para>
 /// The <see langword="default"/> value is <see cref="Zero"/>, the step of a register that was never written.
@@ -33,8 +33,7 @@ public readonly record struct RecorderStep(int Value): IComparable<RecorderStep>
 
 
     /// <summary>
-    /// The step value. It is validated on construction and on a <c>with</c> expression alike, because the
-    /// initializer writes the backing field directly and no accessor runs for it.
+    /// The step value. It is validated on construction and on a <c>with</c> expression alike.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if the value lies outside zero and the value of <see cref="MaxValue"/>.</exception>
     public int Value { get; init { field = Validate(value); } } = Validate(Value);
@@ -68,11 +67,6 @@ public readonly record struct RecorderStep(int Value): IComparable<RecorderStep>
     /// <param name="phase">The phase. Must lie between zero and three.</param>
     /// <returns>The step.</returns>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if the round or the phase is out of range.</exception>
-    /// <remarks>
-    /// The round bound is stated on the round and checked before the arithmetic runs, because four times a
-    /// large round wraps negative in an unchecked context and the wrapped value would then either raise the
-    /// wrong complaint or none at all.
-    /// </remarks>
     public static RecorderStep FromRoundAndPhase(int round, int phase)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(round);

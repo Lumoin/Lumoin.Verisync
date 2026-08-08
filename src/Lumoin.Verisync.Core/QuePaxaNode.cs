@@ -12,47 +12,39 @@ namespace Lumoin.Verisync.Core;
 /// <typeparam name="TValue">The register value type.</typeparam>
 /// <remarks>
 /// <para>
-/// The node is the boundary between the pure, immutable recorder value and the stateful runtime: it holds the
-/// current recorder and replaces it on each request. <see cref="RunAsync"/> drives the node over any inbound
-/// message stream and reply sink, so the same node runs over an in-memory channel or a socket unchanged.
-/// A node processes its requests sequentially and is not safe for concurrent calls.
+/// The node holds the current recorder and replaces it on each request. <see cref="RunAsync"/> drives the node
+/// over any inbound message stream and reply sink, so the same node runs over an in-memory channel or a socket
+/// unchanged. A node processes its requests sequentially and is not safe for concurrent calls.
 /// </para>
 /// <para>
-/// EVERY REQUEST IS SERVED AND NONE IS REFUSED. A reserved-priority claim from a proposer that is not the
+/// Every request is served and none is refused. A reserved-priority claim from a proposer that is not the
 /// recorder's configured leader is downgraded to the lowest ordinary priority and recorded, which is why
-/// <see cref="RecordReply{TValue}"/> carries no rejection field. The downgrade is the whole of this slice's
-/// safety and it lives in <see cref="QuePaxaRecorder{TValue}"/>; this type only carries it across the message
-/// boundary.
+/// <see cref="RecordReply{TValue}"/> carries no rejection field. The downgrade itself lives in
+/// <see cref="QuePaxaRecorder{TValue}"/>; this type only carries it across the message boundary.
 /// </para>
 /// <para>
 /// The node holds its recorder in memory only. Safety across a crash requires the recorder's step and its
-/// first proposal at that step to be durable <em>before</em> the reply leaves the process: Lemma C.10's
-/// argument that the first proposal of a step is never overwritten is what the fast path rests on, and a
-/// restarted node that came back at <see cref="RecorderStep.Zero"/> would take a fresh first proposal for a
-/// step whose original first proposal a proposer has already read. Pass a
-/// <see cref="PersistRecorderDelegate{TValue}"/> to <see cref="RunAsync"/> to get this: after each request
-/// that changes the recorder it makes the new state durable and only then sends the reply, so an unpersisted
-/// first proposal is never observable. Omitting it (or supplying the no-durability implementation) sends each
-/// reply immediately and is suitable for tests and ephemeral clusters. A host that needs different sequencing
-/// drives the node itself instead: call <see cref="Handle"/>, persist <see cref="Recorder"/>, and only then
-/// send the reply.
+/// first proposal at that step to be durable <em>before</em> the reply leaves the process: the fast path rests
+/// on the first proposal of a step never being overwritten, and a restarted node that came back at
+/// <see cref="RecorderStep.Zero"/> would take a fresh first proposal for a step whose original first proposal
+/// a proposer has already read. Pass a <see cref="PersistRecorderDelegate{TValue}"/> to
+/// <see cref="RunAsync"/> to get this: after each request that changes the recorder it makes the new state
+/// durable and only then sends the reply, so an unpersisted first proposal is never observable. Omitting it
+/// (or supplying the no-durability implementation) sends each reply immediately and is suitable for tests and
+/// ephemeral clusters. A host that needs different sequencing drives the node itself instead: call
+/// <see cref="Handle"/>, persist <see cref="Recorder"/>, and only then send the reply.
 /// </para>
 /// <para>
-/// THE CONSTRUCTOR TAKES THE RECORDER RATHER THAN DEFAULTING, and this is not symmetry with
-/// <see cref="ConsensusNode{TValue}"/> being broken for its own sake. A Fast CASPaxos acceptor has no
-/// configuration, while a QuePaxa recorder carries the configured leader, so a node that defaulted to
-/// <see cref="QuePaxaRecorder{TValue}.Leaderless"/> would silently downgrade every reserved claim and turn
-/// every fast path into a three-step round. It is a seam for a later restore path rather than the restore
-/// path itself: no public way exists today to build a recorder holding restored state, because
-/// <see cref="QuePaxaRecorder{TValue}"/> and <see cref="IntervalSummaryRegister{TValue}"/> both expose only
-/// factories that start from an unwritten register. Supplying one is an additive change to those two types,
-/// and this node needs no change at all, because it never assumes an initial recorder.
+/// The constructor takes the recorder rather than defaulting, because a recorder carries the instance's
+/// configured leader: a node that defaulted to <see cref="QuePaxaRecorder{TValue}.Leaderless"/> would silently
+/// downgrade every reserved claim and turn every fast path into a three-step round. There is no public way to
+/// build a recorder holding restored state, because <see cref="QuePaxaRecorder{TValue}"/> and
+/// <see cref="IntervalSummaryRegister{TValue}"/> both expose only factories that start from an unwritten
+/// register; this node needs no change when one is added, because it never assumes an initial recorder.
 /// </para>
 /// <para>
-/// A node serves ONE consensus instance and no request carries an instance or slot identifier, exactly as
-/// <see cref="ConsensusNode{TValue}"/> holds one acceptor and <see cref="QuePaxaRecorder{TValue}"/> holds one
-/// instance. The model has no instance dimension either, and this type is the model's message-driven
-/// refinement.
+/// A node serves one consensus instance, as <see cref="QuePaxaRecorder{TValue}"/> holds one instance, and no
+/// request carries an instance or slot identifier.
 /// </para>
 /// </remarks>
 public sealed class QuePaxaNode<TValue>
@@ -80,7 +72,7 @@ public sealed class QuePaxaNode<TValue>
     /// against.
     /// </summary>
     /// <remarks>
-    /// THIS IS NODE STATE RATHER THAN LOOP STATE, because a host whose durable write failed restarts the loop
+    /// This is node state rather than loop state, because a host whose durable write failed restarts the loop
     /// on this same node and would otherwise begin by treating whatever the failed attempt left in memory as
     /// already durable. It starts at the recorder the node was constructed with, which is durable by
     /// construction: either it records nothing, or the host restored it from what it had already written.
@@ -96,7 +88,7 @@ public sealed class QuePaxaNode<TValue>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="request"/> is <see langword="null"/>.</exception>
     /// <remarks>
     /// A request that changes nothing leaves <see cref="Recorder"/> reference-identical to what it was, which
-    /// is what <see cref="RunAsync"/> reads to decide whether the reply needs to be made durable first.
+    /// <see cref="RunAsync"/> reads to decide whether the reply needs to be made durable first.
     /// </remarks>
     public RecordReply<TValue> Handle(RecordRequest<TValue> request)
     {
@@ -139,8 +131,8 @@ public sealed class QuePaxaNode<TValue>
     /// loop: a node whose transport has failed cannot keep serving requests.
     /// </para>
     /// <para>
-    /// THE GATE IS DURABILITY AND NOT MUTATION, AND THE DIFFERENCE IS ONLY VISIBLE AFTER A FAILED WRITE. The
-    /// loop remembers the last recorder it persisted rather than comparing against the state this request
+    /// The gate is durability rather than mutation, and the difference is only visible after a failed write.
+    /// The loop remembers the last recorder it persisted rather than comparing against the state this request
     /// found. Comparing against the request would fail open on exactly the sequence the re-send rule makes
     /// ordinary: a request advances the recorder, the write fails and the reply is correctly withheld, the
     /// proposer re-delivers the identical request, the re-delivery changes nothing and so would skip the write,

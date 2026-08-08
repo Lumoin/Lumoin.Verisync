@@ -15,21 +15,20 @@ namespace Lumoin.Verisync.Core;
 /// Every <see cref="ulong"/> is a representable priority, so nothing is validated at construction; what is
 /// constrained is what may be <em>drawn</em>, and that is <see cref="ProposalPrioritySourceDelegate"/>'s
 /// contract. <see cref="None"/> is the aggregate's identity and is never drawn and never sent,
-/// <see cref="Lowest"/> is the lowest ordinary priority and is where a declined reserved claim lands, and
-/// <see cref="Reserved"/> is the round-one leader's top priority.
+/// <see cref="Lowest"/> is where a declined reserved claim lands, and <see cref="Reserved"/> is the
+/// round-one leader's top priority.
 /// </para>
 /// <para>
-/// PRIORITY UNPREDICTABILITY IS LOAD-BEARING FOR LIVENESS AND IS NOT HYGIENE. QuePaxa's liveness argument
-/// assumes an adversary that cannot see proposal contents, so an adversary that learns the priorities can
-/// schedule messages to keep a round from converging. Nothing about safety depends on it, and nothing in
-/// this type can supply it. A deployment supplies it by running the replica-to-replica links under TLS and
-/// by drawing from <see cref="Cryptographic"/> or an equally unpredictable source.
+/// Priority unpredictability is load-bearing for liveness. QuePaxa's liveness argument assumes an adversary
+/// that cannot see proposal contents, so an adversary that learns the priorities can schedule messages to
+/// keep a round from converging. Safety does not depend on it, and nothing in this type can supply it. A
+/// deployment supplies it by running the replica-to-replica links under TLS and by drawing from
+/// <see cref="Cryptographic"/> or an equally unpredictable source.
 /// </para>
 /// <para>
 /// <see cref="Reserved"/> is above two to the fifty-third, so any wire format that parses numbers as
-/// doubles destroys it, and it is the one value whose exactness carries safety, because a mangled reserved
-/// priority silently becomes an ordinary one. A codec layer owes round-trip tests pinned at
-/// <see cref="Reserved"/> and at one below it.
+/// doubles destroys it, and a mangled reserved priority silently becomes an ordinary one. A codec layer owes
+/// round-trip tests pinned at <see cref="Reserved"/> and at one below it.
 /// </para>
 /// </remarks>
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
@@ -72,13 +71,12 @@ public readonly record struct ProposalPriority(ulong Value): IComparable<Proposa
     /// <returns>A priority satisfying <see cref="IsOrdinary"/>.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="fillEntropy"/> is <see langword="null"/>.</exception>
     /// <remarks>
-    /// The legal range is the whole 64-bit space minus its two reserved endpoints, so rejection sampling here
-    /// carries no modulo bias at all and terminates with probability one minus two to the minus sixty-three
-    /// per draw. The entropy source is trusted to fill the span with independent random bytes, exactly as
-    /// <see cref="ReplicaId.Generate(FillEntropyDelegate)"/> trusts it: a source that writes a constant makes
-    /// this loop spin, and that is a caller defect rather than a case to defend against, because a source
-    /// that writes a predictable non-constant would break the liveness argument just as thoroughly and cannot
-    /// be detected here at all.
+    /// The legal range is the whole 64-bit space minus its two reserved endpoints, so the rejection sampling
+    /// carries no modulo bias and terminates with probability one minus two to the minus sixty-three per
+    /// draw. The entropy source is trusted to fill the span with independent random bytes, as
+    /// <see cref="ReplicaId.Generate(FillEntropyDelegate)"/> trusts it. A source that writes a constant makes
+    /// this loop spin, and neither a constant source nor a merely predictable one can be detected here, so
+    /// the obligation is the caller's.
     /// </remarks>
     public static ProposalPriority DrawOrdinary(FillEntropyDelegate fillEntropy)
     {
@@ -102,8 +100,7 @@ public readonly record struct ProposalPriority(ulong Value): IComparable<Proposa
     /// CSPRNG.
     /// </summary>
     /// <remarks>
-    /// The delegate instance is created once at type initialization. A test drives a seeded source instead,
-    /// so that the interesting orderings are constructed rather than waited for.
+    /// The delegate instance is created once at type initialization. A test drives a seeded source instead.
     /// </remarks>
     public static ProposalPrioritySourceDelegate Cryptographic { get; } = static () => DrawOrdinary(RandomNumberGenerator.Fill);
 

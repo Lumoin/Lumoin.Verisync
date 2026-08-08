@@ -16,19 +16,19 @@ namespace Lumoin.Verisync.Core;
 /// test runs over.
 /// </para>
 /// <para>
-/// THE RECORDER INDEX IS NOT DECORATION. The catch-up rule breaks a tie among equal-step answers by the
-/// lowest recorder index so that a run is reproducible, and the model's <c>Majority</c> counts reply records,
-/// so a conclusion must be able to see that one recorder contributed at most one of them.
+/// The catch-up rule breaks a tie among equal-step answers by the lowest recorder index so that a run is
+/// reproducible, and the model's <c>Majority</c> counts reply records, so a conclusion must be able to see
+/// that one recorder contributed at most one of them.
 /// </para>
 /// <para>
-/// IT IS A DISTINCT TYPE FROM <see cref="RecordReply{TValue}"/>. A reply is a wire message a recorder sends,
-/// and an answer is a proposer-side record of who sent what. A single type would have to carry a recorder
-/// index over the wire, which is a field the recorder does not know and the model does not have.
+/// This type is distinct from <see cref="RecordReply{TValue}"/>: a reply is a wire message a recorder sends,
+/// and an answer is a proposer-side record of who sent what. The recorder index does not travel on the wire,
+/// because the recorder does not know it.
 /// </para>
 /// <para>
-/// BOTH MEMBERS ARE VALIDATED because a positional record synthesizes no validation at all, and because the
-/// constructor set is not closed: <see cref="QuePaxaRound{TValue}.Conclude"/> is public precisely so that a
-/// host which is neither of the two drivers can assemble an answer array and call it.
+/// Both members are validated because a positional record synthesizes no validation at all, and because the
+/// constructor set is not closed: <see cref="QuePaxaRound{TValue}.Conclude"/> is public so that a host which
+/// is neither of the two drivers can assemble an answer array and call it.
 /// </para>
 /// </remarks>
 public sealed record RecorderAnswer<TValue>(int Recorder, RecordSummary<TValue> Summary)

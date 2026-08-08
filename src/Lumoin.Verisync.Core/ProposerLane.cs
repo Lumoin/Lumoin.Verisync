@@ -14,22 +14,19 @@ namespace Lumoin.Verisync.Core;
 /// <para>
 /// The protocol orders proposals by priority and then by proposer identity, so the identity needs a total
 /// order; this type supplies one lexicographically, replica first and lane second. A lane carries no meaning
-/// outside a proposer identity and the recorder's leader binding is a binding to the pair, so the lane lives
-/// here rather than in a type of its own.
+/// outside a proposer identity, and the recorder's leader binding binds the pair rather than the replica
+/// alone.
 /// </para>
 /// <para>
-/// The lane is what makes <see cref="ProposalKey"/>'s uniqueness contract enforceable. A replica with two
-/// concurrent callers writing at one version would otherwise attach one key to two values, and the aggregate
-/// fold would become arrival-order dependent. It is also why the reserved priority is granted to a lane
-/// rather than to a replica: two lanes of the leader's own replica each claiming the reserved priority would
+/// The lane makes <see cref="ProposalKey"/>'s uniqueness contract enforceable. A replica with two concurrent
+/// callers writing at one version would otherwise attach one key to two values, and the aggregate fold would
+/// become arrival-order dependent. The reserved priority is granted to a lane rather than to a replica for
+/// the same reason: two lanes of the leader's own replica each claiming the reserved priority would
 /// reproduce the divergence hazard from inside the leader.
 /// </para>
 /// <para>
-/// The checked model orders proposals over abstract proposer identities with a total order, and
-/// instantiating that identity as the ordered pair adds no behaviour the model does not admit at a given
-/// number of proposers. What lanes do change is how easily that number grows: the checked configurations ran
-/// two proposers, and lanes make three or more concurrent proposer identities reachable on a three-replica
-/// deployment, which is a contention width no configuration explored.
+/// The checked configurations ran two proposers. Lanes make three or more concurrent proposer identities
+/// reachable on a three-replica deployment, a contention width no configuration explored.
 /// </para>
 /// <para>
 /// The <see langword="default"/> value is lane zero of the all-zero replica identity, which is degenerate
