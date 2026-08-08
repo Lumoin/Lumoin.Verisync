@@ -50,6 +50,14 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 - `HedgingSchedule`, `HedgedFastWriter<TValue>`, `HedgedFastWriteOutcome`, and `FastRoundProgressDelegate` put Fast CASPaxos's leaderless fast round on a delayed-activation schedule. The schedule is an agreed replica order and a base delay; the replica first in the order writes immediately and each later replica waits its position times the base delay, optionally standing down if the host reports that the round was already driven. Nothing in the protocol changes: ballots, quorum rules, and acceptor state are untouched, and the delay decides only when a writer sends, so a delay of zero reproduces the unhedged behaviour exactly. `HedgedFastWriter<TValue>` holds no clock and runs its delay against an injected `TimeProvider`. The order must be an agreed fact — a configured order, a committed decision, or `RotateTo` over the previously committed writer — because replicas that rank the candidates differently each believe they are first and write concurrently.
 
+### Fixed
+
+- `RaftNode<TCommand>.ReceiveVote` now discards a reply from a replica outside the configured membership instead of tallying it. The quorum is a strict majority of the membership, so a vote from anywhere else could complete an election no majority of the cluster had granted, and the replying identity arrives as wire data that the codec deliberately does not check. The same membership filter was already applied when a vote is restored from durable state and when a commit quorum is counted, so the election tally was the one count that omitted it. A reply carrying a higher term still forces a step-down before the filter, because that rule is not a vote.
+
+- `FastCasPaxosRegister<TValue>.ProposeFastReaching` now refuses a repeated acceptor index instead of folding it into the count. An acceptor reached twice answers twice, because the second accept is an idempotent retry of the same ballot and value and so succeeds, and the returned count is what a caller compares against `FastQuorum`; three acceptors could therefore report a quorum of four and a value never accepted by a fast quorum would be treated as committed. The method already validated the other half of the same parameter. **Breaking** for a caller that passed a list with repeats.
+
+- `QuePaxaVersionedRegister<TValue>` allocates the proposer lane per proposal rather than per call, so a caller cannot put two values under one proposal key by calling `TryWriteAsync` again at a version it left undecided. For the version's leader the key is the reserved priority on lane zero and so is identical whatever the value, which made reuse a silent divergence; the lane counter is keyed on the version, so a version the register has not proposed at starts again at lane zero and the reserved priority stays reachable.
+
 ## [0.0.7] - 2026-07-29
 
 ### Changed

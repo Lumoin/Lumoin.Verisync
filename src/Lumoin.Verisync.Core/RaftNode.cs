@@ -305,8 +305,16 @@ public sealed class RaftNode<TCommand>
     /// </returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="reply"/> is <see langword="null"/>.</exception>
     /// <remarks>
+    /// <para>
     /// A reply whose term exceeds this node's term still forces a step-down, even though no vote is counted —
     /// the universal "greater term seen" rule applies to replies as well as requests.
+    /// </para>
+    /// <para>
+    /// A reply from a replica outside <see cref="Members"/> is discarded before the tally. The quorum is a
+    /// majority of the configured membership, so a vote from anywhere else could complete one without a
+    /// majority of the cluster having granted it, and <paramref name="from"/> arrives as wire data that no
+    /// codec checks.
+    /// </para>
     /// </remarks>
     public bool ReceiveVote(ReplicaId from, RequestVoteReply reply)
     {
@@ -316,6 +324,12 @@ public sealed class RaftNode<TCommand>
         {
             StepDownTo(reply.Term);
 
+            return false;
+        }
+
+        //A non-member cannot contribute to a majority of the membership the quorum is computed from.
+        if(!members.Contains(from))
+        {
             return false;
         }
 

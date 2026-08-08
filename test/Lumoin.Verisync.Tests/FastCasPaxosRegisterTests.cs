@@ -67,6 +67,38 @@ internal sealed class FastCasPaxosRegisterTests
     }
 
 
+    //An acceptor reached twice answers twice, because the second accept is an idempotent retry of the same
+    //ballot and value and so succeeds. Without the distinctness check the returned count is what a caller
+    //tests against the fast quorum, so three acceptors could report a quorum of four.
+    [TestMethod]
+    public void AProposalReachingOneAcceptorTwiceIsRefused()
+    {
+        ImmutableArray<int> repeated = [0, 0, 1, 2];
+        FastCasPaxosRegister<string> register = FastCasPaxosRegister<string>.WithAcceptors(5);
+
+        ArgumentException failure = Assert.ThrowsExactly<ArgumentException>(
+            () => register.ProposeFastReaching(FastBallot.Fast(1), "x", repeated));
+
+        Assert.AreEqual("acceptorIndices", failure.ParamName);
+    }
+
+
+    //The count a caller compares against the fast quorum must be a count of distinct acceptors. Four of five
+    //is a fast quorum here, so a repeat that was folded in rather than refused would manufacture one.
+    [TestMethod]
+    public void ThreeDistinctAcceptorsCannotReportAFastQuorum()
+    {
+        ImmutableArray<int> three = [0, 1, 2];
+        FastCasPaxosRegister<string> register = FastCasPaxosRegister<string>.WithAcceptors(5);
+
+        (FastCasPaxosRegister<string> after, int accepted) = register.ProposeFastReaching(FastBallot.Fast(1), "x", three);
+
+        Assert.AreEqual(3, accepted);
+        Assert.IsFalse(after.IsFastQuorum(accepted));
+        Assert.AreEqual(4, after.FastQuorum);
+    }
+
+
     [TestMethod]
     public void RecoveryRecoversTheFastRoundWinner()
     {

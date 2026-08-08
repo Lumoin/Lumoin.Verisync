@@ -23,6 +23,10 @@ internal sealed class QuePaxaVersionedRegisterTests
 
     private static TimeSpan BaseDelay { get; } = TimeSpan.FromMilliseconds(40);
 
+    private static int[] LaneZero { get; } = [0];
+    private static int[] LanesZeroAndOne { get; } = [0, 1];
+    private static int[] LanesZeroToTwo { get; } = [0, 1, 2];
+
 
     //The decision step is asserted because a commit at phase two would satisfy every other assertion here.
     [TestMethod]
@@ -127,12 +131,13 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //An undecided proposal may be decided later, so treating it as a conflict would abandon a live write.
+    //An undecided proposal may be decided later, so treating it as a conflict would abandon a live write. Two
+    //of three hosts are partitioned so the quorum is missed while the third still records what it was asked,
+    //which is what lets the lanes be read rather than inferred from the attempt count.
     [TestMethod]
     public async Task AnUndecidedWriteRetriesAtTheSameVersionOnAFreshLane()
     {
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
-        cluster.Partition(0);
         cluster.Partition(1);
         cluster.Partition(2);
 
@@ -155,6 +160,69 @@ internal sealed class QuePaxaVersionedRegisterTests
 
         Assert.AreSequenceEqual(new string?[] { null, null, null }, seen);
         Assert.IsNull(register.Committed);
+
+        Assert.AreSequenceEqual(
+            LanesZeroToTwo,
+            LanesAt(cluster, RegisterVersion.First, First),
+            "The three attempts did not run on three distinct lanes, so two proposals shared a key at one version.");
+    }
+
+
+    //The lane is a property of the register and the version rather than of the call, so a caller cannot put a
+    //second value under the first attempt's key by calling the single-attempt entry point again. For the
+    //version's leader the key is the reserved priority on lane zero and so is identical whatever the value,
+    //which makes reuse a silent divergence rather than a detectable one.
+    [TestMethod]
+    public async Task ASecondSingleAttemptWriteAtAnUndecidedVersionRunsOnAFreshLane()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        cluster.Partition(1);
+        cluster.Partition(2);
+
+        QuePaxaVersionedRegister<string> register = Register(cluster, First);
+
+        QuePaxaWriteOutcome<string> first = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+        QuePaxaWriteOutcome<string> second = await register.TryWriteAsync("b", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Undecided, first.Status);
+        Assert.AreEqual(QuePaxaWriteStatus.Undecided, second.Status);
+        Assert.AreEqual(RegisterVersion.First, first.Version);
+        Assert.AreEqual(RegisterVersion.First, second.Version);
+
+        Assert.AreSequenceEqual(
+            LanesZeroAndOne,
+            LanesAt(cluster, RegisterVersion.First, First),
+            "The second call reused the first attempt's lane, so one proposal key named two values.");
+    }
+
+
+    //A superseded attempt runs at a version this register has never proposed at, so its lane counter starts
+    //again rather than continuing. Without this the lane would climb across versions and the reserved
+    //priority, which is granted to lane zero alone, would be unreachable after the first retry.
+    [TestMethod]
+    public async Task TheLaneCounterStartsAgainAtAVersionThisRegisterHasNotProposedAt()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> other = Register(cluster, Second);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: (committed, _) =>
+        {
+            cluster.LearnAll(committed);
+
+            return ValueTask.CompletedTask;
+        });
+
+        _ = await other.TryWriteAsync("theirs", TestContext.CancellationToken).ConfigureAwait(false);
+
+        QuePaxaWriteOutcome<string> outcome = await register.WriteAsync(
+            current => $"{current ?? "<none>"}+mine",
+            maxAttempts: 2,
+            TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, outcome.Status);
+        Assert.AreEqual(new RegisterVersion(2UL), outcome.Version);
+
+        Assert.AreSequenceEqual(LaneZero, LanesAt(cluster, RegisterVersion.First, First), "The superseded attempt did not run on lane zero.");
+        Assert.AreSequenceEqual(LaneZero, LanesAt(cluster, new RegisterVersion(2UL), First), "The attempt at the next version continued the previous version's lane counter.");
     }
 
 
@@ -383,6 +451,17 @@ internal sealed class QuePaxaVersionedRegisterTests
             clock ?? TimeProvider.System,
             observe,
             publishCommittedRecord: publish);
+    }
+
+
+    //The distinct lanes one replica proposed on at one version, in the order they first arrived. A proposal
+    //key repeats across the steps of one attempt, so the distinct lanes are what count the attempts.
+    private static int[] LanesAt(VersionedQuePaxaCluster<string> cluster, RegisterVersion version, ReplicaId replica)
+    {
+        return [.. cluster.Recorded
+            .Where(entry => entry.Version == version && entry.Key.Owner.Replica == replica)
+            .Select(entry => entry.Key.Owner.Lane)
+            .Distinct()];
     }
 
 

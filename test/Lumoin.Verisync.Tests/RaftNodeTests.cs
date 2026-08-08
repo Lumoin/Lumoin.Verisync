@@ -11,6 +11,7 @@ internal sealed class RaftNodeTests
     private static ReplicaId N3 { get; } = Replica(3);
     private static ReplicaId N4 { get; } = Replica(4);
     private static ReplicaId N5 { get; } = Replica(5);
+    private static ReplicaId Stranger { get; } = Replica(9);
 
 
     [TestMethod]
@@ -51,6 +52,35 @@ internal sealed class RaftNodeTests
         Assert.AreEqual(2, follower3.CommitIndex);
 
         AssertLogsIdentical(leader, follower2, follower3);
+    }
+
+
+    //The quorum is a majority of the configured membership, so only a member can contribute to it. The
+    //identity arrives as wire data that no codec checks, and the same membership filter is already applied
+    //when a vote is restored and when a commit quorum is counted, so the election tally was the one count
+    //that omitted it. A candidate one short of a majority must not be carried over the line by a stranger.
+    [TestMethod]
+    public void AVoteFromOutsideTheMembershipDoesNotCountTowardsTheElectionQuorum()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3, N4, N5];
+        RaftNode<string> candidate = new(N1, members);
+        RaftNode<string> member = new(N2, members);
+
+        RequestVoteRequest request = candidate.StartElection();
+
+        //Two of five: the candidate's own vote and one member's. A majority here is three.
+        Assert.IsFalse(candidate.ReceiveVote(N2, member.HandleRequestVote(request)));
+        Assert.AreEqual(RaftRole.Candidate, candidate.Role);
+
+        RequestVoteReply granted = new(request.Term, true);
+
+        Assert.IsFalse(candidate.ReceiveVote(Stranger, granted), "A non-member completed the election quorum.");
+        Assert.AreEqual(RaftRole.Candidate, candidate.Role);
+
+        //The same reply from a member does complete it, so the vector fails for membership rather than
+        //because the reply itself was malformed.
+        Assert.IsTrue(candidate.ReceiveVote(N3, granted));
+        Assert.AreEqual(RaftRole.Leader, candidate.Role);
     }
 
 

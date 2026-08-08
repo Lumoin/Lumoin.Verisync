@@ -48,10 +48,19 @@ internal sealed class VersionedQuePaxaCluster<TValue>
     /// <summary>The versions a host refused to serve, which is how a test observes the single-live-instance rule.</summary>
     public IReadOnlyList<RegisterVersion> Declined => DeclinedVersions;
 
+    /// <summary>
+    /// The proposal keys the hosts were asked to record, paired with the version they arrived at, in arrival
+    /// order. A key repeats across the steps of one attempt, so a test counting attempts reads the distinct
+    /// pairs.
+    /// </summary>
+    public IReadOnlyList<(RegisterVersion Version, ProposalKey Key)> Recorded => RecordedKeys;
+
 
     private QuePaxaVersionedNode<TValue>[] Hosts { get; }
 
     private List<RegisterVersion> DeclinedVersions { get; } = [];
+
+    private List<(RegisterVersion Version, ProposalKey Key)> RecordedKeys { get; } = [];
 
     private int[] ServedCounts { get; }
 
@@ -99,6 +108,8 @@ internal sealed class VersionedQuePaxaCluster<TValue>
                 {
                     DeclinedVersions.Add(request.Version);
                 }
+
+                RecordedKeys.Add((request.Version, request.Request.Proposal.Key));
 
                 VersionedRecordReply<VersionedValue<TValue>> reply = Hosts[host].Handle(request);
                 ServedCounts[host]++;

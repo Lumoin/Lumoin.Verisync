@@ -26,17 +26,15 @@ namespace Lumoin.Verisync.Core;
 /// dependent at different recorders, and the disagreement is unrecoverable once it has spread.
 /// </para>
 /// <para>
-/// The refusal covers overlap and not succession, so the lane still has to advance between attempts at one
-/// version. <see cref="WriteAsync"/> does that itself: an undecided attempt retries on the next lane, and only
-/// a superseded one returns to lane zero, because a superseded attempt runs at a version nothing has proposed
-/// at. <see cref="TryWriteAsync"/> always proposes on lane zero, so calling it again at a version it left
-/// undecided proposes a second value under the first attempt's key. A caller that retries calls
-/// <see cref="WriteAsync"/>.
+/// Succession is covered as well as overlap, because the lane is allocated per proposal rather than per call.
+/// Every attempt at one version draws the next lane whether it came from a retry inside
+/// <see cref="WriteAsync"/> or from a fresh call to <see cref="TryWriteAsync"/>, and a version this register
+/// has not proposed at starts again at lane zero. Re-entering cannot put two values under one key.
 /// </para>
 /// <para>
-/// One replica holds one proposer identity per version. This register allocates the lanes for its own
-/// attempts, so a second register for the same replica would allocate the same ones; concurrent proposals for
-/// one version are outside what this type supports. A host that needs them drives
+/// One replica holds one proposer identity per version, and the counter belongs to the register instance
+/// rather than to the replica. A second register for the same replica allocates the same lanes, so concurrent
+/// proposals for one version are outside what this type supports. A host that needs them drives
 /// <see cref="QuePaxaProposer{TValue}"/> directly, which takes the <see cref="ProposerLane"/> explicitly and
 /// so leaves the uniqueness obligation with the caller.
 /// </para>
@@ -160,6 +158,12 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
     private PublishCommittedRecordDelegate<TValue>? PublishCommittedRecord { get; }
 
+    /// <summary>The version <see cref="NextLane"/> counts within, which is <see cref="RegisterVersion.Unwritten"/> before the first proposal.</summary>
+    private RegisterVersion LanedVersion { get; set; }
+
+    /// <summary>The next unused lane number at <see cref="LanedVersion"/>.</summary>
+    private int NextLane { get; set; }
+
 
     /// <summary>
     /// Adopts <paramref name="committed"/> as this register's knowledge of the register's committed state.
@@ -253,16 +257,15 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <remarks>
     /// One attempt and no retry, so an undecided outcome is reported rather than retried. A caller that wants
     /// the retry loop calls <see cref="WriteAsync"/>, which is the only one of the two that can recompute a
-    /// value against a version someone else closed. This one always proposes on lane zero, so calling it a
-    /// second time at a version it left undecided puts a second value under the first attempt's proposal key,
-    /// which is what <see cref="ProposalKey"/>'s uniqueness contract forbids.
+    /// value against a version someone else closed. Calling this one again at a version it left undecided is
+    /// safe: the register allocates the next lane, so the second attempt proposes under its own key.
     /// </remarks>
     public async Task<QuePaxaWriteOutcome<TValue>> TryWriteAsync(TValue value, CancellationToken cancellationToken)
     {
         EnterWrite();
         try
         {
-            return await AttemptAsync(value, 0, 0, cancellationToken).ConfigureAwait(false);
+            return await AttemptAsync(value, 0, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -310,27 +313,17 @@ public sealed class QuePaxaVersionedRegister<TValue>
         EnterWrite();
         try
         {
-            int laneAtThisVersion = 0;
             QuePaxaWriteOutcome<TValue> outcome = new(QuePaxaWriteStatus.Undecided, NextVersion, default, null, RecorderStep.Zero, 0, false);
 
             for(int attempt = 1; attempt <= maxAttempts; attempt++)
             {
                 TValue proposed = update(Committed is { } committed ? committed.Value : default);
-                outcome = await AttemptAsync(proposed, laneAtThisVersion, outcome.Attempts, cancellationToken).ConfigureAwait(false);
+                outcome = await AttemptAsync(proposed, outcome.Attempts, cancellationToken).ConfigureAwait(false);
 
                 if(outcome.Status == QuePaxaWriteStatus.Committed)
                 {
                     return outcome;
                 }
-
-                if(outcome.Status == QuePaxaWriteStatus.Superseded)
-                {
-                    laneAtThisVersion = 0;
-
-                    continue;
-                }
-
-                laneAtThisVersion++;
             }
 
             return outcome;
@@ -342,7 +335,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     }
 
 
-    private async Task<QuePaxaWriteOutcome<TValue>> AttemptAsync(TValue value, int lane, int spent, CancellationToken cancellationToken)
+    private async Task<QuePaxaWriteOutcome<TValue>> AttemptAsync(TValue value, int spent, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -366,7 +359,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         }
 
         VersionedValue<TValue> record = new(version, Self, value);
-        ProposerLane proposerLane = new(Self, lane);
+        ProposerLane proposerLane = AllocateLane(version);
         ProposerLane? believedLeader = LeaderSchedule.LeaderFor(previousWriter);
 
         var proposer = new QuePaxaProposer<VersionedValue<TValue>>(
@@ -424,6 +417,29 @@ public sealed class QuePaxaVersionedRegister<TValue>
         }
 
         return endpoints;
+    }
+
+
+    /// <summary>
+    /// The lane this register's next proposal at <paramref name="version"/> runs on.
+    /// </summary>
+    /// <param name="version">The version the proposal is made at.</param>
+    /// <returns>A lane no proposal of this register's has used at that version.</returns>
+    /// <remarks>
+    /// Every proposal this register makes draws its lane here, which is what keeps one proposal key to one
+    /// value. A second proposal at one version needs a second identity whatever brought it about, so the
+    /// counter is keyed on the version rather than on the call that asked for it, and a version this register
+    /// has not proposed at yet starts again at lane zero.
+    /// </remarks>
+    private ProposerLane AllocateLane(RegisterVersion version)
+    {
+        if(version != LanedVersion)
+        {
+            LanedVersion = version;
+            NextLane = 0;
+        }
+
+        return new ProposerLane(Self, NextLane++);
     }
 
 
