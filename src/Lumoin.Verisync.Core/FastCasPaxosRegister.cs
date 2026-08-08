@@ -166,7 +166,7 @@ public sealed class FastCasPaxosRegister<TValue>
 
         if(promises < ClassicQuorum)
         {
-            return (new FastCasPaxosRegister<TValue>(working.ToImmutable()), new ChangeOutcome<TValue>(false, default));
+            return (new FastCasPaxosRegister<TValue>(working.ToImmutable()), new ChangeOutcome<TValue>(false, default, 0));
         }
 
         if(!highestAccepted.IsZero && highestAccepted.IsFast)
@@ -187,8 +187,8 @@ public sealed class FastCasPaxosRegister<TValue>
         }
 
         ChangeOutcome<TValue> outcome = accepts >= ClassicQuorum
-            ? new ChangeOutcome<TValue>(true, newValue)
-            : new ChangeOutcome<TValue>(false, default);
+            ? new ChangeOutcome<TValue>(true, newValue, accepts)
+            : new ChangeOutcome<TValue>(false, default, accepts);
 
         return (new FastCasPaxosRegister<TValue>(working.ToImmutable()), outcome);
     }

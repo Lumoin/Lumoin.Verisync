@@ -96,7 +96,7 @@ public sealed class CasPaxosRegister<TValue>
 
         if(promises < Quorum)
         {
-            return (new CasPaxosRegister<TValue>(working.ToImmutable()), new ChangeOutcome<TValue>(false, default));
+            return (new CasPaxosRegister<TValue>(working.ToImmutable()), new ChangeOutcome<TValue>(false, default, 0));
         }
 
         TValue newValue = update(recovered);
@@ -113,8 +113,8 @@ public sealed class CasPaxosRegister<TValue>
         }
 
         ChangeOutcome<TValue> outcome = accepts >= Quorum
-            ? new ChangeOutcome<TValue>(true, newValue)
-            : new ChangeOutcome<TValue>(false, default);
+            ? new ChangeOutcome<TValue>(true, newValue, accepts)
+            : new ChangeOutcome<TValue>(false, default, accepts);
 
         return (new CasPaxosRegister<TValue>(working.ToImmutable()), outcome);
     }

@@ -2,6 +2,7 @@ using Lumoin.Base;
 using Lumoin.Verisync.Core;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -27,6 +28,9 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class MasqueradePerDecodeScalingProbe
 {
+    public TestContext TestContext { get; set; } = null!;
+
+
     //Structural items, 8 bytes wide, a width-1 checksum: the sanctioned adversarial-test width where a
     //degree-two cell masquerades with per-candidate probability 2^-8, under the well-known (unkeyed) key
     //so random collisions occur naturally rather than being brute-forced.
@@ -74,10 +78,12 @@ internal sealed class MasqueradePerDecodeScalingProbe
             rangeBase += (long)TrialsPerSize * 1_000L * (d + 1);
         }
 
-        Console.WriteLine($"columns: d, trials, falseAccepts, incomplete, perDecodeFalseAcceptFraction; perCandidate(2^-8)={PerCandidateBound:F5}");
+        //The rows are a comma-separated table, so the decimal separator has to be invariant or a locale that
+        //writes decimal commas makes every row ambiguous.
+        TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"columns: d, trials, falseAccepts, incomplete, perDecodeFalseAcceptFraction; perCandidate(2^-8)={PerCandidateBound:F5}"));
         foreach((int d, int fa, int inc, double frac) in fractions)
         {
-            Console.WriteLine($"{d}, {TrialsPerSize}, {fa}, {inc}, {frac:F4}");
+            TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{d}, {TrialsPerSize}, {fa}, {inc}, {frac:F4}"));
         }
 
         double controlFraction = fractions[0].Fraction;

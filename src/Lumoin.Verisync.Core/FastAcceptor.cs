@@ -95,7 +95,10 @@ public sealed class FastAcceptor<TValue>
     /// impossible — the piggyback only ever <em>adds</em> a coordinated round, never re-opens an uncoordinated
     /// one. Every reject rule is evaluated against the original ballot and ignores <paramref name="next"/>
     /// entirely; only a successful accept (including an idempotent retry of the already-accepted pair) applies
-    /// the raise, and a raise never lowers the promise because the new promise is taken as a maximum.
+    /// the raise, and a raise never lowers the promise because the new promise is taken as a maximum. The
+    /// proposer-side counterpart of this rule is the arming rule documented on
+    /// <see cref="FastProposer{TValue}.TryFastWriteAsync"/>: because an acceptor that missed the raise keeps
+    /// rejecting, a round armed on fewer than a fast quorum is one no later fast write can complete.
     /// </remarks>
     public (FastAcceptor<TValue> Acceptor, bool Accepted) Accept(FastBallot ballot, TValue value, FastBallot? next = null)
     {
