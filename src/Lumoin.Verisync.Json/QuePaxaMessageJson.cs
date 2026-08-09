@@ -9,7 +9,8 @@ namespace Lumoin.Verisync.Json;
 /// <see cref="DeserializeMessageDelegate{TMessage}"/> implementations for the QuePaxa protocol messages,
 /// <see cref="RecordRequest{TValue}"/> and <see cref="RecordReply{TValue}"/>, for the versioned envelopes
 /// that address them to one consensus instance, for the decided record a versioned register carries, and for
-/// the recorder's durable state, so they can cross a Verisync message channel or be persisted by a host.
+/// the two durable states a host persists, the recorder's own and the versioned host's, so they can cross a
+/// Verisync message channel or be persisted by a host.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -56,8 +57,17 @@ namespace Lumoin.Verisync.Json;
 /// a host restores by handing what it decoded to that factory.
 /// </para>
 /// <para>
-/// All three proposal slots of a recorder state are written as an explicit null when absent, so an absent slot
-/// round-trips as null and stays distinguishable from a field the payload never carried.
+/// <see cref="QuePaxaVersionedNodeState{TValue}"/> follows the same split one layer up. Its decoder refuses a
+/// missing field alone and hands every value to its domain constructor, while the rules that read its stored
+/// leader and its stored version against the committed record beside them stay in
+/// <see cref="QuePaxaVersionedNode{TValue}.FromState"/>. The recorder nested inside it is encoded exactly as a
+/// standalone recorder state is, over <see cref="VersionedValue{TValue}"/> as the register's value type, so
+/// there is one encoding of a recorder state and not two.
+/// </para>
+/// <para>
+/// Every optional slot is written as an explicit null when absent — all three proposal slots of a recorder
+/// state, and a versioned node state's committed record and configured leader — so an absent slot round-trips
+/// as null and stays distinguishable from a field the payload never carried.
 /// </para>
 /// <para>
 /// The caller supplies how to read and write <typeparamref name="TValue"/>, since the value is
@@ -72,6 +82,7 @@ public static class QuePaxaMessageJson
     private const string VersionedReplyLabel = "A versioned record reply";
     private const string RecordLabel = "A versioned value";
     private const string RecorderStateLabel = "A recorder state";
+    private const string VersionedNodeStateLabel = "A versioned node state";
     private const string ProposalLabel = "A proposal";
     private const string LaneLabel = "A proposer lane";
 
@@ -246,12 +257,7 @@ public static class QuePaxaMessageJson
         return (state, output) =>
         {
             using var writer = new Utf8JsonWriter(output);
-            writer.WriteStartObject();
-            writer.WriteNumber("step", state.Step.Value);
-            WriteProposalOrNull(writer, "first", state.First, writeValue);
-            WriteProposalOrNull(writer, "currentAggregate", state.CurrentAggregate, writeValue);
-            WriteProposalOrNull(writer, "priorAggregate", state.PriorAggregate, writeValue);
-            writer.WriteEndObject();
+            WriteRecorderState(writer, state, writeValue);
         };
     }
 
@@ -273,13 +279,71 @@ public static class QuePaxaMessageJson
         return JsonMessageGuard.FailClosed<QuePaxaRecorderState<TValue>>(payload =>
         {
             using JsonDocument document = JsonDocument.Parse(payload);
-            JsonElement root = document.RootElement;
-            int step = RequireProperty(root, "step", RecorderStateLabel).GetInt32();
-            PrioritizedProposal<TValue>? first = ReadProposalOrNull(root, "first", RecorderStateLabel, readValue);
-            PrioritizedProposal<TValue>? currentAggregate = ReadProposalOrNull(root, "currentAggregate", RecorderStateLabel, readValue);
-            PrioritizedProposal<TValue>? priorAggregate = ReadProposalOrNull(root, "priorAggregate", RecorderStateLabel, readValue);
 
-            return Construct(() => new QuePaxaRecorderState<TValue>(new RecorderStep(step), first, currentAggregate, priorAggregate));
+            return ReadRecorderState(document.RootElement, readValue);
+        });
+    }
+
+
+    /// <summary>Creates a serializer for <see cref="QuePaxaVersionedNodeState{TValue}"/>.</summary>
+    /// <typeparam name="TValue">The application value type.</typeparam>
+    /// <param name="writeValue">Writes an application value to the JSON writer.</param>
+    /// <returns>A serialize delegate.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// The recorder nested inside the state is encoded exactly as
+    /// <see cref="CreateRecorderStateSerializer{TValue}"/> encodes a standalone one, over the decided record as
+    /// its value type, so the two payloads agree field for field where they overlap.
+    /// </remarks>
+    public static SerializeMessageDelegate<QuePaxaVersionedNodeState<TValue>> CreateVersionedNodeStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    {
+        ArgumentNullException.ThrowIfNull(writeValue);
+
+        //The record writer is built once here rather than per call, exactly as the value writer the other
+        //factories close over is.
+        Action<Utf8JsonWriter, VersionedValue<TValue>> writeRecord = (writer, record) => WriteRecord(writer, record, writeValue);
+
+        return (state, output) =>
+        {
+            using var writer = new Utf8JsonWriter(output);
+            writer.WriteStartObject();
+            WriteRecordOrNull(writer, "committed", state.Committed, writeValue);
+            writer.WriteNumber("recorderVersion", state.RecorderVersion.Value);
+            WriteLaneOrNull(writer, "configuredLeader", state.ConfiguredLeader);
+            writer.WritePropertyName("recorder");
+            WriteRecorderState(writer, state.Recorder, writeRecord);
+            writer.WriteEndObject();
+        };
+    }
+
+
+    /// <summary>Creates a deserializer for <see cref="QuePaxaVersionedNodeState{TValue}"/>.</summary>
+    /// <typeparam name="TValue">The application value type.</typeparam>
+    /// <param name="readValue">Reads an application value from a JSON element.</param>
+    /// <returns>A deserialize delegate.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// A state this returns is decoded and not cross-checked. The rules that read the stored leader and the
+    /// stored version against the record beside them belong to
+    /// <see cref="QuePaxaVersionedNode{TValue}.FromState"/>, so a host restores by passing the decoded state
+    /// there and lets that factory refuse a snapshot whose parts disagree.
+    /// </remarks>
+    public static DeserializeMessageDelegate<QuePaxaVersionedNodeState<TValue>> CreateVersionedNodeStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    {
+        ArgumentNullException.ThrowIfNull(readValue);
+
+        Func<JsonElement, VersionedValue<TValue>> readRecord = element => ReadRecord(element, readValue);
+
+        return JsonMessageGuard.FailClosed<QuePaxaVersionedNodeState<TValue>>(payload =>
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            JsonElement root = document.RootElement;
+            VersionedValue<TValue>? committed = ReadRecordOrNull(root, "committed", VersionedNodeStateLabel, readValue);
+            ulong recorderVersion = RequireProperty(root, "recorderVersion", VersionedNodeStateLabel).GetUInt64();
+            ProposerLane? configuredLeader = ReadLaneOrNull(root, "configuredLeader", VersionedNodeStateLabel);
+            QuePaxaRecorderState<VersionedValue<TValue>> recorder = ReadRecorderState(RequireProperty(root, "recorder", VersionedNodeStateLabel), readRecord);
+
+            return Construct(() => new QuePaxaVersionedNodeState<TValue>(committed, new RegisterVersion(recorderVersion), configuredLeader, recorder));
         });
     }
 
@@ -300,15 +364,7 @@ public static class QuePaxaMessageJson
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
-        return (writer, record) =>
-        {
-            writer.WriteStartObject();
-            writer.WriteNumber("version", record.Version.Value);
-            writer.WriteString("writer", Convert.ToHexStringLower(record.Writer.AsSpan()));
-            writer.WritePropertyName("value");
-            writeValue(writer, record.Value);
-            writer.WriteEndObject();
-        };
+        return (writer, record) => WriteRecord(writer, record, writeValue);
     }
 
 
@@ -323,14 +379,75 @@ public static class QuePaxaMessageJson
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
-        return element =>
-        {
-            ulong version = RequireProperty(element, "version", RecordLabel).GetUInt64();
-            string writer = RequireProperty(element, "writer", RecordLabel).GetString()!;
-            TValue value = readValue(RequireProperty(element, "value", RecordLabel));
+        return element => ReadRecord(element, readValue);
+    }
 
-            return Construct(() => new VersionedValue<TValue>(new RegisterVersion(version), ReplicaId.FromSpan(Convert.FromHexString(writer)), value));
-        };
+
+    private static void WriteRecord<TValue>(Utf8JsonWriter writer, VersionedValue<TValue> record, Action<Utf8JsonWriter, TValue> writeValue)
+    {
+        writer.WriteStartObject();
+        writer.WriteNumber("version", record.Version.Value);
+        writer.WriteString("writer", Convert.ToHexStringLower(record.Writer.AsSpan()));
+        writer.WritePropertyName("value");
+        writeValue(writer, record.Value);
+        writer.WriteEndObject();
+    }
+
+
+    private static VersionedValue<TValue> ReadRecord<TValue>(JsonElement element, Func<JsonElement, TValue> readValue)
+    {
+        ulong version = RequireProperty(element, "version", RecordLabel).GetUInt64();
+        string writer = RequireProperty(element, "writer", RecordLabel).GetString()!;
+        TValue value = readValue(RequireProperty(element, "value", RecordLabel));
+
+        return Construct(() => new VersionedValue<TValue>(new RegisterVersion(version), ReplicaId.FromSpan(Convert.FromHexString(writer)), value));
+    }
+
+
+    private static void WriteRecordOrNull<TValue>(Utf8JsonWriter writer, string name, VersionedValue<TValue>? record, Action<Utf8JsonWriter, TValue> writeValue)
+    {
+        //An absent record is written as an explicit null rather than omitted, on the same rule the proposal
+        //slots follow: a host that has learned nothing is a state the protocol reaches, and a required field
+        //can be swept for by a missing-field test where an optional one cannot.
+        if(record is { } present)
+        {
+            writer.WritePropertyName(name);
+            WriteRecord(writer, present, writeValue);
+        }
+        else
+        {
+            writer.WriteNull(name);
+        }
+    }
+
+
+    private static VersionedValue<TValue>? ReadRecordOrNull<TValue>(JsonElement element, string name, string label, Func<JsonElement, TValue> readValue)
+    {
+        JsonElement slot = RequireProperty(element, name, label);
+
+        return slot.ValueKind == JsonValueKind.Null ? null : ReadRecord(slot, readValue);
+    }
+
+
+    private static void WriteRecorderState<TValue>(Utf8JsonWriter writer, QuePaxaRecorderState<TValue> state, Action<Utf8JsonWriter, TValue> writeValue)
+    {
+        writer.WriteStartObject();
+        writer.WriteNumber("step", state.Step.Value);
+        WriteProposalOrNull(writer, "first", state.First, writeValue);
+        WriteProposalOrNull(writer, "currentAggregate", state.CurrentAggregate, writeValue);
+        WriteProposalOrNull(writer, "priorAggregate", state.PriorAggregate, writeValue);
+        writer.WriteEndObject();
+    }
+
+
+    private static QuePaxaRecorderState<TValue> ReadRecorderState<TValue>(JsonElement element, Func<JsonElement, TValue> readValue)
+    {
+        int step = RequireProperty(element, "step", RecorderStateLabel).GetInt32();
+        PrioritizedProposal<TValue>? first = ReadProposalOrNull(element, "first", RecorderStateLabel, readValue);
+        PrioritizedProposal<TValue>? currentAggregate = ReadProposalOrNull(element, "currentAggregate", RecorderStateLabel, readValue);
+        PrioritizedProposal<TValue>? priorAggregate = ReadProposalOrNull(element, "priorAggregate", RecorderStateLabel, readValue);
+
+        return Construct(() => new QuePaxaRecorderState<TValue>(new RecorderStep(step), first, currentAggregate, priorAggregate));
     }
 
 
@@ -460,6 +577,29 @@ public static class QuePaxaMessageJson
         writer.WriteString("replica", Convert.ToHexStringLower(lane.Replica.AsSpan()));
         writer.WriteNumber("lane", lane.Lane);
         writer.WriteEndObject();
+    }
+
+
+    private static void WriteLaneOrNull(Utf8JsonWriter writer, string name, ProposerLane? lane)
+    {
+        //A leaderless instance is a derived fact rather than a missing one, so it is written as an explicit
+        //null and stays distinguishable from a field the payload never carried.
+        if(lane is { } present)
+        {
+            WriteLane(writer, name, present);
+        }
+        else
+        {
+            writer.WriteNull(name);
+        }
+    }
+
+
+    private static ProposerLane? ReadLaneOrNull(JsonElement element, string name, string label)
+    {
+        JsonElement slot = RequireProperty(element, name, label);
+
+        return slot.ValueKind == JsonValueKind.Null ? null : ReadLane(slot);
     }
 
 

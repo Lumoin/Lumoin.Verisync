@@ -37,6 +37,15 @@ namespace Lumoin.Verisync.Core;
 /// assumption that lets a recorder's own reply be believed.
 /// </para>
 /// <para>
+/// Restarting is this host's own operation and not the recorder's alone. <see cref="ToState"/> snapshots the
+/// committed record beside the recorder serving the instance that record implies, and <see cref="FromState"/>
+/// refuses a snapshot whose stored leader or stored version disagrees with the record beside it, which is what
+/// a write torn across the two leaves behind. The committed record has to be durable before any reply that
+/// depends on it leaves the process, for the same reason the register does: the leader every recorder enforces
+/// is derived from it, so a host that answered at one version and restarted holding an older record re-opens
+/// an instance that has already decided, with an empty register.
+/// </para>
+/// <para>
 /// A node processes its requests sequentially and is not safe for concurrent calls, exactly as
 /// <see cref="QuePaxaNode{TValue}"/> is not.
 /// </para>
@@ -61,6 +70,14 @@ public sealed class QuePaxaVersionedNode<TValue>
         LeaderSchedule = schedule;
         Committed = committed;
         Node = new QuePaxaNode<VersionedValue<TValue>>(schedule.RecorderFor<VersionedValue<TValue>>(committed?.Writer));
+    }
+
+
+    private QuePaxaVersionedNode(QuePaxaLeaderSchedule schedule, VersionedValue<TValue>? committed, QuePaxaNode<VersionedValue<TValue>> node)
+    {
+        LeaderSchedule = schedule;
+        Committed = committed;
+        Node = node;
     }
 
 
@@ -142,4 +159,123 @@ public sealed class QuePaxaVersionedNode<TValue>
 
         return true;
     }
+
+
+    /// <summary>
+    /// Snapshots the host's durable state, which is the committed record beside the recorder serving the
+    /// instance that record implies.
+    /// </summary>
+    /// <returns>The durable state to make stable before any dependent reply is sent.</returns>
+    /// <exception cref="InvalidOperationException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that this host serves no version at all.</exception>
+    /// <remarks>
+    /// <para>
+    /// The derived leader and the live version are written into the snapshot rather than left to be recomputed
+    /// on restore. Both are functions of the committed record, so recomputing them would compare each with
+    /// itself; writing them down is what lets <see cref="FromState"/> refuse a snapshot torn across the record
+    /// and the register.
+    /// </para>
+    /// <para>
+    /// This is the inverse of <see cref="FromState"/> over every state a host reaches, including the interval
+    /// between learning a version and answering the first request for the next one, where the recorder stands
+    /// at <see cref="RecorderStep.Zero"/>. That is a host state rather than a lost register, so it snapshots and
+    /// restores; <see cref="QuePaxaRecorder{TValue}.ToState"/> and
+    /// <see cref="QuePaxaRecorder{TValue}.FromState"/> are deliberately not inverses there, and the difference
+    /// is that a bare recorder state names no instance while this record names one.
+    /// </para>
+    /// </remarks>
+    public QuePaxaVersionedNodeState<TValue> ToState()
+    {
+        return new QuePaxaVersionedNodeState<TValue>(Committed, LiveVersion, Node.Recorder.ConfiguredLeader, Node.Recorder.ToState());
+    }
+
+
+    /// <summary>
+    /// Reconstructs a host from durable <paramref name="state"/> under <paramref name="schedule"/>, refusing
+    /// fail-closed every snapshot whose parts disagree with one another.
+    /// </summary>
+    /// <param name="schedule">
+    /// The leader derivation every replica shares. It comes before the state because it is configuration rather
+    /// than durable protocol state, as identity and membership come before the state in
+    /// <see cref="RaftNode{TCommand}.FromState"/>.
+    /// </param>
+    /// <param name="state">The durable state to restore.</param>
+    /// <returns>A host serving the instance the restored record implies.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="schedule"/> or <paramref name="state"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when the snapshot's parts disagree: a
+    /// <see cref="QuePaxaVersionedNodeState{TValue}.ConfiguredLeader"/> other than the one
+    /// <see cref="QuePaxaLeaderSchedule.LeaderFor(ReplicaId?)"/> derives from the restored record; a
+    /// <see cref="QuePaxaVersionedNodeState{TValue}.RecorderVersion"/> other than the version after the restored
+    /// record's; or a recorder standing at <see cref="RecorderStep.Zero"/> that carries a proposal in any slot.
+    /// Also thrown for every state no recorder-driven register can hold, as
+    /// <see cref="QuePaxaRecorder{TValue}.FromState(ProposerLane?, QuePaxaRecorderState{TValue})"/> defines
+    /// them.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">Thrown if the restored record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it and this host would serve none.</exception>
+    /// <remarks>
+    /// <para>
+    /// The two cross-checks are what a torn snapshot fails. A stored leader other than the derived one means
+    /// two hosts can hold records implying different leaders for one instance, which is the reserved-priority
+    /// divergence hazard, and a host whose own snapshot says so refuses to start rather than joining as the
+    /// second leader. A stored version other than the derived one means a register from one instance beside a
+    /// record from another, which is the half-written snapshot. Neither can fire against a record the restore
+    /// derived from, which is why both are stored.
+    /// </para>
+    /// <para>
+    /// A stale record that is internally consistent restores without complaint, and that is correct rather than
+    /// a gap. The leader is a deterministic function of the record, so a genuinely old record yields exactly
+    /// the leader its own instance ran under, and <see cref="Handle"/>'s version gate keeps such a host from
+    /// serving the live instance at all. What a stale host costs a deployment is availability, since no write
+    /// gathers a quorum until a quorum of hosts has learned the previous version, and that is the same cost the
+    /// derivation charges a host that has merely fallen behind.
+    /// </para>
+    /// <para>
+    /// A recorder standing at <see cref="RecorderStep.Zero"/> is rebuilt unwritten rather than handed to the
+    /// recorder's own restore, which refuses that step. A host occupies it for the whole interval between
+    /// learning a version and answering the first request for the next one, so refusing to restart there would
+    /// be a defect and not a defence, and nothing was answered from a register at that step because a recorder
+    /// records nothing below <see cref="RecorderStep.RoundOnePhaseZero"/>. The short circuit is the unwritten
+    /// register exactly: a step-zero snapshot carrying a proposal in any slot is refused here, and every other
+    /// step below the recorder's floor still reaches the recorder's restore and is refused there.
+    /// </para>
+    /// </remarks>
+    public static QuePaxaVersionedNode<TValue> FromState(QuePaxaLeaderSchedule schedule, QuePaxaVersionedNodeState<TValue> state)
+    {
+        ArgumentNullException.ThrowIfNull(schedule);
+        ArgumentNullException.ThrowIfNull(state);
+
+        ReplicaId? previousWriter = state.Committed?.Writer;
+        ProposerLane? derivedLeader = schedule.LeaderFor(previousWriter);
+
+        if(state.ConfiguredLeader != derivedLeader)
+        {
+            throw new ArgumentException($"A restored configured leader must be the one the schedule derives from the restored record, which is {Describe(derivedLeader)}, and it is {Describe(state.ConfiguredLeader)}. Two hosts whose records imply different leaders for one instance admit two reserved claims at the step the fast path reads.", nameof(state));
+        }
+
+        RegisterVersion live = state.Committed is { } committed ? committed.Version.Next() : RegisterVersion.First;
+        if(state.RecorderVersion != live)
+        {
+            throw new ArgumentException($"A restored recorder must serve the version after the restored record's, which is {live.Value}, and it serves {state.RecorderVersion.Value}. A register from one instance beside a record from another is a snapshot written in two parts and torn between them.", nameof(state));
+        }
+
+        QuePaxaRecorder<VersionedValue<TValue>> recorder;
+        if(state.Recorder.Step == RecorderStep.Zero)
+        {
+            if(state.Recorder.First is not null || state.Recorder.CurrentAggregate is not null || state.Recorder.PriorAggregate is not null)
+            {
+                throw new ArgumentException("A restored recorder at step zero must be the unwritten register, carrying no proposal in any slot. A recorder records nothing below round one phase zero, so a proposal standing at step zero was never recorded there and rebuilding the register unwritten would discard it.", nameof(state));
+            }
+
+            recorder = schedule.RecorderFor<VersionedValue<TValue>>(previousWriter);
+        }
+        else
+        {
+            recorder = schedule.RecorderFor<VersionedValue<TValue>>(previousWriter, state.Recorder);
+        }
+
+        return new QuePaxaVersionedNode<TValue>(schedule, state.Committed, new QuePaxaNode<VersionedValue<TValue>>(recorder));
+    }
+
+
+    private static string Describe(ProposerLane? lane) => lane?.ToString() ?? "leaderless";
 }
