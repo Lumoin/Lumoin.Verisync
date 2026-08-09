@@ -3,8 +3,9 @@
 Model-checked specifications for the protocol tiers this repository ships or is deciding whether to
 ship: the anti-entropy session pair with the completion frame, the consensus-anchored checkpoint
 seal, QuePaxa, and Raft's leader election and log rules. The session pair, the seal, the election and the
-log model the code as it is. QuePaxa models the published protocol before any code exists, which is the
-point of ordering it that way. The abstraction decisions are
+log model the code as it is. The two QuePaxa protocol modules model the published protocol before any
+code exists, which is the point of ordering it that way, while the QuePaxa durability module models the
+code that followed them. The abstraction decisions are
 documented in each module's header comment.
 
 ## Negative models
@@ -111,6 +112,72 @@ only the rewritten copy carries an ordinary proposal past it; under the narrow r
 first step alone and the configuration is green. That green is not a licence to run such a cluster: it
 holds at one leaderless recorder of three and at this bound, and a host that cannot derive the instance's
 leader declines it rather than serving it leaderless.
+
+## The QuePaxa durability matrix
+
+`QuePaxaDurable` is one recorder across a crash: what has to be on stable storage before it answers,
+what a restart brings back, and what a restart is allowed to take away. Lemma C.10's argument for the
+fast path turns on the first proposal of a step never being overwritten, which a running recorder holds
+by construction, because Algorithm 3 assigns the first proposal only on the branch that advances the
+step. A crash is where it can be lost, and a recorder that comes back below the step it answered from
+takes a fresh first proposal at a step a proposer has already read.
+
+The module is a single recorder, and that follows from the protocol rather than from cost. Recorders
+are passive and never address one another, all communication being proposer-to-recorder, so indexing
+every variable by a recorder would give a product of independent copies with no shared variable between
+them, and the invariant over that product is the conjunction of the per-recorder ones. The
+cross-recorder property, that two quorums never decide differently, is `QuePaxaConcrete`'s and is not
+repeated. Three rules are constants in the `RaftLog` mould, so the model is what says each of them is
+load-bearing rather than tidy: `RepliesAfterPersist`, the persist-before-reply obligation;
+`RestoresFromDurableState`, the restore itself; and `PersistsWholeRegister`, whether the durable state
+is all four register fields or the step and the first proposal alone.
+
+| Configuration | Module | What it models | Expected |
+| --- | --- | --- | --- |
+| `MCDurableRecorder` | QuePaxaDurable | all three rules in force, where no crash takes back an answer a proposer has read | green |
+| `MCDurableVolatileReply` | QuePaxaDurable | negative model: the persist-before-reply obligation withdrawn, so an answer leaves on state the disk does not hold | red (required) |
+| `MCDurableFreshRestart` | QuePaxaDurable | negative model: the restore withdrawn, so a recorder that persisted faithfully comes back unwritten anyway | red (required) |
+| `MCDurablePartialPersist` | QuePaxaDurable | negative model: the durable state is the step and the first proposal alone, so the prior aggregate a reply carried does not survive the crash | red (required) |
+| `MCDurableStepZeroServed` | QuePaxaDurable | negative model: the same obligation withdrawn, pinned instead on the premise a host's step-zero short circuit rests on | red (required) |
+
+All five run at the same constants, three proposal keys over steps four to seven, which is one complete
+round and is what the concrete configurations run. Three keys rather than two is `MCAbstractSweep`'s
+reason: two are enough for a first proposal that differs from another, and three for a strict ranking
+of all of them as well as every tie two can make. Every negative is red at exactly the constants the
+positive is green at, which is the test the bounds rule above sets.
+
+The ghost state is what makes the property checkable at all. Stated as "a proposer never reads a first
+proposal at a step the recorder later re-takes" it refers to the future, and TLC checks state predicates
+rather than two-point trace properties. `served[s]` records the summary the recorder has answered for
+step `s`, and `ServedFirstIsStable` and `ServedPriorAggregateIsStable` assert that a recorder standing
+at `s` still holds it, which is a state predicate. The ghost survives a crash because it is what a
+proposer holds rather than what the recorder does, and that is the whole of why it can express the
+loss. Keeping one summary per step rather than a set of them loses nothing, because a second answer
+differing from the first is reachable only through a state in which the recorder already stands at that
+step holding the differing summary, and the invariants fail in that state before any action can
+overwrite the ghost.
+
+Each negative lists exactly the invariant it exists for and no other, which here is a requirement
+rather than a habit. Two of the three rules break more than one of these invariants when withdrawn,
+and TLC stops at its first violation, so a negative listing more than one reports whichever it reaches
+first. That choice is sometimes decided and sometimes a tie: withdrawing the persist-before-reply
+obligation reaches `StepZeroDurableStateWasNeverServed` strictly earlier than `ServedFirstIsStable`,
+so a merged configuration never reaches the second at all, while withdrawing the restore reaches both
+at the same depth and names one of them for reasons no run reproduces. Both were checked by running the
+merged configurations rather than argued.
+
+The last two configurations carry identical constants and differ only in the invariant each lists,
+which is the first of those cases. `MCDurableStepZeroServed` is what the pair exists for: rebuilding
+a step-zero durable state as an unwritten register is what a host's restore does with a snapshot the
+recorder's own restore refuses, and it is safe only because such a state has answered nothing. What
+makes that true is the reply waiting for the write, so the dependency between the two rules is checked
+here rather than argued.
+
+`TypeOK` carries the other half of that restore. A durable state at step zero holding no proposal in
+any slot is the only step-zero state a faithful host writes, so the snapshot the restore refuses is one
+the model says is unreachable rather than one it has to defend against. Which states the restore
+refuses, as against which states a host reaches, stays with the unit suite, where each rule is pinned
+by a rejection test and a mutant.
 
 ## The Raft election matrix
 
@@ -223,6 +290,29 @@ server for anything but its identity.
   round conclusion has one call site per tie regime and a configuration selects exactly one:
   `MCAbstractCrash` takes the ordered-key site, `MCAbstractTieDetection` the tie-detecting site and
   `MCAbstractTiedPriorities` the unordered site. Their union leaves nothing uncovered.
+  `QuePaxaDurable` needs no union: `MCDurableRecorder` reaches all four actions and both sides of
+  every branch in them, the same-step fold at 82,662 and the advance at 11,406, the fold keeping the
+  incumbent at 66,556 and taking the newcomer at 16,106, and the carry taking the aggregate at 10,206
+  and clearing it at 1,200.
+- `QuePaxaDurable` is one recorder and every invariant it checks is local to that recorder, so what a
+  green run there certifies is that a crash never takes back an answer the recorder has already given.
+  It certifies nothing about a quorum. That two quorums never decide differently is
+  `QuePaxaConcrete`'s subject and that module has no crash at all, so no configuration in this
+  directory covers a decision resting on a quorum that a crash then disperses. Reaching it would mean
+  a durability dimension in the concrete module, whose largest configuration already holds 27,328,647
+  distinct states.
+- In `MCDurableRecorder` the crash action generates 19,406 successor states and none of them is new,
+  which is the sharpest available statement of what the restore buys: with all three rules in force a
+  crash reaches no state a crash-free run does not. It is a result rather than an artefact of an
+  unreachable action, and the two halves of that are worth keeping apart. The action fires 19,406
+  times, so it is not disabled; and it adds nothing because an answer requires the durable state to
+  match, so the durable step never lags a step that has been answered from and a crash therefore
+  returns to a state already visited. Under three of the four negatives the same action does add
+  states and stands in the counterexample. The fourth, `MCDurableStepZeroServed`, violates with no
+  crash at all, and that is what its invariant is for: it states the premise the short circuit rests
+  on rather than the loss that follows, so a negative model exists to make the premise fail. The
+  restart itself is exercised against that invariant in the positive, which lists it and crashes
+  against it throughout.
 - The concrete configurations run one consensus round, steps 4 to 7. The paper's own Promela
   baseline ran two, so a green concrete run certifies one leadered round and nothing beyond it: the
   carry from phase 3 into the next round's phase 0 is never exercised, and neither is the leaderless
@@ -241,14 +331,30 @@ server for anything but its identity.
 - Exhaustion is itself probabilistic and TLC reports by how much. Every completed run prints two
   estimates of the chance it skipped a reachable state because two distinct states shared a
   fingerprint: one calculated from the state count, and one from the fingerprints it actually saw.
-  Both are negligible for every configuration here except one, and the exception is worth knowing
-  before quoting a count. Brute-force `MCRaftLogFigure8`, at 76,878,566 distinct states, reported
+  They are not uniformly negligible, and which configuration is worst is not the one size alone
+  suggests. Brute-force `MCRaftLogFigure8`, at 76,878,566 distinct states, reported
   0.0042 calculated and 0.0015 from the actual fingerprints, which is about one chance in 667 and is
   not a figure to report a verification against. The same configuration quotiented by
   `ServerSymmetry` reports 5.4e-7 and 1.0e-6 at 846,584 distinct states, so the symmetry declaration
-  buys confidence as well as time. Read these two lines on any configuration that grows past a few
-  million distinct states rather than assuming they stay small; the largest QuePaxa configuration,
-  at 27,328,647 distinct states, is the next one to watch.
+  buys confidence as well as time. The QuePaxa greens were then read rather than assumed, and the
+  largest of them is `MCAbstractSweep` and not the concrete configuration this note used to name.
+
+  | Configuration | Distinct states | Calculated | From the actual fingerprints |
+  |---|---|---|---|
+  | `MCAbstractSweep` | 29,496,528 | 0.0012 | 8.0e-5 |
+  | `MCConcreteSingleLeader` | 27,328,647 | 2.8e-4 | 3.2e-5 |
+  | `MCAbstractCrash` | 19,703,792 | 1.1e-4 | 1.1e-4 |
+  | `MCAbstractSafety` | 8,739,712 | 3.0e-5 | 3.8e-6 |
+  | `MCConcreteTwoLeadersGuarded` | 7,038,491 | 1.8e-5 | 1.1e-6 |
+  | `MCDurableRecorder` | 27,555 | 1.7e-10 | 2.7e-12 |
+
+  `MCConcreteSingleLeaderDeclaredSchedule` matches `MCConcreteSingleLeader` on both counts, as it
+  must, and reports 3.5e-5 from its own fingerprints. `MCAbstractSweep` is the only QuePaxa
+  configuration whose calculated estimate reaches a thousandth, though its actual figure of about one
+  in 12,500 is nineteen times better than the brute-force Raft log run's, and `MCAbstractCrash` is
+  the one configuration here where the two estimates agree rather than the actual being the better of
+  them. Read both lines on any configuration past a few million distinct states rather than assuming
+  they stay small.
 - Value symmetry is declared in the abstract QuePaxa configurations and is sound there: nothing in
   the module reads a value except to compare it with another value, and the single CHOOSE picks by
   a predicate that ignores values. Where the proposal key leaves that choice open, which is the

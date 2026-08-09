@@ -9,7 +9,8 @@ $tlc = "C:\tools\tlaplus\tlc.cmd"
 
 $modules = @(
     ".\QuePaxaAbstract.tla",
-    ".\QuePaxaConcrete.tla"
+    ".\QuePaxaConcrete.tla",
+    ".\QuePaxaDurable.tla"
 )
 
 # Expected 'red' runs are the negative models; a green negative means the model
@@ -36,7 +37,12 @@ $runs = @(
     @{ Config = ".\MCConcreteMixedLeaderlessWideDowngrade.cfg";   Spec = ".\QuePaxaConcrete.tla"; Expect = "red"; Invariant = "Agreement" },
     @{ Config = ".\MCConcreteMixedLeaderlessNarrowDowngrade.cfg"; Spec = ".\QuePaxaConcrete.tla"; Expect = "green" },
     @{ Config = ".\MCConcreteSplitLeadersWideDowngrade.cfg";      Spec = ".\QuePaxaConcrete.tla"; Expect = "red"; Invariant = "Agreement" },
-    @{ Config = ".\MCConcreteSplitLeadersNarrowDowngrade.cfg";    Spec = ".\QuePaxaConcrete.tla"; Expect = "red"; Invariant = "Agreement" }
+    @{ Config = ".\MCConcreteSplitLeadersNarrowDowngrade.cfg";    Spec = ".\QuePaxaConcrete.tla"; Expect = "red"; Invariant = "Agreement" },
+    @{ Config = ".\MCDurableRecorder.cfg";        Spec = ".\QuePaxaDurable.tla"; Expect = "green" },
+    @{ Config = ".\MCDurableVolatileReply.cfg";   Spec = ".\QuePaxaDurable.tla"; Expect = "red"; Invariant = "ServedFirstIsStable" },
+    @{ Config = ".\MCDurableFreshRestart.cfg";    Spec = ".\QuePaxaDurable.tla"; Expect = "red"; Invariant = "ServedFirstIsStable" },
+    @{ Config = ".\MCDurablePartialPersist.cfg";  Spec = ".\QuePaxaDurable.tla"; Expect = "red"; Invariant = "ServedPriorAggregateIsStable" },
+    @{ Config = ".\MCDurableStepZeroServed.cfg";  Spec = ".\QuePaxaDurable.tla"; Expect = "red"; Invariant = "StepZeroDurableStateWasNeverServed" }
 )
 
 Push-Location $PSScriptRoot
