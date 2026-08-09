@@ -168,6 +168,20 @@ A crash clears the leadership when the crashed server holds it. The role is vola
 own copy of an entry is still volatile while three followers have made it durable, which is a lawful commit
 the leader is not itself counted in.
 
+All four configurations name `Servers` as model values and declare `SYMMETRY ServerSymmetry`. The module
+carries the argument for why that is sound; the short form is that no action and no invariant reads a server
+except through equality, set membership or a cardinality, and a log entry carries the term that created it
+rather than the server that appended it. The declaration was checked rather than assumed, by running every
+configuration BOTH ways before it was taken, and what that showed is the evidence the quotient rests on: both
+negatives stay red on their own invariants, both positives stay green at the same depth, and the brute-force
+runs reproduce the counts recorded above digit for digit. `MCRaftLogDurable` goes from 4,591,516 distinct
+states to 62,021 and `MCRaftLogFigure8` from 76,878,566 to 846,584, which is 74 and 91 times respectively -
+both below the 120 that five servers permit, as a sound quotient must be, since a factor above `5!` could
+only come from collapsing states no permutation relates. The wall clock for `MCRaftLogFigure8` falls from
+about thirty minutes to ninety seconds, which is what makes `Run-Raft.ps1` runnable inside a working
+session. Run the brute-force pair again beside the quotient if the module's actions ever start reading a
+server for anything but its identity.
+
 ## Scope notes (what a green run does not certify)
 
 - The fail-closed rejection layer (misordered frames, wrong-role frames, the completion
@@ -224,9 +238,27 @@ the leader is not itself counted in.
   here used bitstate-equivalent techniques, and nothing may be reported as verified that did. A red
   configuration stops at its first violation and is not exhaustive by design - what it certifies is
   that the defect is reachable, which is all a negative model is for.
+- Exhaustion is itself probabilistic and TLC reports by how much. Every completed run prints two
+  estimates of the chance it skipped a reachable state because two distinct states shared a
+  fingerprint: one calculated from the state count, and one from the fingerprints it actually saw.
+  Both are negligible for every configuration here except one, and the exception is worth knowing
+  before quoting a count. Brute-force `MCRaftLogFigure8`, at 76,878,566 distinct states, reported
+  0.0042 calculated and 0.0015 from the actual fingerprints, which is about one chance in 667 and is
+  not a figure to report a verification against. The same configuration quotiented by
+  `ServerSymmetry` reports 5.4e-7 and 1.0e-6 at 846,584 distinct states, so the symmetry declaration
+  buys confidence as well as time. Read these two lines on any configuration that grows past a few
+  million distinct states rather than assuming they stay small; the largest QuePaxa configuration,
+  at 27,328,647 distinct states, is the next one to watch.
 - Value symmetry is declared in the abstract QuePaxa configurations and is sound there: nothing in
   the module reads a value except to compare it with another value, and the single CHOOSE picks by
   a predicate that ignores values. Where the proposal key leaves that choice open, which is the
   tie-detection configuration, the proposal CHOOSE returns is consumed only under a guard that the
   maxima are unique, so an arbitrary choice never reaches a state. Replica symmetry is not
   available in either QuePaxa module, because the tiebreak reads replica and proposer identities.
+- Server symmetry is declared in all four `RaftLog` configurations, and it is available there for
+  exactly the reason it is unavailable in QuePaxa: no action and no invariant reads a server except
+  through equality, set membership or a cardinality over a set comprehension, and a log entry carries
+  the term that created it rather than the server that appended it, so nothing tiebreaks on an
+  identity. The declaration covers the invariants those configurations check and no temporal
+  property, because the quotient can hide a temporal counterexample rather than report it. The Raft
+  log matrix section above records the both-ways run that licensed it.

@@ -35,7 +35,7 @@ present, at the same index and term, in the log of every leader that follows.
 It is the invariant the paper's Figure 8 discussion exists to preserve, and a
 violation of it is the point at which an applied command can be taken back.
 *)
-EXTENDS Naturals, Sequences, FiniteSets
+EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS
     Servers,                     \* The fixed cluster membership.
@@ -53,6 +53,23 @@ ASSUME MaxLogLength \in Nat
 ASSUME CommitRequiresCurrentTerm \in BOOLEAN
 ASSUME CountsOnlyPersistedReplicas \in BOOLEAN
 ASSUME CrashesEnabled \in BOOLEAN
+
+(* The servers are interchangeable here. Every action and every invariant reads
+   a server only through equality, set membership, or a cardinality over a set
+   comprehension; a log entry carries the term that created it rather than the
+   server that appended it; and nothing chooses a server. Permuting the
+   membership therefore carries every behaviour to a behaviour and every
+   invariant to itself, so quotienting by it is sound.
+
+   The declaration covers the invariants these configurations check and nothing
+   else. A liveness property needs it withdrawn, because the quotient can hide
+   the temporal counterexample rather than report it.
+
+   Init gives every server the same empty log and a persisted length of zero,
+   which is closed under the permutation. A configuration that pinned an
+   asymmetric starting state and kept the declaration would be unsound and would
+   not announce itself. *)
+ServerSymmetry == Permutations(Servers)
 
 VARIABLES
     logs,          \* logs[s], the sequence of terms server s holds. The command is the term that created it.

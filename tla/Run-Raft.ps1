@@ -24,9 +24,11 @@ $runs = @(
     @{ Config = ".\MCRaftElectionFilterFirst.cfg";       Spec = ".\RaftElection.tla"; Expect = "green" },
 
     # Each log pair is a negative and the positive it licenses, at identical
-    # constants. MCRaftLogFigure8 runs for around forty minutes at four workers
-    # and dominates this script; the bound it needs is the one its own negative
-    # goes red at, so it cannot be shortened without making the pair meaningless.
+    # constants. The bound a pair runs at is the one its own negative goes red
+    # at, so it cannot be shortened without making the pair meaningless. All four
+    # quotient the state space by ServerSymmetry, which is what holds
+    # MCRaftLogFigure8 to about ninety seconds instead of the forty minutes the
+    # brute-force run over the same bound costs.
     @{ Config = ".\MCRaftLogVolatileReplicas.cfg";       Spec = ".\RaftLog.tla";      Expect = "red"; Invariant = "CommittedIsDurableAtAQuorum" },
     @{ Config = ".\MCRaftLogDurable.cfg";                Spec = ".\RaftLog.tla";      Expect = "green" },
     @{ Config = ".\MCRaftLogFigure8Withdrawn.cfg";       Spec = ".\RaftLog.tla";      Expect = "red"; Invariant = "LeaderCompleteness" },
