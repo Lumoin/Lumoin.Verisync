@@ -24,7 +24,9 @@ namespace Lumoin.Verisync.Core;
 /// then never see a null. This type itself imposes no floor, because Algorithm 3 has none: recorded at step
 /// zero directly it will fold an aggregate while <see cref="First"/> stays null, which is faithful to the
 /// algorithm and outside every state the protocol reaches. The obligation to reject a corrupt restored
-/// snapshot belongs to whatever layer restores one.
+/// snapshot belongs to <see cref="QuePaxaRecorder{TValue}.FromState"/>, which owns the relational rules a
+/// recorder-driven register satisfies; this type's own <see cref="FromState"/> is internal and rebuilds
+/// whatever it is handed.
 /// </para>
 /// </remarks>
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
@@ -117,6 +119,49 @@ public sealed class IntervalSummaryRegister<TValue>
         var advanced = new IntervalSummaryRegister<TValue>(step, proposal, proposal, carried);
 
         return (advanced, new RecordSummary<TValue>(advanced.Step, advanced.First, advanced.PriorAggregate));
+    }
+
+
+    /// <summary>Snapshots the register's four fields for persistence.</summary>
+    /// <returns>The register's state.</returns>
+    /// <remarks>
+    /// No copy is taken, because every field is immutable and no later record on this register can reach the
+    /// returned state.
+    /// </remarks>
+    internal QuePaxaRecorderState<TValue> ToState()
+    {
+        return new QuePaxaRecorderState<TValue>(Step, First, CurrentAggregate, PriorAggregate);
+    }
+
+
+    /// <summary>
+    /// Rebuilds a register from <paramref name="state"/> field for field, performing no relational validation
+    /// of any kind.
+    /// </summary>
+    /// <param name="state">The state to rebuild from.</param>
+    /// <returns>The register the state names.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// <para>
+    /// This is the unvalidated primitive the validated restore in
+    /// <see cref="QuePaxaRecorder{TValue}.FromState"/> is built on, and it accepts every combination the state
+    /// record can express — including the combinations Algorithm 3 permits and the protocol never reaches,
+    /// such as a step above <see cref="RecorderStep.Zero"/> with a null <see cref="First"/>. The relational
+    /// rules are true of a register driven through <see cref="QuePaxaRecorder{TValue}"/> and its step floor,
+    /// not of this type, so restating them here would refuse states this type legitimately holds.
+    /// </para>
+    /// <para>
+    /// The pair is internal for that reason: a public register restore would be an unvalidated bypass of every
+    /// rule the recorder owns, which is the corrupt-snapshot obligation left unowned again. The state record is
+    /// named for the recorder because the recorder is the type that owns it, as
+    /// <see cref="RaftNodeState{TCommand}"/> belongs to <see cref="RaftNode{TCommand}"/>.
+    /// </para>
+    /// </remarks>
+    internal static IntervalSummaryRegister<TValue> FromState(QuePaxaRecorderState<TValue> state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        return new IntervalSummaryRegister<TValue>(state.Step, state.First, state.CurrentAggregate, state.PriorAggregate);
     }
 
 

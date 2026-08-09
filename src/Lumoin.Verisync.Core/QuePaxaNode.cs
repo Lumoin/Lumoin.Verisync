@@ -24,13 +24,17 @@ namespace Lumoin.Verisync.Core;
 /// carries it across the message boundary.
 /// </para>
 /// <para>
-/// The node holds its recorder in memory only. Safety across a crash requires the recorder's step and its
-/// first proposal at that step to be durable <em>before</em> the reply leaves the process: the fast path rests
-/// on the first proposal of a step never being overwritten, and a restarted node that came back at
-/// <see cref="RecorderStep.Zero"/> would take a fresh first proposal for a step whose original first proposal
-/// a proposer has already read. Pass a <see cref="PersistRecorderDelegate{TValue}"/> to
-/// <see cref="RunAsync"/> to get this: after each request that changes the recorder it makes the new state
-/// durable and only then sends the reply, so an unpersisted first proposal is never observable. Omitting it
+/// The node holds its recorder in memory only. Safety across a crash requires everything the recorder carries
+/// — its step, the first proposal at that step, the aggregate accumulating there and the aggregate carried
+/// from the step below, which is <see cref="QuePaxaRecorder{TValue}.ToState"/> — to be durable <em>before</em>
+/// the reply leaves the process: the fast path rests on the first proposal of a step never being overwritten,
+/// and a restarted node that came back at <see cref="RecorderStep.Zero"/> would take a fresh first proposal
+/// for a step whose original first proposal a proposer has already read. The prior aggregate is durable for a
+/// second reason: every reply carries it and the proposer's later phases decide on it, so a node that
+/// persisted the step and the first proposal alone would answer from a field it never wrote. Pass a
+/// <see cref="PersistRecorderDelegate{TValue}"/> to <see cref="RunAsync"/> to get this: after each request that
+/// changes the recorder it makes the new state durable and only then sends the reply, so no unpersisted
+/// recorder state is ever observable. Omitting it
 /// (or supplying the no-durability implementation) sends each reply immediately and is suitable for tests and
 /// ephemeral clusters. A host that needs different sequencing drives the node itself instead: call
 /// <see cref="Handle"/>, persist <see cref="Recorder"/>, and only then send the reply.
@@ -38,10 +42,11 @@ namespace Lumoin.Verisync.Core;
 /// <para>
 /// The constructor takes the recorder rather than defaulting, because a recorder carries the instance's
 /// configured leader: a node that defaulted to <see cref="QuePaxaRecorder{TValue}.Leaderless"/> would silently
-/// downgrade every reserved claim and turn every fast path into a three-step round. There is no public way to
-/// build a recorder holding restored state, because <see cref="QuePaxaRecorder{TValue}"/> and
-/// <see cref="IntervalSummaryRegister{TValue}"/> both expose only factories that start from an unwritten
-/// register; this node needs no change when one is added, because it never assumes an initial recorder.
+/// downgrade every reserved claim and turn every fast path into a three-step round. A recorder holding
+/// restored state comes from <see cref="QuePaxaRecorder{TValue}.FromState"/>, which validates a
+/// <see cref="QuePaxaRecorderState{TValue}"/> against everything no recorder-driven register can hold and
+/// takes the configured leader beside it; this node needs nothing of its own for a restart, because it never
+/// assumes an initial recorder and treats the recorder it was constructed with as already durable.
 /// </para>
 /// <para>
 /// A node serves one consensus instance, as <see cref="QuePaxaRecorder{TValue}"/> holds one instance, and no
@@ -115,8 +120,9 @@ public sealed class QuePaxaNode<TValue>
     /// <param name="sendReply">The reply sink — see <see cref="SendRecordReplyDelegate{TValue}"/>, a push writer over the chosen transport.</param>
     /// <param name="persistRecorder">
     /// An optional durability hook. When supplied, it is awaited before the matching reply is sent whenever the
-    /// recorder is not already known to be durable, so the recorded step and first proposal are durable before
-    /// they become observable. A request that changes nothing — one below the recorder's step, or an identical
+    /// recorder is not already known to be durable, so the whole recorder state — the step, the first proposal,
+    /// the current aggregate and the prior aggregate — is durable before any of it becomes observable. A
+    /// request that changes nothing — one below the recorder's step, or an identical
     /// same-step re-delivery — leaves the recorder reference-identical and needs no further write. When
     /// <see langword="null"/>, replies are sent immediately, reproducing the in-memory behavior suitable for
     /// tests and ephemeral clusters.

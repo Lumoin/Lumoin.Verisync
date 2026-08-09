@@ -15,11 +15,17 @@ namespace Lumoin.Verisync.Core;
 /// <returns>A task that completes once <paramref name="recorder"/> is durable.</returns>
 /// <remarks>
 /// <para>
-/// The recorder's step and its first proposal at that step must be durable before a reply escapes. The fast
-/// path rests on Lemma C.10's argument that the first proposal of a step is never overwritten, and a
-/// restarted recorder that came back at <see cref="RecorderStep.Zero"/> would take a fresh first proposal for
-/// a step whose original first proposal a proposer has already read. Holding the reply until this delegate
-/// returns closes that window.
+/// Everything the recorder carries must be durable before a reply escapes, which is its step, the first
+/// proposal at that step, the aggregate accumulating there and the aggregate carried from the step below —
+/// exactly <see cref="QuePaxaRecorder{TValue}.ToState"/>, which
+/// <see cref="QuePaxaRecorder{TValue}.FromState"/> restores. The fast path rests on Lemma C.10's argument that
+/// the first proposal of a step is never overwritten, and a restarted recorder that came back at
+/// <see cref="RecorderStep.Zero"/> would take a fresh first proposal for a step whose original first proposal
+/// a proposer has already read. The prior aggregate is load-bearing beside it: every reply carries it and a
+/// proposer's phase two and phase three tests read it, while the current aggregate is what an advance by one
+/// step carries down as the next step's prior aggregate. A host that made the step and the first proposal
+/// durable and nothing else would lose a field a proposer has already acted on. Holding the reply until this
+/// delegate returns closes those windows.
 /// </para>
 /// <para>
 /// A request that changes nothing is not persisted, and the reply is still sent. The recorder returns its own

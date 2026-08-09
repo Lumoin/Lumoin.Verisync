@@ -154,5 +154,49 @@ public sealed class QuePaxaLeaderSchedule
     }
 
 
+    /// <summary>
+    /// The recorder the next instance is resumed by after a restart, configured with the leader
+    /// <see cref="LeaderFor(ReplicaId?)"/> derives and standing at the step <paramref name="state"/> holds.
+    /// </summary>
+    /// <typeparam name="TValue">The consensus value type.</typeparam>
+    /// <param name="previousWriter">
+    /// The replica that wrote the previous version, or <see langword="null"/> when no version has been
+    /// written.
+    /// </param>
+    /// <param name="state">The durable state the restarting recorder last made stable.</param>
+    /// <returns>A recorder standing at the restored step.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown for every state no recorder-driven register can hold, as
+    /// <see cref="QuePaxaRecorder{TValue}.FromState(ProposerLane?, QuePaxaRecorderState{TValue})"/> defines
+    /// them.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// The proposer side reads <see cref="LeaderFor(ReplicaId?)"/> for what it believes and the recorder side
+    /// reads this for what it enforces, so the recorder and the belief never come from two different
+    /// expressions.
+    /// </para>
+    /// <para>
+    /// A host restoring an instance derives the leader from the record it has learned rather than supplying one
+    /// of its own, because two hosts supplying different leaders for one instance is the reserved-priority
+    /// divergence hazard: two reserved claims are then admitted at the step the fast path reads. The restore
+    /// admits a state whose first proposal is ordinary under any leader, so a hand-wired leader that does not
+    /// match the derivation arrives silently, and reading the derivation here is what keeps a restored recorder
+    /// indistinguishable from one that never restarted.
+    /// </para>
+    /// <para>
+    /// A <see langword="null"/> derived leader means the instance is deliberately leaderless and never that the
+    /// leader is unknown. A replica that has not learned the previous version must not serve the instance at
+    /// all, because a leader derived from a stale committed record is a different leader rather than an absent
+    /// one.
+    /// </para>
+    /// </remarks>
+    public QuePaxaRecorder<TValue> RecorderFor<TValue>(ReplicaId? previousWriter, QuePaxaRecorderState<TValue> state)
+    {
+        return QuePaxaRecorder<TValue>.FromState(LeaderFor(previousWriter), state);
+    }
+
+
     private string DebuggerDisplay => $"QuePaxaLeaderSchedule: {Schedule.Order.Length} replicas";
 }

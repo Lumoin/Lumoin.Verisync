@@ -1,5 +1,6 @@
 using Lumoin.Verisync.Core;
 using System.Collections.Immutable;
+using System.Globalization;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -17,6 +18,9 @@ internal sealed class QuePaxaLeaderScheduleTests
     private static ReplicaId Stranger { get; } = Replica(9);
 
     private static TimeSpan BaseDelay { get; } = TimeSpan.FromMilliseconds(20);
+
+
+    public TestContext TestContext { get; set; } = null!;
 
 
     [TestMethod]
@@ -88,6 +92,88 @@ internal sealed class QuePaxaLeaderScheduleTests
         (_, RecordSummary<string> summary) = led.Record(RecorderStep.RoundOnePhaseZero, claim);
 
         Assert.AreEqual(ProposalPriority.Reserved, summary.First!.Key.Priority);
+    }
+
+
+    //A restore that took its leader from anywhere but the derivation would let two hosts serve one instance
+    //under different leaders, so the overload is compared with the derivation it must read on everything a
+    //proposer can observe.
+    [TestMethod]
+    public void TheRestoreOverloadDerivesTheSameLeaderAsADirectFromState()
+    {
+        QuePaxaLeaderSchedule schedule = Schedule();
+        ProposerLane derived = schedule.LeaderFor(Second)!.Value;
+
+        //A leader hand-wired from the configured order's head is a different lane here, which is what lets the
+        //assertions below tell the derivation from a plausible substitute for it.
+        Assert.AreNotEqual(ProposerLane.For(First), derived);
+
+        //The snapshot stands at the round's first step with an ordinary first proposal, which is the shape the
+        //restore accepts under every leader and therefore the shape a wrong lane passes through in silence.
+        (QuePaxaRecorder<string> live, _) = schedule.RecorderFor<string>(Second).Record(
+            RecorderStep.RoundOnePhaseZero,
+            new PrioritizedProposal<string>(new ProposalKey(new ProposalPriority(10), derived), "a"));
+
+        QuePaxaRecorderState<string> snapshot = live.ToState();
+
+        QuePaxaRecorder<string> viaSchedule = schedule.RecorderFor<string>(Second, snapshot);
+        QuePaxaRecorder<string> viaRecorder = QuePaxaRecorder<string>.FromState(schedule.LeaderFor(Second), snapshot);
+
+        Assert.AreEqual(schedule.LeaderFor(Second), viaSchedule.ConfiguredLeader);
+        Assert.AreEqual(RecorderStep.RoundOnePhaseZero, viaSchedule.Step);
+        Assert.AreEqual(snapshot, viaSchedule.ToState());
+
+        //The reserved claim is the one record the configured leader decides, so a recorder restored under any
+        //other lane downgrades it and answers with a different aggregate.
+        PrioritizedProposal<string> claim = new(new ProposalKey(ProposalPriority.Reserved, derived), "v");
+        (QuePaxaRecorder<string> afterSchedule, RecordSummary<string> scheduleSummary) = viaSchedule.Record(RecorderStep.RoundOnePhaseZero, claim);
+        (QuePaxaRecorder<string> afterRecorder, RecordSummary<string> recorderSummary) = viaRecorder.Record(RecorderStep.RoundOnePhaseZero, claim);
+
+        Assert.AreEqual(recorderSummary, scheduleSummary);
+        Assert.AreEqual(afterRecorder.ToState(), afterSchedule.ToState());
+        Assert.AreEqual(ProposalPriority.Reserved, afterSchedule.Register.CurrentAggregate!.Key.Priority);
+
+        TestContext.WriteLine(string.Create(
+            CultureInfo.InvariantCulture,
+            $"restored at step {viaSchedule.Step.Value} under lane {derived.Lane} of the previous writer"));
+    }
+
+
+    //The leaderless answer is a derived fact and not a missing one, so the restore carries it through instead
+    //of falling back on the configured order's bootstrap leader.
+    [TestMethod]
+    public void TheRestoreOverloadPreservesALeaderlessDerivation()
+    {
+        QuePaxaLeaderSchedule schedule = Schedule();
+
+        Assert.IsNull(schedule.LeaderFor(Stranger));
+
+        (QuePaxaRecorder<string> live, _) = schedule.RecorderFor<string>(Stranger).Record(
+            RecorderStep.RoundOnePhaseZero,
+            new PrioritizedProposal<string>(new ProposalKey(new ProposalPriority(10), ProposerLane.For(Second)), "a"));
+
+        QuePaxaRecorderState<string> snapshot = live.ToState();
+
+        QuePaxaRecorder<string> viaSchedule = schedule.RecorderFor<string>(Stranger, snapshot);
+        QuePaxaRecorder<string> viaRecorder = QuePaxaRecorder<string>.FromState(schedule.LeaderFor(Stranger), snapshot);
+
+        Assert.IsNull(viaSchedule.ConfiguredLeader);
+        Assert.AreEqual(RecorderStep.RoundOnePhaseZero, viaSchedule.Step);
+        Assert.AreEqual(snapshot, viaSchedule.ToState());
+
+        //A restore falling back on the order's head would honour this claim, and the reserved priority
+        //dominates every ordinary one, so an honoured claim would show up as a reserved aggregate.
+        PrioritizedProposal<string> bootstrapClaim = new(new ProposalKey(ProposalPriority.Reserved, ProposerLane.For(First)), "v");
+        (QuePaxaRecorder<string> afterSchedule, RecordSummary<string> scheduleSummary) = viaSchedule.Record(RecorderStep.RoundOnePhaseZero, bootstrapClaim);
+        (QuePaxaRecorder<string> afterRecorder, RecordSummary<string> recorderSummary) = viaRecorder.Record(RecorderStep.RoundOnePhaseZero, bootstrapClaim);
+
+        Assert.AreEqual(recorderSummary, scheduleSummary);
+        Assert.AreEqual(afterRecorder.ToState(), afterSchedule.ToState());
+        Assert.IsFalse(afterSchedule.Register.CurrentAggregate!.Key.Priority.IsReserved);
+
+        TestContext.WriteLine(string.Create(
+            CultureInfo.InvariantCulture,
+            $"leaderless restore declined a reserved claim and aggregated priority {afterSchedule.Register.CurrentAggregate.Key.Priority.Value}"));
     }
 
 

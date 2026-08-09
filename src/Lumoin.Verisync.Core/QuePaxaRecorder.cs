@@ -118,5 +118,155 @@ public sealed class QuePaxaRecorder<TValue>
     }
 
 
+    /// <summary>
+    /// Snapshots the recorder's durable state, which is the four fields of <see cref="Register"/>.
+    /// </summary>
+    /// <returns>The durable state to make stable before any dependent reply is sent.</returns>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ConfiguredLeader"/> is not part of the snapshot, because it is configuration a deployment
+    /// derives from committed state and supplies again to <see cref="FromState"/>. No copy is taken, because
+    /// every field of the state is immutable.
+    /// </para>
+    /// <para>
+    /// This is deliberately not the inverse of <see cref="FromState"/> at the bottom of the range. An
+    /// unwritten recorder snapshots at <see cref="RecorderStep.Zero"/> and <see cref="FromState"/> refuses
+    /// that state, because a recorder returning at step zero is the crash the restore exists to prevent: it
+    /// would take a fresh first proposal at a step a proposer has already read. Snapshotting has to succeed
+    /// there anyway, since a host that persists unconditionally after every handled item would otherwise
+    /// throw before it had recorded anything.
+    /// </para>
+    /// </remarks>
+    public QuePaxaRecorderState<TValue> ToState() => Register.ToState();
+
+
+    /// <summary>
+    /// Reconstructs a recorder from durable <paramref name="state"/> under
+    /// <paramref name="configuredLeader"/>, refusing fail-closed every state no recorder-driven register can
+    /// hold.
+    /// </summary>
+    /// <param name="configuredLeader">
+    /// The lane whose reserved-priority claims the restored recorder honours, or <see langword="null"/> when
+    /// the instance is leaderless. It comes before the state because it is configuration rather than durable
+    /// protocol state, as identity and membership come before the state in
+    /// <see cref="RaftNode{TCommand}.FromState"/>. A host derives it from the record it has learned, through
+    /// <see cref="QuePaxaLeaderSchedule.LeaderFor(ReplicaId?)"/>, and
+    /// <see cref="QuePaxaLeaderSchedule.RecorderFor{TValue}(ReplicaId?, QuePaxaRecorderState{TValue})"/> does
+    /// the derivation and the restore in one call so that the recorder and the proposer's belief cannot come
+    /// from two different expressions. A null lane means the instance is deliberately leaderless and never
+    /// that the leader is unknown: a state whose first proposal is ordinary restores under any lane, so a
+    /// hand-wired one that does not match the derivation arrives silently and puts two leaders on one
+    /// instance.
+    /// </param>
+    /// <param name="state">The durable state to restore.</param>
+    /// <returns>A recorder standing at the restored step.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when the durable state is impossible in a way only the whole state shows: a
+    /// <see cref="QuePaxaRecorderState{TValue}.Step"/> below <see cref="RecorderStep.RoundOnePhaseZero"/>;
+    /// a step above <see cref="RecorderStep.Zero"/> with no
+    /// <see cref="QuePaxaRecorderState{TValue}.First"/>; a
+    /// reserved priority at <see cref="RecorderStep.RoundOnePhaseZero"/> owned by a lane other than
+    /// <paramref name="configuredLeader"/>, in either
+    /// <see cref="QuePaxaRecorderState{TValue}.First"/> or
+    /// <see cref="QuePaxaRecorderState{TValue}.CurrentAggregate"/>; a first proposal with no current aggregate;
+    /// a current aggregate whose key orders below the first proposal's; a non-null
+    /// <see cref="QuePaxaRecorderState{TValue}.PriorAggregate"/> at
+    /// <see cref="RecorderStep.RoundOnePhaseZero"/>; or a
+    /// <see cref="QuePaxaRecorderState{TValue}.PriorAggregate"/> one step above
+    /// <see cref="RecorderStep.RoundOnePhaseZero"/> holding a reserved priority owned by a lane other than
+    /// <paramref name="configuredLeader"/>. Everything a single value can be wrong about is refused
+    /// before a state can be built at all: a step outside its range by <see cref="RecorderStep"/> and a
+    /// negative lane by <see cref="ProposerLane"/>.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// The rules refuse a state no register driven through
+    /// <see cref="Record(RecorderStep, PrioritizedProposal{TValue})"/> can hold, which is stronger than
+    /// refusing a state <see cref="IntervalSummaryRegister{TValue}.Record"/> cannot produce. The difference is
+    /// this type's step floor: a register recorded at <see cref="RecorderStep.Zero"/> directly folds an
+    /// aggregate while its first proposal stays null, and a register advanced from step three to
+    /// <see cref="RecorderStep.RoundOnePhaseZero"/> carries an aggregate down, while a recorder reaches step
+    /// four only from step zero, which is a non-adjacent advance and clears the carry. Both are why the
+    /// register's own restore is internal and unvalidated and this one is public and validated.
+    /// </para>
+    /// <para>
+    /// The reserved-priority rule is confined to <see cref="RecorderStep.RoundOnePhaseZero"/>, because a
+    /// reserved priority above that step is recorded verbatim from any owner and refusing it everywhere would
+    /// reject states the library produces. It covers both proposal slots, because the downgrade happens
+    /// upstream of the register's fold, so at that step the first proposal and the current aggregate are both
+    /// drawn from the downgraded stream. The leaderless case needs no separate rule: with a null
+    /// <paramref name="configuredLeader"/> the lifted comparison declines every owner.
+    /// </para>
+    /// <para>
+    /// The downgraded stream reaches one step further through the carry, and one step only. A non-null
+    /// <see cref="QuePaxaRecorderState{TValue}.PriorAggregate"/> one step above
+    /// <see cref="RecorderStep.RoundOnePhaseZero"/> is that step's current aggregate brought down by an advance
+    /// of exactly one, since every other advance clears the carry, so it inherits the same freedom from foreign
+    /// reserved claims. Two steps above and higher the carry comes from a step that records a reserved priority
+    /// verbatim, so the rule stops there.
+    /// </para>
+    /// <para>
+    /// The restored recorder is durable by construction from the host's point of view, which is what
+    /// <see cref="QuePaxaNode{TValue}"/> relies on when it treats the recorder it was constructed with as
+    /// already persisted.
+    /// </para>
+    /// </remarks>
+    public static QuePaxaRecorder<TValue> FromState(ProposerLane? configuredLeader, QuePaxaRecorderState<TValue> state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if(state.Step < RecorderStep.RoundOnePhaseZero)
+        {
+            throw new ArgumentException($"A restored step cannot stand below round one phase zero, got step {state.Step.Value}. A recorder records nothing below that step, and a snapshot returning at step zero is the crash this restore exists to prevent rather than a state to rebuild; an unwritten recorder comes from Leaderless or LedBy.", nameof(state));
+        }
+
+        if(state.Step > RecorderStep.Zero && state.First is null)
+        {
+            throw new ArgumentException($"A restored register above step zero must carry a first proposal, got step {state.Step.Value} with none.", nameof(state));
+        }
+
+        if(state.Step == RecorderStep.RoundOnePhaseZero && HoldsForeignReservedClaim(state.First, configuredLeader))
+        {
+            throw new ArgumentException("A restored first proposal at round one phase zero cannot hold the reserved priority for a lane other than the configured leader, because the recorder downgrades that claim before the register sees it.", nameof(state));
+        }
+
+        if(state.Step == RecorderStep.RoundOnePhaseZero && HoldsForeignReservedClaim(state.CurrentAggregate, configuredLeader))
+        {
+            throw new ArgumentException("A restored current aggregate at round one phase zero cannot hold the reserved priority for a lane other than the configured leader, because the downgrade runs upstream of the fold and both slots at that step come from the downgraded stream.", nameof(state));
+        }
+
+        if(state.First is not null && state.CurrentAggregate is null)
+        {
+            throw new ArgumentException("A restored register carrying a first proposal must carry a current aggregate, because the advancing branch sets both from one proposal and the fold only ever replaces the aggregate.", nameof(state));
+        }
+
+        if(state.First is not null && state.CurrentAggregate is not null && state.CurrentAggregate.Key < state.First.Key)
+        {
+            throw new ArgumentException("A restored current aggregate cannot order below the first proposal at the same step, because the fold keeps the greatest key recorded there.", nameof(state));
+        }
+
+        if(state.Step == RecorderStep.RoundOnePhaseZero && state.PriorAggregate is not null)
+        {
+            throw new ArgumentException("A restored register at round one phase zero cannot carry a prior aggregate, because a recorder reaches that step from step zero, which is a non-adjacent advance and clears the carry.", nameof(state));
+        }
+
+        if(state.Step.IsNextAfter(RecorderStep.RoundOnePhaseZero) && HoldsForeignReservedClaim(state.PriorAggregate, configuredLeader))
+        {
+            throw new ArgumentException("A restored prior aggregate one step above round one phase zero cannot hold the reserved priority for a lane other than the configured leader, because a non-null carry at that step is the aggregate an advance by exactly one brought down from round one phase zero, and that step's aggregate is drawn from the downgraded stream.", nameof(state));
+        }
+
+        return new QuePaxaRecorder<TValue>(configuredLeader, IntervalSummaryRegister<TValue>.FromState(state));
+    }
+
+
+    //The comparison against the owner is lifted exactly as the downgrade in Record lifts it, so a null
+    //configured leader declines every owner and the leaderless case needs no branch of its own.
+    private static bool HoldsForeignReservedClaim(PrioritizedProposal<TValue>? proposal, ProposerLane? configuredLeader)
+    {
+        return proposal is not null && proposal.Key.Priority.IsReserved && configuredLeader != proposal.Key.Owner;
+    }
+
+
     private string DebuggerDisplay => $"QuePaxaRecorder: step {Step.Value}, leader {ConfiguredLeader?.ToString() ?? "none"}";
 }

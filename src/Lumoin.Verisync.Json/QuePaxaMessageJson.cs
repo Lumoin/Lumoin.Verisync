@@ -8,8 +8,8 @@ namespace Lumoin.Verisync.Json;
 /// Builds JSON <see cref="SerializeMessageDelegate{TMessage}"/> and
 /// <see cref="DeserializeMessageDelegate{TMessage}"/> implementations for the QuePaxa protocol messages,
 /// <see cref="RecordRequest{TValue}"/> and <see cref="RecordReply{TValue}"/>, for the versioned envelopes
-/// that address them to one consensus instance, and for the decided record a versioned register carries, so
-/// they can cross a Verisync message channel.
+/// that address them to one consensus instance, for the decided record a versioned register carries, and for
+/// the recorder's durable state, so they can cross a Verisync message channel or be persisted by a host.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -44,6 +44,22 @@ namespace Lumoin.Verisync.Json;
 /// the current step, and it cannot detect the opposite mis-correlation.
 /// </para>
 /// <para>
+/// <see cref="QuePaxaRecorderState{TValue}"/> is durable state rather than a message, and its pair follows the
+/// same validation split the message pairs follow. The decoder refuses only what the encoding can be wrong
+/// about, which for a recorder state is a missing field alone, and hands every value to its domain
+/// constructor, so a step outside its range is refused by <see cref="RecorderStep"/> and a negative lane by
+/// <see cref="ProposerLane"/>, each surfacing with the validator's own message as the inner exception. The
+/// relational rules over a whole state, among them that a step above <see cref="RecorderStep.Zero"/> carries a
+/// first proposal and that a reserved priority at <see cref="RecorderStep.RoundOnePhaseZero"/> belongs to the
+/// configured leader, stay in <see cref="QuePaxaRecorder{TValue}.FromState"/>, the single place that owns them.
+/// A decoded state is therefore a faithful reading of the payload and not yet a state a recorder accepts, and
+/// a host restores by handing what it decoded to that factory.
+/// </para>
+/// <para>
+/// All three proposal slots of a recorder state are written as an explicit null when absent, so an absent slot
+/// round-trips as null and stays distinguishable from a field the payload never carried.
+/// </para>
+/// <para>
 /// The caller supplies how to read and write <typeparamref name="TValue"/>, since the value is
 /// application-defined.
 /// </para>
@@ -55,6 +71,7 @@ public static class QuePaxaMessageJson
     private const string VersionedRequestLabel = "A versioned record request";
     private const string VersionedReplyLabel = "A versioned record reply";
     private const string RecordLabel = "A versioned value";
+    private const string RecorderStateLabel = "A recorder state";
     private const string ProposalLabel = "A proposal";
     private const string LaneLabel = "A proposer lane";
 
@@ -213,6 +230,60 @@ public static class QuePaxaMessageJson
     }
 
 
+    /// <summary>Creates a serializer for <see cref="QuePaxaRecorderState{TValue}"/>.</summary>
+    /// <typeparam name="TValue">The register value type.</typeparam>
+    /// <param name="writeValue">Writes a value to the JSON writer.</param>
+    /// <returns>A serialize delegate.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// The state is what a host makes stable before a dependent reply leaves the process, so a payload this
+    /// writes is the payload <see cref="CreateRecorderStateDeserializer{TValue}"/> reads back on a restart.
+    /// </remarks>
+    public static SerializeMessageDelegate<QuePaxaRecorderState<TValue>> CreateRecorderStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    {
+        ArgumentNullException.ThrowIfNull(writeValue);
+
+        return (state, output) =>
+        {
+            using var writer = new Utf8JsonWriter(output);
+            writer.WriteStartObject();
+            writer.WriteNumber("step", state.Step.Value);
+            WriteProposalOrNull(writer, "first", state.First, writeValue);
+            WriteProposalOrNull(writer, "currentAggregate", state.CurrentAggregate, writeValue);
+            WriteProposalOrNull(writer, "priorAggregate", state.PriorAggregate, writeValue);
+            writer.WriteEndObject();
+        };
+    }
+
+
+    /// <summary>Creates a deserializer for <see cref="QuePaxaRecorderState{TValue}"/>.</summary>
+    /// <typeparam name="TValue">The register value type.</typeparam>
+    /// <param name="readValue">Reads a value from a JSON element.</param>
+    /// <returns>A deserialize delegate.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// A state this returns is decoded and not validated as a whole. The relational rules belong to
+    /// <see cref="QuePaxaRecorder{TValue}.FromState"/>, so a host restores by passing the decoded state there
+    /// and lets that factory refuse a snapshot no recorder-driven register can hold.
+    /// </remarks>
+    public static DeserializeMessageDelegate<QuePaxaRecorderState<TValue>> CreateRecorderStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    {
+        ArgumentNullException.ThrowIfNull(readValue);
+
+        return JsonMessageGuard.FailClosed<QuePaxaRecorderState<TValue>>(payload =>
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            JsonElement root = document.RootElement;
+            int step = RequireProperty(root, "step", RecorderStateLabel).GetInt32();
+            PrioritizedProposal<TValue>? first = ReadProposalOrNull(root, "first", RecorderStateLabel, readValue);
+            PrioritizedProposal<TValue>? currentAggregate = ReadProposalOrNull(root, "currentAggregate", RecorderStateLabel, readValue);
+            PrioritizedProposal<TValue>? priorAggregate = ReadProposalOrNull(root, "priorAggregate", RecorderStateLabel, readValue);
+
+            return Construct(() => new QuePaxaRecorderState<TValue>(new RecorderStep(step), first, currentAggregate, priorAggregate));
+        });
+    }
+
+
     /// <summary>
     /// Builds the value seam for a <see cref="VersionedValue{TValue}"/>, which is what a versioned register
     /// puts in a proposal's value slot.
@@ -286,19 +357,7 @@ public static class QuePaxaMessageJson
         writer.WriteStartObject();
         writer.WriteNumber("step", reply.Step.Value);
         WriteProposal(writer, "first", reply.First, writeValue);
-
-        //The prior aggregate is written as an explicit null rather than omitted, because a skipped step
-        //legitimately clears it and a required field can be swept for by a missing-field test where an
-        //optional one cannot.
-        if(reply.PriorAggregate is { } priorAggregate)
-        {
-            WriteProposal(writer, "priorAggregate", priorAggregate, writeValue);
-        }
-        else
-        {
-            writer.WriteNull("priorAggregate");
-        }
-
+        WriteProposalOrNull(writer, "priorAggregate", reply.PriorAggregate, writeValue);
         writer.WriteEndObject();
     }
 
@@ -307,10 +366,7 @@ public static class QuePaxaMessageJson
     {
         int step = RequireProperty(element, "step", ReplyLabel).GetInt32();
         PrioritizedProposal<TValue> first = ReadProposal(RequireProperty(element, "first", ReplyLabel), readValue);
-        JsonElement priorAggregate = RequireProperty(element, "priorAggregate", ReplyLabel);
-        PrioritizedProposal<TValue>? prior = priorAggregate.ValueKind == JsonValueKind.Null
-            ? null
-            : ReadProposal(priorAggregate, readValue);
+        PrioritizedProposal<TValue>? prior = ReadProposalOrNull(element, "priorAggregate", ReplyLabel, readValue);
 
         return Construct(() => new RecordReply<TValue>(new RecorderStep(step), first, prior));
     }
@@ -370,6 +426,30 @@ public static class QuePaxaMessageJson
         TValue value = readValue(RequireProperty(element, "value", ProposalLabel));
 
         return new PrioritizedProposal<TValue>(new ProposalKey(new ProposalPriority(priority), owner), value);
+    }
+
+
+    private static void WriteProposalOrNull<TValue>(Utf8JsonWriter writer, string name, PrioritizedProposal<TValue>? proposal, Action<Utf8JsonWriter, TValue> writeValue)
+    {
+        //An absent slot is written as an explicit null rather than omitted, because the protocol reaches an
+        //absent slot legitimately, a skipped step clearing the prior aggregate among the ways, and a required
+        //field can be swept for by a missing-field test where an optional one cannot.
+        if(proposal is { } present)
+        {
+            WriteProposal(writer, name, present, writeValue);
+        }
+        else
+        {
+            writer.WriteNull(name);
+        }
+    }
+
+
+    private static PrioritizedProposal<TValue>? ReadProposalOrNull<TValue>(JsonElement element, string name, string label, Func<JsonElement, TValue> readValue)
+    {
+        JsonElement slot = RequireProperty(element, name, label);
+
+        return slot.ValueKind == JsonValueKind.Null ? null : ReadProposal(slot, readValue);
     }
 
 
