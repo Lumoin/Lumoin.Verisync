@@ -97,9 +97,10 @@ public sealed class QuePaxaLeaderSchedule
     /// <para>
     /// The leaderless answer is safe because it is uniform, not because a leaderless recorder is harmless among
     /// led ones. Both inputs are agreed, so every replica takes the same arm and a leaderless instance is
-    /// leaderless at every recorder. A cluster in which some recorders honour a leader and others honour none
-    /// violates agreement, because the downgrade rewrites a declined claim's priority and the leader's one
-    /// proposal then exists under two keys.
+    /// leaderless at every recorder. Recorders that honour different leaders violate agreement, because two
+    /// reserved claims are then admitted at the step the fast path reads. A recorder honouring none among led
+    /// ones is a weaker shape, and the derivation makes it unreachable rather than resting on how much
+    /// weaker it is.
     /// </para>
     /// <para>
     /// The answer is a lane and it is always lane zero, which makes lane zero of the leading replica the only

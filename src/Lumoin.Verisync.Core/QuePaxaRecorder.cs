@@ -18,8 +18,9 @@ namespace Lumoin.Verisync.Core;
 /// </para>
 /// <para>
 /// The downgrade rule obliges the deployment to keep the recorders in agreement on
-/// <see cref="ConfiguredLeader"/>, because recorders that disagree reproduce the reserved-priority
-/// divergence hazard. The agreement needs no message: a deterministic function of committed state such as
+/// <see cref="ConfiguredLeader"/>, because recorders that honour different leaders admit two reserved
+/// claims at the step the fast path reads, which is the reserved-priority divergence hazard. The agreement
+/// needs no message: a deterministic function of committed state such as
 /// <see cref="HedgingSchedule.RotateTo(ReplicaId)"/> over the previously committed writer lets every
 /// recorder derive the same leader for the next version independently.
 /// </para>
@@ -36,7 +37,7 @@ public sealed class QuePaxaRecorder<TValue>
 
     /// <summary>
     /// A recorder with no configured leader, whose register was never written. Every reserved claim reaching
-    /// it is declined.
+    /// it at the round's first step is declined.
     /// </summary>
     public static QuePaxaRecorder<TValue> Leaderless { get; } = new(null, IntervalSummaryRegister<TValue>.Initial);
 
@@ -63,7 +64,8 @@ public sealed class QuePaxaRecorder<TValue>
 
     /// <summary>
     /// Records <paramref name="proposal"/> at <paramref name="step"/>, downgrading a reserved-priority claim
-    /// that did not come from <see cref="ConfiguredLeader"/>, and answers with the summary a proposer reads.
+    /// that did not come from <see cref="ConfiguredLeader"/> when the step is
+    /// <see cref="RecorderStep.RoundOnePhaseZero"/>, and answers with the summary a proposer reads.
     /// </summary>
     /// <param name="step">The step the proposal is tagged with. Must be at least <see cref="RecorderStep.RoundOnePhaseZero"/>.</param>
     /// <param name="proposal">The proposal to record.</param>
@@ -76,11 +78,19 @@ public sealed class QuePaxaRecorder<TValue>
     /// step above its own maximum.
     /// </para>
     /// <para>
+    /// The rule applies at <see cref="RecorderStep.RoundOnePhaseZero"/> alone and a reserved priority
+    /// arriving above that step is recorded verbatim, whoever owns it. The reserved priority earns a
+    /// decision only where the fast path reads it, which is that one step, so rewriting it higher up
+    /// defends nothing and costs what every rewrite costs: a second key for one logical proposal. A
+    /// proposal carried through the ordinary phases is therefore recorded identically at a recorder that
+    /// honours the leader and at one that does not.
+    /// </para>
+    /// <para>
     /// A declined reserved claim is downgraded, not dropped: the proposal is recorded at the lowest ordinary
     /// priority and the round proceeds through the ordinary phases, which keeps the register free of holes
     /// and the protocol free of deadlocks. Dropping would leave a recorder with no first proposal at a step a
     /// proposer is about to read. The leaderless case is included: with no configured leader, every reserved
-    /// claim is declined.
+    /// claim reaching that step is declined.
     /// </para>
     /// </remarks>
     public (QuePaxaRecorder<TValue> Recorder, RecordSummary<TValue> Summary) Record(RecorderStep step, PrioritizedProposal<TValue> proposal)
@@ -88,7 +98,9 @@ public sealed class QuePaxaRecorder<TValue>
         ArgumentNullException.ThrowIfNull(proposal);
         ArgumentOutOfRangeException.ThrowIfLessThan(step, RecorderStep.RoundOnePhaseZero);
 
-        PrioritizedProposal<TValue> recorded = proposal.Key.Priority.IsReserved && ConfiguredLeader != proposal.Key.Owner
+        PrioritizedProposal<TValue> recorded = step == RecorderStep.RoundOnePhaseZero
+            && proposal.Key.Priority.IsReserved
+            && ConfiguredLeader != proposal.Key.Owner
             ? proposal.WithPriority(ProposalPriority.Lowest)
             : proposal;
 

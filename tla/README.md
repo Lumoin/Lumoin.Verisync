@@ -87,23 +87,30 @@ paper section and lemma behind every invariant it checks and every modelling dec
 | `MCConcreteTwoLeadersGuarded` | QuePaxaConcrete | the same two believed leaders with all three defences in force | green |
 | `MCConcreteDeclaredScheduleBinds` | QuePaxaConcrete | the declared-schedule defence alone, where each recorder binds the first leader a request names and refuses any request naming another | green |
 | `MCConcreteSingleLeaderDeclaredSchedule` | QuePaxaConcrete | the declared-schedule defence with the schedule agreed, which must match `MCConcreteSingleLeader` state for state | green |
-| `MCConcreteMixedLeaderless` | QuePaxaConcrete | negative model: one recorder honours no leader while the others honour the agreed one, which is the state a host reaches before it has learned the version the leader is derived from | red (required) |
-| `MCConcreteSplitLeaders` | QuePaxaConcrete | negative model: the recorders disagree about whom the defence protects, with the defence in force at every one of them | red (required) |
-| `MCConcreteSplitLeadersNarrowDowngrade` | QuePaxaConcrete | negative model: the same split with the downgrade narrowed to the round's first step, which must not rescue it | red (required) |
-| `MCConcreteMixedLeaderlessNarrowDowngrade` | QuePaxaConcrete | the mixed configuration with the downgrade narrowed to the round's first step, which is where the reserved priority is read | green |
+| `MCConcreteMixedLeaderlessWideDowngrade` | QuePaxaConcrete | negative model: one recorder honours no leader while the others honour the agreed one, which is the state a host reaches before it has learned the version the leader is derived from, with the downgrade applied at every step | red (required) |
+| `MCConcreteMixedLeaderlessNarrowDowngrade` | QuePaxaConcrete | the same mixed configuration under the downgrade the library applies, which is the round's first step, where the reserved priority is read | green |
+| `MCConcreteSplitLeadersWideDowngrade` | QuePaxaConcrete | negative model: the recorders disagree about whom the defence protects, with the defence in force at every one of them and the downgrade at every step | red (required) |
+| `MCConcreteSplitLeadersNarrowDowngrade` | QuePaxaConcrete | negative model: the same split under the downgrade the library applies, which must not rescue it and does not | red (required) |
 
 The last four exist because a versioned register derives the leader from committed state, so two recorders
 that have learned different amounts would otherwise be unrepresentable. `RecorderLeader` is therefore a
 function over the recorders rather than a single scalar, and `ConfiguredLeader` remains for the
-declared-schedule arm. The three reds are what makes the deployment obligation a checked fact rather than
-prose: a recorder that cannot derive the instance's leader must not serve the instance, because the
-downgrade rewrites a declined claim's priority and the leader's one proposal then exists under two keys.
+declared-schedule arm. They are the two-by-two of the two misconfigurations against the two downgrade
+widths, and the narrow arm carries the rule the library applies: the recorder rewrites a declined reserved
+claim at the round's first step and records one arriving above that step verbatim. Every other concrete
+configuration carries the narrow rule too, and each reproduced its wide-rule state count exactly, which is
+what says the narrowing is inert wherever the recorders are uniform rather than merely harmless there.
 
-`MCConcreteMixedLeaderlessNarrowDowngrade` pins a rule the library does not apply. Narrowing the downgrade
-to the step the fast path is read at makes the mixed configuration safe, and
-`MCConcreteSplitLeadersNarrowDowngrade` is the control showing the narrowing does not weaken the defence it
-narrows. The shipped recorder downgrades at every step, so the pair bounds what the second key rather than
-the non-uniform configuration itself is responsible for.
+The split is red under both widths, and that is what makes the deployment obligation a checked fact rather
+than prose: a recorder that derives a different leader for the instance must not serve the instance,
+because two reserved claims are then honoured at the step the fast path reads. The mixed pair names the
+second key rather than the non-uniform configuration itself as the cause of that configuration's
+divergence. Under the wide rule the recorder honouring no leader rewrites the leader's carried template at
+every step, so one logical proposal exists under two keys through the ordinary phases and a quorum holding
+only the rewritten copy carries an ordinary proposal past it; under the narrow rule the rewrite reaches the
+first step alone and the configuration is green. That green is not a licence to run such a cluster: it
+holds at one leaderless recorder of three and at this bound, and a host that cannot derive the instance's
+leader declines it rather than serving it leaderless.
 
 ## The Raft election matrix
 

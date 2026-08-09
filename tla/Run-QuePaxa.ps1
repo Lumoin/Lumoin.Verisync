@@ -33,10 +33,10 @@ $runs = @(
     @{ Config = ".\MCConcreteTwoLeadersGuarded.cfg";    Spec = ".\QuePaxaConcrete.tla"; Expect = "green" },
     @{ Config = ".\MCConcreteDeclaredScheduleBinds.cfg";      Spec = ".\QuePaxaConcrete.tla"; Expect = "green" },
     @{ Config = ".\MCConcreteSingleLeaderDeclaredSchedule.cfg"; Spec = ".\QuePaxaConcrete.tla"; Expect = "green" },
-    @{ Config = ".\MCConcreteMixedLeaderless.cfg";           Spec = ".\QuePaxaConcrete.tla"; Expect = "red"; Invariant = "Agreement" },
-    @{ Config = ".\MCConcreteSplitLeaders.cfg";              Spec = ".\QuePaxaConcrete.tla"; Expect = "red"; Invariant = "Agreement" },
-    @{ Config = ".\MCConcreteSplitLeadersNarrowDowngrade.cfg"; Spec = ".\QuePaxaConcrete.tla"; Expect = "red"; Invariant = "Agreement" },
-    @{ Config = ".\MCConcreteMixedLeaderlessNarrowDowngrade.cfg"; Spec = ".\QuePaxaConcrete.tla"; Expect = "green" }
+    @{ Config = ".\MCConcreteMixedLeaderlessWideDowngrade.cfg";   Spec = ".\QuePaxaConcrete.tla"; Expect = "red"; Invariant = "Agreement" },
+    @{ Config = ".\MCConcreteMixedLeaderlessNarrowDowngrade.cfg"; Spec = ".\QuePaxaConcrete.tla"; Expect = "green" },
+    @{ Config = ".\MCConcreteSplitLeadersWideDowngrade.cfg";      Spec = ".\QuePaxaConcrete.tla"; Expect = "red"; Invariant = "Agreement" },
+    @{ Config = ".\MCConcreteSplitLeadersNarrowDowngrade.cfg";    Spec = ".\QuePaxaConcrete.tla"; Expect = "red"; Invariant = "Agreement" }
 )
 
 Push-Location $PSScriptRoot

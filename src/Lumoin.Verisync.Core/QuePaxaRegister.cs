@@ -69,7 +69,7 @@ public sealed class QuePaxaRegister<TValue>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="recorderCount"/> is less than one.</exception>
     /// <remarks>
     /// Agreement on the leader is the deployment obligation the downgrade rule places on the host; recorders
-    /// that disagree reproduce the divergence hazard.
+    /// honouring different leaders reproduce the divergence hazard.
     /// </remarks>
     public static QuePaxaRegister<TValue> LedBy(int recorderCount, ProposerLane leader)
     {

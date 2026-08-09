@@ -221,8 +221,9 @@ Honoured(j, p) ==
 \* recorder that declines a claim its neighbours honour records the same logical
 \* proposal under a second key, and a quorum holding only the rewritten copy can
 \* carry an ordinary proposal past it. Restricting the rule to the first step is
-\* what makes a non-uniform RecorderLeader survivable, which the configurations
-\* naming this constant are what establish.
+\* what makes a recorder honouring no leader among led ones survivable; it does
+\* nothing for recorders that honour different leaders, and the configurations
+\* naming this constant are what establish both halves.
 Admitted(j, p, s) ==
     IF \/ Honoured(j, p)
        \/ (DowngradeAtFirstStepOnly /\ s > 4)
@@ -313,15 +314,19 @@ DistinctPreferences ==
 \* reason DistinctPreferences is named: a configuration file cannot write a
 \* function down. UniformLeader is the agreed deployment, where every recorder
 \* honours the same leader. The other two are the misconfigurations a versioned
-\* register must make unreachable, and both break agreement under the downgrade
-\* the library applies, which is the one at every step.
+\* register must make unreachable. SplitLeaders breaks agreement under either
+\* downgrade width; MixedLeaderless breaks it only under the wide one, which is
+\* not the rule the library applies, and the configurations naming
+\* DowngradeAtFirstStepOnly are what establish the difference.
 UniformLeader == [j \in Recorders |-> ConfiguredLeader]
 
 \* One recorder has not learned the previous version and so honours no leader,
-\* while the others honour the agreed one. It looks harmless and is not: the
-\* downgrade rewrites the priority at every step, so the leader's one proposal
-\* exists under two keys, and a quorum holding only the downgraded copy can
-\* carry an ordinary proposal past it.
+\* while the others honour the agreed one. It looks harmless and is not once the
+\* downgrade rewrites the priority at every step: the leader's one proposal then
+\* exists under two keys through the ordinary phases, and a quorum holding only
+\* the downgraded copy can carry an ordinary proposal past it. Under the first
+\* step alone the rewrite reaches no carried template and the configuration is
+\* green.
 MixedLeaderless ==
     [j \in Recorders |-> IF j = 3 THEN NoProposer ELSE ConfiguredLeader]
 

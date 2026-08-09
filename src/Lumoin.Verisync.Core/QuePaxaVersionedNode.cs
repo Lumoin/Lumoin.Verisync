@@ -15,13 +15,13 @@ namespace Lumoin.Verisync.Core;
 /// versions on one instance under two different leaders, which is the reserved-priority divergence hazard.
 /// </para>
 /// <para>
-/// A host that cannot derive the leader must not serve the instance leaderless. A recorder declining a
-/// reserved claim records it at the lowest ordinary priority rather than dropping it, so under a non-uniform
-/// configuration the leader's one logical proposal exists under two keys: reserved where it was honoured,
-/// lowest where it was not. The phase-one spread of the honoured copy then fails to dominate the aggregate at
-/// the recorder holding the rewritten one, and a quorum built from that recorder carries an ordinary proposal
-/// past it and decides a different value. The hazard needs one proposal under two keys rather than two
-/// reserved-priority proposals, and a non-uniform configuration produces exactly that.
+/// A host that cannot derive the leader declines the instance rather than serving it leaderless. A recorder
+/// declining a reserved claim records it at the lowest ordinary priority rather than dropping it, and it does
+/// so at the round's first step, which is the step the fast path is read at: the leader's one logical
+/// proposal then exists under two keys there, reserved where it was honoured and lowest where it was not, so
+/// no quorum containing that recorder can decide on the fast path at all. Uniformity is available outright,
+/// every host deriving the leader from the same committed record, so the surface takes it rather than resting
+/// on what a non-uniform configuration survives.
 /// </para>
 /// <para>
 /// A request for any other instance is declined, and declining is a host act rather than a protocol refusal.

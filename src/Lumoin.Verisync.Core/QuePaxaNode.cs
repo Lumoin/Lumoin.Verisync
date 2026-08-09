@@ -18,9 +18,10 @@ namespace Lumoin.Verisync.Core;
 /// </para>
 /// <para>
 /// Every request is served and none is refused. A reserved-priority claim from a proposer that is not the
-/// recorder's configured leader is downgraded to the lowest ordinary priority and recorded, which is why
-/// <see cref="RecordReply{TValue}"/> carries no rejection field. The downgrade itself lives in
-/// <see cref="QuePaxaRecorder{TValue}"/>; this type only carries it across the message boundary.
+/// recorder's configured leader is downgraded to the lowest ordinary priority and recorded when it arrives
+/// at <see cref="RecorderStep.RoundOnePhaseZero"/>, which is why <see cref="RecordReply{TValue}"/> carries
+/// no rejection field. The downgrade itself lives in <see cref="QuePaxaRecorder{TValue}"/>; this type only
+/// carries it across the message boundary.
 /// </para>
 /// <para>
 /// The node holds its recorder in memory only. Safety across a crash requires the recorder's step and its

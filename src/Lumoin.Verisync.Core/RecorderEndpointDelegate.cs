@@ -18,7 +18,7 @@ namespace Lumoin.Verisync.Core;
 /// the duplicate reaches only the same-step branch, where the fold keeps the incumbent on an exact key tie
 /// and touches neither the step nor the first proposal, or the below-step branch, where nothing is written at
 /// all. The downgrade cannot differ between the two deliveries either, because the recorder's configured
-/// leader is fixed for the instance and the proposal is identical.
+/// leader is fixed for the instance and the step and the proposal are identical.
 /// </para>
 /// <para>
 /// An implementation must complete when <paramref name="cancellationToken"/> is signalled, with a result, a
