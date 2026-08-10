@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Lumoin.Verisync.Core;
 
@@ -70,6 +72,8 @@ public sealed class QuePaxaVersionedNode<TValue>
         LeaderSchedule = schedule;
         Committed = committed;
         Node = new QuePaxaNode<VersionedValue<TValue>>(schedule.RecorderFor<VersionedValue<TValue>>(committed?.Writer));
+        PersistedCommitted = committed;
+        PersistedRecorder = Node.Recorder;
     }
 
 
@@ -78,6 +82,8 @@ public sealed class QuePaxaVersionedNode<TValue>
         LeaderSchedule = schedule;
         Committed = committed;
         Node = node;
+        PersistedCommitted = committed;
+        PersistedRecorder = node.Recorder;
     }
 
 
@@ -94,6 +100,31 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <summary>The recorder node serving <see cref="LiveVersion"/>.</summary>
     public QuePaxaNode<VersionedValue<TValue>> Node { get; private set; }
 
+    /// <summary>
+    /// The committed record <see cref="MakeDurableAsync"/> last made durable, which its gate compares
+    /// against beside <see cref="PersistedRecorder"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is host state rather than loop state, because a host whose durable write failed restarts by
+    /// building a fresh runner over this same node and would otherwise begin by treating whatever the
+    /// failed attempt left in memory as already durable. Both baselines start at what the constructor or
+    /// <see cref="FromState"/> was handed, which is durable by construction: a restored host's state came
+    /// out of its own store, and a constructed host has learned nothing or was given a record its
+    /// deployment already wrote, while the register it starts from is unwritten and records nothing.
+    /// </para>
+    /// <para>
+    /// Both baselines are compared and neither alone. The recorder of a leaderless instance is a shared
+    /// singleton, so a host that learns one leaderless-instance record after another holds the same
+    /// recorder reference across the learn while the record the leader is derived from has moved — the
+    /// one case where the committed record moves and the recorder does not.
+    /// </para>
+    /// </remarks>
+    private VersionedValue<TValue>? PersistedCommitted { get; set; }
+
+    /// <summary>The recorder half of the durable baseline documented at <see cref="PersistedCommitted"/>.</summary>
+    private QuePaxaRecorder<VersionedValue<TValue>> PersistedRecorder { get; set; }
+
 
     /// <summary>
     /// Applies <paramref name="request"/> to the live instance and returns the reply.
@@ -104,10 +135,16 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if the request does not name <see cref="LiveVersion"/>.</exception>
     /// <exception cref="InvalidOperationException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that this host serves no version at all.</exception>
     /// <remarks>
+    /// <para>
     /// Both bounds are refused and for different reasons. A request below the live version belongs to an
     /// instance that has already decided, and folding it into the live register would put a settled version's
     /// proposals into an unsettled one. A request above it belongs to an instance whose leader this host
     /// cannot derive, and serving it under the leader of a different version is the hazard.
+    /// </para>
+    /// <para>
+    /// Both refusals precede any mutation, so a declined request leaves this host exactly as it found it,
+    /// which is what lets a runner keep serving after faulting the declined call.
+    /// </para>
     /// </remarks>
     public VersionedRecordReply<VersionedValue<TValue>> Handle(VersionedRecordRequest<VersionedValue<TValue>> request)
     {
@@ -144,6 +181,10 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// leaves the old one alone; rewriting a live recorder's leader would change the rule mid-instance, after
     /// proposals had already been recorded under the old one.
     /// </para>
+    /// <para>
+    /// A record that advances is always a strictly newer instance and no record is ever mutated in place,
+    /// which is what makes the durability gate's reference comparison on the committed record exact.
+    /// </para>
     /// </remarks>
     public bool Learn(VersionedValue<TValue> committed)
     {
@@ -158,6 +199,87 @@ public sealed class QuePaxaVersionedNode<TValue>
         Node = new QuePaxaNode<VersionedValue<TValue>>(LeaderSchedule.RecorderFor<VersionedValue<TValue>>(committed.Writer));
 
         return true;
+    }
+
+
+    /// <summary>
+    /// Reports whether <see cref="Handle"/> would serve a request at <paramref name="version"/>.
+    /// </summary>
+    /// <param name="version">The version to classify.</param>
+    /// <returns><see langword="true"/> when the version is the live one this host serves.</returns>
+    /// <remarks>
+    /// A classifier and not a guard: it never throws, and serving remains <see cref="Handle"/>'s act. The
+    /// spent-range arm comes first, so a host whose committed record stands at
+    /// <see cref="RegisterVersion.MaxValue"/> reports <see langword="false"/> for every version rather than
+    /// evaluating the throw <see cref="LiveVersion"/> documents. A runner's decline filter reads this to
+    /// tell a refusal, which faults one call, from a defect, which ends its loop.
+    /// </remarks>
+    public bool Serves(RegisterVersion version)
+    {
+        if(Committed is { } committed && committed.Version == RegisterVersion.MaxValue)
+        {
+            return false;
+        }
+
+        return version == LiveVersion;
+    }
+
+
+    /// <summary>
+    /// Makes this host's state durable through <paramref name="persistNode"/>, unless what it would write
+    /// already is.
+    /// </summary>
+    /// <param name="persistNode">The durable store to write through.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A task that completes once the state is durable or was already.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="persistNode"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when the state owing a write holds a committed record at <see cref="RegisterVersion.MaxValue"/>,
+    /// because <see cref="ToState"/> serves no version there. A host restored or constructed at that record
+    /// owes no write and returns without reaching the snapshot; only a host that learned its way there and
+    /// was never made durable ends here, which is terminal by design — every request to it declines without
+    /// a write and a deployment retires a spent key.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// The gate compares the current committed record and the current recorder, by reference, against what
+    /// this method last made durable, and skips both the snapshot and the write when neither has moved. The
+    /// two are captured before the write and the baselines advance only after it returns, so a throwing
+    /// store leaves this host owing exactly the write it owed before, and <see cref="ToState"/> runs only
+    /// inside the firing branch, so a host that owes no write allocates no snapshot.
+    /// </para>
+    /// <para>
+    /// The rule is the or of the two arms and the arms are independent. A request that changes nothing
+    /// leaves the recorder reference-identical and costs no write once that state is durable, while one that
+    /// follows a failed write finds the recorder still past the baseline and retries it. A learn usually
+    /// moves both references, but a host learning one leaderless-instance record after another keeps the
+    /// shared leaderless recorder singleton across the learn, and there the committed arm is the only one
+    /// that fires. That arm alone never fires on a reply path — a request's step is floored above
+    /// <see cref="RecorderStep.Zero"/>, so the first request after any learn advances the recorder — which
+    /// is why it is reachable only through a checkpoint.
+    /// </para>
+    /// <para>
+    /// A host driving <see cref="Handle"/> and <see cref="Learn"/> itself calls this before it lets any
+    /// dependent reply leave, which is the sequencing <see cref="QuePaxaVersionedRunner{TValue}"/> performs
+    /// for a host that does not. It is not safe to call while a runner owns this node;
+    /// <see cref="QuePaxaVersionedRunner{TValue}.MakeDurableAsync"/> is the checkpoint there.
+    /// </para>
+    /// </remarks>
+    public async ValueTask MakeDurableAsync(PersistVersionedNodeDelegate<TValue> persistNode, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(persistNode);
+
+        VersionedValue<TValue>? committed = Committed;
+        QuePaxaRecorder<VersionedValue<TValue>> recorder = Node.Recorder;
+        if(ReferenceEquals(committed, PersistedCommitted) && ReferenceEquals(recorder, PersistedRecorder))
+        {
+            return;
+        }
+
+        await persistNode(ToState(), cancellationToken).ConfigureAwait(false);
+
+        PersistedCommitted = committed;
+        PersistedRecorder = recorder;
     }
 
 

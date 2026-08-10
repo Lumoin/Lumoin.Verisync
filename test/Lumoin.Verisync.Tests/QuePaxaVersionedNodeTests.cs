@@ -11,6 +11,8 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class QuePaxaVersionedNodeTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private static ReplicaId First { get; } = Replica(1);
     private static ReplicaId Second { get; } = Replica(2);
     private static ReplicaId Third { get; } = Replica(3);
@@ -141,6 +143,115 @@ internal sealed class QuePaxaVersionedNodeTests
 
         Assert.ThrowsExactly<ArgumentNullException>(() => _ = host.Handle(null!));
         Assert.ThrowsExactly<ArgumentNullException>(() => _ = host.Learn(null!));
+    }
+
+
+    [TestMethod]
+    public async Task ALearnedRecordIsMadeDurableEvenWhenTheRecorderInstanceIsUnchanged()
+    {
+        //Constructed WITHOUT serving, deliberately: a served request would advance the recorder off the
+        //shared leaderless singleton and silently invert the premise the identity assertion below pins.
+        QuePaxaVersionedNode<string> host = new(Schedule(), Record(4UL, Stranger));
+        QuePaxaRecorder<VersionedValue<string>> before = host.Node.Recorder;
+
+        VersionedValue<string> learned = Record(5UL, Stranger);
+        Assert.IsTrue(host.Learn(learned));
+        Assert.AreSame(before, host.Node.Recorder);
+
+        List<QuePaxaVersionedNodeState<string>> states = [];
+        await host.MakeDurableAsync((state, cancellationToken) =>
+        {
+            states.Add(state);
+
+            return ValueTask.CompletedTask;
+        }, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //The committed record moved while the recorder reference did not, so a gate reading the recorder
+        //alone would skip this write and a restart would re-open a decided instance.
+        Assert.HasCount(1, states);
+        Assert.AreSame(learned, states[0].Committed);
+
+        await host.MakeDurableAsync((state, cancellationToken) =>
+        {
+            states.Add(state);
+
+            return ValueTask.CompletedTask;
+        }, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, states);
+    }
+
+
+    [TestMethod]
+    public async Task ACheckpointOnAHostThatServesNoVersionIsANoOpRatherThanAThrow()
+    {
+        QuePaxaVersionedNode<string> host = new(Schedule(), new VersionedValue<string>(RegisterVersion.MaxValue, Second, "spent"));
+
+        //The gate short-circuits before the snapshot, whose LiveVersion read throws on a spent host, so a
+        //checkpoint hoisting the snapshot above the gate fails here.
+        await host.MakeDurableAsync((state, cancellationToken) =>
+        {
+            Assert.Fail("A host durable by construction owes no write.");
+
+            return ValueTask.CompletedTask;
+        }, TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+
+    [TestMethod]
+    public async Task AConstructedHostTreatsTheRecordItWasGivenAsDurable()
+    {
+        QuePaxaVersionedNode<string> host = new(Schedule(), Record(4UL, Second));
+
+        int writes = 0;
+        await host.MakeDurableAsync((state, cancellationToken) =>
+        {
+            writes++;
+
+            return ValueTask.CompletedTask;
+        }, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(0, writes);
+        _ = await Assert.ThrowsExactlyAsync<ArgumentNullException>(
+            async () => await host.MakeDurableAsync(null!, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+
+    [TestMethod]
+    public void ServesAgreesWithHandleAtBothBoundsAndNeverThrows()
+    {
+        QuePaxaVersionedNode<string> host = new(Schedule(), Record(4UL, Second));
+
+        Assert.IsFalse(host.Serves(new RegisterVersion(4UL)));
+        Assert.IsTrue(host.Serves(new RegisterVersion(5UL)));
+        Assert.IsFalse(host.Serves(new RegisterVersion(6UL)));
+
+        //A spent host serves nothing, and the classifier reports that without evaluating the live-version
+        //throw, which is what lets a runner's decline filter read it inside an exception filter.
+        QuePaxaVersionedNode<string> spent = new(Schedule(), new VersionedValue<string>(RegisterVersion.MaxValue, Second, "spent"));
+
+        Assert.IsFalse(spent.Serves(new RegisterVersion(1UL)));
+        Assert.IsFalse(spent.Serves(RegisterVersion.MaxValue));
+    }
+
+
+    [TestMethod]
+    public void ALearnInstallsAnUnwrittenRegisterTheFirstReplyMustReplace()
+    {
+        QuePaxaVersionedNode<string> host = new(Schedule(), Record(4UL, Second));
+
+        _ = host.Handle(Request(5UL, ProposalPriority.Lowest, Second, "a"));
+
+        Assert.IsTrue(host.Learn(Record(5UL, Third)));
+        Assert.AreEqual(RecorderStep.Zero, host.Node.Recorder.Step);
+
+        QuePaxaRecorder<VersionedValue<string>> unwritten = host.Node.Recorder;
+        _ = host.Handle(Request(6UL, ProposalPriority.Lowest, Third, "b"));
+
+        //Every request's step sits above zero, so the first request after any learn replaces the register,
+        //which is the premise under persist-on-next-reply sufficiency: the durability gate always fires
+        //before the first reply that depends on a learned record.
+        Assert.AreNotSame(unwritten, host.Node.Recorder);
     }
 
 
