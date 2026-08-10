@@ -44,7 +44,7 @@ Verisync is designed to be a peer of credential, identity, and graph stacks rath
 
 Verisync follows the same data-oriented principles as the rest of the family: code is separate from immutable data, CRDTs are values rather than entities with hidden identity, and merges are pure functions. Domain types are agnostic to serialization format; encoding lives at serialization boundaries in the dedicated `Lumoin.Verisync.Json` and `Lumoin.Verisync.Cbor` packages.
 
-Transport, persistence, and clock sources are wired through delegates rather than interfaces. The same CRDT or consensus register is tested against a synthetic in-memory transport (including a deterministic interleaving bench that explores message reorderings from a seed) and deployed against a real transport without changes at the call site.
+Transport is wired through delegates rather than interfaces, and so is persistence wherever a run loop sequences it; clocks enter as injected `TimeProvider` instances, and a host that drives its node directly makes the state durable itself before it replies. The same CRDT or consensus register is tested against a synthetic in-memory transport (including a deterministic interleaving bench that explores message reorderings from a seed) and deployed against a real transport without changes at the call site.
 
 ## Getting started
 
