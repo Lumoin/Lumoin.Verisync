@@ -207,6 +207,14 @@ public sealed class QuePaxaRecorder<TValue>
     /// verbatim, so the rule stops there.
     /// </para>
     /// <para>
+    /// The rules read the state alone, and that bounds what they refuse. A per-field mix of two states a
+    /// faithful host wrote can itself be a state a recorder-driven register can hold, so it restores under
+    /// these rules and still contradicts a reply already sent from the older of its sources, the tuple the
+    /// disk held, through a field the tear took from the newer. Detecting that
+    /// needs history no snapshot carries, so the rules are not a substitute for the store landing the write
+    /// whole, which is <see cref="PersistRecorderDelegate{TValue}"/>'s obligation.
+    /// </para>
+    /// <para>
     /// The restored recorder is durable by construction from the host's point of view, which is what
     /// <see cref="QuePaxaNode{TValue}"/> relies on when it treats the recorder it was constructed with as
     /// already persisted.

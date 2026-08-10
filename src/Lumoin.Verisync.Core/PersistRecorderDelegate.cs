@@ -28,6 +28,14 @@ namespace Lumoin.Verisync.Core;
 /// delegate returns closes those windows.
 /// </para>
 /// <para>
+/// The four fields are one durable write and not four. A store that lands some of them and not others can
+/// leave a mix of two faithful snapshots that is itself a state a recorder-driven register can hold at a
+/// step already answered from, so it passes every rule <see cref="QuePaxaRecorder{TValue}.FromState"/>
+/// owns and still contradicts a reply a proposer has acted on. No rule over the stored fields can close
+/// that, so the write must land whole or not at all, or the stored document must be self-checking so that
+/// a torn one is refused rather than restored.
+/// </para>
+/// <para>
 /// A request that changes nothing still gets its reply, and once the state it found is durable it costs no
 /// fresh write. The recorder returns its own instance exactly when no field would have changed — a record
 /// below its step, or an identical same-step record — which is how the node knows the state it already

@@ -4,8 +4,8 @@ Model-checked specifications for the protocol tiers this repository ships or is 
 ship: the anti-entropy session pair with the completion frame, the consensus-anchored checkpoint
 seal, QuePaxa, and Raft's leader election and log rules. The session pair, the seal, the election and the
 log model the code as it is. The two QuePaxa protocol modules model the published protocol before any
-code exists, which is the point of ordering it that way, while the QuePaxa durability module models the
-code that followed them. The abstraction decisions are
+code exists, which is the point of ordering it that way, while the QuePaxa durability module and its
+torn-write sibling model the code that followed them. The abstraction decisions are
 documented in each module's header comment.
 
 ## Negative models
@@ -175,9 +175,102 @@ here rather than argued.
 
 `TypeOK` carries the other half of that restore. A durable state at step zero holding no proposal in
 any slot is the only step-zero state a faithful host writes, so the snapshot the restore refuses is one
-the model says is unreachable rather than one it has to defend against. Which states the restore
-refuses, as against which states a host reaches, stays with the unit suite, where each rule is pinned
-by a rejection test and a mutant.
+this module says is unreachable rather than one it has to defend against - under a faithful store,
+which is this module's standing assumption and is exactly what the torn-write matrix below withdraws.
+Which states the restore refuses, as against which states a host reaches, stays with the unit suite,
+where each rule is pinned by a rejection test and a mutant; which refusals a real store can make
+necessary is the torn-write matrix's subject.
+
+## The QuePaxa torn-write matrix
+
+`QuePaxaTornWrite` is the durability model's store made unreliable: a write that can land field by
+field, a store that can return a tuple it was never given, and the restore's state-local refusal
+rules standing between the disk and the register. It answers the one durability question the unit
+suite cannot: which torn snapshots the restore's rules catch, and which they provably cannot. The
+module extends `QuePaxaDurable` rather than copying it: `Serve`, `Persist`, `Observe`, `Init`, the
+served ghost and all four parent invariants are inherited as the same operators and cannot drift,
+and the crash action is the one restatement - `GuardedCrash` places the restore guard in front of
+the parent's `Crash` body, and the atomic configurations' digit-for-digit identity with
+`MCDurableRecorder` is what holds that restatement to the parent. That placement is itself a checked result
+rather than taste: the parent's `TypeOK` asserts the durable tuple is one a faithful host wrote,
+which is precisely what a tear falsifies, so `MCTornDurableShape` lists the parent's `TypeOK` and is
+red on it, and an in-module dimension would have had to weaken a shipped invariant under a constant.
+
+Three rules are constants in the shipped mould. `WritesTupleAtomically`: a durable write lands whole
+or not at all, and its withdrawal admits every per-field mix of the tuple on the disk and the tuple
+being written, which covers every prefix tear under every field order a codec could pick, so the
+results are independent of a serialization order nothing in this repository fixes.
+`StoreReturnsWhatItWrote`: the store returns only tuples it was given, and its withdrawal admits
+fabrication, kept apart from tearing because it answers a different question. And
+`RestoreRefusesImpossibleStates`: a restart runs the refusal rules, in their expressible form - the
+step floor, a first proposal above step zero, an aggregate ordering at or above it, no carry into the
+round's first step, and nothing in any slot at step zero. A refused restore is a disabled crash: the
+C# restore throws and the host does not start, so a refused host answers nothing further, and
+disabling the action is exact for safety - the reachable states and the violation depths are those an
+explicit halted-host encoding would produce - and silent about availability. The refused tuple stays
+on the disk, where `DurableStateIsRestorable` reads it, so the refusal is checked and only the
+restart is elided.
+
+| Configuration | Module | What it models | Expected |
+| --- | --- | --- | --- |
+| `MCTornAtomic` | QuePaxaTornWrite | atomic writes, faithful store, restore guard in force; must reproduce `MCDurableRecorder` digit for digit | green |
+| `MCTornAtomicUnvalidated` | QuePaxaTornWrite | the same store with the guard withdrawn; must reproduce the same digits, so the rules refuse nothing a faithful host writes | green |
+| `MCTornRefusedTear` | QuePaxaTornWrite | negative model: a torn write leaves a tuple the restore refuses - the caught half | red (required) |
+| `MCTornAcceptedTear` | QuePaxaTornWrite | negative model: a torn write leaves a tuple the restore accepts that contradicts an answer already given - the uncatchable half | red (required) |
+| `MCTornRestoreLoses` | QuePaxaTornWrite | negative model: the accepted tear restored, so the register comes back holding a different first proposal at an answered step | red (required) |
+| `MCTornPriorAggregate` | QuePaxaTornWrite | negative model: the accepted tear that moves the aggregate a proposer's phase two and three read | red (required) |
+| `MCTornDurableShape` | QuePaxaTornWrite | negative model: the parent's `TypeOK` under tearing, which is the placement argument as a run | red (required) |
+| `MCTornStepZeroPremise` | QuePaxaTornWrite | the tearing green: no tear breaks the step-zero premise, and the guarded register never leaves recorder-reachable states | green |
+| `MCTornUnguardedRestore` | QuePaxaTornWrite | negative model: the guard withdrawn, so a torn restore installs a register state the register cannot reach on its own | red (required) |
+| `MCTornFabricated` | QuePaxaTornWrite | negative model: atomic writes and the guard in force against a lying store - the boundary of what atomicity buys | red (required) |
+
+All ten run at the parent's constants with all three parent durability rules in force, because a
+corruption result under a withdrawn durability rule would not say which of the two produced it.
+
+The headline is a pair, and neither arm alone is the result. `MCTornRefusedTear` is the caught half:
+the refusable mixes include a landed step with no first proposal beside it and a step-zero tuple
+carrying a proposal, which is the one register shape the versioned host's own restore in
+`QuePaxaVersionedNode.FromState` refuses rather than handing to the recorder's restore, and
+which no other configuration in this directory can hand that check as a reachable input.
+`MCTornAcceptedTear` is the uncatchable half: TLC's own counterexample tears a single field - the
+register at `(6,1,1,1)` over an answered durable `(5,1,1,Nil)`, the write landing only the carried
+aggregate, leaving `(5,1,1,1)` on the disk - and the mix passes every rule because it is a state some
+honest run of the register reaches, so only the history of what was answered says otherwise. The
+accepted mixes are crash-free reachable inside `MCDurableRecorder`'s own green, so any state
+predicate that refused them would turn the shipped positive red: there is no stronger state-local
+rule to write, and whole-tuple atomicity is load-bearing in the persist contract rather than
+advisory. `MCTornFabricated` bounds the claim from the other side: with writes atomic and the guard
+in force, a store that returns a tuple it was never given still hands the restore an accepted state
+contradicting an answer already given - atomicity defends against tearing and not against a lying
+store, whose defence is a self-checking document, outside this alphabet.
+
+Each negative lists exactly the invariant it exists for, and the merged runs that justify the
+assignments were run rather than argued. A configuration listing all five red subjects names the
+parent's `TypeOK` on every attempt, because the earliest tears break the durable shape and the
+restorability predicate in the same states, so the shallow pair is an order-dependent tie and a
+merged listing names whichever comes first in the file - swapping the order swaps the answer.
+`DurableRestoreKeepsEveryAnswer` is reached strictly before either stability invariant - it reads
+the disk, and the crash that moves the loss into the register is one transition further - so a
+merged listing of the three never reports the stability pair at all. The two stability invariants
+are reached at the same depth, and repeated merged runs name sometimes one and sometimes the
+other - the same irreproducible naming the durability matrix records for its fresh-restart
+negative, there between a different pair of invariants. The two singleton-constant negatives are
+justified the same way: at the unguarded constants the parent's `TypeOK` masks
+`RegisterHoldsOnlyRecorderStates`, and at the fabrication constants it masks everything, so each
+lists its own subject alone.
+
+`MCTornStepZeroPremise` is the tearing green and the module's one exhaustive run over the tear
+alphabet, at 10,694,841 states generated and 641,422 distinct, reproduced digit for digit over
+three runs. It certifies that no tear breaks the premise the host's step-zero short circuit rests
+on - after the first completed write both mix sources stand at or above the round's first step, so
+the durable step never returns to zero - and, through `RegisterHoldsOnlyRecorderStates`, that the
+guarded restore keeps the register inside the states a recorder-driven register can hold, which is
+the closure of the accepted set under the register's own operation. One boundary of that green must
+be read precisely: the step-zero-carries-a-proposal clause gets a reachable input here, but no
+invariant in this alphabet expresses what it defends, which is the silent discard of a proposal that
+was never answered. Withdrawing that clause alone breaks nothing the `served` ghost records, so the
+green must not be read as the C# check being redundant - what it protects is outside what this
+module can state.
 
 ## The Raft election matrix
 
@@ -293,14 +386,42 @@ server for anything but its identity.
   `QuePaxaDurable` needs no union: `MCDurableRecorder` reaches all four actions and both sides of
   every branch in them, the same-step fold at 82,662 and the advance at 11,406, the fold keeping the
   incumbent at 66,556 and taking the newcomer at 16,106, and the carry taking the aggregate at 10,206
-  and clearing it at 1,200.
-- `QuePaxaDurable` is one recorder and every invariant it checks is local to that recorder, so what a
-  green run there certifies is that a crash never takes back an answer the recorder has already given.
-  It certifies nothing about a quorum. That two quorums never decide differently is
-  `QuePaxaConcrete`'s subject and that module has no crash at all, so no configuration in this
-  directory covers a decision resting on a quorum that a crash then disperses. Reaching it would mean
-  a durability dimension in the concrete module, whose largest configuration already holds 27,328,647
-  distinct states.
+  and clearing it at 1,200. `QuePaxaTornWrite` needs a pair, and one member of it is a red:
+  `MCTornStepZeroPremise` fires every action except `Fabricate` - `Serve` 2,162,811 times,
+  `TornWrite` 7,451,170, `Persist` 599,901, `GuardedCrash` 439,438 and `Observe` 41,520 - and
+  `Fabricate` is disabled at every tearing configuration's constants by design, so its firing is
+  witnessed by `MCTornFabricated`'s own counterexample trace rather than by an exhaustive run.
+  Those invocation totals reproduce digit for digit at one and four workers; the per-action
+  distinct-state figures do not, because here more than one action can be first to a state and the
+  attribution races, so unlike the parent's, only the invocation totals are recorded. In
+  `MCTornAtomic` the guarded crash fires 19,406 times and adds nothing, which is the parent's
+  crash-adds-nothing result reproduced through the guard.
+- `QuePaxaDurable` and `QuePaxaTornWrite` are one recorder and every invariant they check is local to
+  that recorder, so what a green run there certifies is that a crash never takes back an answer the
+  recorder has already given. It certifies nothing about a quorum. That two quorums never decide
+  differently is `QuePaxaConcrete`'s subject and that module has no crash at all, so no configuration
+  in this directory covers a decision resting on a quorum that a crash then disperses - and none
+  joins the corruption cause to the divergence consequence either: a torn snapshot here loses one
+  recorder's answers, while the divergent committed record it could produce at the versioned host
+  needs versions, a committed record, reserved priorities and a second host, all outside this
+  alphabet, and stays with the split-leaders configurations and the unit suite's rejection tests for
+  a restored snapshot whose configured leader or recorder version is not the one its own committed
+  record derives. Reaching either would mean a durability dimension in the concrete module, whose
+  largest configuration already holds 27,328,647 distinct states.
+- `QuePaxaTornWrite`'s tear alphabet has edges that are scope notes rather than claims. The mix runs
+  against the current volatile tuple only, because the reply waits for the persist and the host's
+  runner is single-consumer, so one write is in flight at a time and reordering across concurrent
+  writes cannot arise. The reserved-priority refusals are out of its alphabet - proposals are opaque
+  ordered keys, so a tear that preserves the tuple's shape and changes only a key's priority is
+  unrepresentable here and stays with the recorder's unit suite. A refused restore says nothing
+  about availability: a host that fails closed and never starts is invisible to a safety model. And
+  the module cannot say whether a checksum would close the accepted-tear hole, because the durable
+  tuple carries no field to check; it covers a checksummed store only insofar as a detected tear is
+  a refused restore. Two conjuncts of the restore guard are deliberately inseparable: the
+  aggregate-beside-a-first-proposal rule is subsumed by the ordering rule under the integer
+  encoding, and the recorder's step floor and the host's step-zero branch are one test because the
+  steps between them are not in the alphabet, so no negative pins either pair apart and none
+  pretends to.
 - In `MCDurableRecorder` the crash action generates 19,406 successor states and none of them is new,
   which is the sharpest available statement of what the restore buys: with all three rules in force a
   crash reaches no state a crash-free run does not. It is a result rather than an artefact of an
@@ -346,6 +467,7 @@ server for anything but its identity.
   | `MCAbstractCrash` | 19,703,792 | 1.1e-4 | 1.1e-4 |
   | `MCAbstractSafety` | 8,739,712 | 3.0e-5 | 3.8e-6 |
   | `MCConcreteTwoLeadersGuarded` | 7,038,491 | 1.8e-5 | 1.1e-6 |
+  | `MCTornStepZeroPremise` | 641,422 | 3.5e-7 | 3.8e-11 |
   | `MCDurableRecorder` | 27,555 | 1.7e-10 | 2.7e-12 |
 
   `MCConcreteSingleLeaderDeclaredSchedule` matches `MCConcreteSingleLeader` on both counts, as it

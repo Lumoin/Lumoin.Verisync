@@ -10,7 +10,8 @@ $tlc = "C:\tools\tlaplus\tlc.cmd"
 $modules = @(
     ".\QuePaxaAbstract.tla",
     ".\QuePaxaConcrete.tla",
-    ".\QuePaxaDurable.tla"
+    ".\QuePaxaDurable.tla",
+    ".\QuePaxaTornWrite.tla"
 )
 
 # Expected 'red' runs are the negative models; a green negative means the model
@@ -42,11 +43,32 @@ $runs = @(
     @{ Config = ".\MCDurableVolatileReply.cfg";   Spec = ".\QuePaxaDurable.tla"; Expect = "red"; Invariant = "ServedFirstIsStable" },
     @{ Config = ".\MCDurableFreshRestart.cfg";    Spec = ".\QuePaxaDurable.tla"; Expect = "red"; Invariant = "ServedFirstIsStable" },
     @{ Config = ".\MCDurablePartialPersist.cfg";  Spec = ".\QuePaxaDurable.tla"; Expect = "red"; Invariant = "ServedPriorAggregateIsStable" },
-    @{ Config = ".\MCDurableStepZeroServed.cfg";  Spec = ".\QuePaxaDurable.tla"; Expect = "red"; Invariant = "StepZeroDurableStateWasNeverServed" }
+    @{ Config = ".\MCDurableStepZeroServed.cfg";  Spec = ".\QuePaxaDurable.tla"; Expect = "red"; Invariant = "StepZeroDurableStateWasNeverServed" },
+    @{ Config = ".\MCTornAtomic.cfg";             Spec = ".\QuePaxaTornWrite.tla"; Expect = "green" },
+    @{ Config = ".\MCTornAtomicUnvalidated.cfg";  Spec = ".\QuePaxaTornWrite.tla"; Expect = "green" },
+    @{ Config = ".\MCTornRefusedTear.cfg";        Spec = ".\QuePaxaTornWrite.tla"; Expect = "red"; Invariant = "DurableStateIsRestorable" },
+    @{ Config = ".\MCTornAcceptedTear.cfg";       Spec = ".\QuePaxaTornWrite.tla"; Expect = "red"; Invariant = "DurableRestoreKeepsEveryAnswer" },
+    @{ Config = ".\MCTornRestoreLoses.cfg";       Spec = ".\QuePaxaTornWrite.tla"; Expect = "red"; Invariant = "ServedFirstIsStable" },
+    @{ Config = ".\MCTornPriorAggregate.cfg";     Spec = ".\QuePaxaTornWrite.tla"; Expect = "red"; Invariant = "ServedPriorAggregateIsStable" },
+    @{ Config = ".\MCTornDurableShape.cfg";       Spec = ".\QuePaxaTornWrite.tla"; Expect = "red"; Invariant = "TypeOK" },
+    @{ Config = ".\MCTornStepZeroPremise.cfg";    Spec = ".\QuePaxaTornWrite.tla"; Expect = "green" },
+    @{ Config = ".\MCTornUnguardedRestore.cfg";   Spec = ".\QuePaxaTornWrite.tla"; Expect = "red"; Invariant = "RegisterHoldsOnlyRecorderStates" },
+    @{ Config = ".\MCTornFabricated.cfg";         Spec = ".\QuePaxaTornWrite.tla"; Expect = "red"; Invariant = "DurableRestoreKeepsEveryAnswer" }
 )
 
 Push-Location $PSScriptRoot
 try {
+    # A module that extends another inherits the parent's SPECIFICATION name, so
+    # a torn-write configuration naming Spec instead of TornSpec would silently
+    # model-check the atomic parent and pass for the wrong reason. The check is
+    # here rather than in review because nothing else would ever catch it: the
+    # misdirected greens are required to reproduce the parent's counts anyway.
+    foreach ($cfg in Get-ChildItem ".\MCTorn*.cfg") {
+        if (-not (Select-String -Path $cfg -SimpleMatch "SPECIFICATION TornSpec" -Quiet)) {
+            throw "$($cfg.Name) must name SPECIFICATION TornSpec."
+        }
+    }
+
     foreach ($module in $modules) {
         Write-Host "=== SANY $module ==="
         & $sany $module
