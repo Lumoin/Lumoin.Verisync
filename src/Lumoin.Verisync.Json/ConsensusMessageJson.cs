@@ -7,8 +7,9 @@ namespace Lumoin.Verisync.Json;
 
 /// <summary>
 /// Builds JSON <see cref="SerializeMessageDelegate{TMessage}"/> and
-/// <see cref="DeserializeMessageDelegate{TMessage}"/> implementations for the Fast CASPaxos protocol DTOs,
-/// so they can cross a Verisync message channel (in-memory pipe or socket).
+/// <see cref="DeserializeMessageDelegate{TMessage}"/> implementations for the Fast CASPaxos protocol DTOs
+/// and for the durable state a host persists, <see cref="FastAcceptorState{TValue}"/>, so they can cross a
+/// Verisync message channel (in-memory pipe or socket) or be persisted by a host.
 /// </summary>
 /// <remarks>
 /// The polymorphic request/reply envelopes are written with a <c>kind</c> discriminator rather than relying on
@@ -173,6 +174,77 @@ public static class ConsensusMessageJson
             }
 
             throw new NotSupportedException($"Unknown reply kind '{kind}'.");
+        });
+    }
+
+
+    /// <summary>Creates a serializer for <see cref="FastAcceptorState{TValue}"/>.</summary>
+    /// <typeparam name="TValue">The register value type.</typeparam>
+    /// <param name="writeValue">Writes a value to the JSON writer.</param>
+    /// <returns>A serialize delegate.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// The state is what a host makes stable before a dependent reply leaves the process, so a payload this
+    /// writes is the payload <see cref="CreateAcceptorStateDeserializer{TValue}"/> reads back on a restart.
+    /// The accepted ballot and the accepted value are encoded exactly as a prepare reply's matching fields,
+    /// so the two payloads agree where they overlap; the promise is a ballot here where a reply's
+    /// <c>promised</c> is a boolean, which is why the state has its own factory pair rather than reusing the
+    /// reply's.
+    /// </remarks>
+    public static SerializeMessageDelegate<FastAcceptorState<TValue>> CreateAcceptorStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    {
+        ArgumentNullException.ThrowIfNull(writeValue);
+
+        return (state, output) =>
+        {
+            using var writer = new Utf8JsonWriter(output);
+            writer.WriteStartObject();
+            WriteBallot(writer, "promised", state.Promised);
+            WriteBallot(writer, "acceptedBallot", state.AcceptedBallot);
+            writer.WritePropertyName("acceptedValue");
+            if(state.AcceptedValue is null)
+            {
+                writer.WriteNullValue();
+            }
+            else
+            {
+                writeValue(writer, state.AcceptedValue);
+            }
+
+            writer.WriteEndObject();
+        };
+    }
+
+
+    /// <summary>Creates a deserializer for <see cref="FastAcceptorState{TValue}"/>.</summary>
+    /// <typeparam name="TValue">The register value type.</typeparam>
+    /// <param name="readValue">Reads a value from a JSON element.</param>
+    /// <returns>A deserialize delegate.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// A state this returns is decoded and not validated as a whole. Ballots are decoded through the same
+    /// reader the wire messages use, which builds them without checking a round or a proposer, so a negative
+    /// round and a round-zero ballot owning a proposer both decode. Every restore rule belongs to
+    /// <see cref="FastAcceptor{TValue}.FromState"/> — the single-slot range checks that refuse those two
+    /// ballots as well as the relational rules, because <see cref="FastBallot"/> validates nothing — so a
+    /// host restores by passing the decoded state there and lets that factory refuse a snapshot no acceptor
+    /// can hold. A missing <c>acceptedValue</c> field is
+    /// malformed and fails closed; only a present JSON null decodes as the absent value.
+    /// </remarks>
+    public static DeserializeMessageDelegate<FastAcceptorState<TValue>> CreateAcceptorStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    {
+        ArgumentNullException.ThrowIfNull(readValue);
+
+        return JsonMessageGuard.FailClosed<FastAcceptorState<TValue>>(payload =>
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            JsonElement root = document.RootElement;
+            JsonElement acceptedValue = RequireProperty(root, "acceptedValue", "An acceptor state");
+
+            return new FastAcceptorState<TValue>(
+                ReadBallot(RequireProperty(root, "promised", "An acceptor state")),
+                ReadBallot(RequireProperty(root, "acceptedBallot", "An acceptor state")),
+                acceptedValue.ValueKind == JsonValueKind.Null ? default : readValue(acceptedValue));
         });
     }
 

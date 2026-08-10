@@ -273,6 +273,121 @@ internal sealed class ConsensusNodeTests
     }
 
 
+    [TestMethod]
+    public void ASeededNodeStartsFromTheAcceptorItWasGiven()
+    {
+        //The restored acceptor is the node's state itself, not a template it copies from; the gate below
+        //reads reference identity, so the seam must hand the instance through unchanged.
+        (FastAcceptor<string> accepted, _) = FastAcceptor<string>.Initial.Accept(FastBallot.Classic(2, R1), "v");
+        FastAcceptor<string> restored = FastAcceptor<string>.FromState(accepted.ToState());
+
+        ConsensusNode<string> node = new(restored);
+
+        Assert.AreSame(restored, node.Acceptor);
+    }
+
+
+    [TestMethod]
+    public async Task ASeededNodeTreatsItsRestoredAcceptorAsAlreadyDurable()
+    {
+        //The restored acceptor came from the bytes the host had already written, so the node owes no write
+        //for it: a redelivery the restored acceptor answers idempotently costs exactly zero writes — never
+        //"at most one", because a baseline that started anywhere but the restored instance would put the
+        //first reply on the durable-write path. The restored state is deliberately not the initial one, so a
+        //baseline reset to the initial acceptor is caught unconditionally.
+        AcceptRequest<string> request = new(FastBallot.Classic(2, R1), "v");
+        (FastAcceptor<string> accepted, _) = FastAcceptor<string>.Initial.Accept(request.Ballot, request.Value);
+        FastAcceptor<string> restored = FastAcceptor<string>.FromState(accepted.ToState());
+
+        ConsensusNode<string> node = new(restored);
+        Channel<ConsensusRequest<string>> requests = Channel.CreateUnbounded<ConsensusRequest<string>>();
+        List<FastAcceptor<string>> persisted = [];
+        List<ConsensusReply<string>> replies = [];
+
+        PersistAcceptorDelegate<string> persist = (acceptor, _) =>
+        {
+            persisted.Add(acceptor);
+
+            return ValueTask.CompletedTask;
+        };
+
+        ValueTask SendReply(ConsensusReply<string> reply, CancellationToken token)
+        {
+            replies.Add(reply);
+
+            return ValueTask.CompletedTask;
+        }
+
+        await requests.Writer.WriteAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+        requests.Writer.Complete();
+
+        await node.RunAsync(requests.Reader.ReadAllAsync(TestContext.CancellationToken), SendReply, persist, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.IsEmpty(persisted);
+        Assert.HasCount(1, replies);
+        Assert.IsTrue(((AcceptReply<string>)replies[0]).Accepted);
+    }
+
+
+    [TestMethod]
+    public async Task TheFirstChangingRequestOnASeededNodeCostsExactlyOneWrite()
+    {
+        //Seeding moves only where the gate's two references start; the first request that advances the
+        //acceptor past the restored state pays the ordinary one write before its reply.
+        (FastAcceptor<string> accepted, _) = FastAcceptor<string>.Initial.Accept(FastBallot.Classic(2, R1), "v");
+        FastAcceptor<string> restored = FastAcceptor<string>.FromState(accepted.ToState());
+
+        ConsensusNode<string> node = new(restored);
+        Channel<ConsensusRequest<string>> requests = Channel.CreateUnbounded<ConsensusRequest<string>>();
+        List<FastAcceptor<string>> persisted = [];
+        List<ConsensusReply<string>> replies = [];
+
+        PersistAcceptorDelegate<string> persist = (acceptor, _) =>
+        {
+            persisted.Add(acceptor);
+
+            return ValueTask.CompletedTask;
+        };
+
+        ValueTask SendReply(ConsensusReply<string> reply, CancellationToken token)
+        {
+            replies.Add(reply);
+
+            return ValueTask.CompletedTask;
+        }
+
+        await requests.Writer.WriteAsync(new PrepareRequest<string>(FastBallot.Classic(5, R1)), TestContext.CancellationToken).ConfigureAwait(false);
+        requests.Writer.Complete();
+
+        await node.RunAsync(requests.Reader.ReadAllAsync(TestContext.CancellationToken), SendReply, persist, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, persisted);
+        Assert.HasCount(1, replies);
+        Assert.AreSame(node.Acceptor, persisted[0]);
+        Assert.IsTrue(((PrepareReply<string>)replies[0]).Promised);
+    }
+
+
+    [TestMethod]
+    public void AParameterlessNodeStartsAtTheInitialAcceptor()
+    {
+        //The parameterless path chains through the seeding constructor over the initial singleton, so a
+        //fresh node's acceptor is the very instance every other fresh node starts from.
+        ConsensusNode<string> node = new();
+
+        Assert.AreSame(FastAcceptor<string>.Initial, node.Acceptor);
+    }
+
+
+    [TestMethod]
+    public void TheSeedingConstructorRefusesANullAcceptor()
+    {
+        ArgumentNullException refusal = Assert.ThrowsExactly<ArgumentNullException>(() => new ConsensusNode<string>(null!));
+
+        Assert.AreEqual("acceptor", refusal.ParamName);
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

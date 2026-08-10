@@ -23,7 +23,10 @@ namespace Lumoin.Verisync.Core;
 /// <see cref="FastAcceptor{TValue}.Initial"/> and will re-promise ballots it already superseded, breaking
 /// agreement. Pass a <see cref="PersistAcceptorDelegate{TValue}"/> to <see cref="RunAsync"/> to get this:
 /// before each reply it makes the acceptor durable unless the state the reply rests on already is, so an
-/// unpersisted promise is never observable. Omitting it (or supplying the no-durability
+/// unpersisted promise is never observable. Durability needs the restore as its other half: a restarting
+/// host turns the persisted bytes back into an acceptor with <see cref="FastAcceptor{TValue}.FromState"/>
+/// and constructs the node over it, so the node returns on the state it answered from rather than at the
+/// initial acceptor. Omitting the delegate (or supplying the no-durability
 /// implementation) sends each reply immediately and is suitable for tests and ephemeral clusters. A host
 /// that needs different sequencing drives the node itself instead: call <see cref="Handle"/>, persist
 /// <see cref="Acceptor"/>, and only then send the reply.
@@ -31,8 +34,44 @@ namespace Lumoin.Verisync.Core;
 /// </remarks>
 public sealed class ConsensusNode<TValue>
 {
+    /// <summary>
+    /// Initializes a node whose acceptor starts at <see cref="FastAcceptor{TValue}.Initial"/>.
+    /// </summary>
+    /// <remarks>
+    /// This is the node a host builds when it has nothing to restore. It seeds through the same path a
+    /// restore does, over the initial acceptor, which needs no write because a node that lost everything
+    /// returns exactly there.
+    /// </remarks>
+    public ConsensusNode(): this(FastAcceptor<TValue>.Initial)
+    {
+    }
+
+
+    /// <summary>
+    /// Initializes a node over <paramref name="acceptor"/>, which the node treats as already durable.
+    /// </summary>
+    /// <param name="acceptor">
+    /// The acceptor this node starts from, which a restarting host builds with
+    /// <see cref="FastAcceptor{TValue}.FromState"/> over the state it last made durable.
+    /// </param>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="acceptor"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// The node owes no write for the acceptor it was constructed with: either it is the initial acceptor,
+    /// or the host restored it from what it had already written. The first write a run owes is therefore the
+    /// one for the first request that changes the acceptor, and a retransmission the restored acceptor
+    /// answers idempotently costs none.
+    /// </remarks>
+    public ConsensusNode(FastAcceptor<TValue> acceptor)
+    {
+        ArgumentNullException.ThrowIfNull(acceptor);
+
+        Acceptor = acceptor;
+        Persisted = acceptor;
+    }
+
+
     /// <summary>The current acceptor state.</summary>
-    public FastAcceptor<TValue> Acceptor { get; private set; } = FastAcceptor<TValue>.Initial;
+    public FastAcceptor<TValue> Acceptor { get; private set; }
 
 
     /// <summary>
@@ -42,11 +81,12 @@ public sealed class ConsensusNode<TValue>
     /// <remarks>
     /// This is node state rather than loop state, because a host whose durable write failed restarts the loop
     /// on this same node and would otherwise begin by treating whatever the failed attempt left in memory as
-    /// already durable. It starts at <see cref="FastAcceptor{TValue}.Initial"/>, which needs no write
-    /// because a node that lost everything returns exactly there, and which is the same singleton the
-    /// acceptor starts from, so the gate's reference comparison holds before the first request.
+    /// already durable. It starts at the acceptor the node was constructed with, which is durable by
+    /// construction: either it is the initial acceptor, which needs no write because a node that lost
+    /// everything returns exactly there, or the host restored it from what it had already written. The
+    /// acceptor starts from the same reference, so the gate's comparison holds before the first request.
     /// </remarks>
-    private FastAcceptor<TValue> Persisted { get; set; } = FastAcceptor<TValue>.Initial;
+    private FastAcceptor<TValue> Persisted { get; set; }
 
 
     /// <summary>
