@@ -4,10 +4,10 @@ using System.Threading.Tasks;
 namespace Lumoin.Verisync.Core;
 
 /// <summary>
-/// Persists an acceptor's state so a promise or accept survives a process crash. It is invoked after the
-/// acceptor state has changed and <em>before</em> the corresponding reply is sent, and must not return until
-/// the new state is durable — an <c>fsync</c>, a committed database transaction, or whatever durability means
-/// for the host.
+/// Persists an acceptor's state so a promise or accept survives a process crash. It is invoked
+/// <em>before</em> a reply is sent whenever the acceptor state the reply rests on is not yet durable, and
+/// must not return until the new state is durable — an <c>fsync</c>, a committed database transaction, or
+/// whatever durability means for the host.
 /// </summary>
 /// <typeparam name="TValue">The register value type.</typeparam>
 /// <param name="acceptor">The new acceptor state to make durable before the reply is sent.</param>
@@ -23,7 +23,8 @@ namespace Lumoin.Verisync.Core;
 /// <para>
 /// Throwing prevents the reply from being sent, which is the correct fail-closed behavior: an unpersisted
 /// promise must never be observable, so a host whose durable store is unavailable should throw rather than
-/// let the reply escape. The exception then propagates out of <see cref="ConsensusNode{TValue}.RunAsync"/>.
+/// let the reply escape. The exception then propagates out of <see cref="ConsensusNode{TValue}.RunAsync"/>,
+/// and a later delivery finds the state still unpersisted and retries the write before any reply is sent.
 /// </para>
 /// <para>
 /// The trivial no-durability implementation — <c>(acceptor, cancellationToken) =&gt; ValueTask.CompletedTask</c>

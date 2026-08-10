@@ -174,8 +174,8 @@ internal sealed class SocketClusterTests
                 MessageChannelReader<ConsensusRequest<string>> requests = new(PipeReader.Create(serverStream), requestDeserialize);
                 MessageChannelWriter<ConsensusReply<string>> replies = new(PipeWriter.Create(serverStream, new StreamPipeWriterOptions(leaveOpen: true)), replySerialize);
 
-                //The hook records each state-changing acceptor before its reply is sent: a stand-in for the
-                //fsync a durable host would do. RunAsync only invokes it when the request changed the acceptor.
+                //The hook records each acceptor state before its reply is sent: a stand-in for the fsync a
+                //durable host would do. RunAsync only invokes it when the acceptor is not already durable.
                 ConcurrentQueue<FastAcceptor<string>> sink = persisted[i];
                 PersistAcceptorDelegate<string> persist = (acceptor, _) =>
                 {

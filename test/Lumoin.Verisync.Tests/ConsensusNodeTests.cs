@@ -125,6 +125,126 @@ internal sealed class ConsensusNodeTests
 
 
     [TestMethod]
+    public async Task ARedeliveryAfterAFailedPersistWritesAgainBeforeItAnswers()
+    {
+        //A re-delivery after a failed write is the one place where "did the state change" and "is the state
+        //durable" come apart. The accept advances the acceptor, the write fails, and the reply is correctly
+        //withheld. The proposer then re-delivers the identical accept, which the idempotent-retry branch
+        //answers from the same instance — so a gate that asked whether this request changed the state would
+        //skip the write and announce an accept that never reached the disk. The gate compares against what
+        //was persisted, not against what the request found.
+        ConsensusNode<string> node = new();
+        Channel<ConsensusRequest<string>> requests = Channel.CreateUnbounded<ConsensusRequest<string>>();
+        List<ConsensusReply<string>> replies = [];
+        List<FastAcceptor<string>> persisted = [];
+        int attempts = 0;
+
+        //The first write fails and every later one succeeds, which is a disk that was briefly full.
+        ValueTask Persist(FastAcceptor<string> acceptor, CancellationToken token)
+        {
+            attempts++;
+            if(attempts == 1)
+            {
+                throw new IOException("the durable store is full");
+            }
+
+            persisted.Add(acceptor);
+
+            return ValueTask.CompletedTask;
+        }
+
+        ValueTask SendReply(ConsensusReply<string> reply, CancellationToken token)
+        {
+            replies.Add(reply);
+
+            return ValueTask.CompletedTask;
+        }
+
+        //A classic ballot above the initial promise is the accept-without-prepare case, so a single request
+        //both advances the acceptor and is answered idempotently from the same instance when re-delivered.
+        AcceptRequest<string> request = new(FastBallot.Classic(2, R1), "v");
+
+        await requests.Writer.WriteAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+        requests.Writer.Complete();
+
+        await Assert.ThrowsExactlyAsync<IOException>(
+            async () => await node.RunAsync(requests.Reader.ReadAllAsync(TestContext.CancellationToken), SendReply, Persist, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.IsEmpty(replies);
+        Assert.IsEmpty(persisted);
+
+        //The host restarts the loop on the same node, which is its only option, and the proposer re-delivers
+        //the identical request. The acceptor is unchanged by it, and the write must still happen.
+        FastAcceptor<string> afterFailedWrite = node.Acceptor;
+        Channel<ConsensusRequest<string>> redelivered = Channel.CreateUnbounded<ConsensusRequest<string>>();
+
+        await redelivered.Writer.WriteAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+        redelivered.Writer.Complete();
+
+        await node.RunAsync(redelivered.Reader.ReadAllAsync(TestContext.CancellationToken), SendReply, Persist, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //The redelivery answered from the very instance the failed write left behind. This is the premise
+        //that makes it the path where the two gates diverge; if the retry ever allocated a fresh instance,
+        //this test would pass under either gate and pin nothing.
+        Assert.AreSame(afterFailedWrite, node.Acceptor);
+
+        Assert.HasCount(1, persisted);
+        Assert.HasCount(1, replies);
+        Assert.AreSame(node.Acceptor, persisted[0]);
+        Assert.IsTrue(((AcceptReply<string>)replies[0]).Accepted);
+
+        //A third identical delivery is genuinely durable already, so it costs no further write and still
+        //answers: the gate is durability and not paranoia.
+        Channel<ConsensusRequest<string>> again = Channel.CreateUnbounded<ConsensusRequest<string>>();
+
+        await again.Writer.WriteAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+        again.Writer.Complete();
+
+        await node.RunAsync(again.Reader.ReadAllAsync(TestContext.CancellationToken), SendReply, Persist, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, persisted);
+        Assert.HasCount(2, replies);
+    }
+
+
+    [TestMethod]
+    public async Task AStaleRequestToAFreshNodeCostsNoWrite()
+    {
+        //A fresh node's acceptor and its durable baseline are the same initial singleton, so a request the
+        //acceptor rejects outright leaves nothing to write and the reply goes out alone. A baseline that
+        //started anywhere else would persist a state no request produced on the first rejection.
+        ConsensusNode<string> node = new();
+        Channel<ConsensusRequest<string>> requests = Channel.CreateUnbounded<ConsensusRequest<string>>();
+        List<FastAcceptor<string>> persisted = [];
+        List<ConsensusReply<string>> replies = [];
+
+        PersistAcceptorDelegate<string> persist = (acceptor, _) =>
+        {
+            persisted.Add(acceptor);
+
+            return ValueTask.CompletedTask;
+        };
+
+        ValueTask SendReply(ConsensusReply<string> reply, CancellationToken token)
+        {
+            replies.Add(reply);
+
+            return ValueTask.CompletedTask;
+        }
+
+        //A fast-ballot prepare is rejected from any state, the initial one included, without changing it.
+        await requests.Writer.WriteAsync(new PrepareRequest<string>(FastBallot.InitialFast()), TestContext.CancellationToken).ConfigureAwait(false);
+        requests.Writer.Complete();
+
+        await node.RunAsync(requests.Reader.ReadAllAsync(TestContext.CancellationToken), SendReply, persist, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, replies);
+        Assert.IsEmpty(persisted);
+        Assert.IsFalse(((PrepareReply<string>)replies[0]).Promised);
+    }
+
+
+    [TestMethod]
     public async Task NullPersistDelegateSendsRepliesImmediately()
     {
         //Omitting the persist delegate reproduces the in-memory behavior: every reply is sent, nothing is

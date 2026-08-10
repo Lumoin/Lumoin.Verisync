@@ -4,10 +4,10 @@ using System.Threading.Tasks;
 namespace Lumoin.Verisync.Core;
 
 /// <summary>
-/// Persists a recorder's state so a recorded proposal survives a process crash. It is invoked after the
-/// recorder state has changed and <em>before</em> the corresponding reply is sent, and must not return until
-/// the new state is durable — an <c>fsync</c>, a committed database transaction, or whatever durability means
-/// for the host.
+/// Persists a recorder's state so a recorded proposal survives a process crash. It is invoked
+/// <em>before</em> a reply is sent whenever the recorder state the reply rests on is not yet durable, and
+/// must not return until the new state is durable — an <c>fsync</c>, a committed database transaction, or
+/// whatever durability means for the host.
 /// </summary>
 /// <typeparam name="TValue">The register value type.</typeparam>
 /// <param name="recorder">The new recorder state to make durable before the reply is sent.</param>
@@ -28,9 +28,11 @@ namespace Lumoin.Verisync.Core;
 /// delegate returns closes those windows.
 /// </para>
 /// <para>
-/// A request that changes nothing is not persisted, and the reply is still sent. The recorder returns its own
-/// instance exactly when no field would have changed, which is the case for a record below its step and for
-/// an identical same-step record, so a retransmission costs no <c>fsync</c>.
+/// A request that changes nothing still gets its reply, and once the state it found is durable it costs no
+/// fresh write. The recorder returns its own instance exactly when no field would have changed — a record
+/// below its step, or an identical same-step record — which is how the node knows the state it already
+/// persisted still stands; a retransmission that follows a failed write instead retries the write before the
+/// reply is sent.
 /// </para>
 /// <para>
 /// Throwing prevents the reply from being sent and so fails closed: a recorded proposal that is not durable

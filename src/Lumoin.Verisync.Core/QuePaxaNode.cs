@@ -32,8 +32,8 @@ namespace Lumoin.Verisync.Core;
 /// for a step whose original first proposal a proposer has already read. The prior aggregate is durable for a
 /// second reason: every reply carries it and the proposer's later phases decide on it, so a node that
 /// persisted the step and the first proposal alone would answer from a field it never wrote. Pass a
-/// <see cref="PersistRecorderDelegate{TValue}"/> to <see cref="RunAsync"/> to get this: after each request that
-/// changes the recorder it makes the new state durable and only then sends the reply, so no unpersisted
+/// <see cref="PersistRecorderDelegate{TValue}"/> to <see cref="RunAsync"/> to get this: before each reply it
+/// makes the recorder durable unless the state the reply rests on already is, so no unpersisted
 /// recorder state is ever observable. Omitting it
 /// (or supplying the no-durability implementation) sends each reply immediately and is suitable for tests and
 /// ephemeral clusters. A host that needs different sequencing drives the node itself instead: call
@@ -93,8 +93,9 @@ public sealed class QuePaxaNode<TValue>
     /// <returns>The reply to send back to the proposer.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="request"/> is <see langword="null"/>.</exception>
     /// <remarks>
-    /// A request that changes nothing leaves <see cref="Recorder"/> reference-identical to what it was, which
-    /// <see cref="RunAsync"/> reads to decide whether the reply needs to be made durable first.
+    /// A request that changes nothing leaves <see cref="Recorder"/> reference-identical to what it was, so a
+    /// state once persisted stays reference-equal to what <see cref="RunAsync"/> last made durable, which is
+    /// how its gate detects that a reply needs no further write.
     /// </remarks>
     public RecordReply<TValue> Handle(RecordRequest<TValue> request)
     {
@@ -123,7 +124,8 @@ public sealed class QuePaxaNode<TValue>
     /// recorder is not already known to be durable, so the whole recorder state — the step, the first proposal,
     /// the current aggregate and the prior aggregate — is durable before any of it becomes observable. A
     /// request that changes nothing — one below the recorder's step, or an identical
-    /// same-step re-delivery — leaves the recorder reference-identical and needs no further write. When
+    /// same-step re-delivery — leaves the recorder reference-identical and, once that state is durable, needs
+    /// no further write. When
     /// <see langword="null"/>, replies are sent immediately, reproducing the in-memory behavior suitable for
     /// tests and ephemeral clusters.
     /// </param>
@@ -138,8 +140,10 @@ public sealed class QuePaxaNode<TValue>
     /// loop: a node whose transport has failed cannot keep serving requests.
     /// </para>
     /// <para>
-    /// The gate is durability rather than mutation, and the difference is only visible after a failed write.
-    /// The loop remembers the last recorder it persisted rather than comparing against the state this request
+    /// The gate is durability rather than mutation, and the two come apart only where the recorder has moved
+    /// past what was last made durable without the current request changing it — after a failed write, after
+    /// requests handled directly through <see cref="Handle"/>, or after a run without a delegate. The loop
+    /// remembers the last recorder it persisted rather than comparing against the state this request
     /// found. Comparing against the request would fail open on exactly the sequence the re-send rule makes
     /// ordinary: a request advances the recorder, the write fails and the reply is correctly withheld, the
     /// proposer re-delivers the identical request, the re-delivery changes nothing and so would skip the write,
