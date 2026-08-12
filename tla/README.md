@@ -5,7 +5,9 @@ ship: the anti-entropy session pair with the completion frame, the consensus-anc
 seal, QuePaxa, and Raft's leader election and log rules. The session pair, the seal, the election and the
 log model the code as it is. The two QuePaxa protocol modules model the published protocol before any
 code exists, which is the point of ordering it that way, while the QuePaxa durability module and its
-torn-write sibling model the code that followed them. The abstraction decisions are
+torn-write sibling model the code that followed them. `QuePaxaMembership` is a third case again: it
+models a design for code that does not exist yet and is not in the published protocol either, since
+the QuePaxa paper is silent on reconfiguration. The abstraction decisions are
 documented in each module's header comment.
 
 ## Negative models
@@ -272,6 +274,150 @@ was never answered. Withdrawing that clause alone breaks nothing the `served` gh
 green must not be read as the C# check being redundant - what it protects is outside what this
 module can state.
 
+## The QuePaxa membership matrix
+
+`QuePaxaMembership` is dynamic membership for the versioned register: the configuration is a field
+of the decided record, and the configuration carried by the record decided at version *v* governs
+consensus instance *v+1* and no other. It sits above `QuePaxaConcrete` rather than beside it. One
+instance's protocol is collapsed into a single atomic `Decide` guarded by a quorum of that
+instance's configuration, because the question here is not whether an instance is safe - that is
+`QuePaxaConcrete`'s discharged subject - but whether every quorum that ever completes lies inside
+one configuration, and whether two hosts serving one instance can derive different ones. The
+composition between the two modules is a named predicate rather than a checked refinement:
+`QuePaxaConcrete` assumes the recorders of one instance run under one configuration, and
+`OneConfigurationPerInstance` is exactly that assumption discharged as a checked invariant here.
+That argument is exact for the leader hypothesis and holds for the recorder set only because
+`QuePaxaConcrete` carries a single `Recorders` constant.
+
+Every row below has run and matched its pin. The four greens explored their state spaces to
+exhaustion with nothing left on the queue - `MCMembershipShipped` at 11,555,481 states generated
+and 2,838,113 distinct, `MCMembershipDisjointChange` at 4,477,323 and 1,082,351,
+`MCMembershipRemovedProposer` at 946,629 and 245,515, and `MCMembershipGuardedGenesis` at 3,873
+and 2,044 - and each negative went red on exactly the invariant its own configuration names. A red
+here is pinned by its exit code and by the invariant TLC reports and by nothing else, because a
+run that stops at its first violation leaves the state counts to whichever states the workers had
+reached at that instant.
+
+The three assignments with more than one candidate were settled by merged runs rather than argued,
+which is this directory's rule. `MCMembershipLocalConfig` and `MCMembershipOutsiderCounted` each
+list the shallower of their two candidates and the merged listings name it: the local
+configuration reaches `OneConfigurationPerInstance` at depth 3 with `Agreement` one decision
+further on, and the counted outsider reaches `DecisionsCountOnlyMembers` at depth 2, because the
+stranger is counted in the very first decision while the fork that breaks `Agreement` needs a
+second decision to stand beside the first. At `MCMembershipSplitGenesis`'s constants the merged
+listing names `NoCrossClusterDecision` even though `Agreement` was listed ahead of it, which is
+the general fact those runs exist to establish: TLC reports the invariant its breadth-first search
+falsifies first rather than the first entry in the `INVARIANTS` list. That is exactly why the
+earlier invariant is pinned in a sibling configuration at the same constants instead of as a
+second entry in that file.
+
+`Decide` carries one guard that is not a deployment rule but the collapsed-level encoding of
+intra-instance agreement: a host counted in a decision at a version is not counted again at that
+version for a different record. Without it two quorums of one uniform configuration could both
+decide, every positive would be red and the matrix would pin nothing. With it, two different
+records at one version need disjoint quorums, which majorities of one member set cannot supply,
+while a split genesis affords them across the forked configurations. That is the witness class the
+design panel settled on, and it matters: two majorities of one member set can share a single
+recorder, and a shared recorder is not a fork, because its aggregate carries the decided proposal
+forward.
+
+A decision installs the record at its writer alone. The recorders counted in a quorum have
+*recorded* rather than *learned* - dissemination is best effort and reports nothing - and `Learn`
+is what moves a record anywhere else. That asymmetry is the model's statement of the mechanism
+that preserves a decision: agreement within the instance over its one fixed recorder set, and not
+the version gate, which is the activation boundary rather than the preservation rule.
+
+Six rules are constants in the shipped mould. `ConfigDerivedFromRecord`, `VersionGateBinds`,
+`RepliesOnlyFromMembers`, `ClusterBinds` and `DecommissionGated` each get a negative.
+`ProposerMustBeMember` is the one whose withdrawal stays green, and that green is what its row was
+run for.
+
+| Configuration | Module | What it models | Expected |
+| --- | --- | --- | --- |
+| `MCMembershipShipped` | QuePaxaMembership | every rule in force over an agreeing deployment, with the member set changing at every version of a three-version chain | green |
+| `MCMembershipDisjointChange` | QuePaxaMembership | the headline: a change to a member set sharing nothing with the outgoing one, so no pair of quorums could intersect | green |
+| `MCMembershipRemovedProposer` | QuePaxaMembership | the non-member proposer filter withdrawn, which must change nothing - the green that prices that filter as operability rather than safety | green |
+| `MCMembershipGuardedGenesis` | QuePaxaMembership | a split genesis against the chain-identity check, where the fork becomes a stranded host | green |
+| `MCMembershipLocalConfig` | QuePaxaMembership | negative model: the configuration read from each host's deployment file instead of derived from its record, so one instance runs under two member sets | red (required) |
+| `MCMembershipSplitGenesis` | QuePaxaMembership | negative model: one host provisioned with a different genesis list and no chain identity to notice, so two disjoint quorums decide one version | red (required) |
+| `MCMembershipCrossClusterQuorum` | QuePaxaMembership | negative model: the same constants, pinned instead on the mixed quorum that is reachable one decision earlier than the fork | red (required) |
+| `MCMembershipServesAWindow` | QuePaxaMembership | negative model: the version gate withdrawn, so a decision counts hosts that never learned the record installing them | red (required) |
+| `MCMembershipOutsiderCounted` | QuePaxaMembership | negative model: an answer counted from a host outside the instance's configuration, which is an endpoint slot wired to the wrong machine | red (required) |
+| `MCMembershipEagerDecommission` | QuePaxaMembership | negative model: the decommission gate withdrawn, so the only live holder of the newest record is retired and the register is wedged | red (required) |
+
+One green is half of a constants-matched pair, and it is what keeps the negatives from being the
+whole argument. `MCMembershipGuardedGenesis` runs at `MCMembershipSplitGenesis`'s constants and
+differs in one flag, which is the bounds rule this directory sets: the positive is only meaningful
+where its paired negative is red. The other three greens are not paired, and each is unpaired for
+its own reason worth stating rather than glossing. `MCMembershipShipped` is the baseline every
+negative except the genesis trio is a one-flag departure from, so its pairing is with all four of
+them at once; those four also sit one version shallower than the baseline, which is the permitted
+direction, since the rule this directory sets forbids a positive checked shallower than its
+negative rather than deeper. `MCMembershipDisjointChange` is a standalone claim - that no overlap is required
+between consecutive configurations - and has no negative because the thing it certifies is the
+absence of a requirement rather than the presence of a guard. `MCMembershipRemovedProposer` is the
+sixth flag's price, and it is green: withdrawing that flag breaks nothing, so a negative would
+have nothing to demonstrate. A red there would have made the flag load-bearing and reopened the
+design decision resting on it.
+
+`MCMembershipCrossClusterQuorum` carries the split negative's constants
+exactly and differs only in the invariant it lists, on the precedent the durability matrix already
+records - a fork needs two decisions before `Agreement` can see it, while one mixed quorum breaks
+`NoCrossClusterDecision` at the first, so a single file listing both would report whichever TLC
+reached first and the other would stop testing what it was written for.
+
+Three things a reader would otherwise over-read from this matrix. **What a green certifies is
+narrower than its invariant list.** Every green lists all seven invariants, but three of them -
+`DecisionsCountOnlyMembers`, `DecisionsCountOnlyCaughtUpHosts` and `NoCrossClusterDecision` - are
+state-predicate restatements of guards `Decide` already conjoins wherever their flag is TRUE, so
+they cannot fail in a positive and carry no assurance beyond the guard. They are written that way
+on purpose, because each has to be able to go red in the one negative that withdraws its flag, and
+a rule that is enforced in the action and checked in the state is the only shape that does both.
+In a green, the real checks are `TypeOK`, `Agreement`, `OneConfigurationPerInstance` and
+`LatestDecisionSurvives`. **The cluster arm is inert in seven of the ten rows**, which bind
+`OneCluster`: one identity is carried by every configuration there, so both sides of the check are
+equal by construction and `ClusterBinds = TRUE` constrains nothing. Only the genesis trio exercises
+it. **And the recorder-side refusals need no placement negative**, which is the one obligation this
+matrix discharges by derivation instead of by a run. `RaftElection` carries a placement pair
+(`MCRaftElectionTermInflation` and `MCRaftElectionFilterFirst`) because Raft's term rule moves a
+member's term *before* the tally, so a filter placed after it leaves an outsider a lever. The
+versioned host has no such lever: every refusal in `QuePaxaVersionedNode.Handle` precedes any
+mutation, so no state exists for a wrongly-ordered filter to move, and there is nothing for a
+negative to demonstrate. The Raft pair is in the next section and must not be imported here on the
+strength of the resemblance.
+
+Three bounds are derived rather than chosen for cost. `Hosts` is strictly larger than every
+configuration in every row, or `MCMembershipOutsiderCounted` would have no outsider to inject and
+`MCMembershipRemovedProposer` no non-member to propose - the `RaftElection` `Outsiders` shape
+applied at the recorder. The split-genesis constants must afford a pair of disjoint majorities
+between the two genesis member lists, or under the binding guard that red is unreachable rather
+than merely mis-witnessed.
+
+And the chain length is bound per row rather than matrix-wide, because the rows do not all have the
+same subject. `MCMembershipShipped` and `MCMembershipDisjointChange` run three versions, which is
+what it takes to decide under a configuration that a decision installed rather than one genesis
+supplied; at two versions the rule this section opens with is exercised for exactly one step, and
+the chained step is outside the alphabet. The other eight rows run two, because neither the
+proposer filter, which is per-decision, nor the genesis defence, which lives at the genesis
+boundary, gains anything structural from a second change, and a negative is cheapest at the
+shallowest bound that still reaches its violation. Three is where the chain stops: every guard and
+every invariant here reads the held records, the per-version decision sets and the highest decided
+version, nothing quantifies backwards over a chain, and the invariants are at most pairwise, so an
+interacting pair spans at most two generations beside the deciding one and a fourth version adds
+states without adding a shape. That derivation is the one to revisit first if the module ever
+grows chain-depth-sensitive machinery, configuration reclamation above all.
+
+Symmetry is not available. `Members`, `Genesis` and `Cluster` name hosts and configurations by
+identity, so a host permutation is a symmetry of the constants only if the configurations are
+permuted with them. No configuration declares one.
+
+Two modelling decisions cut the alphabet and are worth stating because each looks like an omission.
+A record carries no value: `Agreement` needs two records at one version to be distinguishable, the
+writer already distinguishes them, and no invariant or guard in the module reads a value, so a
+value field would be a dimension that only multiplies states. And a decision counts exactly a
+quorum rather than at least one, which is faithful rather than a reduction - the endpoint array has
+one slot per member, so a stranger occupies a slot instead of adding one.
+
 ## The Raft election matrix
 
 `RaftElection` models leader election over a fixed membership. It exists for a hazard no conventional Raft
@@ -408,6 +554,44 @@ server for anything but its identity.
   a restored snapshot whose configured leader or recorder version is not the one its own committed
   record derives. Reaching either would mean a durability dimension in the concrete module, whose
   largest configuration already holds 27,328,647 distinct states.
+- `QuePaxaMembership` checks no progress property. `Learn` is enabled from any live holder, so
+  dissemination is over-approximated and nothing there says a joiner catches up; the availability
+  cost of a membership change, which is the whole of the operator guidance, is outside what the
+  module states. `LatestDecisionSurvives` is the one thing said about it, and it is a possibility
+  predicate - recovery remains possible - rather than a claim that recovery happens. The gate it
+  checks is also unenforceable: nothing in the library stops a host being killed, so what the red
+  beside it buys is that the rule is checked, not that it is imposed.
+- `QuePaxaMembership` does not close the standing gap in the note above. That gap joins a
+  *corruption* cause to the divergence consequence and needs reserved priorities in the alphabet;
+  this module supplies a *configuration-divergence* cause instead, which is the adjacent gap. The
+  restore rules that would carry the corruption side stay with the unit suite, on the same
+  precedent the durability matrix records, and no configuration here models durability or tearing:
+  `QuePaxaTornWrite` extends `QuePaxaDurable`, which has no record, no version and no leader, so
+  teaching it a configuration means teaching it all three first.
+- No configuration in the membership matrix checks deadlock. The chain is bounded by `MaxVersion`,
+  so every run reaches a state with nothing left to decide, and that terminal state is the bound
+  rather than a defect. Both Raft matrices set `CHECK_DEADLOCK FALSE` throughout for the same
+  reason, though neither writes the reason down; this is where it is written down.
+- `QuePaxaMembership` needs no union either, and that is a result rather than a convenience. It has
+  three actions (`Decide`, `Learn` and `Decommission`, written as separate `Next` disjuncts so a
+  coverage run can tell them apart), and every one of the four greens fires all three a nonzero
+  number of times, so the covering union is any single green and no configuration in that matrix
+  exists to reach an action the others cannot. In `MCMembershipShipped` `Decide` fires 403,848
+  times, `Learn` 8,110,176 and `Decommission` 3,041,456, which with the initial state is the whole
+  11,555,481 states that run generates, so the arithmetic itself says no action was missed. Only
+  the invocation totals are recorded, on the reason the torn-write note above gives: where more
+  than one action can be first to a state, the per-action distinct-state split is an attribution
+  race rather than a figure. `Learn` is the largest of the three totals in every green but the
+  smallest, where `Decommission` edges past it, which is the ordinary shape of a model where
+  learning is the high-fan-out step; `MCMembershipGuardedGenesis` fires the three 444, 1,632 and
+  1,796 times, so it covers them shallowly and is a cheap smoke row rather than a substitute for
+  the others. The two rows that run three versions were measured at both bounds, and what the
+  comparison says is that the third version is not more of the same: `Decide` grows from 11,544
+  invocations to 403,848 while the state space around it grows by a smaller multiple, so the
+  deeper chain reaches a proposer regime the two-version bound does not, and the same shape
+  appears in `MCMembershipDisjointChange`. The gate stated above is now satisfied for every module
+  in this directory. What none of it says is whether an action's guards were pinned - coverage
+  says only that the action fired.
 - `QuePaxaTornWrite`'s tear alphabet has edges that are scope notes rather than claims. The mix runs
   against the current volatile tuple only, because the reply waits for the persist and the host's
   runner is single-consumer, so one write is in flight at a time and reordering across concurrent
@@ -445,38 +629,53 @@ server for anything but its identity.
   proposal sets from the register summaries needs ghost state that the interval summary register
   exists in order not to keep. The argument is tabulated in the ground-truth map; the concrete
   module checks its own invariants and the hazard directly.
-- Every green QuePaxa configuration listed above explored its state space to exhaustion; nothing
+- Every green QuePaxa configuration listed above explored its state space to exhaustion, the
+  membership greens included, and every one of them drained its queue to zero; nothing
   here used bitstate-equivalent techniques, and nothing may be reported as verified that did. A red
   configuration stops at its first violation and is not exhaustive by design - what it certifies is
   that the defect is reachable, which is all a negative model is for.
-- Exhaustion is itself probabilistic and TLC reports by how much. Every completed run prints two
-  estimates of the chance it skipped a reachable state because two distinct states shared a
-  fingerprint: one calculated from the state count, and one from the fingerprints it actually saw.
-  They are not uniformly negligible, and which configuration is worst is not the one size alone
-  suggests. Brute-force `MCRaftLogFigure8`, at 76,878,566 distinct states, reported
-  0.0042 calculated and 0.0015 from the actual fingerprints, which is about one chance in 667 and is
-  not a figure to report a verification against. The same configuration quotiented by
-  `ServerSymmetry` reports 5.4e-7 and 1.0e-6 at 846,584 distinct states, so the symmetry declaration
-  buys confidence as well as time. The QuePaxa greens were then read rather than assumed, and the
+- Exhaustion is itself probabilistic and TLC reports by how much. Every completed run of any size
+  prints an estimate of the chance it skipped a reachable state because two distinct states shared a
+  fingerprint, calculated from the state count, and every run but the two smallest prints a second
+  one taken from the fingerprints it actually saw. They are not uniformly negligible, and which
+  configuration is worst is not the one size alone suggests. Brute-force `MCRaftLogFigure8`, at
+  76,878,566 distinct states, reported 0.0042 calculated and 0.0015 from the actual fingerprints,
+  which is about one chance in 667 and is not a figure to report a verification against. The same
+  configuration quotiented by `ServerSymmetry` reports 5.4e-7 and 1.0e-6 at 846,584 distinct
+  states, so the symmetry declaration buys confidence as well as time. The QuePaxa greens were then read rather than assumed, and the
   largest of them is `MCAbstractSweep` and not the concrete configuration this note used to name.
 
   | Configuration | Distinct states | Calculated | From the actual fingerprints |
   |---|---|---|---|
-  | `MCAbstractSweep` | 29,496,528 | 0.0012 | 8.0e-5 |
-  | `MCConcreteSingleLeader` | 27,328,647 | 2.8e-4 | 3.2e-5 |
-  | `MCAbstractCrash` | 19,703,792 | 1.1e-4 | 1.1e-4 |
-  | `MCAbstractSafety` | 8,739,712 | 3.0e-5 | 3.8e-6 |
-  | `MCConcreteTwoLeadersGuarded` | 7,038,491 | 1.8e-5 | 1.1e-6 |
-  | `MCTornStepZeroPremise` | 641,422 | 3.5e-7 | 3.8e-11 |
-  | `MCDurableRecorder` | 27,555 | 1.7e-10 | 2.7e-12 |
+  | `MCAbstractSweep` | 29,496,528 | 0.0012 | 1.0e-4 |
+  | `MCConcreteSingleLeader` | 27,328,647 | 2.8e-4 | 1.5e-5 |
+  | `MCAbstractCrash` | 19,703,792 | 1.1e-4 | 3.3e-5 |
+  | `MCAbstractSafety` | 8,739,712 | 3.0e-5 | 6.5e-6 |
+  | `MCConcreteTwoLeadersGuarded` | 7,038,491 | 1.8e-5 | 1.2e-6 |
+  | `MCMembershipShipped` | 2,838,113 | 1.3e-6 | 2.1e-5 |
+  | `MCMembershipDisjointChange` | 1,082,351 | 2.0e-7 | 3.7e-8 |
+  | `MCTornStepZeroPremise` | 641,422 | 3.5e-7 | 1.9e-10 |
+  | `MCMembershipRemovedProposer` | 245,515 | 9.3e-9 | 3.7e-9 |
+  | `MCDurableRecorder` | 27,555 | 1.7e-10 | 1.0e-11 |
 
-  `MCConcreteSingleLeaderDeclaredSchedule` matches `MCConcreteSingleLeader` on both counts, as it
-  must, and reports 3.5e-5 from its own fingerprints. `MCAbstractSweep` is the only QuePaxa
-  configuration whose calculated estimate reaches a thousandth, though its actual figure of about one
-  in 12,500 is nineteen times better than the brute-force Raft log run's, and `MCAbstractCrash` is
-  the one configuration here where the two estimates agree rather than the actual being the better of
-  them. Read both lines on any configuration past a few million distinct states rather than assuming
-  they stay small.
+  The calculated column is a function of the state count and reproduces run to run; the actual
+  column follows the fingerprints a run happens to draw, so it is one matrix run's snapshot and the
+  whole column is refreshed together rather than row by row.
+  `MCConcreteSingleLeaderDeclaredSchedule` matches `MCConcreteSingleLeader` on both counts and on
+  the calculated estimate, as it must, and reports 3.9e-5 from its own fingerprints, the one column
+  where two runs of the same state graph are entitled to differ. `MCAbstractSweep` is the only
+  QuePaxa configuration whose calculated estimate reaches a thousandth, and its actual figure of
+  about one in 10,000 is fifteen times better than the brute-force Raft log run's, which still
+  leaves it the weakest line in the table on both columns. `MCMembershipShipped` is the one row
+  where the actual estimate is the worse of the two rather than the better; everywhere else the
+  fingerprints TLC saw were kinder than the state count predicted. That row reported the same
+  ordering at its old bound, so it is a property of the row and not of a seed: the two estimates
+  come from different formulas, and "optimistic" names the assumptions the first one makes rather
+  than a promise to bound the second. Read both lines on any configuration past a few million
+  distinct states rather than assuming they stay small. Below a few thousand distinct states there
+  is only one line to read: the two smallest greens in the matrix, `MCMembershipGuardedGenesis` at
+  2,044 distinct states and calculated 2.0e-13 and `MCConcreteDeclaredScheduleBinds` at 292, print
+  the calculated estimate and no second one, because the state space is too small to support one.
 - Value symmetry is declared in the abstract QuePaxa configurations and is sound there: nothing in
   the module reads a value except to compare it with another value, and the single CHOOSE picks by
   a predicate that ignores values. Where the proposal key leaves that choice open, which is the

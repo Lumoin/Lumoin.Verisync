@@ -11,7 +11,8 @@ $modules = @(
     ".\QuePaxaAbstract.tla",
     ".\QuePaxaConcrete.tla",
     ".\QuePaxaDurable.tla",
-    ".\QuePaxaTornWrite.tla"
+    ".\QuePaxaTornWrite.tla",
+    ".\QuePaxaMembership.tla"
 )
 
 # Expected 'red' runs are the negative models; a green negative means the model
@@ -53,7 +54,17 @@ $runs = @(
     @{ Config = ".\MCTornDurableShape.cfg";       Spec = ".\QuePaxaTornWrite.tla"; Expect = "red"; Invariant = "TypeOK" },
     @{ Config = ".\MCTornStepZeroPremise.cfg";    Spec = ".\QuePaxaTornWrite.tla"; Expect = "green" },
     @{ Config = ".\MCTornUnguardedRestore.cfg";   Spec = ".\QuePaxaTornWrite.tla"; Expect = "red"; Invariant = "RegisterHoldsOnlyRecorderStates" },
-    @{ Config = ".\MCTornFabricated.cfg";         Spec = ".\QuePaxaTornWrite.tla"; Expect = "red"; Invariant = "DurableRestoreKeepsEveryAnswer" }
+    @{ Config = ".\MCTornFabricated.cfg";         Spec = ".\QuePaxaTornWrite.tla"; Expect = "red"; Invariant = "DurableRestoreKeepsEveryAnswer" },
+    @{ Config = ".\MCMembershipShipped.cfg";           Spec = ".\QuePaxaMembership.tla"; Expect = "green" },
+    @{ Config = ".\MCMembershipDisjointChange.cfg";    Spec = ".\QuePaxaMembership.tla"; Expect = "green" },
+    @{ Config = ".\MCMembershipRemovedProposer.cfg";   Spec = ".\QuePaxaMembership.tla"; Expect = "green" },
+    @{ Config = ".\MCMembershipGuardedGenesis.cfg";    Spec = ".\QuePaxaMembership.tla"; Expect = "green" },
+    @{ Config = ".\MCMembershipLocalConfig.cfg";       Spec = ".\QuePaxaMembership.tla"; Expect = "red"; Invariant = "OneConfigurationPerInstance" },
+    @{ Config = ".\MCMembershipSplitGenesis.cfg";      Spec = ".\QuePaxaMembership.tla"; Expect = "red"; Invariant = "Agreement" },
+    @{ Config = ".\MCMembershipCrossClusterQuorum.cfg"; Spec = ".\QuePaxaMembership.tla"; Expect = "red"; Invariant = "NoCrossClusterDecision" },
+    @{ Config = ".\MCMembershipServesAWindow.cfg";     Spec = ".\QuePaxaMembership.tla"; Expect = "red"; Invariant = "DecisionsCountOnlyCaughtUpHosts" },
+    @{ Config = ".\MCMembershipOutsiderCounted.cfg";   Spec = ".\QuePaxaMembership.tla"; Expect = "red"; Invariant = "DecisionsCountOnlyMembers" },
+    @{ Config = ".\MCMembershipEagerDecommission.cfg"; Spec = ".\QuePaxaMembership.tla"; Expect = "red"; Invariant = "LatestDecisionSurvives" }
 )
 
 Push-Location $PSScriptRoot
