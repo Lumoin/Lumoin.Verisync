@@ -355,7 +355,7 @@ internal sealed class QuePaxaSocketClusterTests
             VersionedValue<string> committed = new(firstWrite.Version, firstWrite.Writer!.Value, firstWrite.Value!);
             for(int i = 0; i < count; i++)
             {
-                Assert.IsTrue(await runners[i].LearnAsync(committed, TestContext.CancellationToken).ConfigureAwait(false));
+                Assert.IsTrue(await runners[i].LearnAsync(committed, LearnDurability.InMemory, TestContext.CancellationToken).ConfigureAwait(false));
             }
 
             QuePaxaWriteOutcome<string> secondWrite = await register.TryWriteAsync("two", TestContext.CancellationToken).ConfigureAwait(false);

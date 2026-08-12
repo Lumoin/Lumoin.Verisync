@@ -77,7 +77,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
 
         Assert.AreEqual(snapshot, restored.ToState());
         Assert.AreEqual(new RegisterVersion(5UL), restored.LiveVersion);
-        Assert.AreEqual(ProposerLane.For(Second), restored.Node.Recorder.ConfiguredLeader);
+        Assert.AreEqual(ProposerLane.For(Second), restored.Recorder.ConfiguredLeader);
 
         //A request that advances the step answers with one reply at both hosts, so a proposer reading it cannot
         //tell which of the two served it.
@@ -111,7 +111,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
         //decline. A rebuild reached only through hosts with a derived leader cannot tell the two apart.
         QuePaxaVersionedNode<string> leaderless = new(schedule, Record(4UL, Stranger));
 
-        Assert.IsNull(leaderless.Node.Recorder.ConfiguredLeader);
+        Assert.IsNull(leaderless.Recorder.ConfiguredLeader);
 
         foreach(QuePaxaVersionedNode<string> host in (QuePaxaVersionedNode<string>[])[bootstrap, learned, leaderless])
         {
@@ -131,8 +131,8 @@ internal sealed class QuePaxaVersionedNodeStateTests
 
             Assert.AreEqual(snapshot, restored.ToState());
             Assert.AreEqual(host.LiveVersion, restored.LiveVersion);
-            Assert.AreEqual(host.Node.Recorder.ConfiguredLeader, restored.Node.Recorder.ConfiguredLeader);
-            Assert.AreEqual(RecorderStep.Zero, restored.Node.Recorder.Step);
+            Assert.AreEqual(host.Recorder.ConfiguredLeader, restored.Recorder.ConfiguredLeader);
+            Assert.AreEqual(RecorderStep.Zero, restored.Recorder.Step);
         }
     }
 
@@ -308,7 +308,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
         QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(schedule, stale);
 
         Assert.AreEqual(new RegisterVersion(5UL), restored.LiveVersion);
-        Assert.AreEqual(ProposerLane.For(Second), restored.Node.Recorder.ConfiguredLeader);
+        Assert.AreEqual(ProposerLane.For(Second), restored.Recorder.ConfiguredLeader);
 
         //It cannot serve the live instance, so a stale host costs a deployment availability and never agreement.
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = restored.Handle(Request(7UL, ProposalPriority.Lowest, First, "live")));
@@ -316,7 +316,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
         //Learning what it missed puts it back on the live instance under the leader every other host derives.
         Assert.IsTrue(restored.Learn(Record(6UL, First)));
         Assert.AreEqual(host.LiveVersion, restored.LiveVersion);
-        Assert.AreEqual(host.Node.Recorder.ConfiguredLeader, restored.Node.Recorder.ConfiguredLeader);
+        Assert.AreEqual(host.Recorder.ConfiguredLeader, restored.Recorder.ConfiguredLeader);
     }
 
 
@@ -340,13 +340,13 @@ internal sealed class QuePaxaVersionedNodeStateTests
         QuePaxaVersionedNodeState<string> snapshot = crashed.ToState();
         QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(schedule, snapshot);
 
-        QuePaxaRecorder<VersionedValue<string>> afterRestore = restored.Node.Recorder;
+        QuePaxaRecorder<VersionedValue<string>> afterRestore = restored.Recorder;
 
         //The proposer's retransmission after the restart re-delivers the claim the snapshot was taken after, and
         //the same recorder instance back is the no-durability-write contract surviving the restart.
         VersionedRecordReply<VersionedValue<string>> afterRestart = restored.Handle(claim);
 
-        Assert.AreSame(afterRestore, restored.Node.Recorder);
+        Assert.AreSame(afterRestore, restored.Recorder);
         Assert.AreEqual(beforeCrash, afterRestart);
 
         //A host that never restarted serves the rest of the quorum, so the restored host's answer is
@@ -389,7 +389,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
         QuePaxaLeaderSchedule schedule = Schedule();
         QuePaxaVersionedNode<string> host = new(schedule, Record(4UL, Stranger));
 
-        Assert.IsNull(host.Node.Recorder.ConfiguredLeader);
+        Assert.IsNull(host.Recorder.ConfiguredLeader);
 
         _ = host.Handle(Request(5UL, new ProposalPriority(10), Second, "a"));
 
@@ -399,15 +399,15 @@ internal sealed class QuePaxaVersionedNodeStateTests
 
         QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(schedule, snapshot);
 
-        Assert.IsNull(restored.Node.Recorder.ConfiguredLeader);
+        Assert.IsNull(restored.Recorder.ConfiguredLeader);
 
         //A restore falling back on the configured order's head would honour this claim at the round's first
         //step, and the reserved priority dominates every ordinary one, so an honoured claim would take the
         //aggregate. Declined, it is recorded at the lowest ordinary priority and loses to the incumbent.
         _ = restored.Handle(Request(5UL, ProposalPriority.Reserved, First, "b"));
 
-        Assert.IsFalse(restored.Node.Recorder.Register.CurrentAggregate!.Key.Priority.IsReserved);
-        Assert.AreEqual(new ProposalPriority(10), restored.Node.Recorder.Register.CurrentAggregate.Key.Priority);
+        Assert.IsFalse(restored.Recorder.Register.CurrentAggregate!.Key.Priority.IsReserved);
+        Assert.AreEqual(new ProposalPriority(10), restored.Recorder.Register.CurrentAggregate.Key.Priority);
     }
 
 

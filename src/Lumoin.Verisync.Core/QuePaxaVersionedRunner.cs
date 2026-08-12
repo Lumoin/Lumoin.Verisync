@@ -15,21 +15,25 @@ namespace Lumoin.Verisync.Core;
 /// <para>
 /// All inbound work is enqueued and <see cref="RunAsync"/> is the sole consumer and the only code that
 /// touches the node, so the node's one-at-a-time contract holds even though <see cref="RecordAsync"/>,
-/// <see cref="LearnAsync"/> and <see cref="MakeDurableAsync"/> are thread-safe producers callable from
-/// any connection. Exactly one runner may own a node; a second runner over the same node is undefined.
-/// <see cref="RunAsync"/> runs once, and a host that must restart after a failed write builds a fresh
-/// runner over the same node, which is what keeps the durability baseline on the node rather than in
-/// the loop.
+/// <see cref="LearnAsync"/>, <see cref="MakeDurableAsync"/> and <see cref="ReadCommittedAsync"/> are
+/// thread-safe producers callable from any connection. Exactly one runner owns a node and the node
+/// enforces it: <see cref="RunAsync"/> claims the node for the life of its loop, a second runner's
+/// <see cref="RunAsync"/> over a claimed node throws, and the node's own mutating members throw while
+/// the claim is held. <see cref="RunAsync"/> runs once, and a host that must restart after a failed
+/// write builds a fresh runner over the same node — the claim is released when the loop ends on any
+/// path and before <see cref="RunAsync"/>'s task completes, so the fresh claim succeeds — which is what
+/// keeps the durability baseline on the node rather than in the loop.
 /// </para>
 /// <para>
 /// <see cref="RecordAsync"/> is a <see cref="VersionedRecorderEndpointDelegate{TValue}"/> over
 /// <see cref="VersionedValue{TValue}"/> and needs no reply sink, because a reply's destination is the
 /// call that asked for it, which is also what makes correlation per call as that delegate requires. A
 /// host that cannot serve the addressed instance faults the call and nothing else, and the fault is the
-/// exception <see cref="QuePaxaVersionedNode{TValue}.Handle"/> threw, unwrapped: a decline is the
-/// host's own act, indistinguishable from calling <see cref="QuePaxaVersionedNode{TValue}.Handle"/>
-/// directly. A wire host must reduce it to an opaque fault carrying the call's correlation and nothing
-/// else, because the exception names the live version only in prose and no protocol field carries it.
+/// exception <see cref="QuePaxaVersionedNode{TValue}.Handle"/> threw, unwrapped and unwrapped alone: a
+/// decline is the host's own act, so the caller receives exactly what the host raised and the runner
+/// introduces no type, no reply and no version of its own. A wire host must reduce it to an opaque fault
+/// carrying the call's correlation and nothing else, because the exception names the live version only
+/// in prose and no protocol field carries it.
 /// </para>
 /// <para>
 /// The reply is handed to its call only after the state it rests on is durable, so a first proposal or
@@ -43,11 +47,18 @@ namespace Lumoin.Verisync.Core;
 /// <para>
 /// A learn is queued beside the requests rather than applied from outside, because the node is not safe
 /// for concurrent calls. <see cref="LearnAsync"/>'s result reports adoption in memory — applied, not
-/// durable; what a learn changes becomes durable with the first reply that depends on it, or with
-/// <see cref="MakeDurableAsync"/>, which sequences a checkpoint through the same queue. A catch-up read
-/// served beside this queue may republish a learned record before it is durable, which is safe under
-/// crash faults — the record was decided by a quorum, and losing the learn costs availability, never
-/// safety — and is documented rather than closed.
+/// durable — under <see cref="LearnDurability.InMemory"/>; what such a learn changes becomes durable
+/// with the first reply that depends on it, or with <see cref="MakeDurableAsync"/>, which sequences a
+/// checkpoint through the same queue. Under <see cref="LearnDurability.Durable"/> the host's state is
+/// made durable before the call completes.
+/// </para>
+/// <para>
+/// A catch-up read goes through <see cref="ReadCommittedAsync"/>, which makes the state durable before
+/// it reports the record. A read served beside this queue rather than through it may republish a record
+/// the host learned and has not persisted; that was judged safe under crash faults — the record was
+/// decided by a quorum, and losing the learn costs availability, never safety — but a peer that adopts
+/// the republished record moves to the next version on it, so the sequenced read persists first and the
+/// gate makes that free whenever the host owes no write.
 /// </para>
 /// <para>
 /// A call cancelled by its own token completes cancelled even though its queued work still runs,
@@ -69,7 +80,7 @@ public sealed class QuePaxaVersionedRunner<TValue>
     /// <summary>
     /// Initializes a runner over <paramref name="node"/>.
     /// </summary>
-    /// <param name="node">The host this runner drives. Exactly one runner may own a node.</param>
+    /// <param name="node">The host this runner drives. Exactly one runner owns a node at a time, which <see cref="RunAsync"/> claims and the node enforces.</param>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="node"/> is <see langword="null"/>.</exception>
     public QuePaxaVersionedRunner(QuePaxaVersionedNode<TValue> node)
     {
@@ -116,24 +127,96 @@ public sealed class QuePaxaVersionedRunner<TValue>
     /// Queues a committed record for adoption and completes with whether it advanced the host.
     /// </summary>
     /// <param name="committed">A decided record.</param>
+    /// <param name="durability">How far the learn must get before this call completes.</param>
     /// <param name="cancellationToken">The caller's token; the returned task completes when it signals, though the queued work still runs.</param>
-    /// <returns><see langword="true"/> when the record advanced the host — applied, not durable.</returns>
+    /// <returns><see langword="true"/> when the record advanced the host in memory.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="committed"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="durability"/> is not a defined <see cref="LearnDurability"/>.</exception>
     /// <exception cref="ChannelClosedException">Thrown through the returned task when no further work is accepted after <see cref="Complete"/> or after the loop has ended.</exception>
     /// <remarks>
-    /// What the learn changes becomes durable with the first reply that depends on it or with
-    /// <see cref="MakeDurableAsync"/>; a host that must acknowledge a dissemination as durable
-    /// checkpoints first.
+    /// <para>
+    /// Under <see cref="LearnDurability.InMemory"/> what the learn changes becomes durable with the first
+    /// reply that depends on it or with <see cref="MakeDurableAsync"/>, which stays the caller-driven
+    /// checkpoint. Under <see cref="LearnDurability.Durable"/> the host's state is made durable through
+    /// the same gate before this call completes, so a failed write faults the learn rather than reporting
+    /// an adoption a crash could lose, and a non-advancing learn still runs the gate because the caller
+    /// asked for a checkpoint and the gate turns it into no write whenever nothing is owed.
+    /// </para>
+    /// <para>
+    /// The result reports adoption in memory whichever durability was asked for. After a
+    /// <see cref="LearnDurability.Durable"/> call that completed the state IS durable, and after one that
+    /// faulted nothing is promised, so there is nothing a second flag could say.
+    /// </para>
+    /// <para>
+    /// A <see cref="LearnDurability.Durable"/> learn to <see cref="RegisterVersion.MaxValue"/> fires the
+    /// gate on a host that serves no version and ends the loop through the snapshot's documented throw,
+    /// with the learn faulted. That is the same terminal-by-design contract
+    /// <see cref="MakeDurableAsync"/> carries, reached one call earlier: such a host declines every call
+    /// without a write, and a deployment retires a spent key.
+    /// </para>
+    /// <para>
+    /// A runner running without a persist delegate completes either durability successfully, reproducing
+    /// the in-memory behavior as every other producer does.
+    /// </para>
     /// </remarks>
-    public ValueTask<bool> LearnAsync(VersionedValue<TValue> committed, CancellationToken cancellationToken = default)
+    public ValueTask<bool> LearnAsync(VersionedValue<TValue> committed, LearnDurability durability, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(committed);
+        if(durability is not (LearnDurability.InMemory or LearnDurability.Durable))
+        {
+            throw new ArgumentOutOfRangeException(nameof(durability), durability, "A learn is either applied in memory or made durable before it completes, and no other durability is defined. An undefined value taking the in-memory arm would silently lose the crash safety a caller asked for.");
+        }
 
         var source = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        ValueTask write = work.Writer.WriteAsync(new LearnItem(committed, source), cancellationToken);
+        ValueTask write = work.Writer.WriteAsync(new LearnItem(committed, durability, source), cancellationToken);
         if(write.IsCompletedSuccessfully)
         {
             return new ValueTask<bool>(source.Task.WaitAsync(cancellationToken));
+        }
+
+        return AwaitEnqueued(write, source.Task, cancellationToken);
+    }
+
+
+    /// <summary>
+    /// Queues a catch-up read and completes with the host's committed record once that record is durable.
+    /// </summary>
+    /// <param name="cancellationToken">The caller's token; the returned task completes when it signals, though the queued work still runs.</param>
+    /// <returns>The committed record the host has learned, or <see langword="null"/> when it has learned none.</returns>
+    /// <exception cref="ChannelClosedException">Thrown through the returned task when no further work is accepted after <see cref="Complete"/> or after the loop has ended.</exception>
+    /// <remarks>
+    /// <para>
+    /// This method is a <see cref="ReadCommittedRecordDelegate{TValue}"/>: assign it where that delegate
+    /// is expected, as <see cref="QuePaxaVersionedRegister{TValue}"/> does for its catch-up. It carries no
+    /// durability knob deliberately, both because the knob would break that conversion and because a
+    /// republish is not permitted to be unpersisted: a replica adopts what a host reports and moves to the
+    /// next version on it, so a record republished before it was written is one a crash loses while a peer
+    /// has already built on it.
+    /// </para>
+    /// <para>
+    /// The record is read after the gate has returned, so what leaves is a value the store holds. The
+    /// write costs nothing whenever the host owes none, which is every host that has answered a request
+    /// since its last learn; a host that owes one owes it because it learned and has not replied since, or
+    /// because a write failed, which are the states where republishing is the hazard.
+    /// </para>
+    /// <para>
+    /// A sequenced <see cref="ObserveCommittedVersionDelegate"/> is built from this rather than from a
+    /// second unsequenced reader:
+    /// <c>async token =&gt; (await runner.ReadCommittedAsync(token).ConfigureAwait(false))?.Version ?? RegisterVersion.Unwritten</c>.
+    /// </para>
+    /// <para>
+    /// A read on a host that learned its way to <see cref="RegisterVersion.MaxValue"/> without an
+    /// intervening write ends the loop through the snapshot's documented throw, with the read faulted,
+    /// which is the same terminal-by-design contract <see cref="MakeDurableAsync"/> carries.
+    /// </para>
+    /// </remarks>
+    public ValueTask<VersionedValue<TValue>?> ReadCommittedAsync(CancellationToken cancellationToken = default)
+    {
+        var source = new TaskCompletionSource<VersionedValue<TValue>?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        ValueTask write = work.Writer.WriteAsync(new ReadItem(source), cancellationToken);
+        if(write.IsCompletedSuccessfully)
+        {
+            return new ValueTask<VersionedValue<TValue>?>(source.Task.WaitAsync(cancellationToken));
         }
 
         return AwaitEnqueued(write, source.Task, cancellationToken);
@@ -147,14 +230,16 @@ public sealed class QuePaxaVersionedRunner<TValue>
     /// <returns>A task that completes once the state is durable, or immediately successful when the loop runs without a persist delegate.</returns>
     /// <exception cref="ChannelClosedException">Thrown through the returned task when no further work is accepted after <see cref="Complete"/> or after the loop has ended.</exception>
     /// <remarks>
-    /// This is the one path on which the committed arm of the durability gate fires alone: a learned
-    /// record whose recorder reference did not move — the shared leaderless singleton across a learn —
-    /// becomes durable here or with the next dependent reply, whichever comes first. A checkpoint on a
+    /// This is one of the three paths on which the committed arm of the durability gate fires alone,
+    /// beside a <see cref="LearnDurability.Durable"/> learn and <see cref="ReadCommittedAsync"/>: a
+    /// learned record whose recorder reference did not move — the shared leaderless singleton across a
+    /// learn — becomes durable through one of the three or with the next dependent reply, whichever
+    /// comes first. None of the three is a reply path, which is why no reply vector reaches that arm. A checkpoint on a
     /// host that learned its way to <see cref="RegisterVersion.MaxValue"/> without an intervening write
     /// ends the loop through the snapshot's documented throw, which is terminal by design: such a host
     /// declines every call without a write, and a deployment retires a spent key. While a runner owns the
-    /// node, calling <see cref="QuePaxaVersionedNode{TValue}.MakeDurableAsync"/> directly is not safe;
-    /// this method is the safe checkpoint there.
+    /// node, <see cref="QuePaxaVersionedNode{TValue}.MakeDurableAsync"/> refuses a direct call; this
+    /// method is the checkpoint there.
     /// </remarks>
     public ValueTask MakeDurableAsync(CancellationToken cancellationToken = default)
     {
@@ -195,13 +280,21 @@ public sealed class QuePaxaVersionedRunner<TValue>
     /// </param>
     /// <param name="cancellationToken">The runner's token; signalling it ends the loop and cancels every unanswered call under it.</param>
     /// <returns>A task that completes when the queue is drained after <see cref="Complete"/>.</returns>
-    /// <exception cref="InvalidOperationException">Thrown when called a second time; a restart after a failure takes a fresh runner over the same node.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when called a second time — a restart after a failure takes a fresh runner over the same node — and when another runner already owns the node.</exception>
     /// <remarks>
+    /// <para>
     /// A throwing persist delegate ends the loop: the call whose write failed is faulted and its
     /// computed reply discarded, every queued call is faulted with the loop failure as inner exception,
     /// the writer is completed so later producers fail fast, and the exception then propagates out —
     /// the fail-closed posture the sibling loops share, since a host whose durable store is gone cannot
     /// keep promising state it may lose.
+    /// </para>
+    /// <para>
+    /// The once-only guard precedes the claim, so a second call on this runner faults before it can
+    /// touch a claim the first call holds and can neither steal nor drop it. The claim is released in a
+    /// <c>finally</c>, so ownership ends with the loop on every path and before this task completes,
+    /// which is what lets a fresh runner over the same node claim it.
+    /// </para>
     /// </remarks>
     public async Task RunAsync(PersistVersionedNodeDelegate<TValue>? persistNode = null, CancellationToken cancellationToken = default)
     {
@@ -210,27 +303,35 @@ public sealed class QuePaxaVersionedRunner<TValue>
             throw new InvalidOperationException("The loop runs once per runner; a restart after a failure takes a fresh runner over the same node.");
         }
 
-        WorkItem? inFlight = null;
+        Node.ClaimForRunner();
         try
         {
-            await foreach(WorkItem item in work.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            WorkItem? inFlight = null;
+            try
             {
-                inFlight = item;
-                await DispatchAsync(item, persistNode, cancellationToken).ConfigureAwait(false);
-                inFlight = null;
+                await foreach(WorkItem item in work.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    inFlight = item;
+                    await DispatchAsync(item, persistNode, cancellationToken).ConfigureAwait(false);
+                    inFlight = null;
+                }
+            }
+            catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested)
+            {
+                Abandon(inFlight, null, cancellationToken);
+
+                throw;
+            }
+            catch(Exception exception)
+            {
+                Abandon(inFlight, exception, cancellationToken);
+
+                throw;
             }
         }
-        catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested)
+        finally
         {
-            Abandon(inFlight, null, cancellationToken);
-
-            throw;
-        }
-        catch(Exception exception)
-        {
-            Abandon(inFlight, exception, cancellationToken);
-
-            throw;
+            Node.ReleaseFromRunner();
         }
     }
 
@@ -243,7 +344,7 @@ public sealed class QuePaxaVersionedRunner<TValue>
                 VersionedRecordReply<VersionedValue<TValue>> reply;
                 try
                 {
-                    reply = Node.Handle(record.Request);
+                    reply = Node.HandleForOwner(record.Request);
                 }
                 catch(Exception refusal) when(!Node.Serves(record.Request.Version))
                 {
@@ -256,21 +357,37 @@ public sealed class QuePaxaVersionedRunner<TValue>
 
                 if(persistNode is not null)
                 {
-                    await Node.MakeDurableAsync(persistNode, cancellationToken).ConfigureAwait(false);
+                    await Node.MakeDurableForOwnerAsync(persistNode, cancellationToken).ConfigureAwait(false);
                 }
 
                 _ = record.Source.TrySetResult(reply);
                 break;
             case LearnItem learn:
-                _ = learn.Source.TrySetResult(Node.Learn(learn.Committed));
+                //The adoption is computed before the write and handed over after it, so a failed write
+                //leaves the loop without ever reporting an adoption the crash would lose.
+                bool advanced = Node.LearnForOwner(learn.Committed);
+                if(learn.Durability == LearnDurability.Durable && persistNode is not null)
+                {
+                    await Node.MakeDurableForOwnerAsync(persistNode, cancellationToken).ConfigureAwait(false);
+                }
+
+                _ = learn.Source.TrySetResult(advanced);
                 break;
             case DurableItem durable:
                 if(persistNode is not null)
                 {
-                    await Node.MakeDurableAsync(persistNode, cancellationToken).ConfigureAwait(false);
+                    await Node.MakeDurableForOwnerAsync(persistNode, cancellationToken).ConfigureAwait(false);
                 }
 
                 _ = durable.Source.TrySetResult();
+                break;
+            case ReadItem read:
+                if(persistNode is not null)
+                {
+                    await Node.MakeDurableForOwnerAsync(persistNode, cancellationToken).ConfigureAwait(false);
+                }
+
+                _ = read.Source.TrySetResult(Node.Committed);
                 break;
         }
     }
@@ -322,6 +439,12 @@ public sealed class QuePaxaVersionedRunner<TValue>
             case DurableItem durable:
                 _ = durable.Source.TrySetException(fault);
                 break;
+            case ReadItem read when fault is null:
+                _ = read.Source.TrySetCanceled(cancellationToken);
+                break;
+            case ReadItem read:
+                _ = read.Source.TrySetException(fault);
+                break;
         }
     }
 
@@ -345,7 +468,9 @@ public sealed class QuePaxaVersionedRunner<TValue>
 
     private sealed record RecordItem(VersionedRecordRequest<VersionedValue<TValue>> Request, TaskCompletionSource<VersionedRecordReply<VersionedValue<TValue>>> Source): WorkItem;
 
-    private sealed record LearnItem(VersionedValue<TValue> Committed, TaskCompletionSource<bool> Source): WorkItem;
+    private sealed record LearnItem(VersionedValue<TValue> Committed, LearnDurability Durability, TaskCompletionSource<bool> Source): WorkItem;
 
     private sealed record DurableItem(TaskCompletionSource Source): WorkItem;
+
+    private sealed record ReadItem(TaskCompletionSource<VersionedValue<TValue>?> Source): WorkItem;
 }

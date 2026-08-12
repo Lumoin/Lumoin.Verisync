@@ -74,7 +74,9 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <param name="readCommittedRecords">
     /// Optional per-host queries used by <see cref="ReadAsync"/> to catch up on versions this replica missed.
     /// When <see langword="null"/> the register can still write, and <see cref="ReadAsync"/> reports only what
-    /// it already holds.
+    /// it already holds. A host driven by a <see cref="QuePaxaVersionedRunner{TValue}"/> supplies that
+    /// runner's <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>, which answers through the
+    /// loop after making its state durable.
     /// </param>
     /// <param name="publishCommittedRecord">
     /// An optional sink offered every record an attempt decides, this replica's own and another's alike,
@@ -197,8 +199,11 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <para>
     /// This needs no quorum and takes no consensus step. A committed record is a decided fact and the protocol
     /// assumes crash faults, so one honest host reporting a version settles it. A host that faults is skipped,
-    /// so learning from fewer hosts than exist is a weaker result rather than a wrong one. A host that cancels
-    /// is not skipped, because a cancellation is the caller's own signal arriving by another route.
+    /// so learning from fewer hosts than exist is a weaker result rather than a wrong one. A cancellation ends
+    /// the round only when it is the caller's own signal arriving by another route, which the filter tests
+    /// rather than assumes: a host whose runner stopped answers its pending read cancelled under the runner's
+    /// token, and that is the host's unavailability wearing a cancellation's type, so it is skipped like any
+    /// other failing host rather than aborting the catch-up at every host after it.
     /// </para>
     /// <para>
     /// Learning nothing new does not prove this replica is current. It is equally the state left behind by a
@@ -224,7 +229,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
             {
                 reported = await read(cancellationToken).ConfigureAwait(false);
             }
-            catch(OperationCanceledException)
+            catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested)
             {
                 throw;
             }

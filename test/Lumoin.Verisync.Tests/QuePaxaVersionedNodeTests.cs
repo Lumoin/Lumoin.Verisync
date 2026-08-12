@@ -27,7 +27,7 @@ internal sealed class QuePaxaVersionedNodeTests
         QuePaxaVersionedNode<string> host = new(Schedule());
 
         Assert.AreEqual(RegisterVersion.First, host.LiveVersion);
-        Assert.AreEqual(ProposerLane.For(First), host.Node.Recorder.ConfiguredLeader);
+        Assert.AreEqual(ProposerLane.For(First), host.Recorder.ConfiguredLeader);
     }
 
 
@@ -39,8 +39,8 @@ internal sealed class QuePaxaVersionedNodeTests
         QuePaxaVersionedNode<string> host = new(schedule, Record(4UL, Second));
 
         Assert.AreEqual(new RegisterVersion(5UL), host.LiveVersion);
-        Assert.AreEqual(schedule.LeaderFor(Second), host.Node.Recorder.ConfiguredLeader);
-        Assert.AreEqual(ProposerLane.For(Second), host.Node.Recorder.ConfiguredLeader);
+        Assert.AreEqual(schedule.LeaderFor(Second), host.Recorder.ConfiguredLeader);
+        Assert.AreEqual(ProposerLane.For(Second), host.Recorder.ConfiguredLeader);
     }
 
 
@@ -48,17 +48,19 @@ internal sealed class QuePaxaVersionedNodeTests
     public void TwoRequestsAtTheLiveVersionReachOneInstance()
     {
         QuePaxaVersionedNode<string> host = new(Schedule(), Record(4UL, Second));
-        QuePaxaNode<VersionedValue<string>> instance = host.Node;
 
         VersionedRecordReply<VersionedValue<string>> first = host.Handle(Request(5UL, ProposalPriority.Lowest, Second, "a"));
         VersionedRecordReply<VersionedValue<string>> second = host.Handle(Request(5UL, new ProposalPriority(7), Second, "b"));
 
-        Assert.AreSame(instance, host.Node);
         Assert.AreEqual(new RegisterVersion(5UL), first.Version);
         Assert.AreEqual(new RegisterVersion(5UL), second.Version);
 
-        //A host creating an instance per request would not fold the second request into the same register.
-        Assert.AreEqual(Four, host.Node.Recorder.Step);
+        //A host creating an instance per request would not fold the second request into the same register: it
+        //would report the second proposal as the step's first, and the register is the fact rather than a
+        //proxy for it.
+        Assert.AreEqual(Four, host.Recorder.Step);
+        Assert.AreEqual("a", host.Recorder.Register.First!.Value.Value);
+        Assert.AreEqual(new ProposalPriority(7), host.Recorder.Register.CurrentAggregate!.Key.Priority);
     }
 
 
@@ -67,15 +69,17 @@ internal sealed class QuePaxaVersionedNodeTests
     public void ARequestForAnyOtherVersionIsRefusedAtBothBounds()
     {
         QuePaxaVersionedNode<string> host = new(Schedule(), Record(4UL, Second));
-        QuePaxaNode<VersionedValue<string>> instance = host.Node;
+        VersionedValue<string>? committed = host.Committed;
+        QuePaxaRecorder<VersionedValue<string>> before = host.Recorder;
 
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = host.Handle(Request(6UL, ProposalPriority.Lowest, Second, "above")));
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = host.Handle(Request(4UL, ProposalPriority.Lowest, Second, "below")));
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = host.Handle(Request(1UL, ProposalPriority.Lowest, Second, "far below")));
 
         //A refusal allocates nothing and records nothing, so a peer naming versions at random costs nothing.
-        Assert.AreSame(instance, host.Node);
-        Assert.AreEqual(RecorderStep.Zero, host.Node.Recorder.Step);
+        Assert.AreSame(before, host.Recorder);
+        Assert.AreSame(committed, host.Committed);
+        Assert.AreEqual(RecorderStep.Zero, host.Recorder.Step);
     }
 
 
@@ -86,7 +90,7 @@ internal sealed class QuePaxaVersionedNodeTests
 
         Assert.IsTrue(host.Learn(Record(5UL, Third)));
         Assert.AreEqual(new RegisterVersion(6UL), host.LiveVersion);
-        Assert.AreEqual(ProposerLane.For(Third), host.Node.Recorder.ConfiguredLeader);
+        Assert.AreEqual(ProposerLane.For(Third), host.Recorder.ConfiguredLeader);
 
         Assert.IsFalse(host.Learn(Record(5UL, Third)));
         Assert.IsFalse(host.Learn(Record(4UL, Second)));
@@ -95,7 +99,7 @@ internal sealed class QuePaxaVersionedNodeTests
 
 
     //The identity assertion alone passes a host that rewrote the leader in place; the leader assertion alone
-    //passes one that kept the old node.
+    //passes one that kept the old recorder.
     [TestMethod]
     public void LearningBuildsANewInstanceAndLeavesTheRunningOnesLeaderAlone()
     {
@@ -103,18 +107,19 @@ internal sealed class QuePaxaVersionedNodeTests
 
         _ = host.Handle(Request(5UL, ProposalPriority.Reserved, Second, "a"));
 
-        QuePaxaNode<VersionedValue<string>> beforeLearning = host.Node;
-        ProposerLane? leaderBeforeLearning = beforeLearning.Recorder.ConfiguredLeader;
+        QuePaxaRecorder<VersionedValue<string>> beforeLearning = host.Recorder;
+        ProposerLane? leaderBeforeLearning = beforeLearning.ConfiguredLeader;
 
         Assert.IsTrue(host.Learn(Record(5UL, Third)));
 
-        Assert.AreNotSame(beforeLearning, host.Node);
-        Assert.AreEqual(leaderBeforeLearning, beforeLearning.Recorder.ConfiguredLeader);
-        Assert.AreEqual(ProposerLane.For(Second), beforeLearning.Recorder.ConfiguredLeader);
-        Assert.AreEqual(ProposerLane.For(Third), host.Node.Recorder.ConfiguredLeader);
+        //A recorder is immutable, so the captured one still enforces the leader its own instance ran under.
+        Assert.AreNotSame(beforeLearning, host.Recorder);
+        Assert.AreEqual(leaderBeforeLearning, beforeLearning.ConfiguredLeader);
+        Assert.AreEqual(ProposerLane.For(Second), beforeLearning.ConfiguredLeader);
+        Assert.AreEqual(ProposerLane.For(Third), host.Recorder.ConfiguredLeader);
 
         //The new instance starts from an unwritten register, so nothing the previous version recorded leaks in.
-        Assert.AreEqual(RecorderStep.Zero, host.Node.Recorder.Step);
+        Assert.AreEqual(RecorderStep.Zero, host.Recorder.Step);
     }
 
 
@@ -126,7 +131,7 @@ internal sealed class QuePaxaVersionedNodeTests
         QuePaxaVersionedNode<string> host = new(schedule, Record(4UL, Stranger));
 
         Assert.AreEqual(new RegisterVersion(5UL), host.LiveVersion);
-        Assert.IsNull(host.Node.Recorder.ConfiguredLeader);
+        Assert.IsNull(host.Recorder.ConfiguredLeader);
 
         VersionedRecordReply<VersionedValue<string>> reply = host.Handle(Request(5UL, ProposalPriority.Reserved, Second, "a"));
 
@@ -152,11 +157,11 @@ internal sealed class QuePaxaVersionedNodeTests
         //Constructed WITHOUT serving, deliberately: a served request would advance the recorder off the
         //shared leaderless singleton and silently invert the premise the identity assertion below pins.
         QuePaxaVersionedNode<string> host = new(Schedule(), Record(4UL, Stranger));
-        QuePaxaRecorder<VersionedValue<string>> before = host.Node.Recorder;
+        QuePaxaRecorder<VersionedValue<string>> before = host.Recorder;
 
         VersionedValue<string> learned = Record(5UL, Stranger);
         Assert.IsTrue(host.Learn(learned));
-        Assert.AreSame(before, host.Node.Recorder);
+        Assert.AreSame(before, host.Recorder);
 
         List<QuePaxaVersionedNodeState<string>> states = [];
         await host.MakeDurableAsync((state, cancellationToken) =>
@@ -243,15 +248,65 @@ internal sealed class QuePaxaVersionedNodeTests
         _ = host.Handle(Request(5UL, ProposalPriority.Lowest, Second, "a"));
 
         Assert.IsTrue(host.Learn(Record(5UL, Third)));
-        Assert.AreEqual(RecorderStep.Zero, host.Node.Recorder.Step);
+        Assert.AreEqual(RecorderStep.Zero, host.Recorder.Step);
 
-        QuePaxaRecorder<VersionedValue<string>> unwritten = host.Node.Recorder;
+        QuePaxaRecorder<VersionedValue<string>> unwritten = host.Recorder;
         _ = host.Handle(Request(6UL, ProposalPriority.Lowest, Third, "b"));
 
         //Every request's step sits above zero, so the first request after any learn replaces the register,
         //which is the premise under persist-on-next-reply sufficiency: the durability gate always fires
         //before the first reply that depends on a learned record.
-        Assert.AreNotSame(unwritten, host.Node.Recorder);
+        Assert.AreNotSame(unwritten, host.Recorder);
+    }
+
+
+    [TestMethod]
+    public async Task AnUnownedHostServesDirectCallsAsBefore()
+    {
+        QuePaxaVersionedNode<string> host = new(Schedule(), Record(4UL, Second));
+
+        VersionedRecordReply<VersionedValue<string>> reply = host.Handle(Request(5UL, ProposalPriority.Lowest, Second, "a"));
+
+        Assert.AreEqual(new RegisterVersion(5UL), reply.Version);
+        Assert.IsTrue(host.Learn(Record(5UL, Third)));
+        Assert.AreEqual(new RegisterVersion(6UL), host.LiveVersion);
+
+        List<QuePaxaVersionedNodeState<string>> states = [];
+        await host.MakeDurableAsync((state, cancellationToken) =>
+        {
+            states.Add(state);
+
+            return ValueTask.CompletedTask;
+        }, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //A claim taken anywhere other than a running loop would refuse all three of these calls, so this is
+        //the whole-arm regression against a latch that fires on a host no runner drives.
+        Assert.HasCount(1, states);
+    }
+
+
+    [TestMethod]
+    public void TheVersionedHostExposesNoRecorderNode()
+    {
+        //The prohibition is absent code, so the vector is positive: no public member may hand out the recorder
+        //node, whose own loop persists a bare register that names no instance — the torn pairing FromState
+        //exists to refuse, written deliberately.
+        foreach(System.Reflection.PropertyInfo property in typeof(QuePaxaVersionedNode<string>).GetProperties())
+        {
+            Assert.IsFalse(IsRecorderNode(property.PropertyType), $"{property.Name} exposes the recorder node.");
+        }
+
+        foreach(System.Reflection.FieldInfo field in typeof(QuePaxaVersionedNode<string>).GetFields())
+        {
+            Assert.IsFalse(IsRecorderNode(field.FieldType), $"{field.Name} exposes the recorder node.");
+        }
+    }
+
+
+    private static bool IsRecorderNode(Type type)
+    {
+        return typeof(QuePaxaNode<VersionedValue<string>>).IsAssignableFrom(type)
+            || (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(QuePaxaNode<>));
     }
 
 

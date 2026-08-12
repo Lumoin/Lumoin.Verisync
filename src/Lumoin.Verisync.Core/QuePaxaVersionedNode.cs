@@ -49,11 +49,24 @@ namespace Lumoin.Verisync.Core;
 /// </para>
 /// <para>
 /// A node processes its requests sequentially and is not safe for concurrent calls, exactly as
-/// <see cref="QuePaxaNode{TValue}"/> is not.
+/// <see cref="QuePaxaNode{TValue}"/> is not. A running
+/// <see cref="QuePaxaVersionedRunner{TValue}.RunAsync"/> claims this host for the life of its loop, and
+/// while it holds the claim <see cref="Handle"/>, <see cref="Learn"/>, <see cref="MakeDurableAsync"/> and
+/// <see cref="ToState"/> refuse rather than interleaving with it; the runner's own producers are the
+/// sequenced paths there. <see cref="Committed"/>, <see cref="LiveVersion"/>, <see cref="Serves"/> and
+/// <see cref="Recorder"/> stay open, because each answers from one read of one reference and an off-loop
+/// reader therefore sees a stale answer but never a torn one;
+/// <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/> is the sequenced read.
+/// <see cref="ToState"/> is not among them because a snapshot pairs two references a learn replaces in
+/// two stores, which is the one composite read on this surface.
 /// </para>
 /// </remarks>
 public sealed class QuePaxaVersionedNode<TValue>
 {
+    //An Interlocked target cannot be a property, and the sibling latches on this surface take the same shape:
+    //QuePaxaVersionedRegister.writing and QuePaxaVersionedRunner.started.
+    private int owner;
+
     /// <summary>
     /// Initializes a host that has learned <paramref name="committed"/>.
     /// </summary>
@@ -71,9 +84,9 @@ public sealed class QuePaxaVersionedNode<TValue>
 
         LeaderSchedule = schedule;
         Committed = committed;
-        Node = new QuePaxaNode<VersionedValue<TValue>>(schedule.RecorderFor<VersionedValue<TValue>>(committed?.Writer));
+        Instance = new QuePaxaNode<VersionedValue<TValue>>(schedule.RecorderFor<VersionedValue<TValue>>(committed?.Writer));
         PersistedCommitted = committed;
-        PersistedRecorder = Node.Recorder;
+        PersistedRecorder = Instance.Recorder;
     }
 
 
@@ -81,7 +94,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     {
         LeaderSchedule = schedule;
         Committed = committed;
-        Node = node;
+        Instance = node;
         PersistedCommitted = committed;
         PersistedRecorder = node.Recorder;
     }
@@ -95,10 +108,20 @@ public sealed class QuePaxaVersionedNode<TValue>
 
     /// <summary>The one version this host serves, which is the one after the committed record's.</summary>
     /// <exception cref="InvalidOperationException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it.</exception>
-    public RegisterVersion LiveVersion => Committed is { } committed ? committed.Version.Next() : RegisterVersion.First;
+    public RegisterVersion LiveVersion => LiveVersionFor(Committed);
+
+    /// <summary>
+    /// The register serving <see cref="LiveVersion"/>, which a request folds into and a learn replaces.
+    /// </summary>
+    /// <remarks>
+    /// A recorder is immutable, so this hands out a reference to state rather than a handle that can change
+    /// it. Reading it while a runner owns this host is racy in the ordinary sense and never torn: the read is
+    /// a single reference read, and a stale answer is a weaker one rather than a wrong one.
+    /// </remarks>
+    public QuePaxaRecorder<VersionedValue<TValue>> Recorder => Instance.Recorder;
 
     /// <summary>The recorder node serving <see cref="LiveVersion"/>.</summary>
-    public QuePaxaNode<VersionedValue<TValue>> Node { get; private set; }
+    private QuePaxaNode<VersionedValue<TValue>> Instance { get; set; }
 
     /// <summary>
     /// The committed record <see cref="MakeDurableAsync"/> last made durable, which its gate compares
@@ -133,7 +156,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <returns>The reply, carrying the version of the instance that answered.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="request"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if the request does not name <see cref="LiveVersion"/>.</exception>
-    /// <exception cref="InvalidOperationException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that this host serves no version at all.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if a runner owns this host, or if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that this host serves no version at all.</exception>
     /// <remarks>
     /// <para>
     /// Both bounds are refused and for different reasons. A request below the live version belongs to an
@@ -145,8 +168,21 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// Both refusals precede any mutation, so a declined request leaves this host exactly as it found it,
     /// which is what lets a runner keep serving after faulting the declined call.
     /// </para>
+    /// <para>
+    /// The ownership refusal precedes all three, because a request folded in beside a running loop's own
+    /// replaces the recorder the loop's durability gate compares by reference.
+    /// <see cref="QuePaxaVersionedRunner{TValue}.RecordAsync"/> is the sequenced path there.
+    /// </para>
     /// </remarks>
     public VersionedRecordReply<VersionedValue<TValue>> Handle(VersionedRecordRequest<VersionedValue<TValue>> request)
+    {
+        ThrowIfOwned();
+
+        return HandleForOwner(request);
+    }
+
+
+    internal VersionedRecordReply<VersionedValue<TValue>> HandleForOwner(VersionedRecordRequest<VersionedValue<TValue>> request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -159,7 +195,7 @@ public sealed class QuePaxaVersionedNode<TValue>
                 $"This host serves version {live.Value}; it has learned nothing about the leader of any other version and will not record for one.");
         }
 
-        return new VersionedRecordReply<VersionedValue<TValue>>(live, Node.Handle(request.Request));
+        return new VersionedRecordReply<VersionedValue<TValue>>(live, Instance.Handle(request.Request));
     }
 
 
@@ -169,11 +205,17 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <param name="committed">A decided record.</param>
     /// <returns><see langword="true"/> when the record advanced this host, and <see langword="false"/> when it was not newer than what it already held.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="committed"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if a runner owns this host.</exception>
     /// <remarks>
     /// <para>
     /// A record that does not advance is ignored rather than refused, because a host disseminating the same
     /// decision twice is ordinary. Knowledge of committed state therefore only ever runs forward, and the live
     /// instance with it.
+    /// </para>
+    /// <para>
+    /// A learn beside a running loop is refused, because it replaces both the committed record and the
+    /// instance, which are the two references the loop's durability gate compares.
+    /// <see cref="QuePaxaVersionedRunner{TValue}.LearnAsync"/> is the sequenced path there.
     /// </para>
     /// <para>
     /// Advancing replaces the instance rather than reconfiguring it. A recorder's configured leader is fixed
@@ -188,6 +230,14 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// </remarks>
     public bool Learn(VersionedValue<TValue> committed)
     {
+        ThrowIfOwned();
+
+        return LearnForOwner(committed);
+    }
+
+
+    internal bool LearnForOwner(VersionedValue<TValue> committed)
+    {
         ArgumentNullException.ThrowIfNull(committed);
 
         if(Committed is { } held && committed.Version <= held.Version)
@@ -196,7 +246,7 @@ public sealed class QuePaxaVersionedNode<TValue>
         }
 
         Committed = committed;
-        Node = new QuePaxaNode<VersionedValue<TValue>>(LeaderSchedule.RecorderFor<VersionedValue<TValue>>(committed.Writer));
+        Instance = new QuePaxaNode<VersionedValue<TValue>>(LeaderSchedule.RecorderFor<VersionedValue<TValue>>(committed.Writer));
 
         return true;
     }
@@ -208,20 +258,23 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <param name="version">The version to classify.</param>
     /// <returns><see langword="true"/> when the version is the live one this host serves.</returns>
     /// <remarks>
-    /// A classifier and not a guard: it never throws, and serving remains <see cref="Handle"/>'s act. The
-    /// spent-range arm comes first, so a host whose committed record stands at
+    /// A classifier and not a guard: it never throws, and serving remains <see cref="Handle"/>'s act. Both
+    /// arms read one snapshot of the committed record, so the spent-range arm comes first over the same
+    /// record the live version is derived from: a host whose committed record stands at
     /// <see cref="RegisterVersion.MaxValue"/> reports <see langword="false"/> for every version rather than
-    /// evaluating the throw <see cref="LiveVersion"/> documents. A runner's decline filter reads this to
-    /// tell a refusal, which faults one call, from a defect, which ends its loop.
+    /// evaluating the throw <see cref="LiveVersion"/> documents, and a learn landing between two reads
+    /// cannot put the classifier on the throwing path. A runner's decline filter reads this to tell a
+    /// refusal, which faults one call, from a defect, which ends its loop.
     /// </remarks>
     public bool Serves(RegisterVersion version)
     {
-        if(Committed is { } committed && committed.Version == RegisterVersion.MaxValue)
+        VersionedValue<TValue>? committed = Committed;
+        if(committed is { } held && held.Version == RegisterVersion.MaxValue)
         {
             return false;
         }
 
-        return version == LiveVersion;
+        return version == LiveVersionFor(committed);
     }
 
 
@@ -234,7 +287,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <returns>A task that completes once the state is durable or was already.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="persistNode"/> is <see langword="null"/>.</exception>
     /// <exception cref="InvalidOperationException">
-    /// Thrown when the state owing a write holds a committed record at <see cref="RegisterVersion.MaxValue"/>,
+    /// Thrown if a runner owns this host. Also thrown when the state owing a write holds a committed record at <see cref="RegisterVersion.MaxValue"/>,
     /// because <see cref="ToState"/> serves no version there. A host restored or constructed at that record
     /// owes no write and returns without reaching the snapshot; only a host that learned its way there and
     /// was never made durable ends here, which is terminal by design — every request to it declines without
@@ -256,27 +309,41 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// shared leaderless recorder singleton across the learn, and there the committed arm is the only one
     /// that fires. That arm alone never fires on a reply path — a request's step is floored above
     /// <see cref="RecorderStep.Zero"/>, so the first request after any learn advances the recorder — which
-    /// is why it is reachable only through a checkpoint.
+    /// is why it is reachable only through one of the three paths that await this with no reply behind
+    /// them: <see cref="QuePaxaVersionedRunner{TValue}.MakeDurableAsync"/>, a
+    /// <see cref="LearnDurability.Durable"/> learn, and
+    /// <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>.
     /// </para>
     /// <para>
     /// A host driving <see cref="Handle"/> and <see cref="Learn"/> itself calls this before it lets any
     /// dependent reply leave, which is the sequencing <see cref="QuePaxaVersionedRunner{TValue}"/> performs
-    /// for a host that does not. It is not safe to call while a runner owns this node;
+    /// for a host that does not. It refuses while a runner owns this node;
     /// <see cref="QuePaxaVersionedRunner{TValue}.MakeDurableAsync"/> is the checkpoint there.
     /// </para>
+    /// <para>
+    /// Both refusals reach the call site rather than the awaiting continuation, because a misuse guard that
+    /// fires only when the caller happens to await is one a caller that stores the task never sees.
+    /// </para>
     /// </remarks>
-    public async ValueTask MakeDurableAsync(PersistVersionedNodeDelegate<TValue> persistNode, CancellationToken cancellationToken = default)
+    public ValueTask MakeDurableAsync(PersistVersionedNodeDelegate<TValue> persistNode, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(persistNode);
+        ThrowIfOwned();
 
+        return MakeDurableForOwnerAsync(persistNode, cancellationToken);
+    }
+
+
+    internal async ValueTask MakeDurableForOwnerAsync(PersistVersionedNodeDelegate<TValue> persistNode, CancellationToken cancellationToken)
+    {
         VersionedValue<TValue>? committed = Committed;
-        QuePaxaRecorder<VersionedValue<TValue>> recorder = Node.Recorder;
+        QuePaxaRecorder<VersionedValue<TValue>> recorder = Recorder;
         if(ReferenceEquals(committed, PersistedCommitted) && ReferenceEquals(recorder, PersistedRecorder))
         {
             return;
         }
 
-        await persistNode(ToState(), cancellationToken).ConfigureAwait(false);
+        await persistNode(ToStateForOwner(), cancellationToken).ConfigureAwait(false);
 
         PersistedCommitted = committed;
         PersistedRecorder = recorder;
@@ -288,7 +355,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// instance that record implies.
     /// </summary>
     /// <returns>The durable state to make stable before any dependent reply is sent.</returns>
-    /// <exception cref="InvalidOperationException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that this host serves no version at all.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if a runner owns this host, or if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that this host serves no version at all.</exception>
     /// <remarks>
     /// <para>
     /// The derived leader and the live version are written into the snapshot rather than left to be recomputed
@@ -304,10 +371,56 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <see cref="QuePaxaRecorder{TValue}.FromState"/> are deliberately not inverses there, and the difference
     /// is that a bare recorder state names no instance while this record names one.
     /// </para>
+    /// <para>
+    /// It refuses while a runner owns the host, unlike the read-only members. A snapshot is four fields read
+    /// off two references a learn replaces in two stores, so one taken beside a running loop can pair a
+    /// record with the register of another instance — the torn snapshot <see cref="FromState"/> exists to
+    /// refuse, produced by a reader rather than by a store. The sequenced snapshot is the one taken inside
+    /// the host's <see cref="PersistVersionedNodeDelegate{TValue}"/>, which the loop invokes while it owns
+    /// the node. On an unowned host the single consumer is the caller, so its snapshot is consistent by
+    /// construction, which is what leaves the never-torn claim true of every reader that remains.
+    /// </para>
     /// </remarks>
     public QuePaxaVersionedNodeState<TValue> ToState()
     {
-        return new QuePaxaVersionedNodeState<TValue>(Committed, LiveVersion, Node.Recorder.ConfiguredLeader, Node.Recorder.ToState());
+        ThrowIfOwned();
+
+        return ToStateForOwner();
+    }
+
+
+    internal QuePaxaVersionedNodeState<TValue> ToStateForOwner()
+    {
+        VersionedValue<TValue>? committed = Committed;
+        QuePaxaRecorder<VersionedValue<TValue>> recorder = Recorder;
+
+        return new QuePaxaVersionedNodeState<TValue>(committed, LiveVersionFor(committed), recorder.ConfiguredLeader, recorder.ToState());
+    }
+
+
+    /// <summary>
+    /// Claims this host for the runner whose loop is starting, refusing a second claim.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Thrown if another runner already holds the claim.</exception>
+    internal void ClaimForRunner()
+    {
+        if(Interlocked.Exchange(ref owner, 1) != 0)
+        {
+            throw new InvalidOperationException("A versioned recorder host is driven by one runner at a time and this one is already owned by a running loop. Two loops over one node interleave, and the node records one request at a time.");
+        }
+    }
+
+
+    /// <summary>Releases the claim, which the runner does when its loop ends on any path.</summary>
+    internal void ReleaseFromRunner() => Interlocked.Exchange(ref owner, 0);
+
+
+    private void ThrowIfOwned()
+    {
+        if(Volatile.Read(ref owner) != 0)
+        {
+            throw new InvalidOperationException("A running runner owns this host and is the only code that may touch it; a call from outside its loop interleaves with the loop's own. Queue the work through the runner instead, whose RecordAsync, LearnAsync, MakeDurableAsync and ReadCommittedAsync are the sequenced paths.");
+        }
     }
 
 
@@ -397,6 +510,17 @@ public sealed class QuePaxaVersionedNode<TValue>
 
         return new QuePaxaVersionedNode<TValue>(schedule, state.Committed, new QuePaxaNode<VersionedValue<TValue>>(recorder));
     }
+
+
+    /// <summary>The version a host holding <paramref name="committed"/> serves.</summary>
+    /// <param name="committed">The committed record to derive from, or <see langword="null"/> for a host that has learned none.</param>
+    /// <returns>The version after the record's.</returns>
+    /// <exception cref="InvalidOperationException">Thrown if the record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it.</exception>
+    /// <remarks>
+    /// The derivation takes the record rather than reading <see cref="Committed"/>, so a caller needing the
+    /// record and the version it implies together reads the field once and derives from that one snapshot.
+    /// </remarks>
+    private static RegisterVersion LiveVersionFor(VersionedValue<TValue>? committed) => committed is { } record ? record.Version.Next() : RegisterVersion.First;
 
 
     private static string Describe(ProposerLane? lane) => lane?.ToString() ?? "leaderless";

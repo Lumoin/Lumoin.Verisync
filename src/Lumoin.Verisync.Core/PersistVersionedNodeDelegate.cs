@@ -31,6 +31,14 @@ namespace Lumoin.Verisync.Core;
 /// retransmission that follows a failed write retries the write before the reply is sent.
 /// </para>
 /// <para>
+/// Three paths besides a reply await this, and they are the reason "before any dependent reply leaves" is
+/// not the whole rule: <see cref="QuePaxaVersionedRunner{TValue}.MakeDurableAsync"/>, the caller-driven
+/// checkpoint; a <see cref="LearnDurability.Durable"/> learn through
+/// <see cref="QuePaxaVersionedRunner{TValue}.LearnAsync"/>, which owes the write before it reports an
+/// adoption; and <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>, which owes it before it
+/// republishes a record to a peer that will move to the next version on it.
+/// </para>
+/// <para>
 /// Throwing prevents the reply from being sent and so fails closed: the call the reply belonged to is
 /// faulted instead, and the exception ends <see cref="QuePaxaVersionedRunner{TValue}.RunAsync"/>.
 /// </para>

@@ -24,5 +24,12 @@ namespace Lumoin.Verisync.Core;
 /// holding. That is also the recovery for the crash: the recorders still serve the instance whose leader they
 /// can derive, so a write at that version converges on the record already decided there.
 /// </para>
+/// <para>
+/// The host-side implementation is <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>, which IS
+/// this delegate by method-group conversion and answers through the runner's own queue after making the
+/// host's state durable. A host that answers a catch-up read off the loop instead both reads state the loop
+/// is writing and may republish a record it has learned and not persisted, which a peer adopts and moves to
+/// the next version on.
+/// </para>
 /// </remarks>
 public delegate ValueTask<VersionedValue<TValue>?> ReadCommittedRecordDelegate<TValue>(CancellationToken cancellationToken);
