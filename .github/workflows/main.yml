@@ -95,7 +95,7 @@ jobs:
     steps:
     - name: Harden Runner
       if: ${{ matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-24.04-arm' }}
-      uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920
+      uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40
       with:
         disable-sudo: true
         egress-policy: block
@@ -215,7 +215,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40
         with:
           disable-sudo: true
           egress-policy: block
@@ -248,7 +248,7 @@ jobs:
     environment: Release
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40
         with:
           disable-sudo: true
           egress-policy: block
