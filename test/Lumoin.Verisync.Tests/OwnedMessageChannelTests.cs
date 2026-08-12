@@ -257,6 +257,49 @@ internal sealed class OwnedMessageChannelTests
     }
 
 
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task ACanceledPendingReadEndsTheOwnedEnumerationAndLeavesNoActiveRentals()
+    {
+        //A consumer stopping mid-stream cancels its own pending read: the parked MoveNextAsync completes false
+        //within the bound and the enumerator then disposes cleanly. Nothing is rented on the stop, because an
+        //owned value rents only at deserialization and the canceled arm never reaches it, so the ledger must
+        //balance on the one message the consumer did take.
+        RentalAccountant accountant = new();
+        using(accountant)
+        {
+            using BaseMemoryPool pool = new();
+
+            Pipe pipe = new();
+            MessageChannelWriter<byte[]> writer = new(pipe.Writer, SerializeBytes);
+            OwnedMessageChannelReader<IMemoryOwner<byte>> reader = new(pipe.Reader, DeserializeOwned, pool);
+
+            await writer.WriteAsync([0x01, 0x02, 0x03], TestContext.CancellationToken).ConfigureAwait(false);
+
+            IAsyncEnumerator<IMemoryOwner<byte>> messages = reader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+
+            Assert.IsTrue(await messages.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false));
+            messages.Current.Dispose();
+
+            //Nothing further is written, so this call is parked in the pipe's read when the cancel lands.
+            Task<bool> pending = messages.MoveNextAsync().AsTask();
+            Assert.IsFalse(pending.IsCompleted, "The read completed against an empty pipe, so no read was in flight to cancel.");
+
+            reader.CancelPendingRead();
+
+            Assert.IsFalse(
+                await pending.WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false),
+                "A canceled read yielded an owned value instead of ending the enumeration.");
+
+            await messages.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false);
+        }
+
+        Assert.AreEqual(0L, accountant.NetActive);
+        Assert.IsGreaterThan(0L, accountant.Rented);
+        Assert.AreEqual(accountant.Rented, accountant.Returned);
+    }
+
+
     //Drains the reader, copying each owned payload's bytes out and disposing the owner inside the loop — the
     //per-message release the class documents. The copy is what a consumer that does not retain the payload does.
     private async Task<List<byte[]>> ReadAllOwned(OwnedMessageChannelReader<IMemoryOwner<byte>> reader)

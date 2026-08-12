@@ -45,6 +45,7 @@ internal sealed class QuePaxaSocketClusterTests
         var listeners = new List<TcpListener>();
         var clients = new List<TcpClient>();
         var servers = new List<TcpClient>();
+        var replyReaders = new List<MessageChannelReader<RecordReply<string>>>();
         var replyEnumerators = new List<IAsyncEnumerator<RecordReply<string>>>();
         var gates = new List<SemaphoreSlim>();
         var nodeTasks = new List<Task>();
@@ -65,10 +66,12 @@ internal sealed class QuePaxaSocketClusterTests
             var endpoints = new RecorderEndpointDelegate<string>[count];
             for(int i = 0; i < count; i++)
             {
+                int connection = i;
                 NetworkStream clientStream = clients[i].GetStream();
                 MessageChannelWriter<RecordRequest<string>> requestWriter = new(PipeWriter.Create(clientStream, new StreamPipeWriterOptions(leaveOpen: true)), requestSerialize);
                 MessageChannelReader<RecordReply<string>> replyReader = new(PipeReader.Create(clientStream), replyDeserialize);
                 IAsyncEnumerator<RecordReply<string>> replies = replyReader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+                replyReaders.Add(replyReader);
                 replyEnumerators.Add(replies);
 
                 //One request/reply exchange at a time per connection: a proposer that abandons a slow
@@ -83,7 +86,10 @@ internal sealed class QuePaxaSocketClusterTests
                     try
                     {
                         await requestWriter.WriteAsync(request, token).ConfigureAwait(false);
-                        _ = await replies.MoveNextAsync().ConfigureAwait(false);
+                        if(!await replies.MoveNextAsync().ConfigureAwait(false))
+                        {
+                            throw new IOException($"Connection {connection} ended its reply stream while the request at {request.Step} was outstanding.");
+                        }
 
                         return replies.Current;
                     }
@@ -112,7 +118,7 @@ internal sealed class QuePaxaSocketClusterTests
         }
         finally
         {
-            await DisposeTransport(replyEnumerators, gates, clients, servers, listeners).ConfigureAwait(false);
+            await DisposeTransport(replyReaders, replyEnumerators, gates, clients, servers, listeners).ConfigureAwait(false);
         }
     }
 
@@ -139,6 +145,7 @@ internal sealed class QuePaxaSocketClusterTests
         var listeners = new List<TcpListener>();
         var clients = new List<TcpClient>();
         var servers = new List<TcpClient>();
+        var replyReaders = new List<MessageChannelReader<RecordReply<string>>>();
         var replyEnumerators = new List<IAsyncEnumerator<RecordReply<string>>>();
         var gates = new List<SemaphoreSlim>();
         var nodeTasks = new List<Task>();
@@ -170,10 +177,12 @@ internal sealed class QuePaxaSocketClusterTests
             var endpoints = new RecorderEndpointDelegate<string>[count];
             for(int i = 0; i < count; i++)
             {
+                int connection = i;
                 NetworkStream clientStream = clients[i].GetStream();
                 MessageChannelWriter<RecordRequest<string>> requestWriter = new(PipeWriter.Create(clientStream, new StreamPipeWriterOptions(leaveOpen: true)), requestSerialize);
                 MessageChannelReader<RecordReply<string>> replyReader = new(PipeReader.Create(clientStream), replyDeserialize);
                 IAsyncEnumerator<RecordReply<string>> replies = replyReader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+                replyReaders.Add(replyReader);
                 replyEnumerators.Add(replies);
 
                 SemaphoreSlim gate = new(1, 1);
@@ -185,7 +194,10 @@ internal sealed class QuePaxaSocketClusterTests
                     try
                     {
                         await requestWriter.WriteAsync(request, token).ConfigureAwait(false);
-                        _ = await replies.MoveNextAsync().ConfigureAwait(false);
+                        if(!await replies.MoveNextAsync().ConfigureAwait(false))
+                        {
+                            throw new IOException($"Connection {connection} ended its reply stream while the request at {request.Step} was outstanding.");
+                        }
 
                         return replies.Current;
                     }
@@ -218,7 +230,7 @@ internal sealed class QuePaxaSocketClusterTests
         }
         finally
         {
-            await DisposeTransport(replyEnumerators, gates, clients, servers, listeners).ConfigureAwait(false);
+            await DisposeTransport(replyReaders, replyEnumerators, gates, clients, servers, listeners).ConfigureAwait(false);
         }
 
         //Every recorder recorded the leader's proposal, so every node's durability hook fired before its
@@ -265,6 +277,7 @@ internal sealed class QuePaxaSocketClusterTests
         var listeners = new List<TcpListener>();
         var clients = new List<TcpClient>();
         var servers = new List<TcpClient>();
+        var responseReaders = new List<MessageChannelReader<CorrelatedFrame>>();
         var responseEnumerators = new List<IAsyncEnumerator<CorrelatedFrame>>();
         var gates = new List<SemaphoreSlim>();
         var servingTasks = new List<Task>();
@@ -309,12 +322,14 @@ internal sealed class QuePaxaSocketClusterTests
                 MessageChannelWriter<CorrelatedFrame> clientRequests = new(PipeWriter.Create(clientStream, new StreamPipeWriterOptions(leaveOpen: true)), WriteFrame);
                 MessageChannelReader<CorrelatedFrame> clientResponses = new(PipeReader.Create(clientStream), ReadFrame);
                 IAsyncEnumerator<CorrelatedFrame> responses = clientResponses.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+                responseReaders.Add(clientResponses);
                 responseEnumerators.Add(responses);
 
                 SemaphoreSlim gate = new(1, 1);
                 gates.Add(gate);
 
                 int nextId = 1;
+                int connection = i;
                 endpoints[i] = async (request, token) =>
                 {
                     await gate.WaitAsync(token).ConfigureAwait(false);
@@ -324,7 +339,11 @@ internal sealed class QuePaxaSocketClusterTests
                         var buffer = new ArrayBufferWriter<byte>();
                         requestSerialize(request, buffer);
                         await clientRequests.WriteAsync(new CorrelatedFrame(id, buffer.WrittenSpan.ToArray()), token).ConfigureAwait(false);
-                        _ = await responses.MoveNextAsync().ConfigureAwait(false);
+                        if(!await responses.MoveNextAsync().ConfigureAwait(false))
+                        {
+                            throw new IOException($"Connection {connection} ended its response stream while call {id} was outstanding.");
+                        }
+
                         CorrelatedFrame answer = responses.Current;
                         Assert.AreEqual(id, answer.Id);
                         if(answer.Payload is null)
@@ -374,7 +393,7 @@ internal sealed class QuePaxaSocketClusterTests
         }
         finally
         {
-            await DisposeTransport(responseEnumerators, gates, clients, servers, listeners).ConfigureAwait(false);
+            await DisposeTransport(responseReaders, responseEnumerators, gates, clients, servers, listeners).ConfigureAwait(false);
 
             foreach(QuePaxaVersionedRunner<string> runner in runners)
             {
@@ -427,6 +446,7 @@ internal sealed class QuePaxaSocketClusterTests
         var listeners = new List<TcpListener>();
         var clients = new List<TcpClient>();
         var servers = new List<TcpClient>();
+        var replyReaders = new List<MessageChannelReader<RecordReply<string>>>();
         var replyEnumerators = new List<IAsyncEnumerator<RecordReply<string>>>();
         var gates = new List<SemaphoreSlim>();
 
@@ -456,6 +476,7 @@ internal sealed class QuePaxaSocketClusterTests
             NetworkStream firstClientStream = firstClients[0].GetStream();
             MessageChannelReader<RecordReply<string>> firstReplyReader = new(PipeReader.Create(firstClientStream), replyDeserialize);
             IAsyncEnumerator<RecordReply<string>> firstAnswers = firstReplyReader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+            replyReaders.Add(firstReplyReader);
             replyEnumerators.Add(firstAnswers);
 
             Assert.IsFalse(await firstAnswers.MoveNextAsync().ConfigureAwait(false), "A reply crossed the wire for a write that never became durable.");
@@ -477,6 +498,7 @@ internal sealed class QuePaxaSocketClusterTests
             MessageChannelWriter<RecordRequest<string>> secondRequestWriter = new(PipeWriter.Create(secondClientStream, new StreamPipeWriterOptions(leaveOpen: true)), requestSerialize);
             MessageChannelReader<RecordReply<string>> secondReplyReader = new(PipeReader.Create(secondClientStream), replyDeserialize);
             IAsyncEnumerator<RecordReply<string>> secondAnswers = secondReplyReader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+            replyReaders.Add(secondReplyReader);
             replyEnumerators.Add(secondAnswers);
 
             await secondRequestWriter.WriteAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
@@ -509,6 +531,7 @@ internal sealed class QuePaxaSocketClusterTests
             MessageChannelWriter<RecordRequest<string>> thirdRequestWriter = new(PipeWriter.Create(thirdClientStream, new StreamPipeWriterOptions(leaveOpen: true)), requestSerialize);
             MessageChannelReader<RecordReply<string>> thirdReplyReader = new(PipeReader.Create(thirdClientStream), replyDeserialize);
             IAsyncEnumerator<RecordReply<string>> thirdAnswers = thirdReplyReader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+            replyReaders.Add(thirdReplyReader);
             replyEnumerators.Add(thirdAnswers);
 
             await thirdRequestWriter.WriteAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
@@ -526,7 +549,7 @@ internal sealed class QuePaxaSocketClusterTests
         }
         finally
         {
-            await DisposeTransport(replyEnumerators, gates, clients, servers, listeners).ConfigureAwait(false);
+            await DisposeTransport(replyReaders, replyEnumerators, gates, clients, servers, listeners).ConfigureAwait(false);
         }
     }
 
@@ -559,13 +582,34 @@ internal sealed class QuePaxaSocketClusterTests
     }
 
 
+    //A proposer abandons an outstanding endpoint call by design, and an abandoned call sits in its reply
+    //enumerator's MoveNextAsync holding its connection's gate. Disposing an enumerator with a call in flight is
+    //illegal, so teardown first completes those calls and then proves none is left.
     private static async Task DisposeTransport<TReply>(
+        List<MessageChannelReader<TReply>> readers,
         List<IAsyncEnumerator<TReply>> enumerators,
         List<SemaphoreSlim> gates,
         List<TcpClient> clients,
         List<TcpClient> servers,
         List<TcpListener> listeners)
     {
+        //Cancelling is unconditional because it is tolerated on a stream that already ended, and a reader whose
+        //call is parked answers it false.
+        foreach(MessageChannelReader<TReply> reader in readers)
+        {
+            reader.CancelPendingRead();
+        }
+
+        //A gate taken proves its connection carries no call, because an endpoint releases the gate only once
+        //its MoveNextAsync has completed.
+        for(int index = 0; index < gates.Count; index++)
+        {
+            if(!await gates[index].WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false))
+            {
+                throw new TimeoutException($"Connection {index}'s gate still carried a call at teardown, so its reply enumerator cannot be disposed.");
+            }
+        }
+
         foreach(IAsyncEnumerator<TReply> enumerator in enumerators)
         {
             await enumerator.DisposeAsync().ConfigureAwait(false);

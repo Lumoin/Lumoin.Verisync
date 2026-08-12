@@ -86,8 +86,10 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         RunTasks = new Task[hostCount];
         ServingTasks = new Task[hostCount];
         RequestWriters = new MessageChannelWriter<CorrelatedFrame>[hostCount];
+        ReplyReaders = new MessageChannelReader<CorrelatedFrame>[hostCount];
         ReplyEnumerators = new IAsyncEnumerator<CorrelatedFrame>[hostCount];
         Gates = new SemaphoreSlim[hostCount];
+        GateTaken = new bool[hostCount];
         NextIds = new int[hostCount];
         Partitioned = new bool[hostCount];
         ServedCounts = new int[hostCount];
@@ -110,6 +112,7 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
             NetworkStream clientStream = clients[host].GetStream();
             RequestWriters[host] = new MessageChannelWriter<CorrelatedFrame>(PipeWriter.Create(clientStream, new StreamPipeWriterOptions(leaveOpen: true)), WriteFrame);
             MessageChannelReader<CorrelatedFrame> clientReplies = new(PipeReader.Create(clientStream), ReadFrame);
+            ReplyReaders[host] = clientReplies;
             ReplyEnumerators[host] = clientReplies.ReadAllAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
 
             //One request and its reply at a time per connection: a proposer that abandons a slow recorder
@@ -211,9 +214,15 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
     private MessageChannelWriter<CorrelatedFrame>[] RequestWriters { get; }
 
+    private MessageChannelReader<CorrelatedFrame>[] ReplyReaders { get; }
+
     private IAsyncEnumerator<CorrelatedFrame>[] ReplyEnumerators { get; }
 
     private SemaphoreSlim[] Gates { get; }
+
+    //A gate this cluster holds, taken by the drain or by teardown and never given back. Teardown waits only on
+    //the gates nobody has taken yet, because waiting on one it holds itself would never return.
+    private bool[] GateTaken { get; }
 
     private int[] NextIds { get; }
 
@@ -456,6 +465,8 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
             {
                 throw new TimeoutException($"Host {index}'s gate still carried a call when the cluster drained, so the observations are incomplete.");
             }
+
+            GateTaken[index] = true;
         }
 
         foreach(TcpClient client in Clients)
@@ -493,6 +504,36 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         catch(Exception)
         {
             //A drain that timed out or faulted still leaves a transport to close.
+        }
+
+        //Disposing an enumerator whose call is still in flight is illegal, and a drain that timed out is exactly
+        //the path that leaves one parked. A cancel only arms that call's completion, which lands on the pipe's
+        //own IO continuation while this method runs on, so the gate take below is the barrier that proves the
+        //parked call finished: an endpoint releases its gate only once its MoveNextAsync has completed.
+        //Cancelling is unconditional because it is tolerated on a stream that already ended.
+        foreach(MessageChannelReader<CorrelatedFrame> reader in ReplyReaders)
+        {
+            reader.CancelPendingRead();
+        }
+
+        //Teardown holds what it takes, as the drain does, so only the gates the drain never acquired are waited
+        //for here. A wait that expires leaves a call still parked, which the swallowing catch around disposal
+        //absorbs, because teardown must not throw over a test's own outcome.
+        for(int index = 0; index < Gates.Length; index++)
+        {
+            if(GateTaken[index])
+            {
+                continue;
+            }
+
+            try
+            {
+                GateTaken[index] = await Gates[index].WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            catch(Exception)
+            {
+                //A gate the runtime has already reclaimed carries no call to wait for either.
+            }
         }
 
         foreach(IAsyncEnumerator<CorrelatedFrame> enumerator in ReplyEnumerators)

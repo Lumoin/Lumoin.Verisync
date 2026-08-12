@@ -327,6 +327,46 @@ internal sealed class ItemStreamChannelTests
     }
 
 
+    [TestMethod]
+    public async Task ACancelMidFrameStillHandlesTheFrameInHandAndThenEndsTheReadTask()
+    {
+        //A cancel is consulted where a read is issued, not between the items of a frame already in hand, so a
+        //handler that cancels while holding the first item still receives the rest of that frame. The stop takes
+        //effect at the next read from the pipe, which ends the read task rather than faulting it.
+        byte[][] items =
+        [
+            [0x01, 0x02, 0x03],
+            [0x04]
+        ];
+
+        using BaseMemoryPool pool = new();
+
+        Pipe pipe = new();
+        MessageChannelWriter<IReadOnlyList<byte[]>> writer = new(pipe.Writer, SerializeBlobs);
+        ItemStreamChannelReader<Blob> reader = new(pipe.Reader, DecodeBlob, pool, MinimumItemByteLength);
+
+        await writer.WriteAsync(items, TestContext.CancellationToken).ConfigureAwait(false);
+
+        var received = new List<byte[]>();
+        Task read = reader.ReadAllAsync(
+            (in Blob item) =>
+            {
+                received.Add(item.Bytes.ToArray());
+                if(received.Count == 1)
+                {
+                    reader.CancelPendingRead();
+                }
+            },
+            TestContext.CancellationToken).AsTask();
+
+        await read.WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false);
+
+        string[] expected = [.. items.Select(Convert.ToHexString)];
+        string[] actual = [.. received.Select(Convert.ToHexString)];
+        Assert.AreSequenceEqual(expected, actual, "The cancel dropped an item of the frame already in hand.");
+    }
+
+
     //Decodes one length-prefixed blob, copying its bytes into a pooled rental returned as the lease so the item
     //outlives the borrowed frame buffer. An empty blob owns nothing, so its lease is null. Every field is bounded
     //against the cursor before a byte is copied, and nothing is rented on a path that then throws.

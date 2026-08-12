@@ -86,6 +86,40 @@ internal sealed class ChannelSerializationTests
 
 
     [TestMethod]
+    public async Task ACanceledPendingReadEndsTheEnumerationOverALocalhostSocket()
+    {
+        //A consumer stopping mid-stream cancels its own pending read rather than completing the pipe. The
+        //parked MoveNextAsync then completes false within the bound, and only a call that has completed
+        //leaves an enumerator that disposes cleanly, which is what a teardown over a real socket rests on.
+        DeserializeMessageDelegate<SampleMessage> deserialize = JsonChannelSerialization.CreateDeserializer(SampleJsonContext.Default.SampleMessage);
+
+        using TcpListener listener = new(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        using TcpClient client = new();
+        Task<TcpClient> acceptTask = listener.AcceptTcpClientAsync(TestContext.CancellationToken).AsTask();
+        await client.ConnectAsync(IPAddress.Loopback, port, TestContext.CancellationToken).ConfigureAwait(false);
+        using TcpClient server = await acceptTask.ConfigureAwait(false);
+
+        MessageChannelReader<SampleMessage> reader = new(PipeReader.Create(server.GetStream()), deserialize);
+        IAsyncEnumerator<SampleMessage> messages = reader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+
+        //The peer sends nothing, so this call is still parked in the socket read when the cancel lands.
+        Task<bool> pending = messages.MoveNextAsync().AsTask();
+        Assert.IsFalse(pending.IsCompleted, "The read completed before the peer sent anything, so no read was in flight to cancel.");
+
+        reader.CancelPendingRead();
+
+        Assert.IsFalse(
+            await pending.WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false),
+            "A canceled read delivered a message instead of ending the enumeration.");
+
+        await messages.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+
+    [TestMethod]
     public void JsonDeserializerRejectsLiteralNullPayload()
     {
         //A channel message is never null. The JSON literal "null" deserializes to a null reference, which

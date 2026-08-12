@@ -52,6 +52,95 @@ internal sealed class MessageChannelTests
 
 
     [TestMethod]
+    public async Task ACancelBeforeTheFirstReadEndsTheEnumerationAndDiscardsBufferedFrames()
+    {
+        //Two frames are on the pipe and no read is in flight, so the cancel takes the next read: the first
+        //MoveNextAsync completes false and neither buffered frame is delivered. A consumer that wants the
+        //buffered tail does not cancel.
+        Pipe pipe = new();
+        MessageChannelWriter<string> writer = new(pipe.Writer, SerializeUtf8);
+        MessageChannelReader<string> reader = new(pipe.Reader, DeserializeUtf8);
+
+        await writer.WriteAsync("alpha", TestContext.CancellationToken).ConfigureAwait(false);
+        await writer.WriteAsync("beta", TestContext.CancellationToken).ConfigureAwait(false);
+
+        reader.CancelPendingRead();
+
+        IAsyncEnumerator<string> messages = reader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+
+        Assert.IsFalse(
+            await messages.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false),
+            "A canceled read delivered a buffered frame instead of ending the enumeration.");
+
+        await messages.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+
+    [TestMethod]
+    public async Task ACancelWithFramesInHandStillYieldsThemAndThenEndsTheEnumeration()
+    {
+        //Three frames are on the pipe before the enumerator exists, so one read takes them all into hand. A
+        //cancel is consulted where the next read is issued, not between the frames of the buffer already read,
+        //so the frames in hand are yielded first and the enumeration ends only at that next read. A consumer
+        //that must observe nothing further stops enumerating rather than relying on the cancel.
+        Pipe pipe = new();
+        MessageChannelWriter<string> writer = new(pipe.Writer, SerializeUtf8);
+        MessageChannelReader<string> reader = new(pipe.Reader, DeserializeUtf8);
+
+        await writer.WriteAsync("alpha", TestContext.CancellationToken).ConfigureAwait(false);
+        await writer.WriteAsync("beta", TestContext.CancellationToken).ConfigureAwait(false);
+        await writer.WriteAsync("gamma", TestContext.CancellationToken).ConfigureAwait(false);
+
+        IAsyncEnumerator<string> messages = reader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+
+        Assert.IsTrue(await messages.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false));
+        Assert.AreEqual("alpha", messages.Current);
+
+        reader.CancelPendingRead();
+
+        Assert.IsTrue(
+            await messages.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false),
+            "The cancel dropped a frame the read had already taken into hand.");
+        Assert.AreEqual("beta", messages.Current);
+
+        Assert.IsTrue(
+            await messages.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false),
+            "The cancel dropped a frame the read had already taken into hand.");
+        Assert.AreEqual("gamma", messages.Current);
+
+        Assert.IsFalse(
+            await messages.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false),
+            "The buffer in hand was exhausted, so the next read had to be the canceled one that ends the enumeration.");
+
+        await messages.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+
+    [TestMethod]
+    public async Task ACancelAfterTheEnumerationEndedIsToleratedAndDisposesCleanly()
+    {
+        //A teardown cancels every reader it holds without asking whether that reader's stream already ended,
+        //so a cancel on a finished enumeration must be a no-op rather than a fault.
+        Pipe pipe = new();
+        MessageChannelWriter<string> writer = new(pipe.Writer, SerializeUtf8);
+        MessageChannelReader<string> reader = new(pipe.Reader, DeserializeUtf8);
+
+        await writer.WriteAsync("alpha", TestContext.CancellationToken).ConfigureAwait(false);
+        await writer.CompleteAsync().ConfigureAwait(false);
+
+        IAsyncEnumerator<string> messages = reader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+
+        Assert.IsTrue(await messages.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false));
+        Assert.AreEqual("alpha", messages.Current);
+        Assert.IsFalse(await messages.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false));
+
+        reader.CancelPendingRead();
+
+        await messages.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+
+    [TestMethod]
     public void ConstructorsRejectNullArguments()
     {
         Pipe pipe = new();

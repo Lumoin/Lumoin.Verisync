@@ -39,6 +39,15 @@ namespace Lumoin.Verisync.Core;
 /// part-way through a frame throws. A configured <see cref="FramePadding"/> policy must match the writing
 /// peer's.
 /// </para>
+/// <para>
+/// The stream ends when the pipe is completed by the writer, when the token is signalled, or when
+/// <see cref="CancelPendingRead"/> cancels a read. The last is the consumer's own graceful stop: the canceled
+/// read itself carries nothing to the handler and completes the read task without the partial-frame check,
+/// because the consumer ended the stream rather than the peer. Items of frames already read from the pipe
+/// into the buffer in hand still reach the handler until that buffer is exhausted, so the stop takes effect
+/// at the next read from the pipe; a consumer that must not observe further items stops the handler itself
+/// rather than relying on the cancel.
+/// </para>
 /// </remarks>
 public sealed class ItemStreamChannelReader<TItem>
 {
@@ -85,6 +94,13 @@ public sealed class ItemStreamChannelReader<TItem>
     /// <param name="handleItem">The per-item handler.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A task that completes when the channel ends.</returns>
+    /// <remarks>
+    /// The channel ends three ways: the writer completes the pipe, the token is signalled, or
+    /// <see cref="CancelPendingRead"/> cancels a read. The canceled read hands over no item and completes this
+    /// task without the partial-frame check, while items of frames already taken from the pipe into the buffer
+    /// in hand still reach <paramref name="handleItem"/> until that buffer is exhausted, so the stop takes
+    /// effect at the next read from the pipe.
+    /// </remarks>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="handleItem"/> is <see langword="null"/>.</exception>
     /// <exception cref="InvalidOperationException">Thrown if the channel ends part-way through a frame, a frame declares more items than its bytes can hold, or a frame carries bytes beyond its declared items.</exception>
     public async ValueTask ReadAllAsync(ItemHandlerDelegate<TItem> handleItem, CancellationToken cancellationToken = default)
@@ -98,6 +114,13 @@ public sealed class ItemStreamChannelReader<TItem>
             while(true)
             {
                 ReadResult result = await Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                if(result.IsCanceled)
+                {
+                    Reader.AdvanceTo(result.Buffer.Start);
+
+                    break;
+                }
+
                 ReadOnlySequence<byte> buffer = result.Buffer;
 
                 while(FrameReader.TryReadFrame(ref buffer, MaxFrameLength, out ReadOnlySequence<byte> frame))
@@ -123,6 +146,15 @@ public sealed class ItemStreamChannelReader<TItem>
             await Reader.CompleteAsync().ConfigureAwait(false);
         }
     }
+
+
+    /// <summary>
+    /// Cancels the read in flight, or the next one, without completing the pipe. The stream then ends
+    /// gracefully: a pending <see cref="ReadAllAsync"/> completes rather than faulting, so a consumer stopping
+    /// mid-stream can observe the end. Callable from any thread, and tolerated after the stream has already
+    /// ended.
+    /// </summary>
+    public void CancelPendingRead() => Reader.CancelPendingRead();
 
 
     private void ReadItems(ReadOnlySequence<byte> payload, ItemHandlerDelegate<TItem> handleItem)
