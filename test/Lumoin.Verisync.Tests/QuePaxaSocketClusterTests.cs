@@ -16,9 +16,10 @@ namespace Lumoin.Verisync.Tests;
 /// QuePaxa consensus over real localhost sockets: the bare record family and the versioned envelope both
 /// serialized through their JSON codecs across loopback TCP, per the standing rule that integration tests
 /// serialize over a real transport rather than run in process. The subjects are whole rounds — a leaderless
-/// decision, the leader's one-step fast path with durability hooks wired, and a versioned write followed by
-/// a learn and the next version's write — because the codec round-trip tests already pin the bytes and only
-/// a decision proves the protocol survives the transport's framing end to end.
+/// decision, the leader's one-step fast path with durability hooks wired, a versioned write followed by a
+/// learn and the next version's write, and a re-delivery of one request across three connections after a
+/// failed durable write — because the codec round-trip tests already pin the bytes and only a decision
+/// proves the protocol survives the transport's framing end to end.
 /// </summary>
 [TestClass]
 internal sealed class QuePaxaSocketClusterTests
@@ -381,6 +382,151 @@ internal sealed class QuePaxaSocketClusterTests
             }
 
             await Task.WhenAll(runTasks).WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false);
+        }
+    }
+
+
+    //A RE-DELIVERY AFTER A FAILED WRITE RETRIES THE WRITE, and this is the one place where "did the state
+    //change" and "is the state durable" come apart. A request advances the recorder, the write fails, and the
+    //reply is correctly withheld. The proposer then re-delivers the identical request, which the re-send rule
+    //makes ordinary rather than exceptional. That re-delivery changes nothing, so a gate that asked whether
+    //THIS request changed the state would skip the write and send a reply carrying a first proposal that never
+    //reached the disk. Here the re-delivery is a real retransmission: the connection the first attempt died on
+    //is gone, and the identical bytes cross a fresh one, which is the shape a proposer's retry actually takes.
+    [TestMethod]
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "All listeners, clients, servers, and enumerators are tracked in lists and disposed in the finally block.")]
+    public async Task ARedeliveryAfterAFailedPersistWritesAgainBeforeItAnswersOverSockets()
+    {
+        ProposerLane leader = ProposerLane.For(First);
+
+        SerializeMessageDelegate<RecordRequest<string>> requestSerialize = QuePaxaMessageJson.CreateRequestSerializer<string>((writer, value) => writer.WriteStringValue(value));
+        DeserializeMessageDelegate<RecordRequest<string>> requestDeserialize = QuePaxaMessageJson.CreateRequestDeserializer(element => element.GetString()!);
+        SerializeMessageDelegate<RecordReply<string>> replySerialize = QuePaxaMessageJson.CreateReplySerializer<string>((writer, value) => writer.WriteStringValue(value));
+        DeserializeMessageDelegate<RecordReply<string>> replyDeserialize = QuePaxaMessageJson.CreateReplyDeserializer(element => element.GetString()!);
+
+        QuePaxaNode<string> node = new(QuePaxaRecorder<string>.LedBy(leader));
+        RecordRequest<string> request = new(RecorderStep.RoundOnePhaseZero, new PrioritizedProposal<string>(new ProposalKey(new ProposalPriority(5), leader), "a"));
+
+        List<QuePaxaRecorder<string>> persisted = [];
+        int attempts = 0;
+
+        //The first write fails and every later one succeeds, which is a disk that was briefly full.
+        ValueTask Persist(QuePaxaRecorder<string> recorder, CancellationToken token)
+        {
+            attempts++;
+            if(attempts == 1)
+            {
+                throw new IOException("the durable store is full");
+            }
+
+            persisted.Add(recorder);
+
+            return ValueTask.CompletedTask;
+        }
+
+        var listeners = new List<TcpListener>();
+        var clients = new List<TcpClient>();
+        var servers = new List<TcpClient>();
+        var replyEnumerators = new List<IAsyncEnumerator<RecordReply<string>>>();
+        var gates = new List<SemaphoreSlim>();
+
+        try
+        {
+            (List<TcpListener> firstListeners, List<TcpClient> firstClients, List<TcpClient> firstServers) = await ConnectedPairs(1).ConfigureAwait(false);
+            listeners.AddRange(firstListeners);
+            clients.AddRange(firstClients);
+            servers.AddRange(firstServers);
+
+            NetworkStream firstServerStream = firstServers[0].GetStream();
+            MessageChannelReader<RecordRequest<string>> firstRequests = new(PipeReader.Create(firstServerStream), requestDeserialize);
+            MessageChannelWriter<RecordReply<string>> firstReplies = new(PipeWriter.Create(firstServerStream, new StreamPipeWriterOptions(leaveOpen: true)), replySerialize);
+            Task firstRun = node.RunAsync(firstRequests.ReadAllAsync(TestContext.CancellationToken), (reply, token) => firstReplies.WriteAsync(reply, token), Persist, TestContext.CancellationToken);
+
+            MessageChannelWriter<RecordRequest<string>> firstRequestWriter = new(PipeWriter.Create(firstClients[0].GetStream(), new StreamPipeWriterOptions(leaveOpen: true)), requestSerialize);
+            await firstRequestWriter.WriteAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<IOException>(async () => await firstRun.ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.IsEmpty(persisted);
+
+            //TCP delivers a reply written before the fault ahead of the close, so an empty stream here is the
+            //persist-before-reply ordering observed as bytes: the assert the in-memory original makes on its
+            //replies list. The reply side is already at its end without a shutdown, because the serve loop's
+            //unwind completes the pipe reader and that disposes the stream the server socket was read over.
+            NetworkStream firstClientStream = firstClients[0].GetStream();
+            MessageChannelReader<RecordReply<string>> firstReplyReader = new(PipeReader.Create(firstClientStream), replyDeserialize);
+            IAsyncEnumerator<RecordReply<string>> firstAnswers = firstReplyReader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+            replyEnumerators.Add(firstAnswers);
+
+            Assert.IsFalse(await firstAnswers.MoveNextAsync().ConfigureAwait(false), "A reply crossed the wire for a write that never became durable.");
+
+            //The host restarts the loop on the same node, which is its only option, and the proposer
+            //re-delivers the identical request over a new connection. The recorder is unchanged by it, and
+            //the write must still happen.
+            (List<TcpListener> secondListeners, List<TcpClient> secondClients, List<TcpClient> secondServers) = await ConnectedPairs(1).ConfigureAwait(false);
+            listeners.AddRange(secondListeners);
+            clients.AddRange(secondClients);
+            servers.AddRange(secondServers);
+
+            NetworkStream secondServerStream = secondServers[0].GetStream();
+            MessageChannelReader<RecordRequest<string>> secondRequests = new(PipeReader.Create(secondServerStream), requestDeserialize);
+            MessageChannelWriter<RecordReply<string>> secondReplies = new(PipeWriter.Create(secondServerStream, new StreamPipeWriterOptions(leaveOpen: true)), replySerialize);
+            Task secondRun = node.RunAsync(secondRequests.ReadAllAsync(TestContext.CancellationToken), (reply, token) => secondReplies.WriteAsync(reply, token), Persist, TestContext.CancellationToken);
+
+            NetworkStream secondClientStream = secondClients[0].GetStream();
+            MessageChannelWriter<RecordRequest<string>> secondRequestWriter = new(PipeWriter.Create(secondClientStream, new StreamPipeWriterOptions(leaveOpen: true)), requestSerialize);
+            MessageChannelReader<RecordReply<string>> secondReplyReader = new(PipeReader.Create(secondClientStream), replyDeserialize);
+            IAsyncEnumerator<RecordReply<string>> secondAnswers = secondReplyReader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+            replyEnumerators.Add(secondAnswers);
+
+            await secondRequestWriter.WriteAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+            _ = await secondAnswers.MoveNextAsync().ConfigureAwait(false);
+
+            Assert.AreEqual(RecorderStep.RoundOnePhaseZero, secondAnswers.Current.Step);
+            Assert.HasCount(1, persisted);
+            Assert.AreSame(node.Recorder, persisted[0]);
+
+            secondClients[0].Client.Shutdown(SocketShutdown.Send);
+            await secondRun.ConfigureAwait(false);
+
+            //One request earns one reply and no more, which is the reply count the in-memory original keeps.
+            //The ended serve loop has already closed this server socket, so the stream is at its end.
+            Assert.IsFalse(await secondAnswers.MoveNextAsync().ConfigureAwait(false), "The second session answered its one request more than once.");
+
+            //A THIRD identical delivery is genuinely durable already, so it costs no further write and still
+            //answers: the gate is durability and not paranoia.
+            (List<TcpListener> thirdListeners, List<TcpClient> thirdClients, List<TcpClient> thirdServers) = await ConnectedPairs(1).ConfigureAwait(false);
+            listeners.AddRange(thirdListeners);
+            clients.AddRange(thirdClients);
+            servers.AddRange(thirdServers);
+
+            NetworkStream thirdServerStream = thirdServers[0].GetStream();
+            MessageChannelReader<RecordRequest<string>> thirdRequests = new(PipeReader.Create(thirdServerStream), requestDeserialize);
+            MessageChannelWriter<RecordReply<string>> thirdReplies = new(PipeWriter.Create(thirdServerStream, new StreamPipeWriterOptions(leaveOpen: true)), replySerialize);
+            Task thirdRun = node.RunAsync(thirdRequests.ReadAllAsync(TestContext.CancellationToken), (reply, token) => thirdReplies.WriteAsync(reply, token), Persist, TestContext.CancellationToken);
+
+            NetworkStream thirdClientStream = thirdClients[0].GetStream();
+            MessageChannelWriter<RecordRequest<string>> thirdRequestWriter = new(PipeWriter.Create(thirdClientStream, new StreamPipeWriterOptions(leaveOpen: true)), requestSerialize);
+            MessageChannelReader<RecordReply<string>> thirdReplyReader = new(PipeReader.Create(thirdClientStream), replyDeserialize);
+            IAsyncEnumerator<RecordReply<string>> thirdAnswers = thirdReplyReader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+            replyEnumerators.Add(thirdAnswers);
+
+            await thirdRequestWriter.WriteAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+            _ = await thirdAnswers.MoveNextAsync().ConfigureAwait(false);
+
+            Assert.AreEqual(RecorderStep.RoundOnePhaseZero, thirdAnswers.Current.Step);
+            Assert.HasCount(1, persisted);
+
+            thirdClients[0].Client.Shutdown(SocketShutdown.Send);
+            await thirdRun.ConfigureAwait(false);
+
+            //The durable-already delivery answers once as well, so no session answered twice. This server
+            //socket is closed by its ended serve loop too, so the stream is at its end.
+            Assert.IsFalse(await thirdAnswers.MoveNextAsync().ConfigureAwait(false), "The third session answered its one request more than once.");
+        }
+        finally
+        {
+            await DisposeTransport(replyEnumerators, gates, clients, servers, listeners).ConfigureAwait(false);
         }
     }
 

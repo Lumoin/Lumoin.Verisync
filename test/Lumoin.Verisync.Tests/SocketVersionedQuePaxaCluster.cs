@@ -1,0 +1,726 @@
+using Lumoin.Verisync.Core;
+using Lumoin.Verisync.Json;
+using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
+using System.IO.Pipelines;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
+
+namespace Lumoin.Verisync.Tests;
+
+/// <summary>
+/// A cluster of QuePaxa recorder hosts for a versioned register, each served by its own runner behind a
+/// loopback TCP connection, so a register scenario runs against real framing, real serialization and real
+/// per-call correlation.
+/// </summary>
+/// <typeparam name="TValue">The application value type.</typeparam>
+/// <remarks>
+/// <para>
+/// It sits beside <see cref="VersionedQuePaxaCluster{TValue}"/> with the same observations,
+/// <see cref="Served"/>, <see cref="Declined"/> and <see cref="Recorded"/>, plus <see cref="Sent"/>, which
+/// only a wire bench needs, and the same <see cref="Partition"/> and <see cref="Heal"/>. The controls the
+/// runner's ownership forces to differ are named for it: learns are <see cref="LearnAtAsync"/> and
+/// <see cref="LearnAllAsync"/> because they queue through the runner, a catch-up read is served by
+/// <see cref="Readers"/> over the wire because nothing may touch a node the runner owns,
+/// <see cref="DrainAsync"/> is the barrier the wire adds, and reply corruption is injected as bytes at
+/// connect time rather than by wrapping an endpoint. The point of the pair stands: the in-memory bench pins
+/// what the protocol does, and this one pins that the wire does not change it.
+/// </para>
+/// <para>
+/// Dissemination is explicit here because it is explicit in a deployment. A host learns a committed record
+/// only when a test calls <see cref="LearnAtAsync"/> or <see cref="LearnAllAsync"/>, which is what lets a
+/// test hold hosts back and watch a write fail to gather a quorum.
+/// </para>
+/// <para>
+/// An observation a serve loop writes is complete only after <see cref="DrainAsync"/>, unless the test can
+/// show no frame can yet be in flight: a clock that has not advanced, or an outcome only a served frame
+/// could have produced. <see cref="Served"/>, <see cref="Declined"/> and <see cref="Recorded"/> are written
+/// by the serve loops, and a write's outcome is no barrier for a frame still in flight, because a proposer
+/// that abandoned a slow recorder leaves a request the host has yet to answer. A test therefore drains
+/// first and asserts afterwards, and the tests that take the exemption carry the argument for it at the
+/// assertion. <see cref="Sent"/> is exempt by construction.
+/// </para>
+/// <para>
+/// The runner is the only sequenced path to a host. Nothing here touches a node after its loop starts,
+/// because the node's ownership latch throws for anyone but its runner.
+/// </para>
+/// </remarks>
+internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
+{
+    private const byte RecordKind = 0;
+    private const byte ReadKind = 1;
+
+    private static byte[] JsonNull { get; } = "null"u8.ToArray();
+
+
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The channels, gates and enumerators built here are held in this instance's arrays and disposed by DisposeAsync.")]
+    private SocketVersionedQuePaxaCluster(
+        QuePaxaLeaderSchedule schedule,
+        Action<Utf8JsonWriter, TValue> writeValue,
+        Func<JsonElement, TValue> readValue,
+        VersionedValue<TValue>? committed,
+        TamperReplyPayloadDelegate? tamperReplyPayload,
+        TcpListener[] listeners,
+        TcpClient[] clients,
+        TcpClient[] servers,
+        CancellationToken cancellationToken)
+    {
+        int hostCount = listeners.Length;
+
+        Schedule = schedule;
+        TamperReplyPayload = tamperReplyPayload;
+        Listeners = listeners;
+        Clients = clients;
+        Servers = servers;
+
+        WriteRecordValue = QuePaxaMessageJson.CreateVersionedValueWriter(writeValue);
+        ReadRecordValue = QuePaxaMessageJson.CreateVersionedValueReader(readValue);
+        RequestSerialize = QuePaxaMessageJson.CreateVersionedRequestSerializer(WriteRecordValue);
+        RequestDeserialize = QuePaxaMessageJson.CreateVersionedRequestDeserializer(ReadRecordValue);
+        ReplySerialize = QuePaxaMessageJson.CreateVersionedReplySerializer(WriteRecordValue);
+        ReplyDeserialize = QuePaxaMessageJson.CreateVersionedReplyDeserializer(ReadRecordValue);
+
+        Runners = new QuePaxaVersionedRunner<TValue>[hostCount];
+        RunTasks = new Task[hostCount];
+        ServingTasks = new Task[hostCount];
+        RequestWriters = new MessageChannelWriter<CorrelatedFrame>[hostCount];
+        ReplyEnumerators = new IAsyncEnumerator<CorrelatedFrame>[hostCount];
+        Gates = new SemaphoreSlim[hostCount];
+        NextIds = new int[hostCount];
+        Partitioned = new bool[hostCount];
+        ServedCounts = new int[hostCount];
+        SentCounts = new int[hostCount];
+
+        for(int index = 0; index < hostCount; index++)
+        {
+            Runners[index] = new QuePaxaVersionedRunner<TValue>(new QuePaxaVersionedNode<TValue>(schedule, committed));
+            RunTasks[index] = Runners[index].RunAsync(cancellationToken: cancellationToken);
+        }
+
+        for(int index = 0; index < hostCount; index++)
+        {
+            int host = index;
+            NetworkStream serverStream = servers[host].GetStream();
+            MessageChannelReader<CorrelatedFrame> serverRequests = new(PipeReader.Create(serverStream), ReadFrame);
+            MessageChannelWriter<CorrelatedFrame> serverResponses = new(PipeWriter.Create(serverStream, new StreamPipeWriterOptions(leaveOpen: true)), WriteFrame);
+            ServingTasks[host] = Task.Run(() => ServeAsync(host, serverRequests, serverResponses, cancellationToken), cancellationToken);
+
+            NetworkStream clientStream = clients[host].GetStream();
+            RequestWriters[host] = new MessageChannelWriter<CorrelatedFrame>(PipeWriter.Create(clientStream, new StreamPipeWriterOptions(leaveOpen: true)), WriteFrame);
+            MessageChannelReader<CorrelatedFrame> clientReplies = new(PipeReader.Create(clientStream), ReadFrame);
+            ReplyEnumerators[host] = clientReplies.ReadAllAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
+
+            //One request and its reply at a time per connection: a proposer that abandons a slow recorder
+            //mid-step still asks it again at the next step, and an overlapping call would interleave frames
+            //on the shared pipe while the abandoned call's reply is still in flight.
+            Gates[host] = new SemaphoreSlim(1, 1);
+        }
+    }
+
+
+    public QuePaxaLeaderSchedule Schedule { get; }
+
+    public int HostCount => Runners.Length;
+
+    /// <summary>The number of requests each host actually served, complete only after <see cref="DrainAsync"/>.</summary>
+    public IReadOnlyList<int> Served
+    {
+        get
+        {
+            lock(Observations)
+            {
+                return (int[])ServedCounts.Clone();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The number of calls each host was asked to answer. It is written on the caller's own flow before the
+    /// wire, so unlike the served-side observations it needs no drain.
+    /// </summary>
+    public IReadOnlyList<int> Sent
+    {
+        get
+        {
+            lock(Observations)
+            {
+                return (int[])SentCounts.Clone();
+            }
+        }
+    }
+
+    /// <summary>The versions a host refused to serve, which is how a test observes the single-live-instance rule.</summary>
+    public IReadOnlyList<RegisterVersion> Declined
+    {
+        get
+        {
+            lock(Observations)
+            {
+                return [.. DeclinedVersions];
+            }
+        }
+    }
+
+    /// <summary>
+    /// The proposal keys the hosts were asked to record, paired with the version they arrived at, in arrival
+    /// order. A key repeats across the steps of one attempt, so a test counting attempts reads the distinct
+    /// pairs.
+    /// </summary>
+    public IReadOnlyList<(RegisterVersion Version, ProposalKey Key)> Recorded
+    {
+        get
+        {
+            lock(Observations)
+            {
+                return [.. RecordedKeys];
+            }
+        }
+    }
+
+    /// <summary>
+    /// The number of record replies the endpoints decoded, which separates a rejection by the register's
+    /// guard from a rejection by the codec.
+    /// </summary>
+    public int DecodedReplies
+    {
+        get
+        {
+            lock(Observations)
+            {
+                return DecodedReplyCount;
+            }
+        }
+    }
+
+
+    private Lock Observations { get; } = new();
+
+    private QuePaxaVersionedRunner<TValue>[] Runners { get; }
+
+    private Task[] RunTasks { get; }
+
+    private Task[] ServingTasks { get; }
+
+    private TcpListener[] Listeners { get; }
+
+    private TcpClient[] Clients { get; }
+
+    private TcpClient[] Servers { get; }
+
+    private MessageChannelWriter<CorrelatedFrame>[] RequestWriters { get; }
+
+    private IAsyncEnumerator<CorrelatedFrame>[] ReplyEnumerators { get; }
+
+    private SemaphoreSlim[] Gates { get; }
+
+    private int[] NextIds { get; }
+
+    private bool[] Partitioned { get; }
+
+    private int[] ServedCounts { get; }
+
+    private int[] SentCounts { get; }
+
+    private int DecodedReplyCount { get; set; }
+
+    private List<RegisterVersion> DeclinedVersions { get; } = [];
+
+    private List<(RegisterVersion Version, ProposalKey Key)> RecordedKeys { get; } = [];
+
+    private TamperReplyPayloadDelegate? TamperReplyPayload { get; }
+
+    private Action<Utf8JsonWriter, VersionedValue<TValue>> WriteRecordValue { get; }
+
+    private Func<JsonElement, VersionedValue<TValue>> ReadRecordValue { get; }
+
+    private SerializeMessageDelegate<VersionedRecordRequest<VersionedValue<TValue>>> RequestSerialize { get; }
+
+    private DeserializeMessageDelegate<VersionedRecordRequest<VersionedValue<TValue>>> RequestDeserialize { get; }
+
+    private SerializeMessageDelegate<VersionedRecordReply<VersionedValue<TValue>>> ReplySerialize { get; }
+
+    private DeserializeMessageDelegate<VersionedRecordReply<VersionedValue<TValue>>> ReplyDeserialize { get; }
+
+    private bool Drained { get; set; }
+
+
+    /// <summary>
+    /// Starts <paramref name="hostCount"/> runner-backed hosts, each behind its own loopback connection.
+    /// </summary>
+    /// <param name="schedule">The leader schedule every host is configured with.</param>
+    /// <param name="hostCount">The number of hosts.</param>
+    /// <param name="writeValue">Writes an application value to the JSON writer.</param>
+    /// <param name="readValue">Reads an application value from a JSON element.</param>
+    /// <param name="cancellationToken">The token the runner loops, the serve loops and the connect run under.</param>
+    /// <param name="committed">The record every host starts having learned, or <see langword="null"/> for a fresh cluster.</param>
+    /// <param name="tamperReplyPayload">An optional rewrite of the reply bytes a record endpoint receives.</param>
+    /// <returns>A connected cluster.</returns>
+    /// <remarks>
+    /// This is a factory rather than a constructor because the connections must be established before the
+    /// instance exists, and a socket cannot be connected without awaiting.
+    /// </remarks>
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The listeners and clients are handed to the instance, which disposes them in DisposeAsync, and a failure before that instance exists disposes everything started here.")]
+    public static async Task<SocketVersionedQuePaxaCluster<TValue>> ConnectAsync(
+        QuePaxaLeaderSchedule schedule,
+        int hostCount,
+        Action<Utf8JsonWriter, TValue> writeValue,
+        Func<JsonElement, TValue> readValue,
+        CancellationToken cancellationToken,
+        VersionedValue<TValue>? committed = null,
+        TamperReplyPayloadDelegate? tamperReplyPayload = null)
+    {
+        ArgumentNullException.ThrowIfNull(schedule);
+        ArgumentOutOfRangeException.ThrowIfLessThan(hostCount, 1);
+        ArgumentNullException.ThrowIfNull(writeValue);
+        ArgumentNullException.ThrowIfNull(readValue);
+
+        List<TcpListener> listeners = new(hostCount);
+        List<TcpClient> clients = new(hostCount);
+        Task<TcpClient>[] acceptTasks = [];
+        try
+        {
+            var ports = new int[hostCount];
+            for(int index = 0; index < hostCount; index++)
+            {
+                TcpListener listener = new(IPAddress.Loopback, 0);
+                listeners.Add(listener);
+                listener.Start();
+                ports[index] = ((IPEndPoint)listener.LocalEndpoint).Port;
+            }
+
+            acceptTasks = [.. listeners.Select(listener => listener.AcceptTcpClientAsync(cancellationToken).AsTask())];
+            for(int index = 0; index < hostCount; index++)
+            {
+                TcpClient client = new();
+                clients.Add(client);
+                await client.ConnectAsync(IPAddress.Loopback, ports[index], cancellationToken).ConfigureAwait(false);
+            }
+
+            TcpClient[] servers = await Task.WhenAll(acceptTasks).ConfigureAwait(false);
+
+            return new SocketVersionedQuePaxaCluster<TValue>(schedule, writeValue, readValue, committed, tamperReplyPayload, [.. listeners], [.. clients], servers, cancellationToken);
+        }
+        catch(Exception)
+        {
+            //A half-built cluster has no owner to dispose it, so every listener started, every client
+            //created and every accept that did complete is closed here before the failure travels on.
+            foreach(TcpListener listener in listeners)
+            {
+                listener.Dispose();
+            }
+
+            foreach(TcpClient client in clients)
+            {
+                client.Dispose();
+            }
+
+            foreach(Task<TcpClient> accept in acceptTasks)
+            {
+                if(accept.IsCompletedSuccessfully)
+                {
+                    (await accept.ConfigureAwait(false)).Dispose();
+                }
+            }
+
+            throw;
+        }
+    }
+
+
+    /// <summary>Cuts one host off, so every later call to it fails before it reaches the wire.</summary>
+    public void Partition(int index) => Partitioned[index] = true;
+
+
+    /// <summary>Restores one host.</summary>
+    public void Heal(int index) => Partitioned[index] = false;
+
+
+    /// <summary>Tells one host about a committed record, which is the dissemination a deployment owes.</summary>
+    /// <param name="index">The host.</param>
+    /// <param name="committed">A decided record.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns><see langword="true"/> when the record advanced that host.</returns>
+    public async Task<bool> LearnAtAsync(int index, VersionedValue<TValue> committed, CancellationToken cancellationToken)
+    {
+        return await Runners[index].LearnAsync(committed, LearnDurability.InMemory, cancellationToken).ConfigureAwait(false);
+    }
+
+
+    /// <summary>Tells every host about a committed record.</summary>
+    /// <param name="committed">A decided record.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A task that completes once every host has adopted or refused the record.</returns>
+    public async Task LearnAllAsync(VersionedValue<TValue> committed, CancellationToken cancellationToken)
+    {
+        for(int index = 0; index < Runners.Length; index++)
+        {
+            _ = await LearnAtAsync(index, committed, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+
+    /// <summary>
+    /// The record endpoints, one per host, over this cluster's shared per-host connections.
+    /// </summary>
+    /// <returns>One endpoint per host.</returns>
+    /// <remarks>
+    /// Every call returns endpoints over the same connections, gates and correlation counters, so two
+    /// registers built from two calls contend for one wire per host exactly as two writers in a deployment do.
+    /// </remarks>
+    public VersionedRecorderEndpointDelegate<VersionedValue<TValue>>[] Endpoints()
+    {
+        var endpoints = new VersionedRecorderEndpointDelegate<VersionedValue<TValue>>[HostCount];
+        for(int index = 0; index < endpoints.Length; index++)
+        {
+            int host = index;
+            endpoints[index] = async (request, token) =>
+            {
+                var buffer = new ArrayBufferWriter<byte>();
+                RequestSerialize(request, buffer);
+                byte[] payload = await ExchangeAsync(host, RecordKind, buffer.WrittenSpan.ToArray(), token).ConfigureAwait(false);
+                byte[] delivered = TamperReplyPayload is null ? payload : TamperReplyPayload(host, payload);
+                VersionedRecordReply<VersionedValue<TValue>> reply = ReplyDeserialize(new ReadOnlySequence<byte>(delivered));
+
+                //The count is taken only once the codec has accepted the bytes, so bytes the codec refused
+                //are not counted as a reply the register was given.
+                lock(Observations)
+                {
+                    DecodedReplyCount++;
+                }
+
+                return reply;
+            };
+        }
+
+        return endpoints;
+    }
+
+
+    /// <summary>
+    /// The catch-up readers, one per host, over the same connections the endpoints use.
+    /// </summary>
+    /// <returns>One reader per host.</returns>
+    public ReadCommittedRecordDelegate<TValue>[] Readers()
+    {
+        var readers = new ReadCommittedRecordDelegate<TValue>[HostCount];
+        for(int index = 0; index < readers.Length; index++)
+        {
+            int host = index;
+            readers[index] = async token =>
+            {
+                byte[] payload = await ExchangeAsync(host, ReadKind, JsonNull, token).ConfigureAwait(false);
+                using JsonDocument document = JsonDocument.Parse(payload);
+                if(document.RootElement.ValueKind == JsonValueKind.Null)
+                {
+                    return null;
+                }
+
+                return ReadRecordValue(document.RootElement);
+            };
+        }
+
+        return readers;
+    }
+
+
+    /// <summary>
+    /// Ends every connection's request side and waits for the serve loops to finish what is in flight.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A task that completes once no serve loop is running.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the barrier the observations need, and it is idempotent so a test that drains explicitly and
+    /// then disposes does not shut a closed socket down twice.
+    /// </para>
+    /// <para>
+    /// The client side is quiesced before the send side closes. A proposer that abandoned a call left it
+    /// queued on its host's gate with its request not yet on the wire, and cutting the connection there
+    /// would drop a request the in-memory bench records, so the drain takes every gate first and never
+    /// gives one back: after a drain the cluster serves nothing further.
+    /// </para>
+    /// </remarks>
+    public async Task DrainAsync(CancellationToken cancellationToken)
+    {
+        if(Drained)
+        {
+            return;
+        }
+
+        Drained = true;
+        for(int index = 0; index < Gates.Length; index++)
+        {
+            if(!await Gates[index].WaitAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false))
+            {
+                throw new TimeoutException($"Host {index}'s gate still carried a call when the cluster drained, so the observations are incomplete.");
+            }
+        }
+
+        foreach(TcpClient client in Clients)
+        {
+            try
+            {
+                client.Client.Shutdown(SocketShutdown.Send);
+            }
+            catch(ObjectDisposedException)
+            {
+                //A socket already torn down needs no shutdown.
+            }
+            catch(SocketException)
+            {
+                //A peer that closed first leaves nothing to shut down either.
+            }
+        }
+
+        await Task.WhenAll(ServingTasks).WaitAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+    }
+
+
+    /// <summary>Drains the cluster and then tears its transport and its runners down.</summary>
+    /// <returns>A task that completes once nothing this cluster started is still running.</returns>
+    /// <remarks>
+    /// Teardown reports nothing of its own, because a failure here would mask the test's own failure, and
+    /// every stage is guarded on its own so a stage that fails still leaves the later ones to run.
+    /// </remarks>
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await DrainAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch(Exception)
+        {
+            //A drain that timed out or faulted still leaves a transport to close.
+        }
+
+        foreach(IAsyncEnumerator<CorrelatedFrame> enumerator in ReplyEnumerators)
+        {
+            try
+            {
+                await enumerator.DisposeAsync().ConfigureAwait(false);
+            }
+            catch(Exception)
+            {
+                //One reader that faults as it completes must not cost the others their disposal.
+            }
+        }
+
+        try
+        {
+            foreach(SemaphoreSlim gate in Gates)
+            {
+                gate.Dispose();
+            }
+
+            foreach(TcpClient client in Clients)
+            {
+                client.Dispose();
+            }
+
+            foreach(TcpClient server in Servers)
+            {
+                server.Dispose();
+            }
+
+            foreach(TcpListener listener in Listeners)
+            {
+                listener.Dispose();
+            }
+        }
+        catch(Exception)
+        {
+            //A handle the runtime has already reclaimed is the only thing this stage can fail on.
+        }
+
+        try
+        {
+            foreach(QuePaxaVersionedRunner<TValue> runner in Runners)
+            {
+                runner.Complete();
+            }
+
+            await Task.WhenAll(RunTasks).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        }
+        catch(Exception)
+        {
+            //A runner loop ended by its token faults its task, and the bound covers a loop that did not end.
+        }
+    }
+
+
+    private async Task<byte[]> ExchangeAsync(int host, byte kind, byte[] payload, CancellationToken cancellationToken)
+    {
+        //A drain takes every gate permanently, so a later call would wait forever on a gate nobody returns.
+        if(Drained)
+        {
+            throw new IOException($"Host {host} is behind a drained cluster, which serves nothing further.");
+        }
+
+        //A partitioned host never sees the request, so it records nothing: the check precedes the gate and
+        //the wire alike.
+        if(Partitioned[host])
+        {
+            throw new IOException($"Host {host} is partitioned.");
+        }
+
+        //This runs on the caller's own flow before any await, so the count is settled by the time the call's
+        //task is handed back and needs no drain to be read.
+        lock(Observations)
+        {
+            SentCounts[host]++;
+        }
+
+        await Gates[host].WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            int id = ++NextIds[host];
+            await RequestWriters[host].WriteAsync(new CorrelatedFrame(id, kind, payload), cancellationToken).ConfigureAwait(false);
+            if(!await ReplyEnumerators[host].MoveNextAsync().ConfigureAwait(false))
+            {
+                throw new IOException($"Host {host} closed its reply stream while call {id} was outstanding.");
+            }
+
+            CorrelatedFrame answer = ReplyEnumerators[host].Current;
+            if(answer.Id != id)
+            {
+                throw new InvalidOperationException($"Host {host} answered call {answer.Id} while call {id} was the outstanding one.");
+            }
+
+            if(answer.Payload is null)
+            {
+                throw new IOException($"Call {id} faulted at recorder host {host}.");
+            }
+
+            return answer.Payload;
+        }
+        finally
+        {
+            _ = Gates[host].Release();
+        }
+    }
+
+
+    private async Task ServeAsync(int host, MessageChannelReader<CorrelatedFrame> requests, MessageChannelWriter<CorrelatedFrame> responses, CancellationToken cancellationToken)
+    {
+        await foreach(CorrelatedFrame frame in requests.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            CorrelatedFrame response;
+            try
+            {
+                response = frame.Kind == ReadKind
+                    ? await ServeReadAsync(host, frame, cancellationToken).ConfigureAwait(false)
+                    : await ServeRecordAsync(host, frame, cancellationToken).ConfigureAwait(false);
+            }
+            catch(Exception)
+            {
+                //A host fault reaches the caller as a fault frame carrying the correlation and nothing else,
+                //because no protocol field can carry the reason.
+                response = new CorrelatedFrame(frame.Id, frame.Kind, null);
+            }
+
+            //The fault frame exists to carry the correlation out when serving failed, and the failure may be
+            //the token itself, so its write must not ride the token that caused it.
+            CancellationToken writeToken = response.Payload is null ? CancellationToken.None : cancellationToken;
+            await responses.WriteAsync(response, writeToken).ConfigureAwait(false);
+        }
+    }
+
+
+    private async Task<CorrelatedFrame> ServeRecordAsync(int host, CorrelatedFrame frame, CancellationToken cancellationToken)
+    {
+        VersionedRecordRequest<VersionedValue<TValue>> request = RequestDeserialize(new ReadOnlySequence<byte>(frame.Payload!));
+
+        //The arrival is recorded before the host is asked, so a request the host refuses is still one it saw.
+        lock(Observations)
+        {
+            RecordedKeys.Add((request.Version, request.Request.Proposal.Key));
+        }
+
+        VersionedRecordReply<VersionedValue<TValue>> reply;
+        try
+        {
+            reply = await Runners[host].RecordAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch(ArgumentOutOfRangeException)
+        {
+            //This is the refusal a versioned host raises for a request that does not name its live version.
+            lock(Observations)
+            {
+                DeclinedVersions.Add(request.Version);
+            }
+
+            return new CorrelatedFrame(frame.Id, RecordKind, null);
+        }
+
+        lock(Observations)
+        {
+            ServedCounts[host]++;
+        }
+
+        var buffer = new ArrayBufferWriter<byte>();
+        ReplySerialize(reply, buffer);
+
+        return new CorrelatedFrame(frame.Id, RecordKind, buffer.WrittenSpan.ToArray());
+    }
+
+
+    private async Task<CorrelatedFrame> ServeReadAsync(int host, CorrelatedFrame frame, CancellationToken cancellationToken)
+    {
+        VersionedValue<TValue>? record = await Runners[host].ReadCommittedAsync(cancellationToken).ConfigureAwait(false);
+        if(record is null)
+        {
+            return new CorrelatedFrame(frame.Id, ReadKind, JsonNull);
+        }
+
+        var buffer = new ArrayBufferWriter<byte>();
+        using(var writer = new Utf8JsonWriter(buffer))
+        {
+            WriteRecordValue(writer, record);
+        }
+
+        return new CorrelatedFrame(frame.Id, ReadKind, buffer.WrittenSpan.ToArray());
+    }
+
+
+    private static void WriteFrame(CorrelatedFrame frame, IBufferWriter<byte> destination)
+    {
+        using var writer = new Utf8JsonWriter(destination);
+        writer.WriteStartObject();
+        writer.WriteNumber("id", frame.Id);
+        writer.WriteNumber("kind", frame.Kind);
+        if(frame.Payload is null)
+        {
+            writer.WriteBoolean("fault", true);
+        }
+        else
+        {
+            writer.WritePropertyName("payload");
+            writer.WriteRawValue(frame.Payload);
+        }
+
+        writer.WriteEndObject();
+    }
+
+
+    private static CorrelatedFrame ReadFrame(ReadOnlySequence<byte> payload)
+    {
+        using JsonDocument document = JsonDocument.Parse(payload);
+        int id = document.RootElement.GetProperty("id").GetInt32();
+        byte kind = document.RootElement.GetProperty("kind").GetByte();
+        if(document.RootElement.TryGetProperty("payload", out JsonElement inner))
+        {
+            return new CorrelatedFrame(id, kind, Encoding.UTF8.GetBytes(inner.GetRawText()));
+        }
+
+        return new CorrelatedFrame(id, kind, null);
+    }
+
+
+    /// <summary>
+    /// One framed call or answer. The kind tells a record exchange from a catch-up read, and an absent
+    /// payload is the opaque fault an answer carries when the host could not serve the call.
+    /// </summary>
+    private sealed record CorrelatedFrame(int Id, byte Kind, byte[]? Payload);
+}
