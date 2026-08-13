@@ -78,6 +78,13 @@ namespace Lumoin.Verisync.Json;
 /// order decodes into a configuration that is not equal to the one encoded.
 /// </para>
 /// <para>
+/// A versioned node state's <c>activeConfiguration</c> is the same nested object under its own required slot,
+/// and it is stored rather than recomputed for the same reason the stored leader and the stored version are:
+/// the restore compares it against what the record beside it implies, and a value the restore recomputed
+/// would be compared with itself. The decoder still adds no rule — the comparison lives in
+/// <see cref="QuePaxaVersionedNode{TValue}.FromState"/>.
+/// </para>
+/// <para>
 /// The caller supplies how to read and write <typeparamref name="TValue"/>, since the value is
 /// application-defined.
 /// </para>
@@ -319,6 +326,7 @@ public static class QuePaxaMessageJson
             WriteRecordOrNull(writer, "committed", state.Committed, writeValue);
             writer.WriteNumber("recorderVersion", state.RecorderVersion.Value);
             WriteLaneOrNull(writer, "configuredLeader", state.ConfiguredLeader);
+            WriteConfiguration(writer, "activeConfiguration", state.ActiveConfiguration);
             writer.WritePropertyName("recorder");
             WriteRecorderState(writer, state.Recorder, writeRecord);
             writer.WriteEndObject();
@@ -350,9 +358,10 @@ public static class QuePaxaMessageJson
             VersionedValue<TValue>? committed = ReadRecordOrNull(root, "committed", VersionedNodeStateLabel, readValue);
             ulong recorderVersion = RequireProperty(root, "recorderVersion", VersionedNodeStateLabel).GetUInt64();
             ProposerLane? configuredLeader = ReadLaneOrNull(root, "configuredLeader", VersionedNodeStateLabel);
+            QuePaxaConfiguration activeConfiguration = ReadConfiguration(RequireProperty(root, "activeConfiguration", VersionedNodeStateLabel));
             QuePaxaRecorderState<VersionedValue<TValue>> recorder = ReadRecorderState(RequireProperty(root, "recorder", VersionedNodeStateLabel), readRecord);
 
-            return Construct(() => new QuePaxaVersionedNodeState<TValue>(committed, new RegisterVersion(recorderVersion), configuredLeader, recorder));
+            return Construct(() => new QuePaxaVersionedNodeState<TValue>(committed, new RegisterVersion(recorderVersion), configuredLeader, activeConfiguration, recorder));
         });
     }
 

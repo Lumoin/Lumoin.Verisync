@@ -1,7 +1,6 @@
 using Lumoin.Verisync.Core;
 using Lumoin.Verisync.Json;
 using System.Buffers;
-using System.Collections.Immutable;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -34,7 +33,7 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class QuePaxaVersionedNodeStateJsonTests
 {
-    private const string NodeStateTemplate = """{"committed":$COMMITTED,"recorderVersion":$SERVES,"configuredLeader":$LEADER,"recorder":$REGISTER}""";
+    private const string NodeStateTemplate = """{"committed":$COMMITTED,"recorderVersion":$SERVES,"configuredLeader":$LEADER,"activeConfiguration":$ACTIVE,"recorder":$REGISTER}""";
     private const string RecordTemplate = """{"version":$AT,"writer":"$BY","configuration":$UNDER,"value":"$HELD"}""";
     private const string RegisterTemplate = """{"step":$STEP,"first":$FIRST,"currentAggregate":$AGGREGATE,"priorAggregate":$PRIOR}""";
     private const string ProposalTemplate = """{"priority":$PRIORITY,"owner":{"replica":"$OWNER","lane":$ON},"value":$CARRIED}""";
@@ -51,9 +50,12 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
     /// <summary>The membership the records in this suite carry.</summary>
     private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Replica(3)]);
 
+    /// <summary>The chain identity the memberships in this suite carry, in lower-case hexadecimal.</summary>
+    private static string ClusterHex { get; } = Convert.ToHexStringLower(Configuration.Cluster.AsSpan());
+
     /// <summary>The membership's payload, written the way the record codec writes it.</summary>
     private static string ConfigurationJson { get; } =
-        $$"""{"cluster":"{{Convert.ToHexStringLower(Configuration.Cluster.AsSpan())}}","members":["{{FirstHex}}","{{SecondHex}}","{{Convert.ToHexStringLower(Replica(3).AsSpan())}}"]}""";
+        $$"""{"cluster":"{{ClusterHex}}","members":["{{FirstHex}}","{{SecondHex}}","{{Convert.ToHexStringLower(Replica(3).AsSpan())}}"]}""";
 
 
     public TestContext TestContext { get; set; } = null!;
@@ -70,6 +72,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
             new VersionedValue<string>(new RegisterVersion(4UL), Second, Configuration, "committed"),
             new RegisterVersion(5UL),
             ProposerLane.For(Second),
+            Configuration,
             new QuePaxaRecorderState<VersionedValue<string>>(
                 Four.Next(),
                 Proposal(new ProposalPriority(10), ProposerLane.For(Second), 5UL, Second, "first"),
@@ -101,6 +104,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
             null,
             RegisterVersion.First,
             null,
+            Configuration,
             new QuePaxaRecorderState<VersionedValue<string>>(RecorderStep.Zero, null, null, null));
 
         QuePaxaVersionedNodeState<string> back = RoundTrip(bootstrap);
@@ -115,6 +119,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
             new VersionedValue<string>(new RegisterVersion(4UL), Replica(9), Configuration, "committed"),
             new RegisterVersion(5UL),
             null,
+            Configuration,
             new QuePaxaRecorderState<VersionedValue<string>>(RecorderStep.Zero, null, null, null));
 
         Assert.AreEqual(leaderless, RoundTrip(leaderless));
@@ -132,6 +137,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
             new VersionedValue<string>(new RegisterVersion(4UL), Second, Configuration, "committed"),
             new RegisterVersion(5UL),
             ProposerLane.For(Second),
+            Configuration,
             new QuePaxaRecorderState<VersionedValue<string>>(
                 Four,
                 Proposal(new ProposalPriority(10), ProposerLane.For(Second), 5UL, Second, "v"),
@@ -167,6 +173,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
             new VersionedValue<string>(new RegisterVersion(4UL), Second, Configuration, "committed"),
             new RegisterVersion(5UL),
             ProposerLane.For(Second),
+            Configuration,
             register);
 
         var buffer = new ArrayBufferWriter<byte>();
@@ -178,9 +185,10 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
 
 
     /// <summary>
-    /// A payload omitting any of the four properties is malformed and fails closed, and each omission is refused
-    /// by the field's own name, so an omitted slot never decodes as an absent one. The nested register keeps its
-    /// own label, so a reader learns which object was short rather than only which field was.
+    /// A payload omitting any of the five properties is malformed and fails closed, and each omission is refused
+    /// by the field's own name, so an omitted slot never decodes as an absent one. The nested register and the
+    /// nested membership keep their own labels, so a reader learns which object was short rather than only which
+    /// field was.
     /// </summary>
     [TestMethod]
     public void AMissingFieldIsNotAnAbsentSlot()
@@ -192,10 +200,13 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
 
         (string Json, string Field, string Label)[] vectors =
         [
-            ($$"""{"recorderVersion":5,"configuredLeader":{{leader}},"recorder":{{register}}}""", "committed", "A versioned node state"),
-            ($$"""{"committed":{{committed}},"configuredLeader":{{leader}},"recorder":{{register}}}""", "recorderVersion", "A versioned node state"),
-            ($$"""{"committed":{{committed}},"recorderVersion":5,"recorder":{{register}}}""", "configuredLeader", "A versioned node state"),
-            ($$"""{"committed":{{committed}},"recorderVersion":5,"configuredLeader":{{leader}}}""", "recorder", "A versioned node state"),
+            ($$"""{"recorderVersion":5,"configuredLeader":{{leader}},"activeConfiguration":{{ConfigurationJson}},"recorder":{{register}}}""", "committed", "A versioned node state"),
+            ($$"""{"committed":{{committed}},"configuredLeader":{{leader}},"activeConfiguration":{{ConfigurationJson}},"recorder":{{register}}}""", "recorderVersion", "A versioned node state"),
+            ($$"""{"committed":{{committed}},"recorderVersion":5,"activeConfiguration":{{ConfigurationJson}},"recorder":{{register}}}""", "configuredLeader", "A versioned node state"),
+            (NodeState(committed, "5", leader, register, omitActive: true), "activeConfiguration", "A versioned node state"),
+            ($$"""{"committed":{{committed}},"recorderVersion":5,"configuredLeader":{{leader}},"activeConfiguration":{{ConfigurationJson}}}""", "recorder", "A versioned node state"),
+            (NodeState(committed, "5", leader, register, active: """{"members":["00"]}"""), "cluster", "A configuration"),
+            (NodeState(committed, "5", leader, register, active: $$"""{"cluster":"{{ClusterHex}}"}"""), "members", "A configuration"),
             (NodeState(committed, "5", leader, Register("4", proposal, proposal, omitPrior: true)), "priorAggregate", "A recorder state"),
             (NodeState(Record("4", SecondHex, "committed", omitWriter: true), "5", leader, register), "writer", "A versioned value"),
             (NodeState(Record("4", SecondHex, "committed", omitConfiguration: true), "5", leader, register), "configuration", "A versioned value")
@@ -235,7 +246,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
         Assert.AreEqual(ProposerLane.For(First), wrongLeader.ConfiguredLeader);
         Assert.AreEqual(Second, wrongLeader.Committed!.Writer);
 
-        ArgumentException refusedLeader = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaVersionedNode<string>.FromState(Schedule(), wrongLeader));
+        ArgumentException refusedLeader = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, wrongLeader));
 
         Assert.AreEqual("state", refusedLeader.ParamName);
 
@@ -245,7 +256,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
 
         Assert.AreEqual(new RegisterVersion(9UL), wrongVersion.RecorderVersion);
 
-        ArgumentException refusedVersion = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaVersionedNode<string>.FromState(Schedule(), wrongVersion));
+        ArgumentException refusedVersion = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, wrongVersion));
 
         Assert.AreEqual("state", refusedVersion.ParamName);
 
@@ -259,9 +270,21 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
         Assert.AreEqual(RecorderStep.Zero, unwrittenCarrying.Recorder.Step);
         Assert.IsNotNull(unwrittenCarrying.Recorder.First);
 
-        ArgumentException refusedUnwritten = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaVersionedNode<string>.FromState(Schedule(), unwrittenCarrying));
+        ArgumentException refusedUnwritten = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, unwrittenCarrying));
 
         Assert.AreEqual("state", refusedUnwritten.ParamName);
+
+        //The stored membership names a set the record does not imply, which is the same tear one field along.
+        //The payload is well formed and the decoder builds the configuration from it without complaint.
+        string extraMember = $$"""{"cluster":"{{ClusterHex}}","members":["{{FirstHex}}","{{SecondHex}}","{{Convert.ToHexStringLower(Replica(3).AsSpan())}}","{{Convert.ToHexStringLower(Replica(4).AsSpan())}}"]}""";
+        QuePaxaVersionedNodeState<string> wrongMembership = Deserialize(NodeState(committed, "5", Lane(SecondHex, "0"), register, active: extraMember));
+
+        Assert.HasCount(4, wrongMembership.ActiveConfiguration.Members);
+        Assert.AreEqual(Configuration.Cluster, wrongMembership.ActiveConfiguration.Cluster);
+
+        ArgumentException refusedMembership = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, wrongMembership));
+
+        Assert.AreEqual("state", refusedMembership.ParamName);
     }
 
 
@@ -321,12 +344,26 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
     }
 
 
-    private static string NodeState(string committed, string serves, string leader, string register)
+    /// <summary>Builds a versioned node state's payload, optionally omitting its membership slot.</summary>
+    /// <param name="committed">The committed record's payload, or a null literal.</param>
+    /// <param name="serves">The version the recorder serves.</param>
+    /// <param name="leader">The configured leader's payload, or a null literal.</param>
+    /// <param name="register">The recorder's payload.</param>
+    /// <param name="active">The membership's payload, or <see langword="null"/> for the one the records carry.</param>
+    /// <param name="omitActive">Whether to omit the membership field, which makes the state malformed.</param>
+    /// <returns>The payload.</returns>
+    private static string NodeState(string committed, string serves, string leader, string register, string? active = null, bool omitActive = false)
     {
+        if(omitActive)
+        {
+            return $$"""{"committed":{{committed}},"recorderVersion":{{serves}},"configuredLeader":{{leader}},"recorder":{{register}}}""";
+        }
+
         return NodeStateTemplate
             .Replace("$COMMITTED", committed, StringComparison.Ordinal)
             .Replace("$SERVES", serves, StringComparison.Ordinal)
             .Replace("$LEADER", leader, StringComparison.Ordinal)
+            .Replace("$ACTIVE", active ?? ConfigurationJson, StringComparison.Ordinal)
             .Replace("$REGISTER", register, StringComparison.Ordinal);
     }
 
@@ -434,16 +471,6 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
     private static QuePaxaVersionedNodeState<string> Deserialize(string json)
     {
         return QuePaxaMessageJson.CreateVersionedNodeStateDeserializer(ReadValue)(new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(json)));
-    }
-
-
-    /// <summary>The leader derivation the restore half of these tests reads.</summary>
-    /// <returns>The derivation.</returns>
-    private static QuePaxaLeaderSchedule Schedule()
-    {
-        ImmutableArray<ReplicaId> order = [First, Second, Replica(3)];
-
-        return new QuePaxaLeaderSchedule(HedgingSchedule.Create(order, TimeSpan.FromMilliseconds(10)));
     }
 
 

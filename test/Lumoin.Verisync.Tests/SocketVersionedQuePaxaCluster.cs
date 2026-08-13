@@ -70,6 +70,7 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         int hostCount = listeners.Length;
 
         Schedule = schedule;
+        Genesis = QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
         TamperReplyPayload = tamperReplyPayload;
         Listeners = listeners;
         Clients = clients;
@@ -97,7 +98,7 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
         for(int index = 0; index < hostCount; index++)
         {
-            Runners[index] = new QuePaxaVersionedRunner<TValue>(new QuePaxaVersionedNode<TValue>(schedule, committed));
+            Runners[index] = new QuePaxaVersionedRunner<TValue>(new QuePaxaVersionedNode<TValue>(Genesis, schedule.Schedule.Order[index], committed));
             RunTasks[index] = Runners[index].RunAsync(cancellationToken: cancellationToken);
         }
 
@@ -124,6 +125,12 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
 
     public QuePaxaLeaderSchedule Schedule { get; }
+
+    /// <summary>
+    /// The genesis membership every host of this cluster runs under, minted from the agreed order so that a
+    /// register over the same order stamps the value the hosts derive.
+    /// </summary>
+    public QuePaxaConfiguration Genesis { get; }
 
     public int HostCount => Runners.Length;
 

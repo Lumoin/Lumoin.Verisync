@@ -26,19 +26,27 @@ internal sealed class VersionedQuePaxaCluster<TValue>
     {
         ArgumentNullException.ThrowIfNull(schedule);
         ArgumentOutOfRangeException.ThrowIfLessThan(hostCount, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(hostCount, schedule.Schedule.Order.Length);
 
         Schedule = schedule;
+        Genesis = QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
         Hosts = new QuePaxaVersionedNode<TValue>[hostCount];
         ServedCounts = new int[hostCount];
         Partitioned = new bool[hostCount];
         for(int index = 0; index < hostCount; index++)
         {
-            Hosts[index] = new QuePaxaVersionedNode<TValue>(schedule, committed);
+            Hosts[index] = new QuePaxaVersionedNode<TValue>(Genesis, schedule.Schedule.Order[index], committed);
         }
     }
 
 
     public QuePaxaLeaderSchedule Schedule { get; }
+
+    /// <summary>
+    /// The genesis membership every host of this cluster runs under, minted from the agreed order so that a
+    /// register over the same order stamps the value the hosts derive.
+    /// </summary>
+    public QuePaxaConfiguration Genesis { get; }
 
     public int HostCount => Hosts.Length;
 

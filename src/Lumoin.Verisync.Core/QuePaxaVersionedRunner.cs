@@ -28,12 +28,15 @@ namespace Lumoin.Verisync.Core;
 /// <see cref="RecordAsync"/> is a <see cref="VersionedRecorderEndpointDelegate{TValue}"/> over
 /// <see cref="VersionedValue{TValue}"/> and needs no reply sink, because a reply's destination is the
 /// call that asked for it, which is also what makes correlation per call as that delegate requires. A
-/// host that cannot serve the addressed instance faults the call and nothing else, and the fault is the
+/// host that cannot serve the addressed request faults the call and nothing else, and the fault is the
 /// exception <see cref="QuePaxaVersionedNode{TValue}.Handle"/> threw, unwrapped and unwrapped alone: a
 /// decline is the host's own act, so the caller receives exactly what the host raised and the runner
 /// introduces no type, no reply and no version of its own. A wire host must reduce it to an opaque fault
 /// carrying the call's correlation and nothing else, because the exception names the live version only
-/// in prose and no protocol field carries it.
+/// in prose and no protocol field carries it. Which throws are declines is
+/// <see cref="QuePaxaVersionedNode{TValue}.Declines"/>'s answer and not this loop's, so a rule the host
+/// gains — a chain it refuses, a membership it is outside of — arrives here as a decline rather than as a
+/// defect that ends the loop.
 /// </para>
 /// <para>
 /// The reply is handed to its call only after the state it rests on is durable, so a first proposal or
@@ -346,10 +349,12 @@ public sealed class QuePaxaVersionedRunner<TValue>
                 {
                     reply = Node.HandleForOwner(record.Request);
                 }
-                catch(Exception refusal) when(!Node.Serves(record.Request.Version))
+                catch(Exception refusal) when(Node.Declines(record.Request))
                 {
-                    //Both documented refusals precede any mutation on the host, so the loop keeps serving;
-                    //a throw at a version the host does serve is a defect and ends the loop instead.
+                    //Every documented refusal precedes any mutation on the host, so the loop keeps serving;
+                    //a throw at a request the host does serve is a defect and ends the loop instead. The
+                    //filter reads the host's own classifier rather than a version test of its own, so a
+                    //membership or chain refusal is a decline here and not a defect.
                     _ = record.Source.TrySetException(refusal);
 
                     return;

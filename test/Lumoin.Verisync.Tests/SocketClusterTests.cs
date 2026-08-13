@@ -427,9 +427,7 @@ internal sealed class SocketClusterTests
             QuePaxaMessageJson.CreateVersionedReplyDeserializer(QuePaxaMessageJson.CreateVersionedValueReader<string>(element => element.GetString()!));
 
         ReplicaId second = VersionedReplica(2);
-        ImmutableArray<ReplicaId> order = [VersionedReplica(1), second, VersionedReplica(3)];
-        QuePaxaLeaderSchedule schedule = new(HedgingSchedule.Create(order, TimeSpan.FromMilliseconds(10)));
-        QuePaxaVersionedNode<string> host = new(schedule, new VersionedValue<string>(new RegisterVersion(4UL), second, VersionedMembership, "committed"));
+        QuePaxaVersionedNode<string> host = new(VersionedMembership, second, new VersionedValue<string>(new RegisterVersion(4UL), second, VersionedMembership, "committed"));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
 

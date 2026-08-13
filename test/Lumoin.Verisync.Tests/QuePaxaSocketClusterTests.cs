@@ -270,12 +270,13 @@ internal sealed class QuePaxaSocketClusterTests
 
         ImmutableArray<ReplicaId> order = [First, Second, Third];
         QuePaxaLeaderSchedule schedule = new(HedgingSchedule.Create(order, TimeSpan.FromMilliseconds(20)));
+        QuePaxaConfiguration genesis = QuePaxaConfiguration.CreateGenesis(order);
 
         var runners = new QuePaxaVersionedRunner<string>[count];
         var runTasks = new Task[count];
         for(int i = 0; i < count; i++)
         {
-            runners[i] = new QuePaxaVersionedRunner<string>(new QuePaxaVersionedNode<string>(schedule));
+            runners[i] = new QuePaxaVersionedRunner<string>(new QuePaxaVersionedNode<string>(genesis, order[i]));
             runTasks[i] = runners[i].RunAsync(cancellationToken: TestContext.CancellationToken);
         }
 

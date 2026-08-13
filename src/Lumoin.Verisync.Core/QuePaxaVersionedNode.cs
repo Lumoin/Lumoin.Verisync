@@ -26,10 +26,20 @@ namespace Lumoin.Verisync.Core;
 /// on what a non-uniform configuration survives.
 /// </para>
 /// <para>
-/// A request for any other instance is declined, and declining is a host act rather than a protocol refusal.
-/// <see cref="RecordReply{TValue}"/> has no rejection field: the node throws, a transport reports that as a
-/// fault like any other unreachable recorder, and a proposer retries within its attempt budget and otherwise
-/// concludes a missed quorum. Nothing in the protocol learns that a decline happened.
+/// A request for any other instance is declined, and so is one from another chain, one addressed to a host a
+/// configuration change removed, and one whose carried record disagrees with the envelope about its own
+/// version. Declining is a host act rather than a protocol refusal. <see cref="RecordReply{TValue}"/> has no
+/// rejection field: the node throws, a transport reports that as a fault like any other unreachable recorder,
+/// and a proposer retries within its attempt budget and otherwise concludes a missed quorum. Nothing in the
+/// protocol learns that a decline happened. <see cref="Declines"/> is the classifier and
+/// <see cref="Handle"/> the act, and both read one predicate, so a rule cannot hold at one and not the other.
+/// </para>
+/// <para>
+/// The membership every instance runs under is derived and never configured. A host is handed one genesis
+/// configuration, and every later one is the next configuration of the record it has learned, so two hosts
+/// holding the record for a version derive the same recorder set, the same hedging order and the same leader
+/// for the version after it. <see cref="ActiveConfiguration"/> and <see cref="LeaderSchedule"/> are memos of
+/// that derivation, recomputed only where the record moves.
 /// </para>
 /// <para>
 /// What this costs a deployment is that no write at v+1 can gather a quorum until a quorum of hosts has
@@ -68,40 +78,90 @@ public sealed class QuePaxaVersionedNode<TValue>
     private int owner;
 
     /// <summary>
-    /// Initializes a host that has learned <paramref name="committed"/>.
+    /// Initializes a host of <paramref name="genesis"/>'s chain that has learned <paramref name="committed"/>.
     /// </summary>
-    /// <param name="schedule">The leader derivation every replica shares.</param>
+    /// <param name="genesis">The chain's genesis membership, which is deployment configuration and the membership the first instance runs under.</param>
+    /// <param name="self">This host's own identity, which the membership filter reads against the active configuration.</param>
     /// <param name="committed">The committed record this host starts from, or <see langword="null"/> when it has learned none.</param>
-    /// <exception cref="ArgumentNullException">Thrown if <paramref name="schedule"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="genesis"/> is <see langword="null"/>.</exception>
     /// <remarks>
+    /// <para>
     /// The committed record is taken at construction rather than defaulted, as <see cref="QuePaxaNode{TValue}"/>
     /// takes its recorder: it is what the instance's leader is derived from, and a host that started from
     /// nothing would serve the first version when it should be serving a much later one.
+    /// </para>
+    /// <para>
+    /// Genesis is configuration and the record is protocol state, which is why one comes before the other.
+    /// Every later membership is a function of a decided record, so genesis is the only one a deployment
+    /// supplies, and it is what <see cref="ActiveConfiguration"/> stands at until a record moves it.
+    /// </para>
+    /// <para>
+    /// This host's identity is not derived from the membership it was handed, because a host outside its own
+    /// active configuration is a state the protocol reaches: a replica removed by a configuration change keeps
+    /// running until its deployment retires it, and it must be able to say which replica it is in order to
+    /// notice.
+    /// </para>
     /// </remarks>
-    public QuePaxaVersionedNode(QuePaxaLeaderSchedule schedule, VersionedValue<TValue>? committed = null)
+    public QuePaxaVersionedNode(QuePaxaConfiguration genesis, ReplicaId self, VersionedValue<TValue>? committed = null)
     {
-        ArgumentNullException.ThrowIfNull(schedule);
+        ArgumentNullException.ThrowIfNull(genesis);
 
-        LeaderSchedule = schedule;
+        Genesis = genesis;
+        Self = self;
         Committed = committed;
-        Instance = new QuePaxaNode<VersionedValue<TValue>>(schedule.RecorderFor<VersionedValue<TValue>>(committed?.Writer));
+        ActiveConfiguration = ConfigurationFor(committed, genesis);
+        LeaderSchedule = ScheduleFor(ActiveConfiguration);
+        Instance = new QuePaxaNode<VersionedValue<TValue>>(LeaderSchedule.RecorderFor<VersionedValue<TValue>>(committed?.Writer));
         PersistedCommitted = committed;
         PersistedRecorder = Instance.Recorder;
     }
 
 
-    private QuePaxaVersionedNode(QuePaxaLeaderSchedule schedule, VersionedValue<TValue>? committed, QuePaxaNode<VersionedValue<TValue>> node)
+    private QuePaxaVersionedNode(
+        QuePaxaConfiguration genesis,
+        ReplicaId self,
+        VersionedValue<TValue>? committed,
+        QuePaxaConfiguration active,
+        QuePaxaLeaderSchedule schedule,
+        QuePaxaNode<VersionedValue<TValue>> node)
     {
-        LeaderSchedule = schedule;
+        Genesis = genesis;
+        Self = self;
         Committed = committed;
+        ActiveConfiguration = active;
+        LeaderSchedule = schedule;
         Instance = node;
         PersistedCommitted = committed;
         PersistedRecorder = node.Recorder;
     }
 
 
-    /// <summary>The leader derivation this host and its register share.</summary>
-    public QuePaxaLeaderSchedule LeaderSchedule { get; }
+    /// <summary>The chain's genesis membership, which is what the active configuration stands at until a record moves it.</summary>
+    public QuePaxaConfiguration Genesis { get; }
+
+    /// <summary>This host's own identity, which the membership filter reads against <see cref="ActiveConfiguration"/>.</summary>
+    public ReplicaId Self { get; }
+
+    /// <summary>
+    /// The membership the live instance runs under, which is the committed record's next configuration or
+    /// <see cref="Genesis"/> when this host has learned no record.
+    /// </summary>
+    /// <remarks>
+    /// A memo of the committed record and never a setting. It is recomputed where the record moves and nowhere
+    /// else — the constructor, <see cref="Learn"/> and <see cref="FromState"/> — because a configuration a host
+    /// can be told is a configuration two hosts can be told differently for one instance, which is the
+    /// split-configuration hazard the derivation exists to make unstateable.
+    /// </remarks>
+    public QuePaxaConfiguration ActiveConfiguration { get; private set; }
+
+    /// <summary>The leader derivation this host and its register share, taken over <see cref="ActiveConfiguration"/>.</summary>
+    /// <remarks>
+    /// A memo on the same rule as <see cref="ActiveConfiguration"/>, and its lifetime is the record's rather
+    /// than the host's. The order it reads is the configuration's member order, so the derivation is a function
+    /// of an agreed fact at every version; the hedging base delay it carries is zero, because delays are local
+    /// tuning applied by a register and this schedule is read only for who leads.
+    /// </remarks>
+    public QuePaxaLeaderSchedule LeaderSchedule { get; private set; }
 
     /// <summary>The committed record this host has learned, or <see langword="null"/> when it has learned none.</summary>
     public VersionedValue<TValue>? Committed { get; private set; }
@@ -156,20 +216,40 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <returns>The reply, carrying the version of the instance that answered.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="request"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if the request does not name <see cref="LiveVersion"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown if the carried record names a chain other than <see cref="ActiveConfiguration"/>'s, if
+    /// <see cref="Self"/> is outside <see cref="ActiveConfiguration"/>, or if the carried record's own version
+    /// is absent or differs from the envelope's.
+    /// </exception>
     /// <exception cref="InvalidOperationException">Thrown if a runner owns this host, or if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that this host serves no version at all.</exception>
     /// <remarks>
     /// <para>
-    /// Both bounds are refused and for different reasons. A request below the live version belongs to an
-    /// instance that has already decided, and folding it into the live register would put a settled version's
-    /// proposals into an unsettled one. A request above it belongs to an instance whose leader this host
-    /// cannot derive, and serving it under the leader of a different version is the hazard.
+    /// Every refusal is <see cref="Declines"/>'s classification raised as an exception, and the two are one
+    /// predicate consulted twice rather than two rules kept in step. A refusal a classifier reported and a
+    /// handler served is a request folded into a register the runner then treats as a defect, and the
+    /// arrangement makes that drift unstateable rather than tested for.
     /// </para>
     /// <para>
-    /// Both refusals precede any mutation, so a declined request leaves this host exactly as it found it,
+    /// Both version bounds are refused and for different reasons. A request below the live version belongs to
+    /// an instance that has already decided, and folding it into the live register would put a settled
+    /// version's proposals into an unsettled one. A request above it belongs to an instance whose leader this
+    /// host cannot derive, and serving it under the leader of a different version is the hazard.
+    /// </para>
+    /// <para>
+    /// The three membership refusals are each a different claim. A carried record naming another chain is a
+    /// host of a different genesis addressing this one, and answering it would merge two chains that have
+    /// never agreed on anything. A host outside its own active configuration is one a change removed, and a
+    /// recorder outside the set a quorum is counted over is a shadow recorder no arithmetic accounts for. A
+    /// carried record whose own version differs from the envelope's is a defective proposer's request, and
+    /// deciding it would wedge the instance, because every host that learns the decision throws on the
+    /// mismatch before it can adopt the record.
+    /// </para>
+    /// <para>
+    /// Every refusal precedes any mutation, so a declined request leaves this host exactly as it found it,
     /// which is what lets a runner keep serving after faulting the declined call.
     /// </para>
     /// <para>
-    /// The ownership refusal precedes all three, because a request folded in beside a running loop's own
+    /// The ownership refusal precedes all of them, because a request folded in beside a running loop's own
     /// replaces the recorder the loop's durability gate compares by reference.
     /// <see cref="QuePaxaVersionedRunner{TValue}.RecordAsync"/> is the sequenced path there.
     /// </para>
@@ -186,16 +266,109 @@ public sealed class QuePaxaVersionedNode<TValue>
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        RegisterVersion live = LiveVersion;
-        if(request.Version != live)
+        RequestRefusal refusal = Classify(request);
+        if(refusal != RequestRefusal.None)
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(request),
-                request.Version.Value,
-                $"This host serves version {live.Value}; it has learned nothing about the leader of any other version and will not record for one.");
+            throw RefusalFor(refusal, request);
         }
 
-        return new VersionedRecordReply<VersionedValue<TValue>>(live, Instance.Handle(request.Request));
+        return new VersionedRecordReply<VersionedValue<TValue>>(LiveVersion, Instance.Handle(request.Request));
+    }
+
+
+    /// <summary>
+    /// Reports whether <see cref="Handle"/> would refuse <paramref name="request"/> rather than serving it.
+    /// </summary>
+    /// <param name="request">The request to classify.</param>
+    /// <returns><see langword="true"/> when this host refuses the request on any of its rules.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="request"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// <para>
+    /// A classifier and not a guard: no rule here throws, and serving remains <see cref="Handle"/>'s act. A
+    /// runner's decline filter reads this to tell a refusal, which faults one call, from a defect, which ends
+    /// its loop, and it reads it from inside an exception filter, where a throw would be swallowed and the
+    /// refusal would be misread as the defect.
+    /// </para>
+    /// <para>
+    /// The spent-range arm comes first over one snapshot of the committed record, as
+    /// <see cref="Serves(RegisterVersion)"/>'s does: a host whose record stands at
+    /// <see cref="RegisterVersion.MaxValue"/> refuses every request rather than evaluating the throw
+    /// <see cref="LiveVersion"/> documents.
+    /// </para>
+    /// <para>
+    /// The membership arms are operability rather than safety. A removed recorder that kept answering would
+    /// not break agreement, because a quorum is counted over the configuration a proposal was addressed
+    /// under, and refusing here is what makes the removal enforceable at the host instead of resting on
+    /// nobody addressing it.
+    /// </para>
+    /// </remarks>
+    public bool Declines(VersionedRecordRequest<VersionedValue<TValue>> request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return Classify(request) != RequestRefusal.None;
+    }
+
+
+    /// <summary>Classifies <paramref name="request"/> against every rule this host refuses on.</summary>
+    /// <param name="request">The request to classify.</param>
+    /// <returns>The rule that refuses it, or <see cref="RequestRefusal.None"/> when this host serves it.</returns>
+    private RequestRefusal Classify(VersionedRecordRequest<VersionedValue<TValue>> request)
+    {
+        VersionedValue<TValue>? committed = Committed;
+        if(committed is { } held && held.Version == RegisterVersion.MaxValue)
+        {
+            return RequestRefusal.Exhausted;
+        }
+
+        if(request.Version != LiveVersionFor(committed))
+        {
+            return RequestRefusal.Instance;
+        }
+
+        //The carried record is read before it is compared, so a request naming no record at all is refused on
+        //the record arm rather than faulting a classifier that promises not to throw.
+        if(request.Request.Proposal.Value is not { } carried)
+        {
+            return RequestRefusal.CarriedRecord;
+        }
+
+        if(!carried.NextConfiguration.Cluster.Equals(ActiveConfiguration.Cluster))
+        {
+            return RequestRefusal.Cluster;
+        }
+
+        if(!ActiveConfiguration.Contains(Self))
+        {
+            return RequestRefusal.Membership;
+        }
+
+        if(carried.Version != request.Version)
+        {
+            return RequestRefusal.CarriedRecord;
+        }
+
+        return RequestRefusal.None;
+    }
+
+
+    /// <summary>Raises <paramref name="refusal"/> as the exception <see cref="Handle"/> refuses with.</summary>
+    /// <param name="refusal">The rule that refused the request, which is never <see cref="RequestRefusal.None"/>.</param>
+    /// <param name="request">The refused request, whose values the message names.</param>
+    /// <returns>The exception to throw.</returns>
+    private Exception RefusalFor(RequestRefusal refusal, VersionedRecordRequest<VersionedValue<TValue>> request)
+    {
+        return refusal switch
+        {
+            RequestRefusal.Exhausted => new InvalidOperationException("The version range is spent; the last representable version has no successor. This host serves no version at all and refuses every request without recording it."),
+            RequestRefusal.Instance => new ArgumentOutOfRangeException(
+                nameof(request),
+                request.Version.Value,
+                $"This host serves version {LiveVersionFor(Committed).Value}; it has learned nothing about the leader of any other version and will not record for one."),
+            RequestRefusal.Cluster => new ArgumentException($"This host records for chain {ActiveConfiguration.Cluster} and the request carries a record of another chain. Two independently bootstrapped chains decline each other rather than merging, so a host wired to the wrong one loses progress and never agreement.", nameof(request)),
+            RequestRefusal.Membership => new ArgumentException("This host is outside the membership the live instance runs under, so it is not one of the recorders a quorum for that instance is counted over. A configuration change removed it, and a removed recorder that kept answering would be a shadow recorder no arithmetic accounts for.", nameof(request)),
+            _ => new ArgumentException($"A request addressed to version {request.Version.Value} must carry a record written at that same version. A record whose own version disagrees with the instance it is proposed to wedges that instance, because every host that learns the decision refuses the mismatch before it can adopt the record.", nameof(request))
+        };
     }
 
 
@@ -224,6 +397,13 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// proposals had already been recorded under the old one.
     /// </para>
     /// <para>
+    /// It is also where the membership moves, because the record names the membership the version after it
+    /// runs under and a record is the only agreed thing a host can derive one from. A change that keeps the
+    /// previous writer keeps that writer leading, so growing or shrinking a configuration around the writer
+    /// costs the next instance nothing and never demotes its one-round-trip path; a change that removes the
+    /// writer leaves the instance leaderless, uniformly at every host that holds the record.
+    /// </para>
+    /// <para>
     /// A record that advances is always a strictly newer instance and no record is ever mutated in place,
     /// which is what makes the durability gate's reference comparison on the committed record exact.
     /// </para>
@@ -246,6 +426,8 @@ public sealed class QuePaxaVersionedNode<TValue>
         }
 
         Committed = committed;
+        ActiveConfiguration = ConfigurationFor(committed, Genesis);
+        LeaderSchedule = ScheduleFor(ActiveConfiguration);
         Instance = new QuePaxaNode<VersionedValue<TValue>>(LeaderSchedule.RecorderFor<VersionedValue<TValue>>(committed.Writer));
 
         return true;
@@ -394,7 +576,7 @@ public sealed class QuePaxaVersionedNode<TValue>
         VersionedValue<TValue>? committed = Committed;
         QuePaxaRecorder<VersionedValue<TValue>> recorder = Recorder;
 
-        return new QuePaxaVersionedNodeState<TValue>(committed, LiveVersionFor(committed), recorder.ConfiguredLeader, recorder.ToState());
+        return new QuePaxaVersionedNodeState<TValue>(committed, LiveVersionFor(committed), recorder.ConfiguredLeader, ActiveConfiguration, recorder.ToState());
     }
 
 
@@ -425,36 +607,47 @@ public sealed class QuePaxaVersionedNode<TValue>
 
 
     /// <summary>
-    /// Reconstructs a host from durable <paramref name="state"/> under <paramref name="schedule"/>, refusing
-    /// fail-closed every snapshot whose parts disagree with one another.
+    /// Reconstructs a host of <paramref name="genesis"/>'s chain from durable <paramref name="state"/>,
+    /// refusing fail-closed every snapshot whose parts disagree with one another or with the chain.
     /// </summary>
-    /// <param name="schedule">
-    /// The leader derivation every replica shares. It comes before the state because it is configuration rather
-    /// than durable protocol state, as identity and membership come before the state in
+    /// <param name="genesis">
+    /// The chain's genesis membership. It comes before the state because it is configuration rather than
+    /// durable protocol state, as identity and membership come before the state in
     /// <see cref="RaftNode{TCommand}.FromState"/>.
     /// </param>
+    /// <param name="self">This host's own identity, which the membership filter reads against the restored configuration.</param>
     /// <param name="state">The durable state to restore.</param>
     /// <returns>A host serving the instance the restored record implies.</returns>
-    /// <exception cref="ArgumentNullException">Thrown if <paramref name="schedule"/> or <paramref name="state"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="genesis"/> or <paramref name="state"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
     /// Thrown when the snapshot's parts disagree: a
     /// <see cref="QuePaxaVersionedNodeState{TValue}.ConfiguredLeader"/> other than the one
     /// <see cref="QuePaxaLeaderSchedule.LeaderFor(ReplicaId?)"/> derives from the restored record; a
     /// <see cref="QuePaxaVersionedNodeState{TValue}.RecorderVersion"/> other than the version after the restored
-    /// record's; or a recorder standing at <see cref="RecorderStep.Zero"/> that carries a proposal in any slot.
-    /// Also thrown for every state no recorder-driven register can hold, as
+    /// record's; a <see cref="QuePaxaVersionedNodeState{TValue}.ActiveConfiguration"/> other than the one the
+    /// restored record implies; a restored membership naming a chain other than
+    /// <paramref name="genesis"/>'s; or a recorder standing at <see cref="RecorderStep.Zero"/> that carries a
+    /// proposal in any slot. Also thrown for every state no recorder-driven register can hold, as
     /// <see cref="QuePaxaRecorder{TValue}.FromState(ProposerLane?, QuePaxaRecorderState{TValue})"/> defines
     /// them.
     /// </exception>
     /// <exception cref="InvalidOperationException">Thrown if the restored record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it and this host would serve none.</exception>
     /// <remarks>
     /// <para>
-    /// The two cross-checks are what a torn snapshot fails. A stored leader other than the derived one means
-    /// two hosts can hold records implying different leaders for one instance, which is the reserved-priority
-    /// divergence hazard, and a host whose own snapshot says so refuses to start rather than joining as the
-    /// second leader. A stored version other than the derived one means a register from one instance beside a
-    /// record from another, which is the half-written snapshot. Neither can fire against a record the restore
-    /// derived from, which is why both are stored.
+    /// The cross-checks are what a torn snapshot fails, and each reads a stored copy of something the record
+    /// already implies. A stored leader other than the derived one means two hosts can hold records implying
+    /// different leaders for one instance, which is the reserved-priority divergence hazard, and a host whose
+    /// own snapshot says so refuses to start rather than joining as the second leader. A stored version other
+    /// than the derived one means a register from one instance beside a record from another. A stored
+    /// membership other than the derived one is the same tear one field further along, and it is the one a
+    /// snapshot written in two parts across a reconfiguration leaves behind. None of them could fire against a
+    /// value the restore recomputed, which is why all three are stored.
+    /// </para>
+    /// <para>
+    /// The chain check is a different claim and not a tear at all. It compares the restored membership's chain
+    /// identity against the genesis this host was handed, so a store attached to the wrong cluster, or a
+    /// genesis edited under a restarting host, refuses to start rather than joining a chain it never agreed
+    /// with. It names an operator act, because no protocol path can produce it.
     /// </para>
     /// <para>
     /// A stale record that is internally consistent restores without complaint, and that is correct rather than
@@ -474,11 +667,15 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// step below the recorder's floor still reaches the recorder's restore and is refused there.
     /// </para>
     /// </remarks>
-    public static QuePaxaVersionedNode<TValue> FromState(QuePaxaLeaderSchedule schedule, QuePaxaVersionedNodeState<TValue> state)
+    public static QuePaxaVersionedNode<TValue> FromState(QuePaxaConfiguration genesis, ReplicaId self, QuePaxaVersionedNodeState<TValue> state)
     {
-        ArgumentNullException.ThrowIfNull(schedule);
+        ArgumentNullException.ThrowIfNull(genesis);
         ArgumentNullException.ThrowIfNull(state);
 
+        //The derivation reads the record and the genesis alone, never the stored copies the rules below
+        //compare against, so a single torn field trips exactly the one rule that reads it.
+        QuePaxaConfiguration derived = ConfigurationFor(state.Committed, genesis);
+        QuePaxaLeaderSchedule schedule = ScheduleFor(derived);
         ReplicaId? previousWriter = state.Committed?.Writer;
         ProposerLane? derivedLeader = schedule.LeaderFor(previousWriter);
 
@@ -491,6 +688,16 @@ public sealed class QuePaxaVersionedNode<TValue>
         if(state.RecorderVersion != live)
         {
             throw new ArgumentException($"A restored recorder must serve the version after the restored record's, which is {live.Value}, and it serves {state.RecorderVersion.Value}. A register from one instance beside a record from another is a snapshot written in two parts and torn between them.", nameof(state));
+        }
+
+        if(!state.ActiveConfiguration.Equals(derived))
+        {
+            throw new ArgumentException("A restored membership must be the one the restored record implies, which is its next configuration, or the genesis membership when no record was restored. A register from one instance beside a configuration from another is a snapshot written in two parts and torn between them.", nameof(state));
+        }
+
+        if(!derived.Cluster.Equals(genesis.Cluster))
+        {
+            throw new ArgumentException($"A restored membership must name the chain this host was given, which is {genesis.Cluster}, and it names {derived.Cluster}. A store attached to the wrong cluster, or a genesis changed under a restarting host, is an operator act, and joining the wrong chain merges two that have never agreed on anything.", nameof(state));
         }
 
         QuePaxaRecorder<VersionedValue<TValue>> recorder;
@@ -508,7 +715,7 @@ public sealed class QuePaxaVersionedNode<TValue>
             recorder = schedule.RecorderFor<VersionedValue<TValue>>(previousWriter, state.Recorder);
         }
 
-        return new QuePaxaVersionedNode<TValue>(schedule, state.Committed, new QuePaxaNode<VersionedValue<TValue>>(recorder));
+        return new QuePaxaVersionedNode<TValue>(genesis, self, state.Committed, derived, schedule, new QuePaxaNode<VersionedValue<TValue>>(recorder));
     }
 
 
@@ -523,5 +730,49 @@ public sealed class QuePaxaVersionedNode<TValue>
     private static RegisterVersion LiveVersionFor(VersionedValue<TValue>? committed) => committed is { } record ? record.Version.Next() : RegisterVersion.First;
 
 
+    /// <summary>The membership a host holding <paramref name="committed"/> of <paramref name="genesis"/>'s chain runs its live instance under.</summary>
+    /// <param name="committed">The committed record to derive from, or <see langword="null"/> for a host that has learned none.</param>
+    /// <param name="genesis">The chain's genesis membership, which is the base case of the derivation.</param>
+    /// <returns>The record's next configuration, or the genesis membership when there is no record.</returns>
+    /// <remarks>
+    /// The one derivation both the memo and the restore read, so a stored membership is compared against the
+    /// same expression the memo is computed from and the two cannot say different things about one record.
+    /// </remarks>
+    private static QuePaxaConfiguration ConfigurationFor(VersionedValue<TValue>? committed, QuePaxaConfiguration genesis) => committed?.NextConfiguration ?? genesis;
+
+
+    /// <summary>The leader derivation over <paramref name="configuration"/>'s member order.</summary>
+    /// <param name="configuration">The membership the instance runs under.</param>
+    /// <returns>The derivation.</returns>
+    /// <remarks>
+    /// The base delay is zero because nothing on this side of the seam hedges: a host reads the derivation for
+    /// who leads, and every delay it could carry is local tuning a register applies to its own sending.
+    /// </remarks>
+    private static QuePaxaLeaderSchedule ScheduleFor(QuePaxaConfiguration configuration) => new(configuration.ScheduleWith(TimeSpan.Zero));
+
+
     private static string Describe(ProposerLane? lane) => lane?.ToString() ?? "leaderless";
+
+
+    /// <summary>The rules a host refuses a record request on, in the order they are evaluated.</summary>
+    private enum RequestRefusal
+    {
+        /// <summary>No rule refuses the request and the host serves it.</summary>
+        None,
+
+        /// <summary>The committed record stands at the last representable version, so this host serves none.</summary>
+        Exhausted,
+
+        /// <summary>The request names an instance other than the live one.</summary>
+        Instance,
+
+        /// <summary>The carried record names a chain other than the active configuration's.</summary>
+        Cluster,
+
+        /// <summary>This host is outside the membership the live instance runs under.</summary>
+        Membership,
+
+        /// <summary>The carried record is absent, or its own version differs from the envelope's.</summary>
+        CarriedRecord
+    }
 }
