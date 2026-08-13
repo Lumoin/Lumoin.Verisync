@@ -31,11 +31,14 @@ namespace Lumoin.Verisync.Core;
 /// retransmission that follows a failed write retries the write before the reply is sent.
 /// </para>
 /// <para>
-/// Three paths besides a reply await this, and they are the reason "before any dependent reply leaves" is
+/// Four paths besides a reply await this, and they are the reason "before any dependent reply leaves" is
 /// not the whole rule: <see cref="QuePaxaVersionedRunner{TValue}.MakeDurableAsync"/>, the caller-driven
 /// checkpoint; a <see cref="LearnDurability.Durable"/> learn through
 /// <see cref="QuePaxaVersionedRunner{TValue}.LearnAsync"/>, which owes the write before it reports an
-/// adoption; and <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>, which owes it before it
+/// adoption; a learn that moved
+/// <see cref="QuePaxaVersionedNode{TValue}.ActiveConfiguration"/>, which owes it whatever durability was
+/// asked for because the record installing a membership may be the only copy of it inside that membership;
+/// and <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>, which owes it before it
 /// republishes a record to a peer that will move to the next version on it.
 /// </para>
 /// <para>

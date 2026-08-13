@@ -358,9 +358,16 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     /// <param name="committed">A decided record.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns><see langword="true"/> when the record advanced that host.</returns>
+    /// <remarks>
+    /// This is the push a register's <see cref="PublishCommittedRecordDelegate{TValue}"/> is wired to here,
+    /// so the learn names <see cref="LearnDurability.Durable"/>: a sender states its own durability
+    /// obligation rather than assuming what the receiver does with the record, and the record that installs
+    /// a membership may be the only copy of it inside the membership it installs. The runners of this
+    /// cluster run without a store, so the naming is the contract and costs no write here.
+    /// </remarks>
     public async Task<bool> LearnAtAsync(int index, VersionedValue<TValue> committed, CancellationToken cancellationToken)
     {
-        return await Runners[index].LearnAsync(committed, LearnDurability.InMemory, cancellationToken).ConfigureAwait(false);
+        return await Runners[index].LearnAsync(committed, LearnDurability.Durable, cancellationToken).ConfigureAwait(false);
     }
 
 

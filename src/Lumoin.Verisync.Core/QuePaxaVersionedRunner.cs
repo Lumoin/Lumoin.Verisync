@@ -53,7 +53,10 @@ namespace Lumoin.Verisync.Core;
 /// durable — under <see cref="LearnDurability.InMemory"/>; what such a learn changes becomes durable
 /// with the first reply that depends on it, or with <see cref="MakeDurableAsync"/>, which sequences a
 /// checkpoint through the same queue. Under <see cref="LearnDurability.Durable"/> the host's state is
-/// made durable before the call completes.
+/// made durable before the call completes. A learn that moved
+/// <see cref="QuePaxaVersionedNode{TValue}.ActiveConfiguration"/> is the one exception: it is checkpointed
+/// under either durability, because the record that installs a membership may be the only copy of it inside
+/// the membership it installs.
 /// </para>
 /// <para>
 /// A catch-up read goes through <see cref="ReadCommittedAsync"/>, which makes the state durable before
@@ -146,6 +149,15 @@ public sealed class QuePaxaVersionedRunner<TValue>
     /// asked for a checkpoint and the gate turns it into no write whenever nothing is owed.
     /// </para>
     /// <para>
+    /// A learn that moved <see cref="QuePaxaVersionedNode{TValue}.ActiveConfiguration"/> is made durable
+    /// under either durability, and that asymmetry is deliberate. Eager persistence per disseminated record
+    /// is the demotion the durability knob exists to avoid, while the record that installs a membership may
+    /// be the only copy of it inside the membership it installs, so a host that adopted it in memory and
+    /// crashed would come back serving under the membership the change replaced. A learn the host did not
+    /// adopt installs nothing and owes nothing, and a store the loop runs without still keeps the whole gate
+    /// vacuous.
+    /// </para>
+    /// <para>
     /// The result reports adoption in memory whichever durability was asked for. After a
     /// <see cref="LearnDurability.Durable"/> call that completed the state IS durable, and after one that
     /// faulted nothing is promised, so there is nothing a second flag could say.
@@ -233,11 +245,13 @@ public sealed class QuePaxaVersionedRunner<TValue>
     /// <returns>A task that completes once the state is durable, or immediately successful when the loop runs without a persist delegate.</returns>
     /// <exception cref="ChannelClosedException">Thrown through the returned task when no further work is accepted after <see cref="Complete"/> or after the loop has ended.</exception>
     /// <remarks>
-    /// This is one of the three paths on which the committed arm of the durability gate fires alone,
-    /// beside a <see cref="LearnDurability.Durable"/> learn and <see cref="ReadCommittedAsync"/>: a
+    /// This is one of the four paths on which the committed arm of the durability gate fires alone,
+    /// beside a <see cref="LearnDurability.Durable"/> learn, a learn that moved
+    /// <see cref="QuePaxaVersionedNode{TValue}.ActiveConfiguration"/>, and
+    /// <see cref="ReadCommittedAsync"/>: a
     /// learned record whose recorder reference did not move — the shared leaderless singleton across a
-    /// learn — becomes durable through one of the three or with the next dependent reply, whichever
-    /// comes first. None of the three is a reply path, which is why no reply vector reaches that arm. A checkpoint on a
+    /// learn — becomes durable through one of the four or with the next dependent reply, whichever
+    /// comes first. None of the four is a reply path, which is why no reply vector reaches that arm. A checkpoint on a
     /// host that learned its way to <see cref="RegisterVersion.MaxValue"/> without an intervening write
     /// ends the loop through the snapshot's documented throw, which is terminal by design: such a host
     /// declines every call without a write, and a deployment retires a spent key. While a runner owns the
@@ -370,8 +384,16 @@ public sealed class QuePaxaVersionedRunner<TValue>
             case LearnItem learn:
                 //The adoption is computed before the write and handed over after it, so a failed write
                 //leaves the loop without ever reporting an adoption the crash would lose.
+                QuePaxaConfiguration held = Node.ActiveConfiguration;
                 bool advanced = Node.LearnForOwner(learn.Committed);
-                if(learn.Durability == LearnDurability.Durable && persistNode is not null)
+
+                //A learn that installed a membership is checkpointed under either durability, because the
+                //record carrying that membership may be the only copy of it inside the membership it
+                //installs, and a host that lost it would come back serving an instance under the membership
+                //the change replaced. The comparison is between what the host held before the learn and what
+                //it holds after, so a record the host did not adopt installs nothing and owes nothing, and it
+                //reads the host's own memo rather than deriving the membership a second time out here.
+                if(persistNode is not null && (learn.Durability == LearnDurability.Durable || !Node.ActiveConfiguration.Equals(held)))
                 {
                     await Node.MakeDurableForOwnerAsync(persistNode, cancellationToken).ConfigureAwait(false);
                 }

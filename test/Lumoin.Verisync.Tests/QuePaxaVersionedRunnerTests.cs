@@ -1050,6 +1050,168 @@ internal sealed class QuePaxaVersionedRunnerTests
     }
 
 
+    /// <summary>
+    /// A learn that installed a membership is durable across a crash even though it named the in-memory
+    /// durability. The durability must stay in memory: a durable learn checkpoints the host on the rule that
+    /// was already there, and would leave the membership rule pinned by nothing at all.
+    /// </summary>
+    /// <remarks>
+    /// The host crashes before it serves anything, which is the window the rule closes: a record adopted in
+    /// memory and never written is one the crash loses, and the membership it installs may have no other
+    /// copy inside itself. The write count is read only after
+    /// <see cref="QuePaxaVersionedRunner{TValue}.Complete"/> and a drained loop, because a call's completion
+    /// is no barrier for the dispatcher's own writes.
+    /// </remarks>
+    [TestMethod]
+    public async Task AnInMemoryLearnThatInstallsAMembershipIsHeldAcrossACrash()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedRunner<string> runner = new(host);
+        RecordingStore store = new();
+        Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
+
+        VersionedValue<string> installing = Record(5UL, Third, Configuration.With(Stranger));
+        Assert.IsTrue(await runner.LearnAsync(installing, LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+
+        runner.Complete();
+        await run.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, store.States);
+        Assert.AreSame(installing, store.States[0].Committed);
+
+        //The crash: the runner and the host are gone, and what comes back is built from the store alone.
+        QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(Configuration, First, store.States[0]);
+
+        Assert.AreEqual(new RegisterVersion(5UL), restored.Committed!.Version);
+        Assert.AreEqual(installing.NextConfiguration, restored.ActiveConfiguration);
+        Assert.IsTrue(restored.ActiveConfiguration.Contains(Stranger), "The restored host runs under the membership the lost record installed.");
+    }
+
+
+    /// <summary>
+    /// The push names the durability it requires at the receiving host, and the record it pushed survives the
+    /// crash that follows it.
+    /// </summary>
+    /// <remarks>
+    /// The naming is read at the receiving seam, on the argument itself, because it is the only observable
+    /// that separates the two rules: the record is written either way, so no crash-and-restore outcome can
+    /// tell a sender that named the durability from one that leaned on the receiver's own rule. The barrier
+    /// before the crash is the pushed learn's own completion, since a learn made durable before it completes
+    /// is durable when the push returns, and never a delay.
+    /// </remarks>
+    [TestMethod]
+    public async Task APushedMembershipChangeNamesADurableLearnAndIsHeldAcrossACrash()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedRunner<string> runner = new(host);
+        RecordingStore store = new();
+        Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
+
+        LearnSeamSpy seam = new(runner);
+        PushingPublisher publisher = new(First, seam);
+
+        //The conversion is the contract: this is what a deployment assigns where the register expects a push.
+        PublishCommittedRecordDelegate<string> push = publisher.PublishAsync;
+        VersionedValue<string> installing = Record(5UL, Third, Configuration.With(Stranger));
+
+        await push(installing, [First, Second, Third, Stranger], TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, seam.Named);
+        Assert.AreEqual(LearnDurability.Durable, seam.Named[0], "The push leaned on the receiver's own rule instead of naming the durability it requires.");
+
+        //The push has returned, so the durable image the crash would leave behind is the one the store holds.
+        QuePaxaVersionedNodeState<string> durable = store.States[^1];
+
+        runner.Complete();
+        await run.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(Configuration, First, durable);
+
+        Assert.AreSame(installing, restored.Committed);
+        Assert.AreEqual(installing.NextConfiguration, restored.ActiveConfiguration);
+        Assert.IsTrue(restored.ActiveConfiguration.Contains(Stranger));
+    }
+
+
+    /// <summary>
+    /// One leaderless learn after another is written, though the recorder reference never moved across the
+    /// second one.
+    /// </summary>
+    /// <remarks>
+    /// Each record removes its own writer, which is the self-removal a deployment performs and what leaves
+    /// the instance after it leaderless at every host holding the record. A leaderless recorder is a shared
+    /// singleton, so the second learn holds the same reference across the learn while the committed record
+    /// moves, and the durability gate's committed arm is the only one that can fire. A gate reading the
+    /// recorder alone would skip the second write and a restart would re-open a decided instance. The counts
+    /// are read only after the drain, because a call's completion is no barrier for the dispatcher's own
+    /// writes.
+    /// </remarks>
+    [TestMethod]
+    public async Task OneLeaderlessLearnAfterAnotherIsWrittenThoughTheRecorderNeverMoved()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedRunner<string> runner = new(host);
+        RecordingStore store = new();
+        Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
+
+        VersionedValue<string> first = Record(5UL, Third, Configuration.Without(Third));
+        VersionedValue<string> second = Record(6UL, Second, Configuration.Without(Third).Without(Second));
+
+        Assert.IsTrue(await runner.LearnAsync(first, LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+
+        QuePaxaRecorder<VersionedValue<string>> leaderless = host.Recorder;
+
+        Assert.IsNull(leaderless.ConfiguredLeader, "The first record left a leader behind, so the sequence never reaches the arm it is about.");
+        Assert.IsTrue(await runner.LearnAsync(second, LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+
+        //The singleton premise, inline: the second learn moved the record and left the recorder where it was.
+        Assert.AreSame(leaderless, host.Recorder);
+        Assert.IsNull(host.Recorder.ConfiguredLeader);
+
+        //A checkpoint after the sequence writes nothing, so the second learn's write had already landed.
+        await runner.MakeDurableAsync(TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        runner.Complete();
+        await run.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(2, store.States);
+        Assert.AreSame(first, store.States[0].Committed);
+        Assert.AreSame(second, store.States[1].Committed);
+    }
+
+
+    /// <summary>
+    /// An ordinary learn writes nothing even when the membership it carries is a fresh copy of the one the
+    /// host already runs under.
+    /// </summary>
+    /// <remarks>
+    /// The prohibition is absent code — no learn that installed nothing may cost a write — so a positive
+    /// vector is what pins it, and the two memberships are equal by value and unequal by reference so the
+    /// same vector separates a structural comparison from one reading the backing array's identity. Two
+    /// configurations sharing one array would leave both rules unpinned, which is what the premise assertion
+    /// below reads.
+    /// </remarks>
+    [TestMethod]
+    public async Task AnOrdinaryLearnUnderAnEquallyValuedMembershipWritesNothing()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedRunner<string> runner = new(host);
+        RecordingStore store = new();
+        Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
+
+        QuePaxaConfiguration copied = QuePaxaConfiguration.Create(Configuration.Cluster, [First, Second, Third]);
+
+        Assert.AreEqual(Configuration, copied);
+        Assert.IsFalse(Configuration.Members.Equals(copied.Members), "The two member lists are one array, so this vector cannot tell a structural comparison from a reference one.");
+        Assert.IsTrue(await runner.LearnAsync(Record(5UL, Third, copied), LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+        Assert.AreEqual(new RegisterVersion(6UL), host.LiveVersion);
+
+        runner.Complete();
+        await run.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.IsEmpty(store.States);
+    }
+
+
     [TestMethod]
     public async Task ACatchUpReadPersistsBeforeItRepublishes()
     {
@@ -1369,7 +1531,21 @@ internal sealed class QuePaxaVersionedRunnerTests
 
     private static VersionedValue<string> Record(ulong version, ReplicaId writer)
     {
-        return new VersionedValue<string>(new RegisterVersion(version), writer, Configuration, "committed");
+        return Record(version, writer, Configuration);
+    }
+
+
+    /// <summary>
+    /// A committed record naming the membership the version after it runs under, which is what a
+    /// reconfiguration decides and what an ordinary write carries forward unchanged.
+    /// </summary>
+    /// <param name="version">The version the record was written at.</param>
+    /// <param name="writer">The replica that wrote it, from which the next instance's leader is derived.</param>
+    /// <param name="membership">The membership the record installs.</param>
+    /// <returns>The record.</returns>
+    private static VersionedValue<string> Record(ulong version, ReplicaId writer, QuePaxaConfiguration membership)
+    {
+        return new VersionedValue<string>(new RegisterVersion(version), writer, membership, "committed");
     }
 
 
@@ -1438,6 +1614,64 @@ internal sealed class QuePaxaVersionedRunnerTests
             Attempts++;
 
             return ValueTask.FromException(new IOException("The durable store is unavailable."));
+        }
+    }
+
+
+    /// <summary>
+    /// A receiving seam that records the durability every pushed learn named before handing the record to the
+    /// host's runner, so a vector reads what the sender named rather than what the receiver did about it.
+    /// </summary>
+    /// <param name="runner">The receiving host's runner, which is the sequenced path into that host.</param>
+    private sealed class LearnSeamSpy(QuePaxaVersionedRunner<string> runner)
+    {
+        /// <summary>Every durability a pushed learn named, in arrival order.</summary>
+        public List<LearnDurability> Named { get; } = [];
+
+
+        /// <summary>Hands a pushed record to the host under the durability the sender named.</summary>
+        /// <param name="committed">The pushed record.</param>
+        /// <param name="durability">How far the sender requires the learn to get.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns><see langword="true"/> when the record advanced the host.</returns>
+        public ValueTask<bool> LearnAsync(VersionedValue<string> committed, LearnDurability durability, CancellationToken cancellationToken)
+        {
+            Named.Add(durability);
+
+            return runner.LearnAsync(committed, durability, cancellationToken);
+        }
+    }
+
+
+    /// <summary>
+    /// A push that offers a decided record to the hosts its audience names, through the receiving seam of the
+    /// one host this vector runs.
+    /// </summary>
+    /// <param name="member">The member whose seam this push can reach.</param>
+    /// <param name="seam">That member's receiving seam.</param>
+    /// <remarks>
+    /// It names <see cref="LearnDurability.Durable"/> at the receiving host, which is the sender's own
+    /// obligation rather than a bet on what the receiver does with the record: the record that installs a
+    /// membership may be the only copy of it inside the membership it installs, and the sender is the one
+    /// that knows the push crosses a boundary. A member it cannot reach simply does not learn, which is an
+    /// operability cost and never a failure of the write.
+    /// </remarks>
+    private sealed class PushingPublisher(ReplicaId member, LearnSeamSpy seam)
+    {
+        /// <summary>Offers <paramref name="committed"/> to every host of <paramref name="audience"/> this push reaches.</summary>
+        /// <param name="committed">The decided record.</param>
+        /// <param name="audience">The hosts to offer it to.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>A task that completes once the record has been offered.</returns>
+        public async ValueTask PublishAsync(VersionedValue<string> committed, ImmutableArray<ReplicaId> audience, CancellationToken cancellationToken)
+        {
+            foreach(ReplicaId target in audience)
+            {
+                if(target.Equals(member))
+                {
+                    _ = await seam.LearnAsync(committed, LearnDurability.Durable, cancellationToken).ConfigureAwait(false);
+                }
+            }
         }
     }
 

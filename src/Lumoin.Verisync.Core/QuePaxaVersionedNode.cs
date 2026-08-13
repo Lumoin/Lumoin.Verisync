@@ -500,10 +500,13 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// shared leaderless recorder singleton across the learn, and there the committed arm is the only one
     /// that fires. That arm alone never fires on a reply path — a request's step is floored above
     /// <see cref="RecorderStep.Zero"/>, so the first request after any learn advances the recorder — which
-    /// is why it is reachable only through one of the three paths that await this with no reply behind
+    /// is why it is reachable only through one of the four paths that await this with no reply behind
     /// them: <see cref="QuePaxaVersionedRunner{TValue}.MakeDurableAsync"/>, a
-    /// <see cref="LearnDurability.Durable"/> learn, and
-    /// <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>.
+    /// <see cref="LearnDurability.Durable"/> learn, a learn that moved
+    /// <see cref="ActiveConfiguration"/>, and
+    /// <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>. The last two meet in the routine
+    /// case: a change that removes its own writer both installs a membership and leaves the instance after
+    /// it leaderless, which is where the recorder reference stands still while the record moves.
     /// </para>
     /// <para>
     /// A host driving <see cref="Handle"/> and <see cref="Learn"/> itself calls this before it lets any
