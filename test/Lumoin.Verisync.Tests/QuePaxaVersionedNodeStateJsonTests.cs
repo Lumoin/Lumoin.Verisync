@@ -35,7 +35,7 @@ namespace Lumoin.Verisync.Tests;
 internal sealed class QuePaxaVersionedNodeStateJsonTests
 {
     private const string NodeStateTemplate = """{"committed":$COMMITTED,"recorderVersion":$SERVES,"configuredLeader":$LEADER,"recorder":$REGISTER}""";
-    private const string RecordTemplate = """{"version":$AT,"writer":"$BY","value":"$HELD"}""";
+    private const string RecordTemplate = """{"version":$AT,"writer":"$BY","configuration":$UNDER,"value":"$HELD"}""";
     private const string RegisterTemplate = """{"step":$STEP,"first":$FIRST,"currentAggregate":$AGGREGATE,"priorAggregate":$PRIOR}""";
     private const string ProposalTemplate = """{"priority":$PRIORITY,"owner":{"replica":"$OWNER","lane":$ON},"value":$CARRIED}""";
     private const string LaneTemplate = """{"replica":"$WHO","lane":$WHICH}""";
@@ -47,6 +47,13 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
     private static string SecondHex { get; } = Convert.ToHexStringLower(Second.AsSpan());
 
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
+
+    /// <summary>The membership the records in this suite carry.</summary>
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Replica(3)]);
+
+    /// <summary>The membership's payload, written the way the record codec writes it.</summary>
+    private static string ConfigurationJson { get; } =
+        $$"""{"cluster":"{{Convert.ToHexStringLower(Configuration.Cluster.AsSpan())}}","members":["{{FirstHex}}","{{SecondHex}}","{{Convert.ToHexStringLower(Replica(3).AsSpan())}}"]}""";
 
 
     public TestContext TestContext { get; set; } = null!;
@@ -60,7 +67,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
     public void AVersionedNodeStateWithEveryFieldPresentRoundTrips()
     {
         QuePaxaVersionedNodeState<string> state = new(
-            new VersionedValue<string>(new RegisterVersion(4UL), Second, "committed"),
+            new VersionedValue<string>(new RegisterVersion(4UL), Second, Configuration, "committed"),
             new RegisterVersion(5UL),
             ProposerLane.For(Second),
             new QuePaxaRecorderState<VersionedValue<string>>(
@@ -105,7 +112,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
 
         //The two nulls are independent, so a host holding a record for a leaderless instance round-trips too.
         QuePaxaVersionedNodeState<string> leaderless = new(
-            new VersionedValue<string>(new RegisterVersion(4UL), Replica(9), "committed"),
+            new VersionedValue<string>(new RegisterVersion(4UL), Replica(9), Configuration, "committed"),
             new RegisterVersion(5UL),
             null,
             new QuePaxaRecorderState<VersionedValue<string>>(RecorderStep.Zero, null, null, null));
@@ -122,7 +129,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
     public void TheEncodingIsPinned()
     {
         QuePaxaVersionedNodeState<string> state = new(
-            new VersionedValue<string>(new RegisterVersion(4UL), Second, "committed"),
+            new VersionedValue<string>(new RegisterVersion(4UL), Second, Configuration, "committed"),
             new RegisterVersion(5UL),
             ProposerLane.For(Second),
             new QuePaxaRecorderState<VersionedValue<string>>(
@@ -157,7 +164,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
             null);
 
         QuePaxaVersionedNodeState<string> state = new(
-            new VersionedValue<string>(new RegisterVersion(4UL), Second, "committed"),
+            new VersionedValue<string>(new RegisterVersion(4UL), Second, Configuration, "committed"),
             new RegisterVersion(5UL),
             ProposerLane.For(Second),
             register);
@@ -190,7 +197,8 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
             ($$"""{"committed":{{committed}},"recorderVersion":5,"recorder":{{register}}}""", "configuredLeader", "A versioned node state"),
             ($$"""{"committed":{{committed}},"recorderVersion":5,"configuredLeader":{{leader}}}""", "recorder", "A versioned node state"),
             (NodeState(committed, "5", leader, Register("4", proposal, proposal, omitPrior: true)), "priorAggregate", "A recorder state"),
-            (NodeState(Record("4", SecondHex, "committed", omitWriter: true), "5", leader, register), "writer", "A versioned value")
+            (NodeState(Record("4", SecondHex, "committed", omitWriter: true), "5", leader, register), "writer", "A versioned value"),
+            (NodeState(Record("4", SecondHex, "committed", omitConfiguration: true), "5", leader, register), "configuration", "A versioned value")
         ];
 
         foreach((string json, string field, string label) in vectors)
@@ -309,7 +317,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
     {
         return new PrioritizedProposal<VersionedValue<string>>(
             new ProposalKey(priority, owner),
-            new VersionedValue<string>(new RegisterVersion(version), writer, value));
+            new VersionedValue<string>(new RegisterVersion(version), writer, Configuration, value));
     }
 
 
@@ -323,22 +331,29 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
     }
 
 
-    /// <summary>Builds a committed record's payload, optionally omitting its writer.</summary>
+    /// <summary>Builds a committed record's payload, optionally omitting one of its required slots.</summary>
     /// <param name="at">The version.</param>
     /// <param name="by">The writer's identity in lower-case hexadecimal.</param>
     /// <param name="held">The application value.</param>
     /// <param name="omitWriter">Whether to omit the writer field, which makes the record malformed.</param>
+    /// <param name="omitConfiguration">Whether to omit the configuration field, which makes the record malformed.</param>
     /// <returns>The payload.</returns>
-    private static string Record(string at, string by, string held, bool omitWriter = false)
+    private static string Record(string at, string by, string held, bool omitWriter = false, bool omitConfiguration = false)
     {
         if(omitWriter)
         {
-            return $$"""{"version":{{at}},"value":"{{held}}"}""";
+            return $$"""{"version":{{at}},"configuration":{{ConfigurationJson}},"value":"{{held}}"}""";
+        }
+
+        if(omitConfiguration)
+        {
+            return $$"""{"version":{{at}},"writer":"{{by}}","value":"{{held}}"}""";
         }
 
         return RecordTemplate
             .Replace("$AT", at, StringComparison.Ordinal)
             .Replace("$BY", by, StringComparison.Ordinal)
+            .Replace("$UNDER", ConfigurationJson, StringComparison.Ordinal)
             .Replace("$HELD", held, StringComparison.Ordinal);
     }
 

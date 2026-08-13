@@ -55,6 +55,11 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     private static ReplicaId Second { get; } = Replica(2);
     private static ReplicaId Third { get; } = Replica(3);
 
+    /// <summary>
+    /// The membership every record in this suite carries, minted from the agreed order the hosts run under.
+    /// </summary>
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+
     private static TimeSpan BaseDelay { get; } = TimeSpan.FromMilliseconds(40);
 
     private static int[] LanesZeroToTwo { get; } = [0, 1, 2];
@@ -77,7 +82,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
                 Assert.IsTrue(outcome.TookFastPath, $"Version {version} did not take the fast path, so the rotation lost the leader its reserved claim.");
 
                 //Without dissemination the hosts stay on the version just decided and decline the next one.
-                await cluster.LearnAllAsync(new VersionedValue<string>(outcome.Version, outcome.Writer!.Value, outcome.Value!), TestContext.CancellationToken).ConfigureAwait(false);
+                await cluster.LearnAllAsync(new VersionedValue<string>(outcome.Version, outcome.Writer!.Value, Configuration, outcome.Value!), TestContext.CancellationToken).ConfigureAwait(false);
             }
 
             Assert.AreEqual(new RegisterVersion(3UL), register.Committed!.Version);
@@ -315,7 +320,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
 
             Assert.AreEqual(QuePaxaWriteStatus.Committed, first.Status);
 
-            VersionedValue<string> committed = new(first.Version, first.Writer!.Value, first.Value!);
+            VersionedValue<string> committed = new(first.Version, first.Writer!.Value, Configuration, first.Value!);
 
             //One host learns, which leaves the quorum one short: two of three must serve.
             _ = await cluster.LearnAtAsync(0, committed, TestContext.CancellationToken).ConfigureAwait(false);
@@ -373,7 +378,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
         SocketVersionedQuePaxaCluster<string> cluster = await ConnectAsync(Schedule()).ConfigureAwait(false);
         try
         {
-            VersionedValue<string> committed = new(new RegisterVersion(7UL), Second, "learned");
+            VersionedValue<string> committed = new(new RegisterVersion(7UL), Second, Configuration, "learned");
             _ = await cluster.LearnAtAsync(2, committed, TestContext.CancellationToken).ConfigureAwait(false);
 
             QuePaxaVersionedRegister<string> register = new(

@@ -41,6 +41,11 @@ internal sealed class QuePaxaVersionedNodeStateTests
     /// <summary>A writer outside the configured order, which the derivation answers leaderless for.</summary>
     private static ReplicaId Stranger { get; } = Replica(9);
 
+    /// <summary>
+    /// The membership every record in this suite carries, minted from the agreed order the hosts run under.
+    /// </summary>
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+
     /// <summary>The round's first step, which is where the fast path is read and where a host's first record lands.</summary>
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
 
@@ -357,7 +362,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
         QuePaxaRound<VersionedValue<string>> round = QuePaxaRound<VersionedValue<string>>.Begin(
             ProposerLane.For(Second),
             ProposerLane.For(Second),
-            new VersionedValue<string>(new RegisterVersion(5UL), Second, "fast"));
+            new VersionedValue<string>(new RegisterVersion(5UL), Second, Configuration, "fast"));
 
         ImmutableArray<RecorderAnswer<VersionedValue<string>>> quorum =
         [
@@ -372,7 +377,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
             $"decided at step {outcome.DecidedAt.Value} on {outcome.SummaryCount} answers of 3 hosts, one of them restored"));
 
         Assert.AreEqual(QuePaxaStepKind.Decided, outcome.Kind);
-        Assert.AreEqual(new VersionedValue<string>(new RegisterVersion(5UL), Second, "fast"), outcome.DecidedValue);
+        Assert.AreEqual(new VersionedValue<string>(new RegisterVersion(5UL), Second, Configuration, "fast"), outcome.DecidedValue);
         Assert.AreEqual(round.Step, outcome.DecidedAt, "A decision above the step the round began at is more than one round trip.");
         Assert.AreEqual(Four, outcome.DecidedAt);
     }
@@ -420,7 +425,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
     public void TheSpentVersionSurfacesAsExhaustionOnBothHalvesOfTheSeam()
     {
         QuePaxaLeaderSchedule schedule = Schedule();
-        VersionedValue<string> spent = new(RegisterVersion.MaxValue, Second, "last");
+        VersionedValue<string> spent = new(RegisterVersion.MaxValue, Second, Configuration, "last");
         QuePaxaVersionedNode<string> host = new(schedule, spent);
 
         Assert.ThrowsExactly<InvalidOperationException>(() => _ = host.ToState());
@@ -503,7 +508,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
     private static VersionedRecordRequest<VersionedValue<string>> Request(ulong version, ProposalPriority priority, ReplicaId owner, string value, RecorderStep? step = null)
     {
         RegisterVersion at = new(version);
-        VersionedValue<string> record = new(at, owner, value);
+        VersionedValue<string> record = new(at, owner, Configuration, value);
         PrioritizedProposal<VersionedValue<string>> proposal = new(new ProposalKey(priority, ProposerLane.For(owner)), record);
 
         return new VersionedRecordRequest<VersionedValue<string>>(at, new RecordRequest<VersionedValue<string>>(step ?? Four, proposal));
@@ -521,7 +526,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
     {
         return new PrioritizedProposal<VersionedValue<string>>(
             new ProposalKey(new ProposalPriority(priority), owner),
-            new VersionedValue<string>(new RegisterVersion(version), writer, value));
+            new VersionedValue<string>(new RegisterVersion(version), writer, Configuration, value));
     }
 
 
@@ -535,7 +540,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
     {
         return new PrioritizedProposal<VersionedValue<string>>(
             new ProposalKey(ProposalPriority.Reserved, owner),
-            new VersionedValue<string>(new RegisterVersion(version), writer, value));
+            new VersionedValue<string>(new RegisterVersion(version), writer, Configuration, value));
     }
 
 
@@ -545,7 +550,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
     /// <returns>The record.</returns>
     private static VersionedValue<string> Record(ulong version, ReplicaId writer)
     {
-        return new VersionedValue<string>(new RegisterVersion(version), writer, "committed");
+        return new VersionedValue<string>(new RegisterVersion(version), writer, Configuration, "committed");
     }
 
 

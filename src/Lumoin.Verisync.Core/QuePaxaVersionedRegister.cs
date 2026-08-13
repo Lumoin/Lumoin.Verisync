@@ -117,6 +117,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         Recorders = recorders;
         Self = self;
         LeaderSchedule = schedule;
+        Configuration = QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
         DrawPriority = drawPriority;
         AttemptsPerRecorder = attemptsPerRecorder;
         TimeProvider = timeProvider;
@@ -147,6 +148,13 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <summary>The delay this replica waits before writing, which is zero for the version's leader.</summary>
     public TimeSpan Delay => LeaderSchedule.ScheduleFor(Committed?.Writer).DelayFor(Self);
 
+
+    /// <summary>
+    /// The membership this register stamps on every record it writes. It is minted from the agreed order the
+    /// leader schedule runs over, so every replica running that order stamps the same one and a decided record
+    /// names one membership rather than as many as there are writers.
+    /// </summary>
+    private QuePaxaConfiguration Configuration { get; }
 
     private IReadOnlyList<VersionedRecorderEndpointDelegate<VersionedValue<TValue>>> Recorders { get; }
 
@@ -360,7 +368,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
             }
         }
 
-        VersionedValue<TValue> record = new(version, Self, value);
+        VersionedValue<TValue> record = new(version, Self, Configuration, value);
         ProposerLane proposerLane = AllocateLane(version);
         ProposerLane? believedLeader = LeaderSchedule.LeaderFor(previousWriter);
 

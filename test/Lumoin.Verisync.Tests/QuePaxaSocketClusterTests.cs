@@ -30,6 +30,11 @@ internal sealed class QuePaxaSocketClusterTests
     private static ReplicaId Second { get; } = Replica(2);
     private static ReplicaId Third { get; } = Replica(3);
 
+    /// <summary>
+    /// The membership every record in this suite carries, minted from the agreed order the hosts run under.
+    /// </summary>
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+
 
     [TestMethod]
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "All listeners, clients, servers, and enumerators are tracked in lists and disposed in the finally block.")]
@@ -372,7 +377,7 @@ internal sealed class QuePaxaSocketClusterTests
 
             //Dissemination is explicit, as in a deployment: every host learns the committed record through
             //its runner's queue, and only then can the next version gather a quorum.
-            VersionedValue<string> committed = new(firstWrite.Version, firstWrite.Writer!.Value, firstWrite.Value!);
+            VersionedValue<string> committed = new(firstWrite.Version, firstWrite.Writer!.Value, Configuration, firstWrite.Value!);
             for(int i = 0; i < count; i++)
             {
                 Assert.IsTrue(await runners[i].LearnAsync(committed, LearnDurability.InMemory, TestContext.CancellationToken).ConfigureAwait(false));

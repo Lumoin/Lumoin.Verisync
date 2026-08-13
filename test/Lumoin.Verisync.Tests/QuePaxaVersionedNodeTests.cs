@@ -18,6 +18,11 @@ internal sealed class QuePaxaVersionedNodeTests
     private static ReplicaId Third { get; } = Replica(3);
     private static ReplicaId Stranger { get; } = Replica(9);
 
+    /// <summary>
+    /// The membership every record in this suite carries, minted from the agreed order the hosts run under.
+    /// </summary>
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
 
 
@@ -190,7 +195,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public async Task ACheckpointOnAHostThatServesNoVersionIsANoOpRatherThanAThrow()
     {
-        QuePaxaVersionedNode<string> host = new(Schedule(), new VersionedValue<string>(RegisterVersion.MaxValue, Second, "spent"));
+        QuePaxaVersionedNode<string> host = new(Schedule(), new VersionedValue<string>(RegisterVersion.MaxValue, Second, Configuration, "spent"));
 
         //The gate short-circuits before the snapshot, whose LiveVersion read throws on a spent host, so a
         //checkpoint hoisting the snapshot above the gate fails here.
@@ -233,7 +238,7 @@ internal sealed class QuePaxaVersionedNodeTests
 
         //A spent host serves nothing, and the classifier reports that without evaluating the live-version
         //throw, which is what lets a runner's decline filter read it inside an exception filter.
-        QuePaxaVersionedNode<string> spent = new(Schedule(), new VersionedValue<string>(RegisterVersion.MaxValue, Second, "spent"));
+        QuePaxaVersionedNode<string> spent = new(Schedule(), new VersionedValue<string>(RegisterVersion.MaxValue, Second, Configuration, "spent"));
 
         Assert.IsFalse(spent.Serves(new RegisterVersion(1UL)));
         Assert.IsFalse(spent.Serves(RegisterVersion.MaxValue));
@@ -313,7 +318,7 @@ internal sealed class QuePaxaVersionedNodeTests
     private static VersionedRecordRequest<VersionedValue<string>> Request(ulong version, ProposalPriority priority, ReplicaId owner, string value)
     {
         RegisterVersion at = new(version);
-        VersionedValue<string> record = new(at, owner, value);
+        VersionedValue<string> record = new(at, owner, Configuration, value);
         PrioritizedProposal<VersionedValue<string>> proposal = new(new ProposalKey(priority, ProposerLane.For(owner)), record);
 
         return new VersionedRecordRequest<VersionedValue<string>>(at, new RecordRequest<VersionedValue<string>>(Four, proposal));
@@ -322,7 +327,7 @@ internal sealed class QuePaxaVersionedNodeTests
 
     private static VersionedValue<string> Record(ulong version, ReplicaId writer)
     {
-        return new VersionedValue<string>(new RegisterVersion(version), writer, "committed");
+        return new VersionedValue<string>(new RegisterVersion(version), writer, Configuration, "committed");
     }
 
 

@@ -429,7 +429,7 @@ internal sealed class SocketClusterTests
         ReplicaId second = VersionedReplica(2);
         ImmutableArray<ReplicaId> order = [VersionedReplica(1), second, VersionedReplica(3)];
         QuePaxaLeaderSchedule schedule = new(HedgingSchedule.Create(order, TimeSpan.FromMilliseconds(10)));
-        QuePaxaVersionedNode<string> host = new(schedule, new VersionedValue<string>(new RegisterVersion(4UL), second, "committed"));
+        QuePaxaVersionedNode<string> host = new(schedule, new VersionedValue<string>(new RegisterVersion(4UL), second, VersionedMembership, "committed"));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
 
@@ -561,11 +561,19 @@ internal sealed class SocketClusterTests
     private static VersionedRecordRequest<VersionedValue<string>> VersionedSocketRequest(ulong version, ReplicaId owner)
     {
         RegisterVersion at = new(version);
-        VersionedValue<string> record = new(at, owner, "value");
+        VersionedValue<string> record = new(at, owner, VersionedMembership, "value");
         PrioritizedProposal<VersionedValue<string>> proposal = new(new ProposalKey(ProposalPriority.Lowest, ProposerLane.For(owner)), record);
 
         return new VersionedRecordRequest<VersionedValue<string>>(at, new RecordRequest<VersionedValue<string>>(RecorderStep.RoundOnePhaseZero, proposal));
     }
+
+
+    /// <summary>
+    /// The membership the versioned records in this suite carry, minted from the order the versioned host runs
+    /// under.
+    /// </summary>
+    private static QuePaxaConfiguration VersionedMembership { get; } =
+        QuePaxaConfiguration.CreateGenesis([VersionedReplica(1), VersionedReplica(2), VersionedReplica(3)]);
 
 
     private static ReplicaId VersionedReplica(byte id)

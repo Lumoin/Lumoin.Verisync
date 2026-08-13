@@ -23,6 +23,12 @@ internal sealed class QuePaxaVersionedRegisterTests
 
     private static TimeSpan BaseDelay { get; } = TimeSpan.FromMilliseconds(40);
 
+    /// <summary>
+    /// The membership a register over this suite's agreed order stamps on its records, so a record built here
+    /// compares equal to one the register wrote.
+    /// </summary>
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+
     private static int[] LaneZero { get; } = [0];
     private static int[] LanesZeroAndOne { get; } = [0, 1];
     private static int[] LanesZeroToTwo { get; } = [0, 1, 2];
@@ -63,7 +69,7 @@ internal sealed class QuePaxaVersionedRegisterTests
             Assert.IsTrue(outcome.TookFastPath, $"Version {version} did not take the fast path, so the rotation lost the leader its reserved claim.");
 
             //Without dissemination the hosts stay on the version just decided and decline the next one.
-            cluster.LearnAll(new VersionedValue<string>(outcome.Version, outcome.Writer!.Value, outcome.Value!));
+            cluster.LearnAll(new VersionedValue<string>(outcome.Version, outcome.Writer!.Value, Configuration, outcome.Value!));
         }
 
         Assert.AreEqual(new RegisterVersion(3UL), register.Committed!.Version);
@@ -294,7 +300,7 @@ internal sealed class QuePaxaVersionedRegisterTests
 
         Assert.AreEqual(QuePaxaWriteStatus.Committed, first.Status);
 
-        VersionedValue<string> committed = new(first.Version, first.Writer!.Value, first.Value!);
+        VersionedValue<string> committed = new(first.Version, first.Writer!.Value, Configuration, first.Value!);
 
         //One host learns, which leaves the quorum one short: two of three must serve.
         _ = cluster.LearnAt(0, committed);
@@ -406,7 +412,7 @@ internal sealed class QuePaxaVersionedRegisterTests
     public async Task AReadAdoptsTheHighestRecordAnyHostReports()
     {
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
-        VersionedValue<string> committed = new(new RegisterVersion(7UL), Second, "learned");
+        VersionedValue<string> committed = new(new RegisterVersion(7UL), Second, Configuration, "learned");
         _ = cluster.LearnAt(2, committed);
 
         ReadCommittedRecordDelegate<string>[] readers = new ReadCommittedRecordDelegate<string>[3];

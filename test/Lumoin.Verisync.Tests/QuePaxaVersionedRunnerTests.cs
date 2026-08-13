@@ -22,6 +22,11 @@ internal sealed class QuePaxaVersionedRunnerTests
     private static ReplicaId Second { get; } = Replica(2);
     private static ReplicaId Third { get; } = Replica(3);
 
+    /// <summary>
+    /// The membership every record in this suite carries, minted from the agreed order the hosts run under.
+    /// </summary>
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
     private static RecorderStep Five { get; } = RecorderStep.FromRoundAndPhase(1, 1);
 
@@ -518,7 +523,7 @@ internal sealed class QuePaxaVersionedRunnerTests
 
         //The durability must stay in-memory: a durable learn into the spent range fires the gate, the snapshot
         //throws, and the loop this vector needs alive ends before it can decline anything.
-        Assert.IsTrue(await runner.LearnAsync(new VersionedValue<string>(RegisterVersion.MaxValue, Third, "spent"), LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+        Assert.IsTrue(await runner.LearnAsync(new VersionedValue<string>(RegisterVersion.MaxValue, Third, Configuration, "spent"), LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
 
         //The spent-range refusal is a different exception type than the version mismatch, and both must
         //fault their own call: a decline filter narrowed to the range type would end the loop here instead.
@@ -926,7 +931,7 @@ internal sealed class QuePaxaVersionedRunnerTests
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
 
-        Task<bool> learn = runner.LearnAsync(new VersionedValue<string>(RegisterVersion.MaxValue, Third, "spent"), LearnDurability.Durable, TestContext.CancellationToken).AsTask();
+        Task<bool> learn = runner.LearnAsync(new VersionedValue<string>(RegisterVersion.MaxValue, Third, Configuration, "spent"), LearnDurability.Durable, TestContext.CancellationToken).AsTask();
 
         //The gate fires on a host that serves no version, the snapshot throws, and the loop ends with the
         //learn faulted: the checkpoint's terminal contract reached one call earlier than it was.
@@ -1069,7 +1074,7 @@ internal sealed class QuePaxaVersionedRunnerTests
 
         //The learn puts the host past its baseline at the last version, so the read owes a write and the
         //snapshot it would take serves no version.
-        Assert.IsTrue(await runner.LearnAsync(new VersionedValue<string>(RegisterVersion.MaxValue, Third, "spent"), LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+        Assert.IsTrue(await runner.LearnAsync(new VersionedValue<string>(RegisterVersion.MaxValue, Third, Configuration, "spent"), LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
 
         Task<VersionedValue<string>?> read = runner.ReadCommittedAsync(TestContext.CancellationToken).AsTask();
 
@@ -1248,7 +1253,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     private static VersionedRecordRequest<VersionedValue<string>> Request(ulong version, RecorderStep step, ProposalPriority priority, ReplicaId owner, string value)
     {
         RegisterVersion at = new(version);
-        VersionedValue<string> record = new(at, owner, value);
+        VersionedValue<string> record = new(at, owner, Configuration, value);
         PrioritizedProposal<VersionedValue<string>> proposal = new(new ProposalKey(priority, ProposerLane.For(owner)), record);
 
         return new VersionedRecordRequest<VersionedValue<string>>(at, new RecordRequest<VersionedValue<string>>(step, proposal));
@@ -1257,7 +1262,7 @@ internal sealed class QuePaxaVersionedRunnerTests
 
     private static VersionedValue<string> Record(ulong version, ReplicaId writer)
     {
-        return new VersionedValue<string>(new RegisterVersion(version), writer, "committed");
+        return new VersionedValue<string>(new RegisterVersion(version), writer, Configuration, "committed");
     }
 
 

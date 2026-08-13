@@ -1,6 +1,7 @@
 using Lumoin.Verisync.Core;
 using Lumoin.Verisync.Json;
 using System.Buffers;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
@@ -33,13 +34,23 @@ namespace Lumoin.Verisync.Tests;
 internal sealed class QuePaxaEnvelopeJsonTests
 {
     private const string EnvelopedRequestTemplate = """{"version":$VERSION,"request":{"step":4,"proposal":{"priority":1,"owner":{"replica":"$REPLICA","lane":0},"value":$VALUE}}}""";
-    private const string RecordTemplate = """{"version":$VERSION,"writer":"$WRITER","value":"v"}""";
+    private const string RecordTemplate = """{"version":$VERSION,"writer":"$WRITER","configuration":$CONFIGURATION,"value":"v"}""";
+    private const string RecordLabel = "A versioned value";
+    private const string ConfigurationLabel = "A configuration";
+
+    public TestContext TestContext { get; set; } = null!;
 
     private static ProposerLane LaneA { get; } = ProposerLane.For(Replica(1));
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
 
     private static string ReplicaHex { get; } = Convert.ToHexStringLower(Replica(1).AsSpan());
     private static string WriterHex { get; } = Convert.ToHexStringLower(Replica(2).AsSpan());
+
+    /// <summary>The membership the records in this suite carry.</summary>
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([Replica(1), Replica(2), Replica(3)]);
+
+    /// <summary>The membership's payload, written the way the record codec writes it.</summary>
+    private static string ConfigurationJson { get; } = $$"""{"cluster":"{{Convert.ToHexStringLower(Configuration.Cluster.AsSpan())}}","members":["{{ReplicaHex}}","{{WriterHex}}","{{Convert.ToHexStringLower(Replica(3).AsSpan())}}"]}""";
 
 
     [TestMethod]
@@ -138,7 +149,7 @@ internal sealed class QuePaxaEnvelopeJsonTests
     [TestMethod]
     public void TheComposedEncodingIsPinned()
     {
-        VersionedValue<string> record = new(new RegisterVersion(9UL), Replica(2), "v");
+        VersionedValue<string> record = new(new RegisterVersion(9UL), Replica(2), Configuration, "v");
         VersionedRecordRequest<VersionedValue<string>> request = new(
             new RegisterVersion(5UL),
             new RecordRequest<VersionedValue<string>>(Four, new PrioritizedProposal<VersionedValue<string>>(new ProposalKey(ProposalPriority.Lowest, LaneA), record)));
@@ -147,7 +158,7 @@ internal sealed class QuePaxaEnvelopeJsonTests
             EnvelopedRequestTemplate,
             "5",
             ReplicaHex,
-            Fill(RecordTemplate, "9", WriterHex));
+            FillRecord(RecordTemplate, "9", WriterHex, ConfigurationJson));
 
         Assert.AreEqual(
             expected,
@@ -159,7 +170,7 @@ internal sealed class QuePaxaEnvelopeJsonTests
     [TestMethod]
     public void TheDecidedRecordRoundTripsInsideAProposal()
     {
-        VersionedValue<string> record = new(new RegisterVersion(3UL), Replica(2), "v");
+        VersionedValue<string> record = new(new RegisterVersion(3UL), Replica(2), Configuration, "v");
         VersionedRecordRequest<VersionedValue<string>> request = new(
             new RegisterVersion(3UL),
             new RecordRequest<VersionedValue<string>>(Four, new PrioritizedProposal<VersionedValue<string>>(new ProposalKey(ProposalPriority.Reserved, LaneA), record)));
@@ -174,20 +185,50 @@ internal sealed class QuePaxaEnvelopeJsonTests
         Assert.AreEqual(request, decoded);
         Assert.AreEqual(Replica(2), decoded.Request.Proposal.Value.Writer);
         Assert.AreEqual(ProposalPriority.Reserved, decoded.Request.Proposal.Key.Priority);
+
+        //The configuration crossed the codec as its own object over its own buffers, so equality here is
+        //element-wise rather than an identity the encoder and decoder happen to share.
+        Assert.AreNotSame(Configuration, decoded.Request.Proposal.Value.NextConfiguration);
+        Assert.AreEqual(Configuration, decoded.Request.Proposal.Value.NextConfiguration);
+        Assert.AreSequenceEqual(Configuration.Members, decoded.Request.Proposal.Value.NextConfiguration.Members);
+        Assert.AreEqual(Configuration.Cluster, decoded.Request.Proposal.Value.NextConfiguration.Cluster);
     }
 
 
     [TestMethod]
     public void AMissingRecordFieldIsRefusedByName()
     {
+        //Each vector is a complete, otherwise-valid record differing from a good one in exactly the omitted
+        //slot, so each draws one rejection and no other guard can answer for it. The configuration's own two
+        //slots carry their own label, so a reader learns which object was short rather than only which field.
+        string members = $$"""["{{ReplicaHex}}","{{WriterHex}}"]""";
+        string cluster = Convert.ToHexStringLower(Configuration.Cluster.AsSpan());
+
+        (string Record, string Field, string Label)[] vectors =
+        [
+            ($$"""{"writer":"{{WriterHex}}","configuration":{{ConfigurationJson}},"value":"v"}""", "version", RecordLabel),
+            ($$"""{"version":3,"configuration":{{ConfigurationJson}},"value":"v"}""", "writer", RecordLabel),
+            ($$"""{"version":3,"writer":"{{WriterHex}}","value":"v"}""", "configuration", RecordLabel),
+            ($$"""{"version":3,"writer":"{{WriterHex}}","configuration":{{ConfigurationJson}}}""", "value", RecordLabel),
+            ($$"""{"version":3,"writer":"{{WriterHex}}","configuration":{"members":{{members}}},"value":"v"}""", "cluster", ConfigurationLabel),
+            ($$"""{"version":3,"writer":"{{WriterHex}}","configuration":{"cluster":"{{cluster}}"},"value":"v"}""", "members", ConfigurationLabel)
+        ];
+
         DeserializeMessageDelegate<VersionedRecordRequest<VersionedValue<string>>> deserialize =
             QuePaxaMessageJson.CreateVersionedRequestDeserializer(QuePaxaMessageJson.CreateVersionedValueReader<string>(ReadValue));
 
-        MessageDeserializationException failure = Assert.Throws<MessageDeserializationException>(
-            () => deserialize(new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(
-                Fill(EnvelopedRequestTemplate, "3", ReplicaHex, """{"version":3,"value":"v"}""")))));
+        foreach((string record, string field, string label) in vectors)
+        {
+            TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"record omitting {field}, refused as {label}"));
 
-        Assert.Contains("writer", failure.InnerException!.Message);
+            MessageDeserializationException failure = Assert.Throws<MessageDeserializationException>(
+                () => deserialize(new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(
+                    Fill(EnvelopedRequestTemplate, "3", ReplicaHex, record)))));
+
+            Assert.IsInstanceOfType<JsonException>(failure.InnerException);
+            Assert.Contains(field, failure.InnerException!.Message);
+            Assert.Contains(label, failure.InnerException.Message);
+        }
     }
 
 
@@ -262,11 +303,12 @@ internal sealed class QuePaxaEnvelopeJsonTests
     }
 
 
-    private static string Fill(string template, string version, string writer)
+    private static string FillRecord(string template, string version, string writer, string configuration)
     {
         return template
             .Replace("$VERSION", version, StringComparison.Ordinal)
-            .Replace("$WRITER", writer, StringComparison.Ordinal);
+            .Replace("$WRITER", writer, StringComparison.Ordinal)
+            .Replace("$CONFIGURATION", configuration, StringComparison.Ordinal);
     }
 
 

@@ -52,6 +52,11 @@ internal sealed class QuePaxaVersionedRegisterLinearizabilityTests
     private static ReplicaId Second { get; } = Replica(2);
     private static ReplicaId Third { get; } = Replica(3);
 
+    /// <summary>
+    /// The membership every record in this suite carries, minted from the agreed order the hosts run under.
+    /// </summary>
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+
     private static TimeSpan BaseDelay { get; } = TimeSpan.FromMilliseconds(40);
 
 
@@ -371,7 +376,7 @@ internal sealed class QuePaxaVersionedRegisterLinearizabilityTests
         //A host whose committed record leaves no version to follow is a defect and not a decline, so it must
         //not be folded into the transport's fault path. A bench that caught every exception from a host would
         //report this as a missed quorum, and the run would come back merely undecided.
-        VersionedValue<string> exhausted = new(RegisterVersion.MaxValue, First, "x");
+        VersionedValue<string> exhausted = new(RegisterVersion.MaxValue, First, Configuration, "x");
         InterleavedVersionedQuePaxaCluster<string> cluster = new(Schedule(), HostCount, seed: 5, exhausted);
 
         QuePaxaVersionedRegister<string> register = cluster.CreateRegister(First, AttemptsPerRecorder);

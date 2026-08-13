@@ -1,5 +1,6 @@
 using Lumoin.Verisync.Core;
 using System;
+using System.Collections.Immutable;
 using System.Text.Json;
 
 namespace Lumoin.Verisync.Json;
@@ -70,6 +71,13 @@ namespace Lumoin.Verisync.Json;
 /// as null and stays distinguishable from a field the payload never carried.
 /// </para>
 /// <para>
+/// A decided record's configuration is a required slot rather than an optional one, so a payload that omits it
+/// is refused by name and the missing-field tests sweep it. It is written as a nested object carrying the
+/// chain identity and the ordered member list, each identity in lower-case hexadecimal, and the member order
+/// is part of the value rather than an arrangement of a set: a payload listing the same replicas in another
+/// order decodes into a configuration that is not equal to the one encoded.
+/// </para>
+/// <para>
 /// The caller supplies how to read and write <typeparamref name="TValue"/>, since the value is
 /// application-defined.
 /// </para>
@@ -81,6 +89,7 @@ public static class QuePaxaMessageJson
     private const string VersionedRequestLabel = "A versioned record request";
     private const string VersionedReplyLabel = "A versioned record reply";
     private const string RecordLabel = "A versioned value";
+    private const string ConfigurationLabel = "A configuration";
     private const string RecorderStateLabel = "A recorder state";
     private const string VersionedNodeStateLabel = "A versioned node state";
     private const string ProposalLabel = "A proposal";
@@ -388,6 +397,7 @@ public static class QuePaxaMessageJson
         writer.WriteStartObject();
         writer.WriteNumber("version", record.Version.Value);
         writer.WriteString("writer", Convert.ToHexStringLower(record.Writer.AsSpan()));
+        WriteConfiguration(writer, "configuration", record.NextConfiguration);
         writer.WritePropertyName("value");
         writeValue(writer, record.Value);
         writer.WriteEndObject();
@@ -398,9 +408,46 @@ public static class QuePaxaMessageJson
     {
         ulong version = RequireProperty(element, "version", RecordLabel).GetUInt64();
         string writer = RequireProperty(element, "writer", RecordLabel).GetString()!;
+        QuePaxaConfiguration configuration = ReadConfiguration(RequireProperty(element, "configuration", RecordLabel));
         TValue value = readValue(RequireProperty(element, "value", RecordLabel));
 
-        return Construct(() => new VersionedValue<TValue>(new RegisterVersion(version), ReplicaId.FromSpan(Convert.FromHexString(writer)), value));
+        return Construct(() => new VersionedValue<TValue>(new RegisterVersion(version), ReplicaId.FromSpan(Convert.FromHexString(writer)), configuration, value));
+    }
+
+
+    private static void WriteConfiguration(Utf8JsonWriter writer, string name, QuePaxaConfiguration configuration)
+    {
+        writer.WritePropertyName(name);
+        writer.WriteStartObject();
+        writer.WriteString("cluster", Convert.ToHexStringLower(configuration.Cluster.AsSpan()));
+        writer.WriteStartArray("members");
+        foreach(ReplicaId member in configuration.Members)
+        {
+            writer.WriteStringValue(Convert.ToHexStringLower(member.AsSpan()));
+        }
+
+        writer.WriteEndArray();
+        writer.WriteEndObject();
+    }
+
+
+    private static QuePaxaConfiguration ReadConfiguration(JsonElement element)
+    {
+        JsonElement cluster = RequireProperty(element, "cluster", ConfigurationLabel);
+        JsonElement members = RequireProperty(element, "members", ConfigurationLabel);
+
+        //The chain identity's width, the members' widths and the list's own rules all belong to the domain
+        //factories, so one construction carries every one of them and the codec adds none.
+        return Construct(() =>
+        {
+            ImmutableArray<ReplicaId>.Builder listed = ImmutableArray.CreateBuilder<ReplicaId>();
+            foreach(JsonElement member in members.EnumerateArray())
+            {
+                listed.Add(ReplicaId.FromSpan(Convert.FromHexString(member.GetString()!)));
+            }
+
+            return QuePaxaConfiguration.Create(ClusterId.FromSpan(Convert.FromHexString(cluster.GetString()!)), listed.ToImmutable());
+        });
     }
 
 
