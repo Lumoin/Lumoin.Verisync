@@ -40,6 +40,13 @@ namespace Lumoin.Verisync.Tests;
 /// cluster, so a continuation that escaped to the thread pool is reported rather than silently producing a
 /// short history.
 /// </para>
+/// <para>
+/// HOSTS AND MEMBERS ARE TWO SEPARATE FACTS. The hosts are the replicas this bench was told to run, and the
+/// membership is what the genesis configuration and the records decided on its chain name, so a replica may
+/// be a host that is up, reachable and answering while standing outside the configuration entirely. That is
+/// the joiner before the change that admits it and the leaver after the change that removed it, and a bench
+/// whose every array is sized to its host list makes both unstateable by construction.
+/// </para>
 /// </remarks>
 internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
 {
@@ -50,32 +57,64 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     private uint randomState;
 
     /// <summary>
-    /// Creates a cluster of hosts under <paramref name="schedule"/>, each having learned
-    /// <paramref name="committed"/>.
+    /// Creates a cluster running one host per replica in <paramref name="replicas"/> on the chain
+    /// <paramref name="genesis"/> begins, each having learned <paramref name="committed"/>.
     /// </summary>
-    /// <param name="schedule">The leader derivation every replica shares.</param>
-    /// <param name="hostCount">The number of recorder hosts.</param>
+    /// <param name="genesis">The chain's genesis membership, which every host of this bench is handed and which need not name every host.</param>
+    /// <param name="replicas">The replicas this bench runs a host for, in host order.</param>
+    /// <param name="baseDelay">The hedging delay increment per position the registers this bench creates wait.</param>
     /// <param name="seed">The delivery-order seed. It is printed by every test that uses one.</param>
     /// <param name="committed">The committed record every host starts from, or <see langword="null"/> when none has been written.</param>
-    /// <exception cref="ArgumentNullException">Thrown if <paramref name="schedule"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="hostCount"/> is less than one.</exception>
-    public InterleavedVersionedQuePaxaCluster(QuePaxaLeaderSchedule schedule, int hostCount, int seed, VersionedValue<TValue>? committed = null)
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="genesis"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">Thrown if <paramref name="replicas"/> is default or empty, or names one replica twice.</exception>
+    /// <remarks>
+    /// The genesis membership is taken rather than derived from the host list, which is what lets a host
+    /// stand outside the configuration. Every host is handed the same genesis, as every host of a deployed
+    /// chain is, so a replica the genesis does not name declines record requests until it learns a record
+    /// that names it, and answers everything else the whole time.
+    /// </remarks>
+    public InterleavedVersionedQuePaxaCluster(
+        QuePaxaConfiguration genesis,
+        ImmutableArray<ReplicaId> replicas,
+        TimeSpan baseDelay,
+        int seed,
+        VersionedValue<TValue>? committed = null)
     {
-        ArgumentNullException.ThrowIfNull(schedule);
-        ArgumentOutOfRangeException.ThrowIfLessThan(hostCount, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(hostCount, schedule.Schedule.Order.Length);
+        ArgumentNullException.ThrowIfNull(genesis);
+        if(replicas.IsDefaultOrEmpty)
+        {
+            throw new ArgumentException("A bench runs at least one host.", nameof(replicas));
+        }
 
-        Schedule = schedule;
-        Genesis = QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
+        for(int index = 0; index < replicas.Length; index++)
+        {
+            for(int other = index + 1; other < replicas.Length; other++)
+            {
+                if(replicas[index].Equals(replicas[other]))
+                {
+                    throw new ArgumentException("A bench runs one host per replica and cannot name one replica twice; two hosts answering as one replica is a wiring error rather than a topology.", nameof(replicas));
+                }
+            }
+        }
+
+        Genesis = genesis;
+        Replicas = replicas;
+        BaseDelay = baseDelay;
         Seed = seed;
         OwnerThreadId = Environment.CurrentManagedThreadId;
         Clock = new PumpTimeProvider(this);
 
-        Hosts = new QuePaxaVersionedNode<TValue>[hostCount];
-        Partitioned = new bool[hostCount];
-        for(int index = 0; index < hostCount; index++)
+        Hosts = new QuePaxaVersionedNode<TValue>[replicas.Length];
+        Partitioned = new bool[replicas.Length];
+        DisseminationHeld = new bool[replicas.Length];
+        RecordRequestCounts = new int[replicas.Length];
+        for(int index = 0; index < replicas.Length; index++)
         {
-            Hosts[index] = new QuePaxaVersionedNode<TValue>(Genesis, schedule.Schedule.Order[index], committed);
+            Hosts[index] = new QuePaxaVersionedNode<TValue>(genesis, replicas[index], committed);
+            if(committed is not null)
+            {
+                Adoptions.Add(new AdoptedRecord(replicas[index], committed));
+            }
         }
 
         //Xorshift32 instead of System.Random: the sequence is deterministic across runtimes and platforms, so
@@ -84,19 +123,40 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     }
 
 
-    /// <summary>The leader derivation this cluster's hosts and registers share.</summary>
-    public QuePaxaLeaderSchedule Schedule { get; }
+    /// <summary>
+    /// Creates a cluster of <paramref name="hostCount"/> hosts on the chain <paramref name="schedule"/>'s
+    /// whole agreed order founds, each having learned <paramref name="committed"/>.
+    /// </summary>
+    /// <param name="schedule">The agreed order the chain is founded on and the hedging increment its registers wait.</param>
+    /// <param name="hostCount">The number of recorder hosts, taken from the front of that order.</param>
+    /// <param name="seed">The delivery-order seed. It is printed by every test that uses one.</param>
+    /// <param name="committed">The committed record every host starts from, or <see langword="null"/> when none has been written.</param>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="schedule"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="hostCount"/> is less than one or above the order's length.</exception>
+    public InterleavedVersionedQuePaxaCluster(QuePaxaLeaderSchedule schedule, int hostCount, int seed, VersionedValue<TValue>? committed = null)
+        : this(GenesisOver(schedule), LeadingReplicasOf(schedule, hostCount), BaseDelayOf(schedule), seed, committed)
+    {
+    }
+
 
     /// <summary>
-    /// The genesis membership every host of this cluster runs under, minted from the agreed order so that a
-    /// register over the same order stamps the value the hosts derive.
+    /// The genesis membership this cluster's chain begins under, which every host was handed and which a
+    /// register over the same chain stamps its records with until a change moves it.
     /// </summary>
     public QuePaxaConfiguration Genesis { get; }
+
+    /// <summary>
+    /// The replicas this cluster runs a host for, in host order, whether or not the membership names them.
+    /// </summary>
+    public ImmutableArray<ReplicaId> Replicas { get; }
+
+    /// <summary>The hedging delay increment per position the registers this cluster creates wait.</summary>
+    public TimeSpan BaseDelay { get; }
 
     /// <summary>The delivery-order seed this cluster was created with.</summary>
     public int Seed { get; }
 
-    /// <summary>The number of recorder hosts.</summary>
+    /// <summary>The number of recorder hosts, which is not the number of members.</summary>
     public int HostCount => Hosts.Length;
 
     /// <summary>The virtual instant, in ticks.</summary>
@@ -137,6 +197,14 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     /// <summary>The number of dissemination messages delivered to a host that had not learned the record.</summary>
     public int DisseminationsLearned { get; private set; }
 
+    /// <summary>Every committed record a host of this cluster has adopted, in adoption order.</summary>
+    /// <remarks>
+    /// A safety witness reads this beside the records the hosts hold now. A version whose record has been
+    /// superseded by a later one is still a version every host that held it had to agree about, and a reading
+    /// taken when a run has quiesced can no longer see it.
+    /// </remarks>
+    public IReadOnlyList<AdoptedRecord> AdoptedRecords => Adoptions;
+
     /// <summary>The delivery order so far, one line per delivered or lost event, for replay comparison.</summary>
     public IReadOnlyList<string> DeliveryTrace => TraceLines;
 
@@ -176,6 +244,12 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
 
     private bool[] Partitioned { get; }
 
+    /// <summary>Which hosts lose an offered record at delivery while answering everything else.</summary>
+    private bool[] DisseminationHeld { get; }
+
+    /// <summary>How many record requests each host has been delivered.</summary>
+    private int[] RecordRequestCounts { get; }
+
     private List<Message> InFlight { get; } = [];
 
     private List<PumpTimer> Timers { get; } = [];
@@ -183,6 +257,9 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     private List<string> TraceLines { get; } = [];
 
     private List<DeliveredRecordCall> RecordCalls { get; } = [];
+
+    /// <summary>Every record a host adopted, which is the safety witness's history.</summary>
+    private List<AdoptedRecord> Adoptions { get; } = [];
 
     private int OwnerThreadId { get; }
 
@@ -193,6 +270,38 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     public QuePaxaVersionedNode<TValue> Host(int index) => Hosts[index];
 
 
+    /// <summary>Returns the host that is <paramref name="member"/>.</summary>
+    /// <param name="member">The replica whose host to return.</param>
+    /// <returns>That host.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this bench is that replica.</exception>
+    /// <remarks>
+    /// Reading a host by the replica it is rather than by its position is what keeps a scenario legible once
+    /// the membership has moved, because a position means nothing after a change and a replica means the same
+    /// thing at every version.
+    /// </remarks>
+    public QuePaxaVersionedNode<TValue> HostFor(ReplicaId member) => Hosts[HostIndexOf(member)];
+
+
+    /// <summary>The committed record the host that is <paramref name="member"/> holds.</summary>
+    /// <param name="member">The replica whose host to read.</param>
+    /// <returns>That host's committed record, or <see langword="null"/> when it has learned none.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this bench is that replica.</exception>
+    public VersionedValue<TValue>? CommittedAt(ReplicaId member) => Hosts[HostIndexOf(member)].Committed;
+
+
+    /// <summary>How many record requests have reached the host that is <paramref name="member"/>.</summary>
+    /// <param name="member">The replica whose host to read.</param>
+    /// <returns>The number of record requests delivered to it.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this bench is that replica.</exception>
+    /// <remarks>
+    /// It counts record requests and nothing else: a dissemination, a catch-up read and a version
+    /// observation all leave it alone, and a request lost to a partition never reached the host and is not
+    /// counted either. A host whose count is zero has therefore answered no request at all, which is what
+    /// makes an eager push the only route a record it holds can have arrived by.
+    /// </remarks>
+    public int RecordRequestsAt(ReplicaId member) => RecordRequestCounts[HostIndexOf(member)];
+
+
     /// <summary>Partitions the host at <paramref name="index"/>, so its messages are lost at delivery.</summary>
     /// <param name="index">The host index.</param>
     public void Partition(int index) => Partitioned[index] = true;
@@ -201,6 +310,57 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     /// <summary>Heals the host at <paramref name="index"/>.</summary>
     /// <param name="index">The host index.</param>
     public void Heal(int index) => Partitioned[index] = false;
+
+
+    /// <summary>
+    /// Stops the host that is <paramref name="member"/> from taking an offered record, while it keeps
+    /// answering requests, reads and version observations.
+    /// </summary>
+    /// <param name="member">The replica whose host to hold back.</param>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this bench is that replica.</exception>
+    /// <remarks>
+    /// A held host is behind and not unreachable, and the two are what a readiness report separates. A
+    /// partition collapses them, because a host nobody can reach also reports nothing, so a scenario that
+    /// needs a member which answers and has not learned holds its dissemination instead.
+    /// </remarks>
+    public void HoldDissemination(ReplicaId member) => DisseminationHeld[HostIndexOf(member)] = true;
+
+
+    /// <summary>Lets the host that is <paramref name="member"/> take offered records again.</summary>
+    /// <param name="member">The replica whose host to release.</param>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this bench is that replica.</exception>
+    /// <remarks>
+    /// Releasing the hold delivers nothing by itself. A record offered while the hold was on was lost at
+    /// delivery and is gone, so a held host catches up when something offers it the record again.
+    /// </remarks>
+    public void ResumeDissemination(ReplicaId member) => DisseminationHeld[HostIndexOf(member)] = false;
+
+
+    /// <summary>
+    /// Offers <paramref name="committed"/> to the hosts <paramref name="members"/> names, as scheduled
+    /// deliveries.
+    /// </summary>
+    /// <param name="committed">The record to offer.</param>
+    /// <param name="members">The replicas whose hosts to offer it to.</param>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="committed"/> or <paramref name="members"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this bench is one of those replicas.</exception>
+    /// <remarks>
+    /// This is the catch-up a deployment owns beside a writer's own push, and it is deliberately not the
+    /// register's publish: nothing here is decided, offered to an audience or reported anywhere, so a
+    /// scenario that uses it is saying a straggler was fed by its operator rather than by the protocol.
+    /// </remarks>
+    public void Disseminate(VersionedValue<TValue> committed, IEnumerable<ReplicaId> members)
+    {
+        ArgumentNullException.ThrowIfNull(committed);
+        ArgumentNullException.ThrowIfNull(members);
+
+        foreach(ReplicaId member in members)
+        {
+            TaskCompletionSource<bool> completion = new();
+            Enqueue(new Dissemination(HostIndexOf(member), committed, completion));
+            Absorb(completion.Task);
+        }
+    }
 
 
     /// <summary>Advances the clock by one tick, marking a history boundary such as an operation start.</summary>
@@ -271,14 +431,15 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
         return new QuePaxaVersionedRegister<TValue>(
             Genesis,
             self,
-            Schedule.Schedule.BaseDelay,
+            BaseDelay,
             Resolve,
             SeededPrioritySource.For(Seed, self),
             attemptsPerRecorder,
             Clock,
             ObserveAsync,
             ResolveReader,
-            PublishAsync);
+            PublishAsync,
+            ObserveMemberAsync);
     }
 
 
@@ -288,6 +449,26 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     /// <exception cref="InvalidOperationException">Thrown when no host of this bench is that member, which is how a resolver reports one it cannot resolve.</exception>
     private int HostIndexOf(ReplicaId member)
     {
+        int index = TryHostIndexOf(member);
+        if(index < 0)
+        {
+            throw new InvalidOperationException($"No host of this bench is {member}.");
+        }
+
+        return index;
+    }
+
+
+    /// <summary>The index of the host that is <paramref name="member"/>, or a negative value when none is.</summary>
+    /// <param name="member">The member to look for.</param>
+    /// <returns>That host's index, or a negative value.</returns>
+    /// <remarks>
+    /// A membership may name a replica this bench runs no host for, which is the deployment whose endpoint
+    /// map does not reach one of its members, so the paths that tolerate an unreachable member ask this and
+    /// the ones that report an unresolvable member ask <see cref="HostIndexOf"/>.
+    /// </remarks>
+    private int TryHostIndexOf(ReplicaId member)
+    {
         for(int index = 0; index < Hosts.Length; index++)
         {
             if(Hosts[index].Self.Equals(member))
@@ -296,7 +477,7 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
             }
         }
 
-        throw new InvalidOperationException($"No host of this bench is {member}.");
+        return -1;
     }
 
 
@@ -401,11 +582,22 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
             return true;
         }
 
+        //A held host is reached and takes nothing, so the offer fails exactly as an unreachable host's does
+        //while every other call to it still answers.
+        if(message.OffersARecord && DisseminationHeld[message.Host])
+        {
+            TraceLines.Add($"{Now}:h{message.Host}:{message.Kind}:held");
+            message.Lose(new IOException($"Host {message.Host} is not taking offered records."));
+
+            return true;
+        }
+
         TraceLines.Add($"{Now}:h{message.Host}:{message.Kind}");
         switch(message)
         {
             case RecordCall call:
             {
+                RecordRequestCounts[call.Host]++;
                 RecordCalls.Add(new DeliveredRecordCall(call.Host, call.Sender, call.Request.Request.Proposal.Key.Owner.Replica, call.Request.Version, call.Request.Request.Step));
 
                 //A host declines by throwing, which a transport reports as a fault like any other, so the
@@ -442,6 +634,7 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
                 if(Hosts[dissemination.Host].Learn(dissemination.Committed))
                 {
                     DisseminationsLearned++;
+                    Adoptions.Add(new AdoptedRecord(Hosts[dissemination.Host].Self, dissemination.Committed));
                 }
 
                 dissemination.Completion.SetResult(true);
@@ -475,6 +668,15 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     /// Offers a decided record to the hosts its audience names, as scheduled deliveries, which is the
     /// dissemination a deployment owes and the reason the next version becomes servable at all.
     /// </summary>
+    /// <param name="committed">The decided record.</param>
+    /// <param name="audience">The replicas the register computed the offer for.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A task that completes once every offer has landed or failed.</returns>
+    /// <remarks>
+    /// The audience is what this offers to, and never the host list. At a configuration boundary the two
+    /// coincide for a cluster whose hosts are all members, and they part at the ordinary decide after it,
+    /// where a host the change removed is still up and must be offered nothing.
+    /// </remarks>
     private async ValueTask PublishAsync(VersionedValue<TValue> committed, ImmutableArray<ReplicaId> audience, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -482,8 +684,16 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
         var pending = new List<Task<bool>>(audience.Length);
         foreach(ReplicaId member in audience)
         {
+            int host = TryHostIndexOf(member);
+            if(host < 0)
+            {
+                //A member this bench runs no host for cannot be offered anything, and a push that could not
+                //be made to one member is not a reason to skip the rest of the audience.
+                continue;
+            }
+
             TaskCompletionSource<bool> completion = new();
-            Enqueue(new Dissemination(HostIndexOf(member), committed, completion));
+            Enqueue(new Dissemination(host, committed, completion));
             pending.Add(completion.Task);
         }
 
@@ -503,9 +713,44 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
 
 
     /// <summary>
+    /// Reports what the host that is <paramref name="member"/> has committed, which is what a readiness
+    /// report is assembled from.
+    /// </summary>
+    /// <param name="member">The member to ask.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>That member's highest committed version, which is unwritten when it has learned nothing.</returns>
+    /// <remarks>
+    /// A member this bench runs no host for faults rather than answering unwritten, because a report cannot
+    /// tell a member that has learned nothing from one nothing reaches unless the two answer differently.
+    /// </remarks>
+    private ValueTask<RegisterVersion> ObserveMemberAsync(ReplicaId member, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        int host = TryHostIndexOf(member);
+        if(host < 0)
+        {
+            return ValueTask.FromException<RegisterVersion>(new InvalidOperationException($"No host of this bench is {member}."));
+        }
+
+        TaskCompletionSource<RegisterVersion> completion = new();
+        Enqueue(new ObserveCall(host, completion));
+
+        return new ValueTask<RegisterVersion>(completion.Task);
+    }
+
+
+    /// <summary>
     /// Reports the highest version any reachable host has committed, which is what lets a writer woken after
     /// a rival closed its version stand down instead of running a closed instance.
     /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The highest version any host answered with.</returns>
+    /// <remarks>
+    /// It reads every host and not the membership's members, because a stand-down signal is a deployment-wide
+    /// aggregate rather than a statement about who records: a host outside the configuration that already
+    /// holds a later record is as good a reason to stand down as a member holding it.
+    /// </remarks>
     private async ValueTask<RegisterVersion> ObserveAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -542,6 +787,59 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     {
         AssertOwnerThread();
         InFlight.Add(message);
+    }
+
+
+    /// <summary>Observes an offer no caller awaits.</summary>
+    /// <param name="offer">The delivery to observe.</param>
+    /// <remarks>
+    /// A delivery lost at a partitioned or held host faults its task, and a faulted task nobody read
+    /// resurfaces later on a finalizer thread as a failure belonging to whatever test happened to be running
+    /// then. Reading it here keeps a lost offer's report inside the run that produced it.
+    /// </remarks>
+    private static void Absorb(Task offer)
+    {
+        _ = offer.ContinueWith(static delivered => _ = delivered.Exception, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+
+    /// <summary>The genesis membership a cluster over <paramref name="schedule"/>'s whole agreed order founds.</summary>
+    /// <param name="schedule">The agreed order.</param>
+    /// <returns>The genesis membership.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="schedule"/> is <see langword="null"/>.</exception>
+    private static QuePaxaConfiguration GenesisOver(QuePaxaLeaderSchedule schedule)
+    {
+        ArgumentNullException.ThrowIfNull(schedule);
+
+        return QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
+    }
+
+
+    /// <summary>The first <paramref name="hostCount"/> replicas of <paramref name="schedule"/>'s agreed order.</summary>
+    /// <param name="schedule">The agreed order.</param>
+    /// <param name="hostCount">How many of its replicas run a host.</param>
+    /// <returns>Those replicas, in the order's own order.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="schedule"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="hostCount"/> is less than one or above the order's length.</exception>
+    private static ImmutableArray<ReplicaId> LeadingReplicasOf(QuePaxaLeaderSchedule schedule, int hostCount)
+    {
+        ArgumentNullException.ThrowIfNull(schedule);
+        ArgumentOutOfRangeException.ThrowIfLessThan(hostCount, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(hostCount, schedule.Schedule.Order.Length);
+
+        return ImmutableArray.Create(schedule.Schedule.Order, 0, hostCount);
+    }
+
+
+    /// <summary>The hedging increment <paramref name="schedule"/> stands on.</summary>
+    /// <param name="schedule">The schedule.</param>
+    /// <returns>Its base delay.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="schedule"/> is <see langword="null"/>.</exception>
+    private static TimeSpan BaseDelayOf(QuePaxaLeaderSchedule schedule)
+    {
+        ArgumentNullException.ThrowIfNull(schedule);
+
+        return schedule.Schedule.BaseDelay;
     }
 
 
@@ -591,9 +889,18 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     internal sealed record DeliveredRecordCall(int Host, ReplicaId Sender, ReplicaId KeyOwner, RegisterVersion Version, RecorderStep Step);
 
 
+    /// <summary>One committed record as a host adopted it, which is what a safety witness folds.</summary>
+    /// <param name="Member">The replica whose host adopted it.</param>
+    /// <param name="Record">The record adopted.</param>
+    internal sealed record AdoptedRecord(ReplicaId Member, VersionedValue<TValue> Record);
+
+
     private abstract record Message(int Host)
     {
         public abstract string Kind { get; }
+
+        /// <summary>Whether this message offers a record to its host, which is what a hold stops.</summary>
+        public virtual bool OffersARecord => false;
 
         public abstract void Lose(Exception cause);
     }
@@ -641,6 +948,8 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     private sealed record Dissemination(int Host, VersionedValue<TValue> Committed, TaskCompletionSource<bool> Completion): Message(Host)
     {
         public override string Kind => "learn";
+
+        public override bool OffersARecord => true;
 
         public override void Lose(Exception cause) => Completion.SetException(cause);
     }
