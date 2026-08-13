@@ -19,6 +19,7 @@ internal sealed class QuePaxaVersionedRegisterTests
     private static ReplicaId First { get; } = Replica(1);
     private static ReplicaId Second { get; } = Replica(2);
     private static ReplicaId Third { get; } = Replica(3);
+    private static ReplicaId Fourth { get; } = Replica(4);
     private static ReplicaId Stranger { get; } = Replica(9);
 
     private static TimeSpan BaseDelay { get; } = TimeSpan.FromMilliseconds(40);
@@ -84,7 +85,7 @@ internal sealed class QuePaxaVersionedRegisterTests
         QuePaxaVersionedRegister<string> other = Register(cluster, Second);
 
         //The retry has nowhere to go until the version that beat it has reached the hosts.
-        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: (committed, _) =>
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: (committed, _, _) =>
         {
             cluster.LearnAll(committed);
 
@@ -210,7 +211,7 @@ internal sealed class QuePaxaVersionedRegisterTests
     {
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
         QuePaxaVersionedRegister<string> other = Register(cluster, Second);
-        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: (committed, _) =>
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: (committed, _, _) =>
         {
             cluster.LearnAll(committed);
 
@@ -239,7 +240,7 @@ internal sealed class QuePaxaVersionedRegisterTests
         FakeTimeProvider clock = new();
         QuePaxaVersionedRegister<string> later = Register(cluster, Third, clock);
 
-        Assert.AreEqual(2 * BaseDelay, later.Delay);
+        Assert.AreEqual(2 * BaseDelay, later.Delay!.Value);
 
         Task<QuePaxaWriteOutcome<string>> pending = later.TryWriteAsync("y", TestContext.CancellationToken);
 
@@ -253,7 +254,7 @@ internal sealed class QuePaxaVersionedRegisterTests
 
         QuePaxaVersionedRegister<string> leader = Register(cluster, First, clock);
 
-        Assert.AreEqual(TimeSpan.Zero, leader.Delay);
+        Assert.AreEqual(TimeSpan.Zero, leader.Delay!.Value);
     }
 
 
@@ -324,30 +325,43 @@ internal sealed class QuePaxaVersionedRegisterTests
     public async Task AVersionSwappingTransportYieldsNoDecisionRatherThanAWrongOne()
     {
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
-        VersionedRecorderEndpointDelegate<VersionedValue<string>>[] honest = cluster.Endpoints();
-        var swapped = new VersionedRecorderEndpointDelegate<VersionedValue<string>>[honest.Length];
-        for(int index = 0; index < honest.Length; index++)
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, resolve: member =>
         {
-            VersionedRecorderEndpointDelegate<VersionedValue<string>> inner = honest[index];
-            swapped[index] = async (request, token) =>
+            VersionedRecorderEndpointDelegate<VersionedValue<string>> inner = cluster.Resolve(member);
+
+            return async (request, token) =>
             {
                 VersionedRecordReply<VersionedValue<string>> reply = await inner(request, token).ConfigureAwait(false);
 
                 return reply with { Version = reply.Version.Next() };
             };
-        }
-
-        QuePaxaVersionedRegister<string> register = new(
-            swapped,
-            First,
-            Schedule(),
-            ProposalPriority.Cryptographic,
-            AttemptsPerRecorder,
-            TimeProvider.System);
+        });
 
         QuePaxaWriteOutcome<string> outcome = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreEqual(QuePaxaWriteStatus.Undecided, outcome.Status);
+    }
+
+
+    //Two slots answered by one host would count one replica twice, and a quorum counted over distinct members
+    //is what majority intersection rests on. Two of the three slots are pointed at the first host, so an
+    //unchecked register sees three answers where one replica answered and commits on a minority of one.
+    [TestMethod]
+    public async Task AReplyFromAMemberOtherThanTheOneAddressedIsRefusedRatherThanCounted()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, resolve: _ => cluster.Resolve(First));
+
+        QuePaxaWriteOutcome<string> outcome = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Undecided, outcome.Status);
+        Assert.IsNull(register.Committed);
+
+        //The one honest slot did answer, so the write failed on the identity of the other two rather than on
+        //a transport that carried nothing.
+        Assert.IsGreaterThan(0, cluster.Served[0]);
+        Assert.AreEqual(0, cluster.Served[1]);
+        Assert.AreEqual(0, cluster.Served[2]);
     }
 
 
@@ -370,25 +384,50 @@ internal sealed class QuePaxaVersionedRegisterTests
 
 
     [TestMethod]
-    public void TheConstructorRefusesAReplicaOutsideTheScheduleAndAnEmptyRecorderSet()
+    public void TheConstructorRefusesAMissingGenesisResolverPriorityOrClock()
     {
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
 
-        Assert.ThrowsExactly<ArgumentException>(() => _ = new QuePaxaVersionedRegister<string>(
-            cluster.Endpoints(),
-            Stranger,
-            Schedule(),
-            ProposalPriority.Cryptographic,
-            AttemptsPerRecorder,
-            TimeProvider.System));
+        Assert.ThrowsExactly<ArgumentNullException>(() => _ = new QuePaxaVersionedRegister<string>(
+            null!, First, BaseDelay, cluster.Resolve, ProposalPriority.Cryptographic, AttemptsPerRecorder, TimeProvider.System));
 
-        Assert.ThrowsExactly<ArgumentException>(() => _ = new QuePaxaVersionedRegister<string>(
-            [],
-            First,
-            Schedule(),
-            ProposalPriority.Cryptographic,
-            AttemptsPerRecorder,
-            TimeProvider.System));
+        Assert.ThrowsExactly<ArgumentNullException>(() => _ = new QuePaxaVersionedRegister<string>(
+            cluster.Genesis, First, BaseDelay, null!, ProposalPriority.Cryptographic, AttemptsPerRecorder, TimeProvider.System));
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => _ = new QuePaxaVersionedRegister<string>(
+            cluster.Genesis, First, BaseDelay, cluster.Resolve, null!, AttemptsPerRecorder, TimeProvider.System));
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => _ = new QuePaxaVersionedRegister<string>(
+            cluster.Genesis, First, BaseDelay, cluster.Resolve, ProposalPriority.Cryptographic, AttemptsPerRecorder, null!));
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = new QuePaxaVersionedRegister<string>(
+            cluster.Genesis, First, BaseDelay, cluster.Resolve, ProposalPriority.Cryptographic, 0, TimeProvider.System));
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = new QuePaxaVersionedRegister<string>(
+            cluster.Genesis, First, -BaseDelay, cluster.Resolve, ProposalPriority.Cryptographic, AttemptsPerRecorder, TimeProvider.System));
+    }
+
+
+    //A register for a replica the membership does not list is how a joiner starts and what a removed replica
+    //becomes, so construction cannot refuse it and the write reports it per version instead. The write spends
+    //no attempt and sends nothing at all, which is what separates a settled refusal from an unlucky round.
+    [TestMethod]
+    public async Task AWriteFromOutsideTheMembershipIsReportedWithoutSpendingAnAttempt()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> outsider = Register(cluster, Stranger);
+
+        Assert.IsNull(outsider.Delay, "A replica outside the membership has no position in the hedging order and so no delay.");
+
+        QuePaxaWriteOutcome<string> outcome = await outsider.WriteAsync(static _ => "a", maxAttempts: 3, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.OutsideConfiguration, outcome.Status);
+        Assert.AreEqual(RegisterVersion.First, outcome.Version);
+        Assert.AreEqual(0, outcome.Attempts, "A refusal that cannot change with a retry burned the retry budget.");
+        Assert.IsFalse(outcome.Activated);
+        Assert.IsNull(outcome.Writer);
+        Assert.IsEmpty(cluster.Recorded, "An outsider's write reached a recorder.");
+        Assert.IsNull(outsider.Committed);
     }
 
 
@@ -415,21 +454,15 @@ internal sealed class QuePaxaVersionedRegisterTests
         VersionedValue<string> committed = new(new RegisterVersion(7UL), Second, Configuration, "learned");
         _ = cluster.LearnAt(2, committed);
 
-        ReadCommittedRecordDelegate<string>[] readers = new ReadCommittedRecordDelegate<string>[3];
-        for(int index = 0; index < 3; index++)
-        {
-            int host = index;
-            readers[index] = _ => new ValueTask<VersionedValue<string>?>(cluster.Host(host).Committed);
-        }
-
         QuePaxaVersionedRegister<string> register = new(
-            cluster.Endpoints(),
+            cluster.Genesis,
             First,
-            Schedule(),
+            BaseDelay,
+            cluster.Resolve,
             ProposalPriority.Cryptographic,
             AttemptsPerRecorder,
             TimeProvider.System,
-            readCommittedRecords: readers);
+            resolveCommittedRecordReader: cluster.ResolveReader);
 
         Assert.IsNull(register.Committed);
 
@@ -440,23 +473,382 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
+    //The record the register learns while it is parked moves both the version and the membership, so an
+    //attempt that resolved anything after its delay would send the version it computed before the delay to
+    //the recorder set of a membership it learned after it.
+    [TestMethod]
+    public async Task AnAttemptAddressesTheInstanceItCapturedEvenWhenTheRecordMovesDuringTheDelay()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        FakeTimeProvider clock = new();
+        QuePaxaVersionedRegister<string> later = Register(cluster, Third, clock);
+
+        Task<QuePaxaWriteOutcome<string>> pending = later.TryWriteAsync("y", TestContext.CancellationToken);
+
+        Assert.AreEqual(0, cluster.Served[0], "The parked writer sent before its delay expired.");
+
+        //A record that both closes the captured version and removes this replica from the membership: an
+        //attempt reading the field again would address version two under a two-member set it is not in.
+        VersionedValue<string> moved = new(RegisterVersion.First, Second, Configuration.Without(Third), "elsewhere");
+
+        Assert.IsTrue(later.Learn(moved));
+        Assert.AreEqual(new RegisterVersion(2UL), later.NextVersion);
+        Assert.IsFalse(later.ActiveConfiguration.Contains(Third));
+
+        clock.Advance(2 * BaseDelay);
+        QuePaxaWriteOutcome<string> outcome = await pending.ConfigureAwait(false);
+
+        Assert.IsTrue(outcome.Activated, "The attempt stood down instead of addressing its captured instance.");
+        Assert.AreEqual(RegisterVersion.First, outcome.Version);
+        Assert.AreNotEqual(QuePaxaWriteStatus.OutsideConfiguration, outcome.Status);
+        Assert.IsNotEmpty(cluster.Recorded);
+        Assert.IsTrue(
+            cluster.Recorded.All(entry => entry.Version == RegisterVersion.First),
+            "A request left for a version other than the captured one, so the attempt re-resolved after its delay.");
+        Assert.IsGreaterThan(0, cluster.Served[2], "The third host was not addressed, so the attempt used the membership it learned during the delay.");
+    }
+
+
+    //The quorum is the endpoint array's own length, so a member left out because nothing resolves it does not
+    //make the cluster smaller: it makes the majority smaller. The second arm is the one that separates a
+    //full-length array from a filtered one, because a filtered array of one decides on one host.
+    [TestMethod]
+    public async Task AnUnresolvableMemberKeepsItsSlotSoTheQuorumStaysTheMembershipsOwn()
+    {
+        VersionedQuePaxaCluster<string> tolerant = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> withOneUnresolved = Register(tolerant, First, resolve: member => member.Equals(Third)
+            ? throw new InvalidOperationException("No route to the third member.")
+            : tolerant.Resolve(member));
+
+        QuePaxaWriteOutcome<string> tolerated = await withOneUnresolved.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, tolerated.Status, "Two of three members resolve, which is the membership's own quorum.");
+        Assert.AreEqual(0, tolerant.Served[2]);
+
+        VersionedQuePaxaCluster<string> starved = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> withTwoUnresolved = Register(starved, First, resolve: member => member.Equals(First)
+            ? starved.Resolve(member)
+            : throw new InvalidOperationException($"No route to member {member}."));
+
+        QuePaxaWriteOutcome<string> missed = await withTwoUnresolved.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Undecided, missed.Status, "One resolvable member of three decided, so the quorum was counted over the resolved members rather than over the membership.");
+        Assert.IsNull(withTwoUnresolved.Committed);
+    }
+
+
+    //A prohibition is absent code, so it is pinned by what the records actually carry. Both arms matter: the
+    //membership a chain starts with is carried forward, and so is one a change installed.
+    [TestMethod]
+    public async Task AnOrdinaryWriteCarriesTheMembershipForwardUnchanged()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(WiderSchedule(), 4);
+        RecordingPublisher publisher = new(cluster);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: publisher.PublishAsync);
+
+        _ = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+        _ = await register.TryWriteAsync("b", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(cluster.Genesis, register.Committed!.NextConfiguration, "An ordinary write changed the membership it inherited.");
+
+        QuePaxaWriteOutcome<string> shrunk = await register.ReconfigureAsync(current => current.Without(Fourth), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, shrunk.Status);
+
+        QuePaxaConfiguration installed = register.ActiveConfiguration;
+
+        Assert.IsFalse(installed.Contains(Fourth));
+
+        _ = await register.TryWriteAsync("c", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(installed, register.Committed!.NextConfiguration, "An ordinary write after a change did not carry the installed membership forward.");
+        Assert.AreEqual("c", register.Committed.Value);
+    }
+
+
+    //A change that keeps the writer keeps that writer leading, so growing or shrinking the membership around
+    //it must cost the next instance nothing. Only the decision step separates the two paths.
+    [TestMethod]
+    public async Task AConfigurationChangeThatKeepsTheWriterKeepsTheOneRoundTripPath()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(WiderSchedule(), 4);
+        RecordingPublisher publisher = new(cluster);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: publisher.PublishAsync);
+
+        QuePaxaWriteOutcome<string> first = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.IsTrue(first.TookFastPath);
+
+        QuePaxaWriteOutcome<string> shrunk = await register.ReconfigureAsync(current => current.Without(Fourth), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, shrunk.Status);
+        Assert.IsTrue(shrunk.TookFastPath, "The reconfiguring write itself lost the leader's reserved claim.");
+        Assert.AreEqual(RecorderStep.RoundOnePhaseZero, shrunk.DecidedAt);
+
+        QuePaxaWriteOutcome<string> after = await register.TryWriteAsync("b", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, after.Status);
+        Assert.IsTrue(after.TookFastPath, "The write after a membership change that kept the writer took the ordinary phases.");
+        Assert.AreEqual(RecorderStep.RoundOnePhaseZero, after.DecidedAt);
+
+        //Self-removal is the case where the two memberships answer differently. The instance that removes the
+        //writer still runs under the membership that has it, so that write keeps the reserved claim and only
+        //the instance after it is leaderless; a leader read off the membership being installed would give it
+        //up a version early and take the ordinary phases for nothing.
+        QuePaxaWriteOutcome<string> leaving = await register.ReconfigureAsync(current => current.Without(First), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, leaving.Status);
+        Assert.IsTrue(leaving.TookFastPath, "The write that removed its own writer gave up the reserved claim a version early.");
+        Assert.AreEqual(RecorderStep.RoundOnePhaseZero, leaving.DecidedAt);
+
+        QuePaxaWriteOutcome<string> departed = await register.TryWriteAsync("c", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.OutsideConfiguration, departed.Status);
+    }
+
+
+    [TestMethod]
+    public async Task AReconfigurationInstallsTheMembershipAndCarriesTheValueForward()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(WiderSchedule(), 4);
+        RecordingPublisher publisher = new(cluster);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: publisher.PublishAsync);
+
+        _ = await register.TryWriteAsync("carried", TestContext.CancellationToken).ConfigureAwait(false);
+
+        QuePaxaWriteOutcome<string> outcome = await register.ReconfigureAsync(current => current.Without(Fourth), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, outcome.Status);
+        Assert.AreEqual(new RegisterVersion(2UL), outcome.Version);
+        Assert.AreEqual("carried", outcome.Value, "A reconfiguration wrote a value of its own instead of carrying the committed one.");
+        Assert.AreEqual(First, outcome.Writer);
+        Assert.AreEqual(1, outcome.Attempts);
+
+        Assert.AreSequenceEqual(new[] { First, Second, Third }, register.ActiveConfiguration.Members);
+        Assert.AreEqual(cluster.Genesis.Cluster, register.ActiveConfiguration.Cluster, "A membership change minted a new chain.");
+        Assert.AreSequenceEqual(new[] { First, Second, Third }, cluster.Host(0).ActiveConfiguration.Members);
+    }
+
+
+    [TestMethod]
+    public async Task AReconfigurationIsRefusedBeforeAnythingIsCommitted()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(WiderSchedule(), 4);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            async () => await register.ReconfigureAsync(current => current.Without(Fourth), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.IsEmpty(cluster.Recorded);
+    }
+
+
+    [TestMethod]
+    public async Task AReconfigurationToTheInstalledMembershipWritesNothing()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(WiderSchedule(), 4);
+        RecordingPublisher publisher = new(cluster);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: publisher.PublishAsync);
+
+        _ = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+        _ = await register.ReconfigureAsync(current => current.Without(Fourth), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
+
+        int served = cluster.Recorded.Count;
+        QuePaxaWriteOutcome<string> again = await register.ReconfigureAsync(current => current.Without(Fourth), maxAttempts: 3, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, again.Status);
+        Assert.AreEqual(0, again.Attempts, "A change the membership already carries ran a consensus instance.");
+        Assert.IsFalse(again.Activated);
+        Assert.AreEqual(new RegisterVersion(2UL), again.Version);
+        Assert.HasCount(served, cluster.Recorded, "A change that installs nothing put a request on the wire.");
+    }
+
+
+    //Publish runs after the decision is taken and after it is learned, so a caller told its write failed
+    //would retry a write that landed.
+    [TestMethod]
+    public async Task AThrowingPublisherLeavesTheDecidedWriteDecided()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        int entered = 0;
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: (_, _, _) =>
+        {
+            entered++;
+
+            throw new IOException("Every push target is unreachable.");
+        });
+
+        QuePaxaWriteOutcome<string> outcome = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(1, entered, "The publisher was never entered, so the vector pinned nothing.");
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, outcome.Status);
+        Assert.AreEqual("a", outcome.Value);
+        Assert.AreEqual(RegisterVersion.First, register.Committed!.Version);
+    }
+
+
+    //The stub fires the caller's own token and throws bound to it, which is the one fault a guard written to
+    //re-raise cancellation would let through.
+    [TestMethod]
+    public async Task ACancellingPublisherLeavesTheDecidedWriteDecided()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        using CancellationTokenSource writing = new();
+        int entered = 0;
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: async (_, _, token) =>
+        {
+            entered++;
+            await writing.CancelAsync().ConfigureAwait(false);
+
+            throw new OperationCanceledException("The push was cancelled under the caller's own token.", token);
+        });
+
+        QuePaxaWriteOutcome<string> outcome = await register.TryWriteAsync("a", writing.Token).ConfigureAwait(false);
+
+        Assert.AreEqual(1, entered, "The publisher was never entered, so the vector pinned nothing.");
+        Assert.IsTrue(writing.IsCancellationRequested, "The stub did not fire the caller's token, so nothing tested the cancellation arm.");
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, outcome.Status);
+        Assert.AreEqual("a", outcome.Value);
+    }
+
+
+    //Two arms of one rule. At a boundary the audience is the union, so a leaver is handed the record that
+    //removed it and a joiner is handed the record that admitted it; at an ordinary decide the union
+    //degenerates, and the arm runs immediately after a completed removal so a departed member exists to be
+    //wrongly included. Every assertion is by key on the content rather than on the length.
+    [TestMethod]
+    public async Task TheAudienceIsTheUnionAtABoundaryAndTheMembershipAtAnOrdinaryDecide()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(WiderSchedule(), 4);
+        RecordingPublisher publisher = new(cluster);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: publisher.PublishAsync);
+
+        _ = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        ImmutableArray<ReplicaId> ordinary = publisher.Audiences[0];
+
+        TestContext.WriteLine($"ordinary decide under genesis: {Describe(ordinary)}");
+        Assert.Contains(Fourth, ordinary, "The genesis membership's own member was left out of an ordinary audience.");
+
+        _ = await register.ReconfigureAsync(current => current.Without(Fourth), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
+
+        ImmutableArray<ReplicaId> removal = publisher.Audiences[1];
+
+        TestContext.WriteLine($"boundary removing the fourth member: {Describe(removal)}");
+        Assert.Contains(Fourth, removal, "The departing member was not handed the record that removed it.");
+        Assert.Contains(First, removal);
+        Assert.Contains(Second, removal);
+        Assert.Contains(Third, removal);
+
+        _ = await register.TryWriteAsync("b", TestContext.CancellationToken).ConfigureAwait(false);
+
+        ImmutableArray<ReplicaId> afterRemoval = publisher.Audiences[2];
+
+        TestContext.WriteLine($"ordinary decide after the boundary: {Describe(afterRemoval)}");
+        Assert.DoesNotContain(Fourth, afterRemoval, "A member a completed change removed is still being pushed to, so the outgoing half is stale.");
+        Assert.Contains(First, afterRemoval);
+        Assert.Contains(Second, afterRemoval);
+        Assert.Contains(Third, afterRemoval);
+
+        _ = await register.ReconfigureAsync(current => current.Without(Second).With(Fourth), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
+
+        ImmutableArray<ReplicaId> replacement = publisher.Audiences[3];
+
+        TestContext.WriteLine($"boundary replacing the second member with the fourth: {Describe(replacement)}");
+        Assert.Contains(Second, replacement, "The leaver was dropped from the union.");
+        Assert.Contains(Fourth, replacement, "The joiner was dropped from the union.");
+        Assert.Contains(First, replacement);
+        Assert.Contains(Third, replacement);
+        Assert.AreSequenceEqual(new[] { First, Third, Fourth }, register.ActiveConfiguration.Members);
+    }
+
+
+    [TestMethod]
+    public async Task AReadinessReportNamesEveryMemberAndWhetherAQuorumHasLearned()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (member, _) => member.Equals(Third)
+            ? throw new IOException("The third member is unreachable.")
+            : new ValueTask<RegisterVersion>(member.Equals(First) ? new RegisterVersion(4UL) : new RegisterVersion(3UL)));
+
+        RegisterReadiness readiness = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(cluster.Genesis, readiness.Configuration);
+        Assert.AreEqual(2, readiness.Reachable);
+        Assert.AreSequenceEqual(new[] { First, Second, Third }, readiness.Members.Select(member => member.Member));
+
+        MemberReadiness unreachable = readiness.Members.Single(member => member.Member.Equals(Third));
+
+        Assert.IsFalse(unreachable.Reachable);
+        Assert.IsNull(unreachable.Version, "An unreachable member was reported as one that has learned nothing.");
+        Assert.AreEqual(new RegisterVersion(3UL), readiness.Members.Single(member => member.Member.Equals(Second)).Version);
+
+        Assert.IsTrue(readiness.QuorumHasLearned(new RegisterVersion(3UL)));
+        Assert.IsFalse(readiness.QuorumHasLearned(new RegisterVersion(4UL)), "A quorum was claimed at a version one member reported below.");
+    }
+
+
+    [TestMethod]
+    public async Task AReadinessReportIsRefusedWhenNoMemberVersionQueryWasSupplied()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            async () => await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+
+    private static string Describe(ImmutableArray<ReplicaId> audience)
+    {
+        return string.Join(", ", audience.Select(member => Convert.ToHexStringLower(member.AsSpan())[..4]));
+    }
+
+
     private static QuePaxaVersionedRegister<string> Register(
         VersionedQuePaxaCluster<string> cluster,
         ReplicaId self,
         TimeProvider? clock = null,
         ObserveCommittedVersionDelegate? observe = null,
         TimeSpan? baseDelay = null,
-        PublishCommittedRecordDelegate<string>? publish = null)
+        PublishCommittedRecordDelegate<string>? publish = null,
+        ResolveRecorderEndpointDelegate<string>? resolve = null,
+        ObserveMemberVersionDelegate? observeMember = null)
     {
         return new QuePaxaVersionedRegister<string>(
-            cluster.Endpoints(),
+            cluster.Genesis,
             self,
-            Schedule(baseDelay ?? BaseDelay),
+            baseDelay ?? BaseDelay,
+            resolve ?? cluster.Resolve,
             ProposalPriority.Cryptographic,
             AttemptsPerRecorder,
             clock ?? TimeProvider.System,
             observe,
-            publishCommittedRecord: publish);
+            publishCommittedRecord: publish,
+            observeMemberVersion: observeMember);
+    }
+
+
+    /// <summary>
+    /// A publisher that tells the hosts the audience names and records every audience it was handed, so a
+    /// test reads what the register computed rather than what the hosts ended up holding.
+    /// </summary>
+    private sealed class RecordingPublisher(VersionedQuePaxaCluster<string> cluster)
+    {
+        /// <summary>Every audience handed over, in the order the writes decided.</summary>
+        public List<ImmutableArray<ReplicaId>> Audiences { get; } = [];
+
+
+        public ValueTask PublishAsync(VersionedValue<string> committed, ImmutableArray<ReplicaId> audience, CancellationToken cancellationToken)
+        {
+            Audiences.Add(audience);
+            foreach(ReplicaId member in audience)
+            {
+                _ = cluster.LearnAtMember(member, committed);
+            }
+
+            return ValueTask.CompletedTask;
+        }
     }
 
 
@@ -474,6 +866,18 @@ internal sealed class QuePaxaVersionedRegisterTests
     private static QuePaxaLeaderSchedule Schedule(TimeSpan? baseDelay = null)
     {
         ImmutableArray<ReplicaId> order = [First, Second, Third];
+
+        return new QuePaxaLeaderSchedule(HedgingSchedule.Create(order, baseDelay ?? BaseDelay));
+    }
+
+
+    /// <summary>
+    /// A four-replica order, which is what a membership change needs: a shrink has somewhere to shrink to and
+    /// a replacement has an identity to admit that the three-replica suite has no host for.
+    /// </summary>
+    private static QuePaxaLeaderSchedule WiderSchedule(TimeSpan? baseDelay = null)
+    {
+        ImmutableArray<ReplicaId> order = [First, Second, Third, Fourth];
 
         return new QuePaxaLeaderSchedule(HedgingSchedule.Create(order, baseDelay ?? BaseDelay));
     }

@@ -71,6 +71,14 @@ namespace Lumoin.Verisync.Json;
 /// as null and stays distinguishable from a field the payload never carried.
 /// </para>
 /// <para>
+/// A versioned reply's <c>recorder</c> is a required slot on the same rule, written as the answering host's
+/// identity in lower-case hexadecimal. A writer counts a quorum over distinct members of the membership it
+/// addressed, so the identity is what lets it check that the endpoint it aimed at one member was answered by
+/// that member; a payload that omits the field is refused by name and the missing-field tests sweep it. The
+/// field is a claim the sender makes about itself and the codec verifies nothing about it, exactly as
+/// <see cref="VersionedRecordReply{TValue}"/> states.
+/// </para>
+/// <para>
 /// A decided record's configuration is a required slot rather than an optional one, so a payload that omits it
 /// is refused by name and the missing-field tests sweep it. It is written as a nested object carrying the
 /// chain identity and the ordered member list, each identity in lower-case hexadecimal, and the member order
@@ -229,6 +237,7 @@ public static class QuePaxaMessageJson
             using var writer = new Utf8JsonWriter(output);
             writer.WriteStartObject();
             writer.WriteNumber("version", reply.Version.Value);
+            writer.WriteString("recorder", Convert.ToHexStringLower(reply.Recorder.AsSpan()));
             writer.WritePropertyName("reply");
             WriteReply(writer, reply.Reply, writeValue);
             writer.WriteEndObject();
@@ -250,9 +259,10 @@ public static class QuePaxaMessageJson
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
             ulong version = RequireProperty(root, "version", VersionedReplyLabel).GetUInt64();
+            string recorder = RequireProperty(root, "recorder", VersionedReplyLabel).GetString()!;
             RecordReply<TValue> reply = ReadReply(RequireProperty(root, "reply", VersionedReplyLabel), readValue);
 
-            return Construct(() => new VersionedRecordReply<TValue>(new RegisterVersion(version), reply));
+            return Construct(() => new VersionedRecordReply<TValue>(new RegisterVersion(version), ReplicaId.FromSpan(Convert.FromHexString(recorder)), reply));
         });
     }
 

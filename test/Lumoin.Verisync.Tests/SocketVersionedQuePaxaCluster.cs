@@ -385,6 +385,26 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     /// Every call returns endpoints over the same connections, gates and correlation counters, so two
     /// registers built from two calls contend for one wire per host exactly as two writers in a deployment do.
     /// </remarks>
+    /// <summary>
+    /// Resolves the endpoint of one member, which is this cluster's
+    /// <see cref="ResolveRecorderEndpointDelegate{TValue}"/>.
+    /// </summary>
+    /// <param name="member">The member to reach.</param>
+    /// <returns>That member's endpoint, over the same connection every other call to it uses.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this cluster is that member, which is how the resolver reports one it cannot resolve.</exception>
+    public VersionedRecorderEndpointDelegate<VersionedValue<TValue>> Resolve(ReplicaId member) => Endpoints()[IndexOf(member)];
+
+
+    /// <summary>
+    /// Resolves the catch-up reader of one member, which is this cluster's
+    /// <see cref="ResolveCommittedRecordReaderDelegate{TValue}"/>.
+    /// </summary>
+    /// <param name="member">The member to ask.</param>
+    /// <returns>That member's reader.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this cluster is that member.</exception>
+    public ReadCommittedRecordDelegate<TValue> ResolveReader(ReplicaId member) => Readers()[IndexOf(member)];
+
+
     public VersionedRecorderEndpointDelegate<VersionedValue<TValue>>[] Endpoints()
     {
         var endpoints = new VersionedRecorderEndpointDelegate<VersionedValue<TValue>>[HostCount];
@@ -438,6 +458,24 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         }
 
         return readers;
+    }
+
+
+    /// <summary>The index of the host that is <paramref name="member"/>.</summary>
+    /// <param name="member">The member to look for.</param>
+    /// <returns>That host's index.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this cluster is that member.</exception>
+    private int IndexOf(ReplicaId member)
+    {
+        for(int index = 0; index < HostCount; index++)
+        {
+            if(Schedule.Schedule.Order[index].Equals(member))
+            {
+                return index;
+            }
+        }
+
+        throw new InvalidOperationException($"No host of this cluster is {member}.");
     }
 
 

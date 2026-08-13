@@ -113,7 +113,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
             QuePaxaVersionedRegister<string> other = Register(cluster, Second);
 
             //The retry has nowhere to go until the version that beat it has reached the hosts.
-            QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: async (committed, token) =>
+            QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: async (committed, _, token) =>
                 await cluster.LearnAllAsync(committed, token).ConfigureAwait(false));
 
             QuePaxaWriteOutcome<string> theirs = await other.TryWriteAsync("theirs", TestContext.CancellationToken).ConfigureAwait(false);
@@ -382,13 +382,14 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
             _ = await cluster.LearnAtAsync(2, committed, TestContext.CancellationToken).ConfigureAwait(false);
 
             QuePaxaVersionedRegister<string> register = new(
-                cluster.Endpoints(),
+                cluster.Genesis,
                 First,
-                Schedule(),
+                BaseDelay,
+                cluster.Resolve,
                 ProposalPriority.Cryptographic,
                 AttemptsPerRecorder,
                 TimeProvider.System,
-                readCommittedRecords: cluster.Readers());
+                resolveCommittedRecordReader: cluster.ResolveReader);
 
             Assert.IsNull(register.Committed);
 
@@ -417,6 +418,10 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
         {
             writer.WriteStartObject();
             writer.WriteNumber("version", version + 1UL);
+
+            //Only the version is swapped: a payload short of its recorder would be refused by the codec and
+            //the register's instance check would never be reached.
+            writer.WriteString("recorder", root.GetProperty("recorder").GetString());
             writer.WritePropertyName("reply");
             root.GetProperty("reply").WriteTo(writer);
             writer.WriteEndObject();
@@ -447,9 +452,10 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
         PublishCommittedRecordDelegate<string>? publish = null)
     {
         return new QuePaxaVersionedRegister<string>(
-            cluster.Endpoints(),
+            cluster.Genesis,
             self,
-            Schedule(baseDelay ?? BaseDelay),
+            baseDelay ?? BaseDelay,
+            cluster.Resolve,
             ProposalPriority.Cryptographic,
             AttemptsPerRecorder,
             clock ?? TimeProvider.System,

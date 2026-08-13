@@ -35,8 +35,10 @@ internal sealed class QuePaxaEnvelopeJsonTests
 {
     private const string EnvelopedRequestTemplate = """{"version":$VERSION,"request":{"step":4,"proposal":{"priority":1,"owner":{"replica":"$REPLICA","lane":0},"value":$VALUE}}}""";
     private const string RecordTemplate = """{"version":$VERSION,"writer":"$WRITER","configuration":$CONFIGURATION,"value":"v"}""";
+    private const string EnvelopedReplyTemplate = """{"version":7,$RECORDER"reply":{"step":4,"first":{"priority":1,"owner":{"replica":"$REPLICA","lane":0},"value":"v"},"priorAggregate":null}}""";
     private const string RecordLabel = "A versioned value";
     private const string ConfigurationLabel = "A configuration";
+    private const string VersionedReplyLabel = "A versioned record reply";
 
     public TestContext TestContext { get; set; } = null!;
 
@@ -67,9 +69,38 @@ internal sealed class QuePaxaEnvelopeJsonTests
     {
         VersionedRecordReply<string> reply = new(
             new RegisterVersion(7UL),
+            Replica(3),
             new RecordReply<string>(Four, Proposal(ProposalPriority.Reserved, LaneA, "first"), Proposal(new ProposalPriority(3), LaneA, "prior")));
 
-        Assert.AreEqual(reply, RoundTripReply(reply));
+        VersionedRecordReply<string> decoded = RoundTripReply(reply);
+
+        Assert.AreEqual(reply, decoded);
+
+        //The identity is what a writer counts a quorum over distinct members with, so it is asserted on its
+        //own rather than left to the record's equality.
+        Assert.AreEqual(Replica(3), decoded.Recorder);
+    }
+
+
+    //The identity a writer counts its quorum over distinct members with cannot be optional: an omitted slot
+    //would decode into the all-zero replica, which is an identity a deployment may legitimately hold, so the
+    //check would pass for whichever member happened to carry it and silently fail for the rest.
+    [TestMethod]
+    public void AReplyMissingItsRecorderIsRefusedByName()
+    {
+        //A complete, otherwise-valid reply differing from a good one in exactly the omitted slot.
+        MessageDeserializationException failure = Assert.Throws<MessageDeserializationException>(
+            () => DeserializeReply(FillReply(string.Empty)));
+
+        Assert.IsInstanceOfType<JsonException>(failure.InnerException);
+        Assert.Contains("recorder", failure.InnerException!.Message);
+        Assert.Contains(VersionedReplyLabel, failure.InnerException.Message);
+
+        //The same payload with the slot present decodes, so the vector fails on the omission and on nothing
+        //else it happens to be short of.
+        Assert.AreEqual(
+            Replica(3),
+            DeserializeReply(FillReply($"\"recorder\":\"{Convert.ToHexStringLower(Replica(3).AsSpan())}\",")).Recorder);
     }
 
 
@@ -259,6 +290,25 @@ internal sealed class QuePaxaEnvelopeJsonTests
             reply,
             QuePaxaMessageJson.CreateVersionedReplySerializer<string>(WriteValue),
             QuePaxaMessageJson.CreateVersionedReplyDeserializer<string>(ReadValue));
+    }
+
+
+    /// <summary>A complete enveloped reply whose recorder slot is whatever <paramref name="recorder"/> is.</summary>
+    /// <param name="recorder">The recorder slot including its trailing comma, or an empty string to omit it.</param>
+    /// <returns>The payload.</returns>
+    private static string FillReply(string recorder)
+    {
+        return EnvelopedReplyTemplate
+            .Replace("$RECORDER", recorder, StringComparison.Ordinal)
+            .Replace("$REPLICA", ReplicaHex, StringComparison.Ordinal);
+    }
+
+
+    private static VersionedRecordReply<string> DeserializeReply(string payload)
+    {
+        DeserializeMessageDelegate<VersionedRecordReply<string>> deserialize = QuePaxaMessageJson.CreateVersionedReplyDeserializer<string>(ReadValue);
+
+        return deserialize(new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(payload)));
     }
 
 

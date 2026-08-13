@@ -139,7 +139,16 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <summary>The chain's genesis membership, which is what the active configuration stands at until a record moves it.</summary>
     public QuePaxaConfiguration Genesis { get; }
 
-    /// <summary>This host's own identity, which the membership filter reads against <see cref="ActiveConfiguration"/>.</summary>
+    /// <summary>
+    /// This host's own identity, which the membership filter reads against <see cref="ActiveConfiguration"/>
+    /// and every reply carries.
+    /// </summary>
+    /// <remarks>
+    /// A reply naming its own producer is what lets a writer check that the endpoint it addressed to a member
+    /// reached that member. The host states it and nothing verifies it, which is exact under crash faults and
+    /// no defence at all against a host that lies; <see cref="VersionedRecordReply{TValue}"/> carries the
+    /// whole of that claim.
+    /// </remarks>
     public ReplicaId Self { get; }
 
     /// <summary>
@@ -213,7 +222,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// Applies <paramref name="request"/> to the live instance and returns the reply.
     /// </summary>
     /// <param name="request">The request to handle.</param>
-    /// <returns>The reply, carrying the version of the instance that answered.</returns>
+    /// <returns>The reply, carrying the version of the instance that answered and this host's own identity.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="request"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if the request does not name <see cref="LiveVersion"/>.</exception>
     /// <exception cref="ArgumentException">
@@ -272,7 +281,7 @@ public sealed class QuePaxaVersionedNode<TValue>
             throw RefusalFor(refusal, request);
         }
 
-        return new VersionedRecordReply<VersionedValue<TValue>>(LiveVersion, Instance.Handle(request.Request));
+        return new VersionedRecordReply<VersionedValue<TValue>>(LiveVersion, Self, Instance.Handle(request.Request));
     }
 
 

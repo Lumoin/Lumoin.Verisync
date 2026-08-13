@@ -1,4 +1,5 @@
 using Lumoin.Verisync.Core;
+using System.Collections.Immutable;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -239,14 +240,13 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     /// </remarks>
     public QuePaxaVersionedRegister<TValue> CreateRegister(ReplicaId self, int attemptsPerRecorder)
     {
-        var endpoints = new VersionedRecorderEndpointDelegate<VersionedValue<TValue>>[Hosts.Length];
-        for(int index = 0; index < Hosts.Length; index++)
+        //The sender is captured here rather than read off the proposal key, because a proposer carrying
+        //another lane's template names the adopted owner and would under-report contention.
+        VersionedRecorderEndpointDelegate<VersionedValue<TValue>> Resolve(ReplicaId member)
         {
-            int host = index;
+            int host = HostIndexOf(member);
 
-            //The sender is captured here rather than read off the proposal key, because a proposer carrying
-            //another lane's template names the adopted owner and would under-report contention.
-            endpoints[index] = (request, _) =>
+            return (request, _) =>
             {
                 TaskCompletionSource<VersionedRecordReply<VersionedValue<TValue>>> completion = new();
                 Enqueue(new RecordCall(host, self, request, completion));
@@ -255,11 +255,11 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
             };
         }
 
-        var reads = new ReadCommittedRecordDelegate<TValue>[Hosts.Length];
-        for(int index = 0; index < Hosts.Length; index++)
+        ReadCommittedRecordDelegate<TValue> ResolveReader(ReplicaId member)
         {
-            int host = index;
-            reads[index] = _ =>
+            int host = HostIndexOf(member);
+
+            return _ =>
             {
                 TaskCompletionSource<VersionedValue<TValue>?> completion = new();
                 Enqueue(new ReadCall(host, self, completion));
@@ -269,15 +269,34 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
         }
 
         return new QuePaxaVersionedRegister<TValue>(
-            endpoints,
+            Genesis,
             self,
-            Schedule,
+            Schedule.Schedule.BaseDelay,
+            Resolve,
             SeededPrioritySource.For(Seed, self),
             attemptsPerRecorder,
             Clock,
             ObserveAsync,
-            reads,
+            ResolveReader,
             PublishAsync);
+    }
+
+
+    /// <summary>The index of the host that is <paramref name="member"/>.</summary>
+    /// <param name="member">The member to look for.</param>
+    /// <returns>That host's index.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this bench is that member, which is how a resolver reports one it cannot resolve.</exception>
+    private int HostIndexOf(ReplicaId member)
+    {
+        for(int index = 0; index < Hosts.Length; index++)
+        {
+            if(Hosts[index].Self.Equals(member))
+            {
+                return index;
+            }
+        }
+
+        throw new InvalidOperationException($"No host of this bench is {member}.");
     }
 
 
@@ -453,18 +472,18 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
 
 
     /// <summary>
-    /// Offers a decided record to every host as a scheduled delivery, which is the dissemination a deployment
-    /// owes and the reason the next version becomes servable at all.
+    /// Offers a decided record to the hosts its audience names, as scheduled deliveries, which is the
+    /// dissemination a deployment owes and the reason the next version becomes servable at all.
     /// </summary>
-    private async ValueTask PublishAsync(VersionedValue<TValue> committed, CancellationToken cancellationToken)
+    private async ValueTask PublishAsync(VersionedValue<TValue> committed, ImmutableArray<ReplicaId> audience, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var pending = new List<Task<bool>>(Hosts.Length);
-        for(int index = 0; index < Hosts.Length; index++)
+        var pending = new List<Task<bool>>(audience.Length);
+        foreach(ReplicaId member in audience)
         {
             TaskCompletionSource<bool> completion = new();
-            Enqueue(new Dissemination(index, committed, completion));
+            Enqueue(new Dissemination(HostIndexOf(member), committed, completion));
             pending.Add(completion.Task);
         }
 

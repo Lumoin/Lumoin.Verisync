@@ -27,5 +27,23 @@ public enum QuePaxaWriteStatus
     Superseded = 1,
 
     /// <summary>The version was decided and it carries this writer's record.</summary>
-    Committed = 2
+    Committed = 2,
+
+    /// <summary>
+    /// The attempt was not made, because this replica is outside the membership the instance runs under.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It is a third failure and not a variant of the first two. Nothing was proposed, nothing was recorded
+    /// anywhere, and no later proposer can carry this value, so a caller reads it as a definite refusal
+    /// where <see cref="Undecided"/> is a definite ignorance.
+    /// </para>
+    /// <para>
+    /// A register reports it rather than throwing, because membership is a per-version fact and not a
+    /// construction error. A replica removed by a configuration change reaches this at the first version
+    /// after the change and a joiner reaches it at every version before the one that admits it, and both are
+    /// states the protocol arrives at rather than misuse a caller can be blamed for.
+    /// </para>
+    /// </remarks>
+    OutsideConfiguration = 3
 }

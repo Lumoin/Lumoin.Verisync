@@ -1188,16 +1188,15 @@ internal sealed class QuePaxaVersionedRunnerTests
         //The conversion is the contract: a durability knob on the signature would break this assignment, and
         //a wire host's catch-up wiring is this one line.
         ReadCommittedRecordDelegate<string> reader = runner.ReadCommittedAsync;
-        VersionedRecorderEndpointDelegate<VersionedValue<string>>[] endpoints = [runner.RecordAsync];
-        ReadCommittedRecordDelegate<string>[] readers = [reader];
         QuePaxaVersionedRegister<string> register = new(
-            endpoints,
+            Configuration,
             First,
-            schedule,
+            schedule.Schedule.BaseDelay,
+            _ => runner.RecordAsync,
             ProposalPriority.Cryptographic,
             attemptsPerRecorder: 1,
             TimeProvider.System,
-            readCommittedRecords: readers);
+            resolveCommittedRecordReader: member => member.Equals(First) ? reader : throw new InvalidOperationException($"This test runs one host and it is not {member}."));
 
         VersionedValue<string>? caughtUp = await register.ReadAsync(TestContext.CancellationToken).WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -1230,16 +1229,21 @@ internal sealed class QuePaxaVersionedRunnerTests
         VersionedValue<string> learned = Record(5UL, Third);
         Assert.IsTrue(await survivingRunner.LearnAsync(learned, LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
 
-        VersionedRecorderEndpointDelegate<VersionedValue<string>>[] endpoints = [stoppingRunner.RecordAsync];
-        ReadCommittedRecordDelegate<string>[] readers = [stoppingRunner.ReadCommittedAsync, survivingRunner.ReadCommittedAsync];
+        //The membership's order is what a read walks, so the stopped host is the first member and the
+        //surviving one the second: the cancellation this vector is about has to arrive before the answer.
         QuePaxaVersionedRegister<string> register = new(
-            endpoints,
+            Configuration,
             First,
-            schedule,
+            schedule.Schedule.BaseDelay,
+            _ => stoppingRunner.RecordAsync,
             ProposalPriority.Cryptographic,
             attemptsPerRecorder: 1,
             TimeProvider.System,
-            readCommittedRecords: readers);
+            resolveCommittedRecordReader: member => member.Equals(First)
+                ? stoppingRunner.ReadCommittedAsync
+                : member.Equals(Second)
+                    ? survivingRunner.ReadCommittedAsync
+                    : throw new InvalidOperationException($"This test runs two hosts and neither is {member}."));
 
         //The caller's own token is never signalled here, so the cancellation the stopped host answers with is
         //that host's unavailability wearing a cancellation's type; a reader that rethrew it would abort the
@@ -1263,16 +1267,15 @@ internal sealed class QuePaxaVersionedRunnerTests
         Task<VersionedRecordReply<VersionedValue<string>>> blockedCall = blockingRunner.RecordAsync(Request(5UL, ProposalPriority.Lowest, Second, "park"), TestContext.CancellationToken).AsTask();
         await blocked.Entered.WaitAsync(TestContext.CancellationToken).WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
 
-        VersionedRecorderEndpointDelegate<VersionedValue<string>>[] blockingEndpoints = [blockingRunner.RecordAsync];
-        ReadCommittedRecordDelegate<string>[] blockingReaders = [blockingRunner.ReadCommittedAsync];
         QuePaxaVersionedRegister<string> caller = new(
-            blockingEndpoints,
+            Configuration,
             First,
-            schedule,
+            schedule.Schedule.BaseDelay,
+            _ => blockingRunner.RecordAsync,
             ProposalPriority.Cryptographic,
             attemptsPerRecorder: 1,
             TimeProvider.System,
-            readCommittedRecords: blockingReaders);
+            resolveCommittedRecordReader: _ => blockingRunner.ReadCommittedAsync);
 
         using CancellationTokenSource callerToken = new();
         Task<VersionedValue<string>?> ownCancellation = caller.ReadAsync(callerToken.Token);

@@ -367,7 +367,14 @@ internal sealed class QuePaxaSocketClusterTests
             }
 
             SeededPrioritySource source = new(55);
-            QuePaxaVersionedRegister<string> register = new(endpoints, First, schedule, source.Next, attemptsPerRecorder: 2, TimeProvider.System);
+            QuePaxaVersionedRegister<string> register = new(
+                genesis,
+                First,
+                schedule.Schedule.BaseDelay,
+                member => endpoints[order.IndexOf(member)],
+                source.Next,
+                attemptsPerRecorder: 2,
+                TimeProvider.System);
 
             QuePaxaWriteOutcome<string> firstWrite = await register.TryWriteAsync("one", TestContext.CancellationToken).ConfigureAwait(false);
 

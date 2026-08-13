@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -45,6 +45,29 @@ namespace Lumoin.Verisync.Core;
 /// else would have its reserved claim declined, which costs a round trip and never costs safety.
 /// </para>
 /// <para>
+/// The membership is derived on the same rule and from the same record. A register is handed one genesis
+/// configuration and every later one is the next configuration of the record it holds, so
+/// <see cref="ActiveConfiguration"/> is a memo rather than a setting, and the recorder set an attempt
+/// addresses, the quorum it counts, the hedging order it waits in and the leader it believes are all
+/// functions of one agreed fact. An ordinary write carries the membership forward unchanged;
+/// <see cref="ReconfigureAsync"/> is the only path that proposes a different one.
+/// </para>
+/// <para>
+/// EVERY ATTEMPT ADDRESSES ONE CAPTURED INSTANCE. An attempt reads the committed record once, builds a
+/// <see cref="RegisterInstance"/> from that one reference before it waits its hedging delay, and resolves the
+/// version, the membership, the leader and the endpoints from the capture alone. A record learned while the
+/// attempt was parked therefore does not move the instance under it: an attempt that resolved its endpoints
+/// after the delay would send the version it computed before it to the recorder set of a membership it
+/// learned after, and a quorum counted over the wrong set is a decision taken by a minority of the instance
+/// it names.
+/// </para>
+/// <para>
+/// Membership is answered per version and never at construction. A register for a replica that is not yet a
+/// member is how a joiner starts, and one for a replica a change removed is what that replica becomes, so
+/// both are constructible and both report <see cref="QuePaxaWriteStatus.OutsideConfiguration"/> from a write
+/// rather than throwing at a caller that could not have known.
+/// </para>
+/// <para>
 /// The committed record has one owner per replica, and both roles read it: the register computes the next
 /// version and the update's input from it, and the recorder host derives the leader from it. A host feeds
 /// both through <see cref="Learn"/>. A recorder host that has not learned the version a write runs at cannot
@@ -58,11 +81,12 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
 
     /// <summary>
-    /// Initializes a register for <paramref name="self"/> over <paramref name="recorders"/>.
+    /// Initializes a register for <paramref name="self"/> over <paramref name="genesis"/>'s chain.
     /// </summary>
-    /// <param name="recorders">The recorder host endpoints, in index order.</param>
-    /// <param name="self">This replica, which must appear in <paramref name="schedule"/>'s order.</param>
-    /// <param name="schedule">The leader derivation every replica shares.</param>
+    /// <param name="genesis">The chain's genesis membership, which is deployment configuration and the membership the first instance runs under.</param>
+    /// <param name="self">This replica, which need not be a member of <paramref name="genesis"/>.</param>
+    /// <param name="baseDelay">The hedging delay increment per position in the membership order. Zero activates every replica at once.</param>
+    /// <param name="resolveRecorder">Answers which transport reaches one member, called per member per attempt.</param>
     /// <param name="drawPriority">The source of the phase-zero priority draw.</param>
     /// <param name="attemptsPerRecorder">How many times one step may send to one recorder before abandoning it for that step. Must be at least one.</param>
     /// <param name="timeProvider">The clock the hedging delay runs against.</param>
@@ -71,12 +95,12 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// instead of running an instance that is closed. When <see langword="null"/> every scheduled writer
     /// activates on its delay.
     /// </param>
-    /// <param name="readCommittedRecords">
-    /// Optional per-host queries used by <see cref="ReadAsync"/> to catch up on versions this replica missed.
-    /// When <see langword="null"/> the register can still write, and <see cref="ReadAsync"/> reports only what
-    /// it already holds. A host driven by a <see cref="QuePaxaVersionedRunner{TValue}"/> supplies that
-    /// runner's <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>, which answers through the
-    /// loop after making its state durable.
+    /// <param name="resolveCommittedRecordReader">
+    /// An optional per-member catch-up query used by <see cref="ReadAsync"/> to learn versions this replica
+    /// missed. When <see langword="null"/> the register can still write, and <see cref="ReadAsync"/> reports
+    /// only what it already holds. A host driven by a <see cref="QuePaxaVersionedRunner{TValue}"/> supplies
+    /// that runner's <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>, which answers through
+    /// the loop after making its state durable.
     /// </param>
     /// <param name="publishCommittedRecord">
     /// An optional sink offered every record an attempt decides, this replica's own and another's alike,
@@ -84,57 +108,84 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// without disseminating them, and the next version stays unservable until a host learns the current one
     /// by some other route.
     /// </param>
-    /// <exception cref="ArgumentNullException">Thrown if <paramref name="recorders"/>, <paramref name="schedule"/>, <paramref name="drawPriority"/> or <paramref name="timeProvider"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException">Thrown if <paramref name="recorders"/> is empty, or if <paramref name="self"/> is not in the schedule.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="attemptsPerRecorder"/> is less than one.</exception>
+    /// <param name="observeMemberVersion">
+    /// An optional per-member version query, which is what <see cref="ReadReadinessAsync"/> is built from.
+    /// When <see langword="null"/> this register reports no readiness at all rather than reporting an empty
+    /// one.
+    /// </param>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="genesis"/>, <paramref name="resolveRecorder"/>, <paramref name="drawPriority"/> or <paramref name="timeProvider"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="attemptsPerRecorder"/> is less than one, and if <paramref name="baseDelay"/> is negative or large enough that the last position's delay would not fit in a <see cref="TimeSpan"/>.</exception>
+    /// <remarks>
+    /// No recorder list and no leader schedule are supplied, and no membership check is made here. All three
+    /// are consequences of the same rule: the recorder set, the hedging order and the leader are derived from
+    /// the record this register holds, and a genesis membership is the base case of that derivation rather
+    /// than a parallel list that could disagree with it.
+    /// </remarks>
     public QuePaxaVersionedRegister(
-        IReadOnlyList<VersionedRecorderEndpointDelegate<VersionedValue<TValue>>> recorders,
+        QuePaxaConfiguration genesis,
         ReplicaId self,
-        QuePaxaLeaderSchedule schedule,
+        TimeSpan baseDelay,
+        ResolveRecorderEndpointDelegate<TValue> resolveRecorder,
         ProposalPrioritySourceDelegate drawPriority,
         int attemptsPerRecorder,
         TimeProvider timeProvider,
         ObserveCommittedVersionDelegate? observeCommittedVersion = null,
-        IReadOnlyList<ReadCommittedRecordDelegate<TValue>>? readCommittedRecords = null,
-        PublishCommittedRecordDelegate<TValue>? publishCommittedRecord = null)
+        ResolveCommittedRecordReaderDelegate<TValue>? resolveCommittedRecordReader = null,
+        PublishCommittedRecordDelegate<TValue>? publishCommittedRecord = null,
+        ObserveMemberVersionDelegate? observeMemberVersion = null)
     {
-        ArgumentNullException.ThrowIfNull(recorders);
-        if(recorders.Count == 0)
-        {
-            throw new ArgumentException("At least one recorder is required.", nameof(recorders));
-        }
-
-        ArgumentNullException.ThrowIfNull(schedule);
+        ArgumentNullException.ThrowIfNull(genesis);
+        ArgumentNullException.ThrowIfNull(resolveRecorder);
         ArgumentNullException.ThrowIfNull(drawPriority);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentOutOfRangeException.ThrowIfLessThan(attemptsPerRecorder, 1);
 
-        if(!schedule.Schedule.Contains(self))
-        {
-            throw new ArgumentException("The writing replica is not in the leader schedule.", nameof(self));
-        }
-
-        Recorders = recorders;
+        Genesis = genesis;
         Self = self;
-        LeaderSchedule = schedule;
-        Configuration = QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
+        BaseDelay = baseDelay;
+        ResolveRecorder = resolveRecorder;
         DrawPriority = drawPriority;
         AttemptsPerRecorder = attemptsPerRecorder;
         TimeProvider = timeProvider;
         ObserveCommittedVersion = observeCommittedVersion;
-        ReadCommittedRecords = readCommittedRecords;
+        ResolveCommittedRecordReader = resolveCommittedRecordReader;
         PublishCommittedRecord = publishCommittedRecord;
+        ObserveMemberVersion = observeMemberVersion;
+        ActiveConfiguration = genesis;
+        LeaderSchedule = ScheduleFor(genesis, baseDelay);
     }
 
 
     /// <summary>This replica.</summary>
     public ReplicaId Self { get; }
 
-    /// <summary>The leader derivation this register and its recorders share.</summary>
-    public QuePaxaLeaderSchedule LeaderSchedule { get; }
+    /// <summary>The chain's genesis membership, which is what the active membership stands at until a record moves it.</summary>
+    public QuePaxaConfiguration Genesis { get; }
 
-    /// <summary>The number of recorder hosts.</summary>
-    public int RecorderCount => Recorders.Count;
+    /// <summary>The hedging delay increment per position in the membership order.</summary>
+    /// <remarks>
+    /// Local tuning and not part of the membership. A delay orders sending and settles no protocol rule, so
+    /// replicas may disagree on it at the cost of redundant rounds and never of agreement.
+    /// </remarks>
+    public TimeSpan BaseDelay { get; }
+
+    /// <summary>
+    /// The membership this register's next write runs under, which is the committed record's next
+    /// configuration or <see cref="Genesis"/> when it holds no record.
+    /// </summary>
+    /// <remarks>
+    /// A memo of the committed record and never a setting, recomputed where the record moves and nowhere
+    /// else. It is the same derivation <see cref="QuePaxaVersionedNode{TValue}"/> runs, so a register and the
+    /// hosts holding the same record agree on the recorder set without exchanging a message about it.
+    /// </remarks>
+    public QuePaxaConfiguration ActiveConfiguration { get; private set; }
+
+    /// <summary>The leader derivation this register and its recorders share, taken over <see cref="ActiveConfiguration"/>.</summary>
+    /// <remarks>
+    /// A memo on the same rule as <see cref="ActiveConfiguration"/>, carrying <see cref="BaseDelay"/> because
+    /// this side of the seam is the one that hedges.
+    /// </remarks>
+    public QuePaxaLeaderSchedule LeaderSchedule { get; private set; }
 
     /// <summary>How many times one step may send to one recorder before abandoning it for that step.</summary>
     public int AttemptsPerRecorder { get; }
@@ -145,18 +196,29 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <summary>The version this register's next write runs at.</summary>
     public RegisterVersion NextVersion => Committed is { } committed ? committed.Version.Next() : RegisterVersion.First;
 
-    /// <summary>The delay this replica waits before writing, which is zero for the version's leader.</summary>
-    public TimeSpan Delay => LeaderSchedule.ScheduleFor(Committed?.Writer).DelayFor(Self);
-
+    /// <summary>
+    /// The instance this register's next attempt would address, read as one triple.
+    /// </summary>
+    /// <remarks>
+    /// The version, the membership and the previous writer are three consequences of one record, and reading
+    /// them one at a time off this register can pair a version from before a learn with a membership from
+    /// after it. This is the read that cannot, and it is the same capture an attempt makes.
+    /// </remarks>
+    public RegisterInstance Instance => InstanceFor(Committed);
 
     /// <summary>
-    /// The membership this register stamps on every record it writes. It is minted from the agreed order the
-    /// leader schedule runs over, so every replica running that order stamps the same one and a decided record
-    /// names one membership rather than as many as there are writers.
+    /// The delay this replica waits before writing, which is zero for the version's leader and
+    /// <see langword="null"/> when this replica is outside <see cref="ActiveConfiguration"/>.
     /// </summary>
-    private QuePaxaConfiguration Configuration { get; }
+    /// <remarks>
+    /// A non-member has no position in the hedging order, so it has no delay rather than a zero one: zero is
+    /// what the leader waits, and reporting it for a replica that will not write at all would say the
+    /// opposite of what is true.
+    /// </remarks>
+    public TimeSpan? Delay => DelayFor(Instance);
 
-    private IReadOnlyList<VersionedRecorderEndpointDelegate<VersionedValue<TValue>>> Recorders { get; }
+
+    private ResolveRecorderEndpointDelegate<TValue> ResolveRecorder { get; }
 
     private ProposalPrioritySourceDelegate DrawPriority { get; }
 
@@ -164,9 +226,11 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
     private ObserveCommittedVersionDelegate? ObserveCommittedVersion { get; }
 
-    private IReadOnlyList<ReadCommittedRecordDelegate<TValue>>? ReadCommittedRecords { get; }
+    private ResolveCommittedRecordReaderDelegate<TValue>? ResolveCommittedRecordReader { get; }
 
     private PublishCommittedRecordDelegate<TValue>? PublishCommittedRecord { get; }
+
+    private ObserveMemberVersionDelegate? ObserveMemberVersion { get; }
 
     /// <summary>The lane counter this register allocates its own proposals from.</summary>
     private LaneAllocation Lanes { get; set; } = LaneAllocation.None;
@@ -180,7 +244,9 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="committed"/> is <see langword="null"/>.</exception>
     /// <remarks>
     /// A record that does not advance is ignored rather than refused, so knowledge of committed state only
-    /// ever runs forward.
+    /// ever runs forward. It is also where the membership moves, on the same rule and for the same reason a
+    /// host's does: the record names the membership the version after it runs under, and a record is the only
+    /// agreed thing a membership can be derived from.
     /// </remarks>
     public bool Learn(VersionedValue<TValue> committed)
     {
@@ -192,13 +258,16 @@ public sealed class QuePaxaVersionedRegister<TValue>
         }
 
         Committed = committed;
+        ActiveConfiguration = committed.NextConfiguration;
+        LeaderSchedule = ScheduleFor(ActiveConfiguration, BaseDelay);
 
         return true;
     }
 
 
     /// <summary>
-    /// Catches up on versions this replica missed by asking the recorder hosts what they have learned.
+    /// Catches up on versions this replica missed by asking the members of the active membership what they
+    /// have learned.
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The highest committed record known after the round, or <see langword="null"/> when none is known.</returns>
@@ -207,11 +276,18 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <para>
     /// This needs no quorum and takes no consensus step. A committed record is a decided fact and the protocol
     /// assumes crash faults, so one honest host reporting a version settles it. A host that faults is skipped,
-    /// so learning from fewer hosts than exist is a weaker result rather than a wrong one. A cancellation ends
-    /// the round only when it is the caller's own signal arriving by another route, which the filter tests
-    /// rather than assumes: a host whose runner stopped answers its pending read cancelled under the runner's
-    /// token, and that is the host's unavailability wearing a cancellation's type, so it is skipped like any
-    /// other failing host rather than aborting the catch-up at every host after it.
+    /// so learning from fewer hosts than exist is a weaker result rather than a wrong one, and a member this
+    /// register cannot resolve at all is skipped on the same rule. A cancellation ends the round only when it
+    /// is the caller's own signal arriving by another route, which the filter tests rather than assumes: a
+    /// host whose runner stopped answers its pending read cancelled under the runner's token, and that is the
+    /// host's unavailability wearing a cancellation's type, so it is skipped like any other failing host
+    /// rather than aborting the catch-up at every host after it.
+    /// </para>
+    /// <para>
+    /// The member list is read once, before the first query. A record adopted mid-round moves the membership,
+    /// and re-reading it between queries would ask half a round of one membership and half of another; asking
+    /// one membership and letting the next round ask the next one is a weaker result rather than an
+    /// inconsistent one.
     /// </para>
     /// <para>
     /// Learning nothing new does not prove this replica is current. It is equally the state left behind by a
@@ -223,19 +299,19 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// </remarks>
     public async Task<VersionedValue<TValue>?> ReadAsync(CancellationToken cancellationToken)
     {
-        if(ReadCommittedRecords is null)
+        if(ResolveCommittedRecordReader is null)
         {
             return Committed;
         }
 
-        foreach(ReadCommittedRecordDelegate<TValue> read in ReadCommittedRecords)
+        foreach(ReplicaId member in ActiveConfiguration.Members)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             VersionedValue<TValue>? reported;
             try
             {
-                reported = await read(cancellationToken).ConfigureAwait(false);
+                reported = await ResolveCommittedRecordReader(member)(cancellationToken).ConfigureAwait(false);
             }
             catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested)
             {
@@ -257,12 +333,70 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
 
     /// <summary>
+    /// Asks every member of the active membership how far it has caught up.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>One entry per member, in the membership's own order, beside the membership it was measured over.</returns>
+    /// <exception cref="InvalidOperationException">Thrown if this register was built without a per-member version query.</exception>
+    /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled, and if a member answers with a cancellation of its own.</exception>
+    /// <remarks>
+    /// <para>
+    /// This is the observable a membership change is gated on. A joiner is added, disseminated to, and only
+    /// then written through, and a host is decommissioned only once a quorum that excludes it has learned the
+    /// record that removed it; both gates are a quorum-has-learned question about named replicas, which is
+    /// what this answers and what no aggregate can.
+    /// </para>
+    /// <para>
+    /// It refuses rather than reporting nothing when no query was supplied. An empty or all-unreachable report
+    /// is what a genuinely silent cluster looks like, and an operator gate cannot tell that apart from a
+    /// register that was never wired to ask.
+    /// </para>
+    /// <para>
+    /// A member that faults is reported unreachable rather than failing the round, on the same rule
+    /// <see cref="ReadAsync"/> skips a failing host by: the report is about availability, so a host's
+    /// unavailability is its answer rather than an error. A cancellation is a member's answer too unless it is
+    /// the caller's own signal.
+    /// </para>
+    /// </remarks>
+    public async Task<RegisterReadiness> ReadReadinessAsync(CancellationToken cancellationToken)
+    {
+        if(ObserveMemberVersion is null)
+        {
+            throw new InvalidOperationException("This register was built without a per-member version query and cannot report readiness. A report of nothing is indistinguishable from a cluster that answered nothing, and a decommission gate cleared against the second is how a quorum is lost.");
+        }
+
+        QuePaxaConfiguration measured = ActiveConfiguration;
+        ImmutableArray<MemberReadiness>.Builder reports = ImmutableArray.CreateBuilder<MemberReadiness>(measured.Members.Length);
+        foreach(ReplicaId member in measured.Members)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                RegisterVersion reported = await ObserveMemberVersion(member, cancellationToken).ConfigureAwait(false);
+                reports.Add(new MemberReadiness(member, reported));
+            }
+            catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch(Exception)
+            {
+                reports.Add(new MemberReadiness(member, null));
+            }
+        }
+
+        return new RegisterReadiness(measured, reports.ToImmutable());
+    }
+
+
+    /// <summary>
     /// Makes one attempt to write <paramref name="value"/> at the next version.
     /// </summary>
     /// <param name="value">The value to propose.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>What the attempt established.</returns>
-    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if the version range is spent, or if a recorder answered for an instance other than the one addressed.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if the version range is spent, or if a recorder answered for an instance other than the one addressed or naming a member other than the one addressed.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled.</exception>
     /// <remarks>
     /// One attempt and no retry, so an undecided outcome is reported rather than retried. A caller that wants
@@ -275,7 +409,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         EnterWrite();
         try
         {
-            return await AttemptAsync(value, 0, cancellationToken).ConfigureAwait(false);
+            return await AttemptAsync(_ => value, null, 0, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -297,7 +431,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <returns>What the write established.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="update"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="maxAttempts"/> is less than one.</exception>
-    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if the version range is spent, or if a recorder answered for an instance other than the one addressed.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if the version range is spent, or if a recorder answered for an instance other than the one addressed or naming a member other than the one addressed.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled.</exception>
     /// <remarks>
     /// <para>
@@ -308,14 +442,22 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// lose a write.
     /// </para>
     /// <para>
-    /// The three outcomes are retried differently. A committed attempt returns. A superseded attempt adopts
+    /// The four outcomes are retried differently. A committed attempt returns. A superseded attempt adopts
     /// the winner, advances to the version after it, and recomputes. An undecided attempt retries at the same
     /// version on a fresh lane and recomputes from the same value, because it learned nothing: its own
     /// proposal may still be carried by another proposer and decided later, so treating it as a loss would
-    /// abandon a write that is still live.
+    /// abandon a write that is still live. An attempt this replica is outside the membership of returns at
+    /// once and spends no attempt at all, because retrying is what a caller does when the next attempt might
+    /// establish something different, and only a configuration change can change this one.
+    /// </para>
+    /// <para>
+    /// The membership is carried forward and never changed here. Every record this writes names the
+    /// membership its own instance ran under, so a write that is not a reconfiguration cannot move the
+    /// recorder set, whatever it does to the value. <see cref="ReconfigureAsync"/> is the only path that
+    /// proposes a different one.
     /// </para>
     /// </remarks>
-    public async Task<QuePaxaWriteOutcome<TValue>> WriteAsync(Func<TValue?, TValue> update, int maxAttempts, CancellationToken cancellationToken)
+    public async Task<QuePaxaWriteOutcome<TValue>> WriteAsync(ComputeRegisterValueDelegate<TValue> update, int maxAttempts, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(update);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxAttempts, 1);
@@ -323,20 +465,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         EnterWrite();
         try
         {
-            QuePaxaWriteOutcome<TValue> outcome = new(QuePaxaWriteStatus.Undecided, NextVersion, default, null, RecorderStep.Zero, 0, false);
-
-            for(int attempt = 1; attempt <= maxAttempts; attempt++)
-            {
-                TValue proposed = update(Committed is { } committed ? committed.Value : default);
-                outcome = await AttemptAsync(proposed, outcome.Attempts, cancellationToken).ConfigureAwait(false);
-
-                if(outcome.Status == QuePaxaWriteStatus.Committed)
-                {
-                    return outcome;
-                }
-            }
-
-            return outcome;
+            return await RunAttemptsAsync(update, null, maxAttempts, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -345,15 +474,117 @@ public sealed class QuePaxaVersionedRegister<TValue>
     }
 
 
-    private async Task<QuePaxaWriteOutcome<TValue>> AttemptAsync(TValue value, int spent, CancellationToken cancellationToken)
+    /// <summary>
+    /// Installs the membership <paramref name="change"/> computes, carrying the committed value forward
+    /// unchanged.
+    /// </summary>
+    /// <param name="change">The membership delta to apply, re-applied against the winner when an attempt is superseded.</param>
+    /// <param name="maxAttempts">How many consensus attempts the reconfiguration may spend. Must be at least one.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>What the reconfiguration established, which names the record that installed the membership.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="change"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="maxAttempts"/> is less than one.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if nothing is committed yet, if the version range is spent, or if a recorder answered for an instance other than the one addressed or naming a member other than the one addressed.</exception>
+    /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled.</exception>
+    /// <remarks>
+    /// <para>
+    /// A reconfiguration is an ordinary write whose record names a different membership. It takes the same
+    /// consensus instance, the same quorum over the outgoing membership and the same leader, which is what
+    /// makes the change safe without a joint consensus: the instance that decides it runs entirely under the
+    /// membership that existed before it, and the new membership governs the version after.
+    /// </para>
+    /// <para>
+    /// It refuses when nothing is committed, because it has no value to carry forward and inventing one would
+    /// make a membership change also a value write. A cluster is bootstrapped by writing once under genesis
+    /// and reconfiguring after that.
+    /// </para>
+    /// <para>
+    /// A change that computes the membership it was given returns without writing, and the outcome names the
+    /// record already committed with no attempt spent. The operator asked for a state the cluster is already
+    /// in — adding a member that is already listed, removing one that is already gone — and a consensus
+    /// instance run to decide that would cost a round and change nothing.
+    /// </para>
+    /// <para>
+    /// <paramref name="change"/> is re-applied against the membership that won rather than against the one
+    /// this attempt captured, which is why it is a delta. Two operators changing membership concurrently
+    /// therefore compose, and neither undoes the other; an absolute set would reinstate whatever the rival
+    /// removed.
+    /// </para>
+    /// </remarks>
+    public async Task<QuePaxaWriteOutcome<TValue>> ReconfigureAsync(ChangeConfigurationDelegate change, int maxAttempts, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxAttempts, 1);
+
+        EnterWrite();
+        try
+        {
+            if(Committed is null)
+            {
+                throw new InvalidOperationException("A reconfiguration carries the committed value forward and this register holds no committed record. A chain is bootstrapped by writing once under its genesis membership, and reconfigured after that.");
+            }
+
+            return await RunAttemptsAsync(current => current!, change, maxAttempts, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            LeaveWrite();
+        }
+    }
+
+
+    private async Task<QuePaxaWriteOutcome<TValue>> RunAttemptsAsync(
+        ComputeRegisterValueDelegate<TValue> update,
+        ChangeConfigurationDelegate? change,
+        int maxAttempts,
+        CancellationToken cancellationToken)
+    {
+        QuePaxaWriteOutcome<TValue> outcome = new(QuePaxaWriteStatus.Undecided, NextVersion, default, null, RecorderStep.Zero, 0, false);
+
+        for(int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            outcome = await AttemptAsync(update, change, outcome.Attempts, cancellationToken).ConfigureAwait(false);
+
+            //A membership refusal is settled rather than unlucky, so retrying it would spend the budget on an
+            //answer that cannot change.
+            if(outcome.Status is QuePaxaWriteStatus.Committed or QuePaxaWriteStatus.OutsideConfiguration)
+            {
+                return outcome;
+            }
+        }
+
+        return outcome;
+    }
+
+
+    private async Task<QuePaxaWriteOutcome<TValue>> AttemptAsync(
+        ComputeRegisterValueDelegate<TValue> update,
+        ChangeConfigurationDelegate? change,
+        int spent,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        ReplicaId? previousWriter = Committed?.Writer;
-        RegisterVersion version = NextVersion;
+        //The whole attempt addresses this one capture and nothing below reads the committed record again.
+        VersionedValue<TValue>? captured = Committed;
+        RegisterInstance instance = InstanceFor(captured);
 
-        TimeSpan delay = LeaderSchedule.ScheduleFor(previousWriter).DelayFor(Self);
-        if(delay > TimeSpan.Zero)
+        //The membership is classified before the delay, so a replica that will not write does not first wait
+        //to find out.
+        if(!instance.Configuration.Contains(Self))
+        {
+            return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.OutsideConfiguration, instance.Version, default, null, RecorderStep.Zero, spent, false);
+        }
+
+        QuePaxaConfiguration next = change is null ? instance.Configuration : change(instance.Configuration);
+        if(change is not null && captured is { } installed && next.Equals(instance.Configuration))
+        {
+            return Unchanged(installed);
+        }
+
+        TValue value = update(captured is { } held ? held.Value : default);
+
+        if(DelayFor(instance) is { } delay && delay > TimeSpan.Zero)
         {
             await Task.Delay(delay, TimeProvider, cancellationToken).ConfigureAwait(false);
 
@@ -361,19 +592,19 @@ public sealed class QuePaxaVersionedRegister<TValue>
             if(ObserveCommittedVersion is not null)
             {
                 RegisterVersion observed = await ObserveCommittedVersion(cancellationToken).ConfigureAwait(false);
-                if(observed >= version)
+                if(observed >= instance.Version)
                 {
-                    return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Undecided, version, default, null, RecorderStep.Zero, spent, false);
+                    return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Undecided, instance.Version, default, null, RecorderStep.Zero, spent, false);
                 }
             }
         }
 
-        VersionedValue<TValue> record = new(version, Self, Configuration, value);
-        ProposerLane proposerLane = AllocateLane(version);
-        ProposerLane? believedLeader = LeaderSchedule.LeaderFor(previousWriter);
+        VersionedValue<TValue> record = new(instance.Version, Self, next, value);
+        ProposerLane proposerLane = AllocateLane(instance.Version);
+        ProposerLane? believedLeader = ScheduleFor(instance.Configuration, BaseDelay).LeaderFor(instance.PreviousWriter);
 
         var proposer = new QuePaxaProposer<VersionedValue<TValue>>(
-            EndpointsFor(version),
+            EndpointsFor(instance),
             proposerLane,
             DrawPriority,
             AttemptsPerRecorder);
@@ -382,44 +613,162 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
         if(!outcome.IsDecided || outcome.Value is not { } decided)
         {
-            return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Undecided, version, default, null, RecorderStep.Zero, spent + 1, true);
+            return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Undecided, instance.Version, default, null, RecorderStep.Zero, spent + 1, true);
         }
 
         //A misrouted decision kept out of the committed state cannot set the next instance's leader.
-        if(decided.Version != version)
+        if(decided.Version != instance.Version)
         {
-            throw new InvalidOperationException($"The instance for version {version.Value} decided a record carrying version {decided.Version.Value}, so a request reached an instance it was not addressed to.");
+            throw new InvalidOperationException($"The instance for version {instance.Version.Value} decided a record carrying version {decided.Version.Value}, so a request reached an instance it was not addressed to.");
         }
 
         _ = Learn(decided);
 
-        if(PublishCommittedRecord is not null)
-        {
-            await PublishCommittedRecord(decided, cancellationToken).ConfigureAwait(false);
-        }
+        await PublishAsync(instance.Configuration, decided, cancellationToken).ConfigureAwait(false);
 
         //A value can be chosen by a quorum and still not be this writer's, so the test is over the whole record.
         QuePaxaWriteStatus status = decided.Equals(record) ? QuePaxaWriteStatus.Committed : QuePaxaWriteStatus.Superseded;
 
-        return new QuePaxaWriteOutcome<TValue>(status, version, decided.Value, decided.Writer, outcome.DecidedAt, spent + 1, true);
+        return new QuePaxaWriteOutcome<TValue>(status, instance.Version, decided.Value, decided.Writer, outcome.DecidedAt, spent + 1, true);
     }
 
 
-    private RecorderEndpointDelegate<VersionedValue<TValue>>[] EndpointsFor(RegisterVersion version)
+    /// <summary>
+    /// Offers <paramref name="decided"/> to its audience, absorbing whatever the offer does.
+    /// </summary>
+    /// <param name="deciding">The membership the instance that decided the record ran under.</param>
+    /// <param name="decided">The decided record.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A task that completes once the offer has been made or has failed.</returns>
+    /// <remarks>
+    /// <para>
+    /// A publish fault never reaches the caller, cancellation included and the caller's own token included.
+    /// The decision has already been taken and already been learned by the time this runs, so a caller told
+    /// its write failed would retry a write that landed; the boundary push in particular addresses exactly
+    /// the cold hosts most likely to fault, which would make a reconfiguration the write most likely to
+    /// throw after deciding.
+    /// </para>
+    /// <para>
+    /// The register owes this guard whatever the delegate's signature says, which is why the delegate has no
+    /// result type reporting failure: a .NET delegate can always throw, so a result would add a second route
+    /// for the same event and leave this guard standing anyway. What a caller reads instead is
+    /// <see cref="ReadReadinessAsync"/>, which reports what the hosts actually hold rather than what a push
+    /// attempt claimed.
+    /// </para>
+    /// </remarks>
+    private async ValueTask PublishAsync(QuePaxaConfiguration deciding, VersionedValue<TValue> decided, CancellationToken cancellationToken)
     {
-        var endpoints = new RecorderEndpointDelegate<VersionedValue<TValue>>[Recorders.Count];
-        for(int index = 0; index < Recorders.Count; index++)
+        if(PublishCommittedRecord is null)
         {
-            VersionedRecorderEndpointDelegate<VersionedValue<TValue>> host = Recorders[index];
+            return;
+        }
+
+        try
+        {
+            await PublishCommittedRecord(decided, AudienceFor(deciding, decided.NextConfiguration), cancellationToken).ConfigureAwait(false);
+        }
+        catch(Exception)
+        {
+        }
+    }
+
+
+    /// <summary>The hosts a decided record is offered to.</summary>
+    /// <param name="outgoing">The membership the deciding instance ran under.</param>
+    /// <param name="incoming">The membership the decided record installs for the version after it.</param>
+    /// <returns>The union of the two, in outgoing order with the joiners appended.</returns>
+    /// <remarks>
+    /// <para>
+    /// For an ordinary decide the two are the same membership and the union degenerates to it, which is why
+    /// this changes nothing for a cluster that never reconfigures. At a boundary each half carries a duty the
+    /// other cannot: the joiners are handed the installing record rather than left to learn it, and the
+    /// leavers are handed the record that removed them rather than left in silence.
+    /// </para>
+    /// <para>
+    /// It is computed from the deciding instance's own membership and never from this register's genesis or
+    /// its current memo. A stale outgoing half would keep naming replicas a completed change removed, so
+    /// every later ordinary decide would push to hosts that are no longer members and the union would never
+    /// degenerate again.
+    /// </para>
+    /// </remarks>
+    private static ImmutableArray<ReplicaId> AudienceFor(QuePaxaConfiguration outgoing, QuePaxaConfiguration incoming)
+    {
+        if(incoming.Equals(outgoing))
+        {
+            return outgoing.Members;
+        }
+
+        ImmutableArray<ReplicaId>.Builder audience = ImmutableArray.CreateBuilder<ReplicaId>(outgoing.Members.Length + incoming.Members.Length);
+        audience.AddRange(outgoing.Members);
+        foreach(ReplicaId joining in incoming.Members)
+        {
+            if(!outgoing.Contains(joining))
+            {
+                audience.Add(joining);
+            }
+        }
+
+        return audience.ToImmutable();
+    }
+
+
+    /// <summary>The endpoints an attempt at <paramref name="instance"/> addresses, one per member in order.</summary>
+    /// <param name="instance">The captured instance the attempt runs at.</param>
+    /// <returns>Exactly as many endpoints as the instance's membership has members.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE ARRAY HAS ONE SLOT PER MEMBER AND NEVER FEWER. A quorum is
+    /// <see cref="QuePaxaProposer{TValue}.Quorum"/>, computed from the number of endpoints, so a member left
+    /// out because it could not be resolved does not make the cluster smaller: it makes the majority smaller,
+    /// and a decision taken by that majority is taken by fewer replicas than the membership's arithmetic
+    /// claims. An unresolvable member therefore keeps its slot as an endpoint that always faults, which the
+    /// protocol already knows how to treat, because an unreachable recorder costs availability and a diluted
+    /// quorum costs agreement.
+    /// </para>
+    /// <para>
+    /// Each slot also checks that the reply came back from the member it was addressed to, beside the
+    /// existing check that it came back from the instance it was addressed to. Both are the same failure in
+    /// two dimensions: an answer counted toward a quorum it is not a member of. The identity check is exact
+    /// under crash faults and is not authentication — the answering host asserts its own name and nothing
+    /// verifies it — so what it catches is a deployment's endpoint map pointing two slots at one host, which
+    /// is the wiring error that turns a majority into a minority.
+    /// </para>
+    /// </remarks>
+    private RecorderEndpointDelegate<VersionedValue<TValue>>[] EndpointsFor(RegisterInstance instance)
+    {
+        ImmutableArray<ReplicaId> members = instance.Configuration.Members;
+        var endpoints = new RecorderEndpointDelegate<VersionedValue<TValue>>[members.Length];
+        for(int index = 0; index < members.Length; index++)
+        {
+            ReplicaId member = members[index];
+            VersionedRecorderEndpointDelegate<VersionedValue<TValue>> host;
+            try
+            {
+                host = ResolveRecorder(member);
+            }
+            catch(Exception unresolved)
+            {
+                endpoints[index] = (_, _) => throw new InvalidOperationException($"No transport resolves member {member} of the membership version {instance.Version.Value} runs under, so this recorder is unreachable for the whole instance. Its slot is kept because the quorum is counted over the membership's size and dropping it would decide on a smaller majority than the membership names.", unresolved);
+
+                continue;
+            }
+
             endpoints[index] = async (request, token) =>
             {
-                VersionedRecordReply<VersionedValue<TValue>> reply = await host(new VersionedRecordRequest<VersionedValue<TValue>>(version, request), token).ConfigureAwait(false);
+                VersionedRecordReply<VersionedValue<TValue>> reply = await host(new VersionedRecordRequest<VersionedValue<TValue>>(instance.Version, request), token).ConfigureAwait(false);
 
                 //A reply from another instance would enter this quorum and break the majority intersection
                 //agreement rests on.
-                if(reply.Version != version)
+                if(reply.Version != instance.Version)
                 {
-                    throw new InvalidOperationException($"A recorder answering version {version.Value} replied for version {reply.Version.Value}, so the transport correlated a reply to the wrong instance.");
+                    throw new InvalidOperationException($"A recorder answering version {instance.Version.Value} replied for version {reply.Version.Value}, so the transport correlated a reply to the wrong instance.");
+                }
+
+                //And a reply from another member would enter it twice, which is the same break one dimension
+                //over: two slots answered by one host count one replica as two.
+                if(!reply.Recorder.Equals(member))
+                {
+                    throw new InvalidOperationException($"The endpoint for member {member} was answered by {reply.Recorder}, so this deployment's endpoint map does not reach the membership it names. Counting that answer would let one host fill two slots of a quorum counted over distinct members.");
                 }
 
                 return reply.Reply;
@@ -427,6 +776,57 @@ public sealed class QuePaxaVersionedRegister<TValue>
         }
 
         return endpoints;
+    }
+
+
+    /// <summary>The instance an attempt holding <paramref name="committed"/> addresses.</summary>
+    /// <param name="committed">The committed record the attempt captured, or <see langword="null"/> when it holds none.</param>
+    /// <returns>The version, membership and previous writer that one record implies.</returns>
+    /// <remarks>
+    /// The one derivation both the public read and every attempt run, so the triple a caller sees and the
+    /// triple an attempt addresses cannot come from two expressions that drift apart. It reads the record it
+    /// is handed rather than the field, which is what makes the capture a capture.
+    /// </remarks>
+    private RegisterInstance InstanceFor(VersionedValue<TValue>? committed)
+    {
+        return committed is { } record
+            ? new RegisterInstance(record.Version.Next(), record.NextConfiguration, record.Writer)
+            : new RegisterInstance(RegisterVersion.First, Genesis, null);
+    }
+
+
+    /// <summary>The delay this replica waits before writing at <paramref name="instance"/>.</summary>
+    /// <param name="instance">The captured instance.</param>
+    /// <returns>The delay, or <see langword="null"/> when this replica is not a member of the instance's membership.</returns>
+    private TimeSpan? DelayFor(RegisterInstance instance)
+    {
+        if(!instance.Configuration.Contains(Self))
+        {
+            return null;
+        }
+
+        return ScheduleFor(instance.Configuration, BaseDelay).ScheduleFor(instance.PreviousWriter).DelayFor(Self);
+    }
+
+
+    /// <summary>The leader derivation over <paramref name="configuration"/>'s member order.</summary>
+    /// <param name="configuration">The membership the instance runs under.</param>
+    /// <param name="baseDelay">The hedging increment this register waits per position.</param>
+    /// <returns>The derivation.</returns>
+    private static QuePaxaLeaderSchedule ScheduleFor(QuePaxaConfiguration configuration, TimeSpan baseDelay) => new(configuration.ScheduleWith(baseDelay));
+
+
+    /// <summary>The outcome of a reconfiguration that asked for the membership already installed.</summary>
+    /// <param name="committed">The record the attempt captured, which is the one that installed that membership or an ordinary one carrying it forward.</param>
+    /// <returns>An outcome naming that record, with no attempt spent and nothing activated.</returns>
+    /// <remarks>
+    /// It reports committed rather than a status of its own, because the membership the operator asked for
+    /// is installed and the record named here is the evidence. Nothing was proposed, which the spent-attempt
+    /// count of zero and the unset activation flag are what say.
+    /// </remarks>
+    private static QuePaxaWriteOutcome<TValue> Unchanged(VersionedValue<TValue> committed)
+    {
+        return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Committed, committed.Version, committed.Value, committed.Writer, RecorderStep.Zero, 0, false);
     }
 
 

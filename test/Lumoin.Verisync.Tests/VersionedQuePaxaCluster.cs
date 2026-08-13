@@ -88,6 +88,18 @@ internal sealed class VersionedQuePaxaCluster<TValue>
     public bool LearnAt(int index, VersionedValue<TValue> committed) => Hosts[index].Learn(committed);
 
 
+    /// <summary>Tells the host that is <paramref name="member"/> about a committed record.</summary>
+    /// <param name="member">The member to tell.</param>
+    /// <param name="committed">A decided record.</param>
+    /// <returns><see langword="true"/> when the record advanced that host, and <see langword="false"/> when it did not or when no host of this cluster is that member.</returns>
+    public bool LearnAtMember(ReplicaId member, VersionedValue<TValue> committed)
+    {
+        int index = IndexOf(member);
+
+        return index >= 0 && Hosts[index].Learn(committed);
+    }
+
+
     /// <summary>Tells every host about a committed record.</summary>
     public void LearnAll(VersionedValue<TValue> committed)
     {
@@ -95,6 +107,44 @@ internal sealed class VersionedQuePaxaCluster<TValue>
         {
             _ = host.Learn(committed);
         }
+    }
+
+
+    /// <summary>
+    /// Resolves the endpoint of one member, which is this bench's
+    /// <see cref="ResolveRecorderEndpointDelegate{TValue}"/>.
+    /// </summary>
+    /// <param name="member">The member to reach.</param>
+    /// <returns>That member's endpoint.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this cluster is that member, which is how the resolver reports one it cannot resolve.</exception>
+    public VersionedRecorderEndpointDelegate<VersionedValue<TValue>> Resolve(ReplicaId member)
+    {
+        int index = IndexOf(member);
+        if(index < 0)
+        {
+            throw new InvalidOperationException($"No host of this cluster is {member}.");
+        }
+
+        return Endpoints()[index];
+    }
+
+
+    /// <summary>
+    /// Resolves the catch-up reader of one member, which is this bench's
+    /// <see cref="ResolveCommittedRecordReaderDelegate{TValue}"/>.
+    /// </summary>
+    /// <param name="member">The member to ask.</param>
+    /// <returns>That member's reader.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this cluster is that member.</exception>
+    public ReadCommittedRecordDelegate<TValue> ResolveReader(ReplicaId member)
+    {
+        int index = IndexOf(member);
+        if(index < 0)
+        {
+            throw new InvalidOperationException($"No host of this cluster is {member}.");
+        }
+
+        return _ => new ValueTask<VersionedValue<TValue>?>(Hosts[index].Committed);
     }
 
 
@@ -127,5 +177,20 @@ internal sealed class VersionedQuePaxaCluster<TValue>
         }
 
         return endpoints;
+    }
+
+
+    /// <summary>The index of the host that is <paramref name="member"/>, or a negative value when none is.</summary>
+    private int IndexOf(ReplicaId member)
+    {
+        for(int index = 0; index < Hosts.Length; index++)
+        {
+            if(Hosts[index].Self.Equals(member))
+            {
+                return index;
+            }
+        }
+
+        return -1;
     }
 }
