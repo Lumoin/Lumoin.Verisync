@@ -346,10 +346,17 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
 
     /// <summary>Cuts one host off, so every later call to it fails before it reaches the wire.</summary>
+    /// <param name="index">The host.</param>
+    /// <remarks>
+    /// The host keeps running behind the cut and keeps everything it had learned, so what a cut takes away is
+    /// the route and never the host: a healed host answers again, with the record it held while nothing could
+    /// ask it for one.
+    /// </remarks>
     public void Partition(int index) => Partitioned[index] = true;
 
 
     /// <summary>Restores one host.</summary>
+    /// <param name="index">The host.</param>
     public void Heal(int index) => Partitioned[index] = false;
 
 
@@ -410,6 +417,29 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     /// <returns>That member's reader.</returns>
     /// <exception cref="InvalidOperationException">Thrown when no host of this cluster is that member.</exception>
     public ReadCommittedRecordDelegate<TValue> ResolveReader(ReplicaId member) => Readers()[IndexOf(member)];
+
+
+    /// <summary>
+    /// Reports which version the host that is <paramref name="member"/> holds, asked over that member's own
+    /// connection, which is this cluster's <see cref="ObserveMemberVersionDelegate"/>.
+    /// </summary>
+    /// <param name="member">The member to ask.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>That member's highest committed version, which is <see cref="RegisterVersion.Unwritten"/> when it holds no record.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when no host of this cluster is that member.</exception>
+    /// <exception cref="IOException">Thrown when the call to that member faults, which is what a host behind a cut route or a drained cluster answers with.</exception>
+    /// <remarks>
+    /// The question crosses the wire rather than reading the state behind it, which is what lets a report
+    /// separate a member that has learned nothing from one nothing reaches: the first answers unwritten over a
+    /// working connection and the second answers not at all. A query that read the node directly could report
+    /// neither, and would report a version for a host no caller could have obtained one from.
+    /// </remarks>
+    public async ValueTask<RegisterVersion> ObserveMemberVersionAsync(ReplicaId member, CancellationToken cancellationToken)
+    {
+        VersionedValue<TValue>? held = await ResolveReader(member)(cancellationToken).ConfigureAwait(false);
+
+        return held is null ? RegisterVersion.Unwritten : held.Version;
+    }
 
 
     public VersionedRecorderEndpointDelegate<VersionedValue<TValue>>[] Endpoints()

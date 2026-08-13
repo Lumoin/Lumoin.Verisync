@@ -2,6 +2,7 @@ using Lumoin.Verisync.Core;
 using Microsoft.Extensions.Time.Testing;
 using System.Buffers;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Text.Json;
 
 namespace Lumoin.Verisync.Tests;
@@ -13,11 +14,19 @@ namespace Lumoin.Verisync.Tests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Ported here are the ten scenarios below, which are the fast path across three consecutive versions, the
+/// Ported here are ten of the scenarios below, which are the fast path across three consecutive versions, the
 /// two superseded outcomes, the undecided retry on a fresh lane, the two hedging vectors and the zero-delay
 /// activation, the dissemination-bound quorum, the version-swapping transport, and the catch-up read. With
 /// them goes the bare family's re-delivery after a failed persist, which lives in
 /// <see cref="QuePaxaSocketClusterTests"/> beside the other bare-family rounds.
+/// </para>
+/// <para>
+/// The two readiness scenarios are native here rather than ported. A readiness report is about who can be
+/// reached and what they hold, and both halves of that are transport facts: the member that answers and holds
+/// nothing and the member whose endpoints fault are one report apart and cannot be told apart by any reading
+/// of the protocol. The in-memory bench separates behind from reachable by holding a host's dissemination
+/// while it answers everything; this one cuts the route to a host that answers everything, which is the same
+/// separation from the other side.
 /// </para>
 /// <para>
 /// Staying in process by design are the law suites, <see cref="QuePaxaAgreementLawTests"/>,
@@ -405,6 +414,147 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     }
 
 
+    /// <summary>
+    /// A readiness report assembled over real connections. Every member is asked over its own connection and
+    /// every one answers, so the report names each member of the membership and the version that member holds,
+    /// and the member the dissemination has not reached answers unwritten rather than falling silent.
+    /// </summary>
+    /// <remarks>
+    /// A readiness read owes a census where a write owes a quorum. A write commits on a majority and may
+    /// abandon the lanes it no longer needs, so which members answered it is the run's timing; this read
+    /// addresses every member of the membership in turn and takes every answer, so each member's entry is
+    /// required by name and a report that dropped one or answered for one it never asked is a report that
+    /// differs from this one.
+    /// </remarks>
+    [TestMethod]
+    public async Task AReadinessReportOverSocketsNamesEveryMemberAndTheVersionEachOneHolds()
+    {
+        SocketVersionedQuePaxaCluster<string> cluster = await ConnectAsync(Schedule()).ConfigureAwait(false);
+        try
+        {
+            QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: cluster.ObserveMemberVersionAsync);
+
+            QuePaxaWriteOutcome<string> committed = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(QuePaxaWriteStatus.Committed, committed.Status);
+
+            //Two of the three learn, which leaves a member that answers and holds nothing beside two that
+            //answer and hold the record: the reading below is what separates behind from unreachable.
+            VersionedValue<string> record = register.Committed!;
+            _ = await cluster.LearnAtAsync(0, record, TestContext.CancellationToken).ConfigureAwait(false);
+            _ = await cluster.LearnAtAsync(1, record, TestContext.CancellationToken).ConfigureAwait(false);
+
+            RegisterReadiness behind = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+            TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness while one member is behind: {Describe(behind)}"));
+            Assert.AreEqual(Configuration, behind.Configuration, "The report was measured over a membership other than the one this register runs under.");
+            Assert.AreSequenceEqual(new[] { First, Second, Third }, behind.Members.Select(member => member.Member), "The report does not name every member of the membership it was measured over, in that membership's order.");
+            Assert.AreEqual(3, behind.Reachable, "A member that answered over its connection was reported unreachable.");
+            Assert.AreEqual(committed.Version, behind.Members.Single(member => member.Member.Equals(First)).Version);
+            Assert.AreEqual(committed.Version, behind.Members.Single(member => member.Member.Equals(Second)).Version);
+            Assert.AreEqual(RegisterVersion.Unwritten, behind.Members.Single(member => member.Member.Equals(Third)).Version, "The member the dissemination has not reached reported a version no host could have given it.");
+            Assert.IsFalse(behind.Members.Single(member => member.Member.Equals(Third)).HasLearned(committed.Version), "A member holding nothing was read as having learned the record.");
+            Assert.IsTrue(behind.QuorumHasLearned(committed.Version), "Two of the three reported the record and the gate reads no quorum at it.");
+
+            _ = await cluster.LearnAtAsync(2, record, TestContext.CancellationToken).ConfigureAwait(false);
+
+            RegisterReadiness caughtUp = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+            TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness once the straggler caught up: {Describe(caughtUp)}"));
+            Assert.AreEqual(3, caughtUp.Reachable);
+            Assert.AreEqual(committed.Version, caughtUp.Members.Single(member => member.Member.Equals(Third)).Version, "The member that took the record still reports the version it held before it, so the report is a memory rather than a question.");
+        }
+        finally
+        {
+            await cluster.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+
+    /// <summary>
+    /// A member whose endpoints fault is reported unreachable while the rest of the membership answers. The
+    /// route to one host is cut after every host has learned the record, so nothing about what that host holds
+    /// changed and the only thing that did is whether it can be asked; the report drops it from the reachable
+    /// count, still names it, and still reads a quorum at the record the two reachable members hold.
+    /// </summary>
+    /// <remarks>
+    /// This is the complementary reading to a member that answers and has not learned. There the versions
+    /// separate the members and the reachable count does not; here the reachable count separates them and the
+    /// versions cannot, because a host that cannot be asked reports no version at all. An operator waiting out
+    /// the first would wait forever on the second, which is why the two are counted apart. Healing the route
+    /// is what shows which of the two this was: the same host answers again with the version it held all
+    /// along, so the drop was the endpoints and never the host.
+    /// </remarks>
+    [TestMethod]
+    public async Task AMemberWhoseEndpointsFaultIsReportedUnreachableWhileTheOtherMembersAnswerOverSockets()
+    {
+        SocketVersionedQuePaxaCluster<string> cluster = await ConnectAsync(Schedule()).ConfigureAwait(false);
+        try
+        {
+            QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: cluster.ObserveMemberVersionAsync);
+
+            QuePaxaWriteOutcome<string> committed = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(QuePaxaWriteStatus.Committed, committed.Status);
+
+            await cluster.LearnAllAsync(register.Committed!, TestContext.CancellationToken).ConfigureAwait(false);
+
+            RegisterReadiness reached = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+            TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness while every route is up: {Describe(reached)}"));
+            Assert.AreEqual(3, reached.Reachable, "A member answered nothing while every route was up, so the reading below would not be the route's doing.");
+            Assert.AreEqual(committed.Version, reached.Members.Single(member => member.Member.Equals(Third)).Version, "The member whose route is cut below does not hold the record beforehand, so a later silence would say nothing about reachability.");
+
+            //The host keeps running and keeps the record it learned; what it loses is the route to it.
+            cluster.Partition(2);
+
+            RegisterReadiness faulted = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+            TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness while one member's endpoints fault: {Describe(faulted)}"));
+            Assert.AreEqual(2, faulted.Reachable, "A member whose calls fault was counted among those that answered.");
+            Assert.AreSequenceEqual(new[] { First, Second, Third }, faulted.Members.Select(member => member.Member), "The member that could not be reached was left out of the report rather than reported unreachable.");
+
+            MemberReadiness unreachable = faulted.Members.Single(member => member.Member.Equals(Third));
+
+            Assert.IsFalse(unreachable.Reachable);
+            Assert.IsNull(unreachable.Version, "A member that answered nothing was reported as one that has learned nothing, which is the collapse the report exists to prevent.");
+            Assert.IsFalse(unreachable.HasLearned(committed.Version), "A member that could not be asked was read as having learned the record it holds, which is a fact the report cannot have.");
+            Assert.AreEqual(committed.Version, faulted.Members.Single(member => member.Member.Equals(First)).Version, "The first member stopped answering when another member's route was cut.");
+            Assert.AreEqual(committed.Version, faulted.Members.Single(member => member.Member.Equals(Second)).Version, "The second member stopped answering when another member's route was cut.");
+            Assert.IsTrue(faulted.QuorumHasLearned(committed.Version), "Two members of three reported the record and the gate reads no quorum at it, so an unreachable member is being counted against what the reachable ones said.");
+
+            cluster.Heal(2);
+
+            RegisterReadiness healed = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+            TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness once the route is restored: {Describe(healed)}"));
+            Assert.AreEqual(3, healed.Reachable, "The host behind the restored route did not answer again, so the run cannot say the cut was the endpoints rather than the host.");
+            Assert.AreEqual(committed.Version, healed.Members.Single(member => member.Member.Equals(Third)).Version, "The host behind the restored route lost the record it held while nothing could ask it for one.");
+        }
+        finally
+        {
+            await cluster.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+
+    /// <summary>One readiness report as a line, per member, for the run's own record.</summary>
+    /// <param name="readiness">The report.</param>
+    /// <returns>The line.</returns>
+    private static string Describe(RegisterReadiness readiness)
+    {
+        return string.Join(", ", readiness.Members.Select(member => member.Version is { } version
+            ? string.Create(CultureInfo.InvariantCulture, $"{Name(member.Member)}@{version.Value}")
+            : $"{Name(member.Member)}@unreachable"));
+    }
+
+
+    /// <summary>A replica's leading bytes, which is enough to tell this suite's three apart.</summary>
+    /// <param name="replica">The replica.</param>
+    /// <returns>Its leading bytes in hexadecimal.</returns>
+    private static string Name(ReplicaId replica) => Convert.ToHexStringLower(replica.AsSpan())[..4];
+
+
     //The reply is rewritten as bytes rather than as a deserialized object, so the swap crosses the codec that
     //a deployment would meet it at.
     private static byte[] SwapReplyVersion(int host, byte[] payload)
@@ -449,7 +599,8 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
         TimeProvider? clock = null,
         ObserveCommittedVersionDelegate? observe = null,
         TimeSpan? baseDelay = null,
-        PublishCommittedRecordDelegate<string>? publish = null)
+        PublishCommittedRecordDelegate<string>? publish = null,
+        ObserveMemberVersionDelegate? observeMember = null)
     {
         return new QuePaxaVersionedRegister<string>(
             cluster.Genesis,
@@ -460,7 +611,8 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
             AttemptsPerRecorder,
             clock ?? TimeProvider.System,
             observe,
-            publishCommittedRecord: publish);
+            publishCommittedRecord: publish,
+            observeMemberVersion: observeMember);
     }
 
 

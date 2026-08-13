@@ -20,5 +20,13 @@ namespace Lumoin.Verisync.Core;
 /// a weaker result rather than a wrong one. The rule that keeps the recorder array at full length is a
 /// quorum rule and it has no counterpart here.
 /// </para>
+/// <para>
+/// A host that lags across a complete membership turnover is recovered by the deployment's locator and not by
+/// the protocol, and this is the seam it is recovered through. A read asks the members of the membership the
+/// reader holds, so a host whose held membership has been replaced outright asks replicas that may all be
+/// gone and catches up from none of them. Answering for identities no current membership names is what a
+/// locator outliving memberships is for; the alternative, a register keeping the memberships it has left
+/// behind, would put a log inside a register and is deliberately not taken.
+/// </para>
 /// </remarks>
 public delegate ReadCommittedRecordDelegate<TValue> ResolveCommittedRecordReaderDelegate<TValue>(ReplicaId member);
