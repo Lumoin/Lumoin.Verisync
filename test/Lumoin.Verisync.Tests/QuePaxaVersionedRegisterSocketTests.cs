@@ -2,6 +2,7 @@ using Lumoin.Verisync.Core;
 using Microsoft.Extensions.Time.Testing;
 using System.Buffers;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 
@@ -59,6 +60,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
 {
     private const int AttemptsPerRecorder = 2;
     private const int HostCount = 3;
+    private const int MaxWriteRounds = 10;
 
     public TestContext TestContext { get; set; } = null!;
 
@@ -115,9 +117,14 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     }
 
 
-    //The publish delegate here is the cluster's wire push, so the record crosses the wire into each host's
-    //own receive leg rather than being handed to the runners in process: the leg every socketed deployment
-    //wires is the subject, not a shortcut past it.
+    /// <summary>
+    /// A disseminated record crosses the wire into each host's own receive leg and opens the next version.
+    /// </summary>
+    /// <remarks>
+    /// The publish delegate here is the cluster's wire push, so the record crosses the wire into each host's
+    /// own learn rather than being handed to the runners in process: the leg every socketed deployment wires
+    /// is the subject, not a shortcut past it.
+    /// </remarks>
     [TestMethod]
     public async Task ADisseminatedRecordCrossesTheWireAndOpensTheNextVersion()
     {
@@ -150,7 +157,116 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     }
 
 
-    //The change function records its input because a retry re-proposing the original value would still pass.
+    /// <summary>
+    /// Concurrent writers on real operating-system threads stay linearizable over the wire.
+    /// </summary>
+    /// <remarks>
+    /// Concurrent clients drive the real transport while every operation is recorded into a history whose
+    /// indeterminate outcomes stay possibilities rather than failures, and the history is checked against
+    /// the append register's formal model afterwards. Safety is asserted under any interleaving; that contention
+    /// actually occurred on a given run is scheduled by the operating system, so the deterministic pin for
+    /// contention stays with the in-memory linearizability suite and this row pins that the wire and real
+    /// threads change nothing the model can see.
+    /// </remarks>
+    [TestMethod]
+    public async Task ConcurrentWritersLinearizeOverSockets()
+    {
+        SocketVersionedQuePaxaCluster<string> cluster = await ConnectAsync(Schedule()).ConfigureAwait(false);
+        try
+        {
+            Task<RegisterOperation[]>[] writers =
+            [
+                RunSocketWriterAsync(cluster, First, 'A', 'B', null, null, TestContext.CancellationToken),
+                RunSocketWriterAsync(cluster, Second, 'C', 'D', null, null, TestContext.CancellationToken),
+                RunSocketWriterAsync(cluster, Third, 'E', 'F', null, null, TestContext.CancellationToken)
+            ];
+
+            RegisterOperation[][] completed = await Task.WhenAll(writers).ConfigureAwait(false);
+            RegisterOperation[] history = [.. completed.SelectMany(operations => operations)];
+            string witness = await WitnessOverSocketsAsync(cluster, TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.HasCount(6, history, "A label was retired unlanded on a healthy cluster, which the rounds budget exists to prevent.");
+            Assert.AreEqual(6, witness.Length, $"The witness '{witness}' does not carry exactly the six labels.");
+            AppendRegisterChecker.AssertLinearizable(history, witness);
+
+            TestContext.WriteLine($"Witness '{witness}'.");
+
+            await cluster.DrainAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+            for(int host = 0; host < cluster.HostCount; host++)
+            {
+                Assert.IsGreaterThan(0, cluster.Served[host], $"Host {host} served nothing under three concurrent writers.");
+            }
+        }
+        finally
+        {
+            await cluster.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+
+    /// <summary>
+    /// The concurrent workload stays linearizable across a minority partition, and the healed host converges.
+    /// </summary>
+    /// <remarks>
+    /// The fault is injected mid-workload: the partition is installed between the first and second appends
+    /// by barrier rather than by clock, so the cut lands mid-history on every run. Writes keep committing
+    /// through the surviving majority, the history stays linearizable across the fault, and the healed host
+    /// converges on the final record through the same wire-borne receive leg an operator's re-dissemination
+    /// would use.
+    /// </remarks>
+    [TestMethod]
+    public async Task WritersLinearizeAcrossAMinorityPartitionOverSockets()
+    {
+        SocketVersionedQuePaxaCluster<string> cluster = await ConnectAsync(Schedule()).ConfigureAwait(false);
+        try
+        {
+            using CountdownEvent firstWave = new(3);
+            TaskCompletionSource cutInstalled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            Task nemesis = Task.Run(() =>
+            {
+                firstWave.Wait(TestContext.CancellationToken);
+                cluster.Partition(2);
+                cutInstalled.SetResult();
+            }, TestContext.CancellationToken);
+
+            Task<RegisterOperation[]>[] writers =
+            [
+                RunSocketWriterAsync(cluster, First, 'A', 'B', cutInstalled.Task, () => firstWave.Signal(), TestContext.CancellationToken),
+                RunSocketWriterAsync(cluster, Second, 'C', 'D', cutInstalled.Task, () => firstWave.Signal(), TestContext.CancellationToken),
+                RunSocketWriterAsync(cluster, Third, 'E', 'F', cutInstalled.Task, () => firstWave.Signal(), TestContext.CancellationToken)
+            ];
+
+            RegisterOperation[][] completed = await Task.WhenAll(writers).ConfigureAwait(false);
+            await nemesis.ConfigureAwait(false);
+            cluster.Heal(2);
+
+            RegisterOperation[] history = [.. completed.SelectMany(operations => operations)];
+            string witness = await WitnessOverSocketsAsync(cluster, TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.HasCount(6, history, "A label was retired unlanded although a majority served throughout the cut.");
+            AppendRegisterChecker.AssertLinearizable(history, witness);
+
+            //The healed host converges through the receive leg: the final record is offered over the wire
+            //and the host then reports the final version through its own connection.
+            VersionedValue<string>? final = await HighestHeldAsync(cluster, TestContext.CancellationToken).ConfigureAwait(false);
+            await cluster.PublishAsync(final!, cluster.Genesis.Members, TestContext.CancellationToken).ConfigureAwait(false);
+
+            VersionedValue<string>? healed = await cluster.ResolveReader(cluster.Genesis.Members[2])(TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(final!.Version, healed!.Version, "The healed host did not converge on the final record it was offered.");
+        }
+        finally
+        {
+            await cluster.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+
+    /// <summary>
+    /// The change function records its input because a retry re-proposing the original value would still pass.
+    /// </summary>
     [TestMethod]
     public async Task ASupersededWriteAdoptsTheWinnerAndRecomputesFromItOverSockets()
     {
@@ -221,9 +337,13 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     }
 
 
-    //An undecided proposal may be decided later, so treating it as a conflict would abandon a live write. Two
-    //of three hosts are partitioned so the quorum is missed while the third still records what it was asked,
-    //which is what lets the lanes be read rather than inferred from the attempt count.
+    /// <summary>
+    /// An undecided proposal may be decided later, so treating it as a conflict would abandon a live write.
+    /// </summary>
+    /// <remarks>
+    /// Two of three hosts are partitioned so the quorum is missed while the third still records what it was
+    /// asked, which is what lets the lanes be read rather than inferred from the attempt count.
+    /// </remarks>
     [TestMethod]
     public async Task AnUndecidedWriteRetriesAtTheSameVersionOnAFreshLaneOverSockets()
     {
@@ -332,7 +452,9 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     }
 
 
-    //This is the only vector that fails if the stand-down is hoisted out of the delay guard.
+    /// <summary>
+    /// This is the only vector that fails if the stand-down is hoisted out of the delay guard.
+    /// </summary>
     [TestMethod]
     public async Task AZeroBaseDelayActivatesEveryWriterEvenWhenTheVersionIsReportedCommittedOverSockets()
     {
@@ -354,7 +476,9 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     }
 
 
-    //This pins the liveness cost that the single-live-instance rule pays for its safety.
+    /// <summary>
+    /// This pins the liveness cost that the single-live-instance rule pays for its safety.
+    /// </summary>
     [TestMethod]
     public async Task AWriteReachesAQuorumOnlyWhereThePreviousVersionHasBeenDisseminatedOverSockets()
     {
@@ -394,7 +518,10 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     }
 
 
-    //Counting a reply from another instance would decide on a set that is a minority of the instance it names.
+    /// <summary>
+    /// Counting a reply from another instance would decide on a set that is a minority of the instance it
+    /// names.
+    /// </summary>
     [TestMethod]
     public async Task AVersionSwappingTransportYieldsNoDecisionRatherThanAWrongOneOverSockets()
     {
@@ -418,7 +545,9 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     }
 
 
-    //One honest host settles it because a committed record is a decided fact under the crash-fault model.
+    /// <summary>
+    /// One honest host settles it because a committed record is a decided fact under the crash-fault model.
+    /// </summary>
     [TestMethod]
     public async Task AReadAdoptsTheHighestRecordAnyHostReportsOverSockets()
     {
@@ -851,8 +980,10 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     private static string Name(ReplicaId replica) => Convert.ToHexStringLower(replica.AsSpan())[..4];
 
 
-    //The reply is rewritten as bytes rather than as a deserialized object, so the swap crosses the codec that
-    //a deployment would meet it at.
+    /// <summary>
+    /// The reply is rewritten as bytes rather than as a deserialized object, so the swap crosses the codec
+    /// that a deployment would meet it at.
+    /// </summary>
     private static byte[] SwapReplyVersion(int host, byte[] payload)
     {
         using JsonDocument document = JsonDocument.Parse(payload);
@@ -903,7 +1034,8 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
         ObserveCommittedVersionDelegate? observe = null,
         TimeSpan? baseDelay = null,
         PublishCommittedRecordDelegate<string>? publish = null,
-        ObserveMemberVersionDelegate? observeMember = null)
+        ObserveMemberVersionDelegate? observeMember = null,
+        ResolveCommittedRecordReaderDelegate<string>? reader = null)
     {
         return new QuePaxaVersionedRegister<string>(
             cluster.Genesis,
@@ -914,13 +1046,126 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
             AttemptsPerRecorder,
             clock ?? TimeProvider.System,
             observe,
+            resolveCommittedRecordReader: reader,
             publishCommittedRecord: publish,
             observeMemberVersion: observeMember);
     }
 
 
-    //The distinct lanes one replica proposed on at one version, in the order they first arrived. A proposal
-    //key repeats across the steps of one attempt, so the distinct lanes are what count the attempts.
+    /// <summary>
+    /// Appends one label over the wire, retrying until it lands or until its instance is known to have
+    /// decided without it. This is the in-memory linearizability bench's append ported onto real transport:
+    /// an undecided attempt catches up before retrying, and an effect that landed after its own attempt gave
+    /// up is read out of the witness rather than proposed again, because counting it lost is what makes one
+    /// effect land twice.
+    /// </summary>
+    /// <returns>The completed operation, or <see langword="null"/> when the label was retired unlanded.</returns>
+    private static async Task<RegisterOperation?> AppendOverSocketsAsync(
+        QuePaxaVersionedRegister<string> register,
+        char label,
+        CancellationToken cancellationToken)
+    {
+        long invoked = Stopwatch.GetTimestamp();
+
+        for(int round = 1; round <= MaxWriteRounds; round++)
+        {
+            //The value is computed here rather than inside a round, which is what makes it a local belief.
+            string observed = register.Committed?.Value ?? string.Empty;
+
+            QuePaxaWriteOutcome<string> outcome = await register.TryWriteAsync(observed + label, cancellationToken).ConfigureAwait(false);
+
+            if(outcome.Status == QuePaxaWriteStatus.Committed)
+            {
+                return new RegisterOperation(label, invoked, Stopwatch.GetTimestamp(), observed, outcome.Value!);
+            }
+
+            //An undecided attempt learned nothing and a stood-down one did not even send, so both need the
+            //catch-up or the next round proposes at the same closed version and stands down again. A
+            //superseded attempt has already adopted the winner and needs none.
+            if(outcome.Status == QuePaxaWriteStatus.Undecided)
+            {
+                _ = await register.ReadAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            int at = register.Committed?.Value.IndexOf(label, StringComparison.Ordinal) ?? -1;
+            if(at >= 0)
+            {
+                string chain = register.Committed!.Value;
+
+                return new RegisterOperation(label, invoked, Stopwatch.GetTimestamp(), chain[..at], chain[..(at + 1)]);
+            }
+        }
+
+        return null;
+    }
+
+
+    /// <summary>
+    /// Runs one writer on its own thread: its own register over the shared connections, two appends, and an
+    /// optional barrier between them so a nemesis can land mid-history without a clock.
+    /// </summary>
+    private static Task<RegisterOperation[]> RunSocketWriterAsync(
+        SocketVersionedQuePaxaCluster<string> cluster,
+        ReplicaId writer,
+        char firstLabel,
+        char secondLabel,
+        Task? betweenAppends,
+        Action? firstDone,
+        CancellationToken cancellationToken)
+    {
+        return Task.Run(async () =>
+        {
+            QuePaxaVersionedRegister<string> register = Register(cluster, writer, publish: cluster.PublishAsync, reader: cluster.ResolveReader);
+
+            RegisterOperation? first = await AppendOverSocketsAsync(register, firstLabel, cancellationToken).ConfigureAwait(false);
+            firstDone?.Invoke();
+            if(betweenAppends is not null)
+            {
+                await betweenAppends.ConfigureAwait(false);
+            }
+
+            RegisterOperation? second = await AppendOverSocketsAsync(register, secondLabel, cancellationToken).ConfigureAwait(false);
+
+            return new[] { first, second }.OfType<RegisterOperation>().ToArray();
+        }, cancellationToken);
+    }
+
+
+    /// <summary>
+    /// The final value as the hosts hold it, read over each member's own connection: the highest committed
+    /// record anywhere is the chosen chain every operation must sit on.
+    /// </summary>
+    private static async Task<string> WitnessOverSocketsAsync(SocketVersionedQuePaxaCluster<string> cluster, CancellationToken cancellationToken)
+    {
+        VersionedValue<string>? highest = await HighestHeldAsync(cluster, cancellationToken).ConfigureAwait(false);
+
+        return highest?.Value ?? string.Empty;
+    }
+
+
+    private static async Task<VersionedValue<string>?> HighestHeldAsync(SocketVersionedQuePaxaCluster<string> cluster, CancellationToken cancellationToken)
+    {
+        VersionedValue<string>? highest = null;
+        foreach(ReplicaId member in cluster.Genesis.Members)
+        {
+            VersionedValue<string>? held = await cluster.ResolveReader(member)(cancellationToken).ConfigureAwait(false);
+            if(held is not null && (highest is null || held.Version > highest.Version))
+            {
+                highest = held;
+            }
+        }
+
+        return highest;
+    }
+
+
+    /// <summary>
+    /// The distinct lanes one replica proposed on at one version, in the order they first arrived.
+    /// </summary>
+    /// <remarks>
+    /// A proposal key repeats across the steps of one attempt, so the distinct lanes are what count the
+    /// attempts.
+    /// </remarks>
     private static int[] LanesAt(SocketVersionedQuePaxaCluster<string> cluster, RegisterVersion version, ReplicaId replica)
     {
         return [.. cluster.Recorded
