@@ -47,6 +47,7 @@ internal static class Program
             "W5" => ReproductionGate.Run(TrialsAt(args, 1)) ? 0 : 1,
             "COMPUTED" => Computed(),
             "CELL" => Cell(args),
+            "RMW" => Rmw(args),
             "GATES" => Gates(TrialsAt(args, 1)),
             _ => Help()
         };
@@ -134,6 +135,49 @@ internal static class Program
     }
 
 
+    private static int Rmw(string[] args)
+    {
+        if(args.Length < 4)
+        {
+            Report.Text("usage: rmw <replicas> <topology> <writers> [trials] [seedBase]");
+            Report.Line($"topologies: {string.Join(", ", TopologyNames)}");
+
+            return 1;
+        }
+
+        int replicaCount = int.Parse(args[1], CultureInfo.InvariantCulture);
+        string topologyName = args[2].ToUpperInvariant();
+        int writerCount = int.Parse(args[3], CultureInfo.InvariantCulture);
+        int trials = TrialsAt(args, 4);
+        int seedBase = args.Length > 5
+            ? int.Parse(args[5], CultureInfo.InvariantCulture)
+            : CellSweep.DefaultSeedBase(replicaCount, writerCount);
+
+        Topology? placement = Resolve(topologyName, replicaCount);
+        if(placement is null)
+        {
+            Report.Line($"unknown topology '{topologyName}'; known: {string.Join(", ", TopologyNames)}");
+
+            return 1;
+        }
+
+        //A read-modify-write writer is a member of the chain it writes to, so a cell asking for more writers
+        //than replicas describes a workload no deployment can run and is refused rather than clamped.
+        if(writerCount > replicaCount)
+        {
+            Report.Line($"a read-modify-write cell runs at most one writer per replica; {writerCount} writers were asked for over {replicaCount} replicas");
+
+            return 1;
+        }
+
+        JitterModel jitter = placement.Name.StartsWith("probe", StringComparison.Ordinal)
+            ? JitterModel.PublishedMillisecondGrid
+            : JitterModel.ProportionalFifteenPercent;
+
+        return RmwCellSweep.Run(placement, writerCount, jitter, trials, seedBase).Agreed ? 0 : 1;
+    }
+
+
     private static int Help()
     {
         Report.Text("Lumoin.Verisync.DecisionTable - the measurement harness for the QuePaxa against Fast CASPaxos decision table.");
@@ -143,6 +187,8 @@ internal static class Program
         Report.Text("  gates [trials]                          verify then w5, which is what a slice is adjudicated on");
         Report.Text("  computed                                the computed cells and the quorum table, no simulation");
         Report.Text("  cell <replicas> <topology> <writers> [trials] [seedBase]");
+        Report.Text("  rmw <replicas> <topology> <writers> [trials] [seedBase]");
+        Report.Text("                                          the read-modify-write rider, at most one writer per replica");
         Report.Blank();
         Report.Line($"topologies: {string.Join(", ", TopologyNames)}");
 

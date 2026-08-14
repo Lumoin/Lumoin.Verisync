@@ -556,7 +556,7 @@ internal static class CellSweep
     /// A deployment picks a topology before it knows which member writes, so the median site is the honest
     /// single answer and the flip by placement is reported beside it rather than averaged away.
     /// </remarks>
-    private static int RepresentativeWriter(ImmutableArray<ComputedSiteCost> computed, int writerCount)
+    public static int RepresentativeWriter(ImmutableArray<ComputedSiteCost> computed, int writerCount)
     {
         int[] writers = [.. Enumerable.Range(0, writerCount).OrderBy(writer => computed[writer % computed.Length].MajorityRoundTrip).ThenBy(writer => writer)];
 

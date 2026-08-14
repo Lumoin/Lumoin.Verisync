@@ -67,7 +67,23 @@ internal static class HarnessVectors
             ("verdict-either-band-and-its-exact-boundary", VerdictEitherBandAndItsExactBoundary),
             ("verdict-tie-break-orders-the-simpler-mode-first", VerdictTieBreakOrdersTheSimplerModeFirst),
             ("verdict-winning-rung-is-expressed-in-majority-radius", VerdictWinningRungIsExpressedInMajorityRadius),
-            ("verdict-gate-b-removes-a-retried-quepaxa-configuration", VerdictGateBRemovesARetriedQuePaxaConfiguration)
+            ("verdict-gate-b-removes-a-retried-quepaxa-configuration", VerdictGateBRemovesARetriedQuePaxaConfiguration),
+            ("rmw-change-function-is-read-modify-write", RmwChangeFunctionIsReadModifyWrite),
+            ("rmw-oracle-rejects-a-duplicated-change", RmwOracleRejectsADuplicatedChange),
+            ("rmw-oracle-rejects-a-lost-change", RmwOracleRejectsALostChange),
+            ("rmw-oracle-rejects-a-foreign-token", RmwOracleRejectsAForeignToken),
+            ("rmw-oracle-accepts-the-sequential-fold", RmwOracleAcceptsTheSequentialFold),
+            ("rmw-uncontended-write-costs-one-round-on-both-arms", RmwUncontendedWriteCostsOneRound),
+            ("rmw-quepaxa-recomputes-against-the-winner", RmwQuePaxaRecomputesAgainstTheWinner),
+            ("rmw-fastcaspaxos-composes-inside-the-round", RmwFastComposesInsideTheRound),
+            ("rmw-apply-once-token-separates-the-two-arms", RmwApplyOnceTokenSeparatesTheTwoArms),
+            ("rmw-determinism-quepaxa-arm", RmwDeterminismQuePaxa),
+            ("rmw-determinism-fastcaspaxos-arm", RmwDeterminismFast),
+            ("rmw-writer-count-cannot-exceed-the-replica-count", RmwWriterCountCannotExceedTheReplicaCount),
+            ("rmw-seed-allocation-is-injective-across-both-workloads", RmwSeedAllocationIsInjective),
+            ("rmw-gate-input-is-keyed-by-protocol-rung-and-spread", RmwGateInputIsKeyedByProtocolRungAndSpread),
+            ("rmw-verdict-is-read-at-the-plain-cell-representative-writer", RmwVerdictIsReadAtThePlainCellRepresentativeWriter),
+            ("rmw-cell-feeds-the-gate-its-own-measured-rates", RmwCellFeedsTheGateItsOwnMeasuredRates)
         ];
 
         Report.Text("HARNESS VECTORS");
@@ -1191,6 +1207,583 @@ internal static class HarnessVectors
         CellVerdict unmeasured = VerdictReducer.ReduceSpread(rows, 0.00, VerdictMajorityRadiusMicroseconds, _ => null);
         failures.Require(ReferenceEquals(unmeasured.Winner, quePaxa), $"A configuration the rider holds no figure for was removed on an absence, and the cell went to {unmeasured.Winner?.Key ?? "nothing at all"}.");
     }
+
+
+    /// <summary>The placement the read-modify-write vectors contend on, which is the widest quorum gap in the grid.</summary>
+    private static Topology RmwPlacement { get; } = Topologies.Global(5);
+
+
+    /// <summary>The writer count the read-modify-write vectors contend at.</summary>
+    private const int RmwWriters = 3;
+
+
+    /// <summary>How many seeds a read-modify-write vector sweeps when it needs an event to occur at all.</summary>
+    private const int RmwSweepSeeds = 16;
+
+
+    /// <summary>The arrivals of a trial in which every writer starts at once.</summary>
+    private static ImmutableArray<long> RmwSimultaneous { get; } = [.. Enumerable.Repeat(0L, RmwWriters)];
+
+
+    /// <summary>
+    /// One QuePaxa read-modify-write trial at <paramref name="seed"/>, with every writer starting at once and
+    /// nothing staggered.
+    /// </summary>
+    /// <param name="seed">The trial index the seed is derived from.</param>
+    /// <param name="jitter">The per-leg jitter distribution.</param>
+    /// <returns>The trial's outcome.</returns>
+    /// <remarks>
+    /// A jitterless trial is what the semantic vectors want, because the arrival order is then the placement's
+    /// alone and a failing assertion names a protocol rule rather than a draw. It is also the one setting under
+    /// which the seed reaches nothing on the Fast CASPaxos arm, which has no priority stream at all, so the
+    /// determinism vectors ask for a jittered model instead.
+    /// </remarks>
+    private static RmwTrialOutcome<RmwQuePaxaWriterMeasurement> RmwQuePaxaTrial(int seed, JitterModel jitter) => RmwQuePaxaArm.RunTrial(new RmwQuePaxaTrialRequest(
+        RmwPlacement,
+        RmwWriters,
+        RmwSimultaneous,
+        0,
+        SeedMixer.TrialSeed(83, seed),
+        jitter,
+        RmwQuePaxaArm.DefaultMaxAttempts,
+        RmwQuePaxaArm.DefaultAttemptsPerRecorder,
+        RmwQuePaxaArm.DefaultEventBudget));
+
+
+    /// <summary>
+    /// One Fast CASPaxos read-modify-write trial at <paramref name="seed"/>, with every writer starting at once
+    /// and nothing hedged.
+    /// </summary>
+    /// <param name="seed">The trial index the seed is derived from.</param>
+    /// <param name="jitter">The per-leg jitter distribution.</param>
+    /// <returns>The trial's outcome.</returns>
+    private static RmwTrialOutcome<RmwFastWriterMeasurement> RmwFastTrial(int seed, JitterModel jitter) => RmwFastCasPaxosArm.RunTrial(new RmwFastTrialRequest(
+        RmwPlacement,
+        RmwWriters,
+        RmwSimultaneous,
+        TimeSpan.Zero,
+        SeedMixer.TrialSeed(83, seed),
+        jitter,
+        RmwFastCasPaxosArm.DefaultMaxRecoveryRounds,
+        RmwFastCasPaxosArm.DefaultEventBudget));
+
+
+    /// <summary>
+    /// The workload's change is a read-modify-write and carries its own apply-once token: the value it
+    /// produces is a function of the value it was given, and applying one writer's change to a value that
+    /// already carries it changes nothing.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwChangeFunctionIsReadModifyWrite(VectorFailures failures)
+    {
+        failures.Require(RmwFold.Apply(null, 'a') == "a", $"The change applied to an unwritten register produced '{RmwFold.Apply(null, 'a')}' rather than the writer's own token alone.");
+        failures.Require(RmwFold.Apply("a", 'b') == "ab", $"The change applied to 'a' produced '{RmwFold.Apply("a", 'b')}', so the value it proposes does not depend on the value it read.");
+        failures.Require(RmwFold.Apply("ba", 'c') == "bac", $"The change applied to 'ba' produced '{RmwFold.Apply("ba", 'c')}', so the order the value records is not the order the changes landed in.");
+        failures.Require(RmwFold.Apply("ab", 'b') == "ab", $"The change applied to a value already carrying its own token produced '{RmwFold.Apply("ab", 'b')}', so a change recovered back into its own round would be counted twice.");
+
+        //The tokens have to be injective, or two writers' changes would be one change and every count below
+        //would be measured over a workload with fewer writers than the trial ran.
+        for(int writer = 0; writer < RmwFold.MaximumWriters; writer++)
+        {
+            failures.Require(RmwFold.WriterOf(RmwFold.Token(writer)) == writer, $"Writer {writer}'s token maps back to writer {RmwFold.WriterOf(RmwFold.Token(writer))}.");
+        }
+
+        failures.Require(RmwFold.WriterOf('A') < 0, $"The token 'A' maps to writer {RmwFold.WriterOf('A')} rather than to no writer at all.");
+        failures.Require(!RmwFold.Carries(null, 'a'), $"An unwritten register was reported as carrying a token.");
+        failures.Require(RmwFold.Carries("cab", 'a'), $"The value 'cab' was reported as not carrying 'a'.");
+    }
+
+
+    /// <summary>
+    /// A value carrying one writer's token twice is a change applied twice, which is what a recovery composing
+    /// a writer's own value back on top of itself produces, and the oracle names it rather than tolerating it.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwOracleRejectsADuplicatedChange(VectorFailures failures)
+    {
+        RmwFoldVerdict verdict = RmwFold.Check("aba", ['a', 'b'], 3);
+
+        failures.Require(!verdict.Holds, $"The oracle accepted 'aba', in which one writer's change is applied twice.");
+        failures.Require(verdict.Reason.Contains("twice", StringComparison.Ordinal), $"The oracle rejected a duplicated change without saying so: '{verdict.Reason}'.");
+    }
+
+
+    /// <summary>
+    /// A committed writer's token missing from the committed value is a lost update, which is what a proposer
+    /// re-proposing a stale value or applying its change to a stale base produces.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwOracleRejectsALostChange(VectorFailures failures)
+    {
+        RmwFoldVerdict verdict = RmwFold.Check("b", ['a', 'b'], 3);
+
+        failures.Require(!verdict.Holds, $"The oracle accepted 'b' while the writer holding 'a' reported its change committed.");
+        failures.Require(verdict.Reason.Contains("lost", StringComparison.Ordinal), $"The oracle rejected a lost change without saying so: '{verdict.Reason}'.");
+    }
+
+
+    /// <summary>
+    /// A token belonging to no writer of the trial is a corrupted value, and the oracle separates it from the
+    /// two failures a protocol can produce.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwOracleRejectsAForeignToken(VectorFailures failures)
+    {
+        RmwFoldVerdict verdict = RmwFold.Check("az", ['a'], 3);
+
+        failures.Require(!verdict.Holds, $"The oracle accepted 'az' in a trial of three writers, so a token no writer holds is not caught.");
+        failures.Require(verdict.Reason.Contains("no writer", StringComparison.Ordinal), $"The oracle rejected a foreign token without saying so: '{verdict.Reason}'.");
+    }
+
+
+    /// <summary>
+    /// The oracle accepts exactly the sequential folds: any order of distinct tokens, an unwritten register
+    /// with nothing committed, and a value carrying the token of a writer that never learned its own change
+    /// landed. The last of those is a client-side timeout rather than a protocol violation.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwOracleAcceptsTheSequentialFold(VectorFailures failures)
+    {
+        foreach(string fold in new[] { "abc", "cab", "bca" })
+        {
+            RmwFoldVerdict verdict = RmwFold.Check(fold, ['a', 'b', 'c'], 3);
+            failures.Require(verdict.Holds, $"The oracle rejected the sequential fold '{fold}': {verdict.Reason}");
+        }
+
+        RmwFoldVerdict unwritten = RmwFold.Check(null, [], 3);
+        failures.Require(unwritten.Holds, $"The oracle rejected an unwritten register with nothing committed: {unwritten.Reason}");
+
+        RmwFoldVerdict censored = RmwFold.Check("ab", ['a'], 3);
+        failures.Require(censored.Holds, $"The oracle rejected a value carrying the token of a writer that spent its budget without learning its own change had landed: {censored.Reason}");
+    }
+
+
+    /// <summary>
+    /// A lone writer has nobody to lose to, so its change costs exactly one consensus instance on QuePaxa and
+    /// exactly one blind fast round on Fast CASPaxos, and neither arm reports a conflict.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwUncontendedWriteCostsOneRound(VectorFailures failures)
+    {
+        foreach((int replicaCount, Topology placement) in EveryPlacement())
+        {
+            ComputedSiteCost computed = QuorumDistance.For(placement)[0];
+
+            RmwTrialOutcome<RmwQuePaxaWriterMeasurement> quePaxaTrial = RmwQuePaxaArm.RunTrial(new RmwQuePaxaTrialRequest(
+                placement, 1, [0], 0, SeedMixer.TrialSeed(87, replicaCount), JitterModel.None,
+                RmwQuePaxaArm.DefaultMaxAttempts, RmwQuePaxaArm.DefaultAttemptsPerRecorder, RmwQuePaxaArm.DefaultEventBudget));
+
+            RmwQuePaxaWriterMeasurement quePaxa = quePaxaTrial.Writers[0];
+            failures.Require(quePaxa.IsCommitted, $"{placement.Name} at {replicaCount}: the uncontended QuePaxa read-modify-write did not commit.");
+            failures.Require(quePaxa.Attempts == 1, $"{placement.Name} at {replicaCount}: the uncontended QuePaxa read-modify-write spent {quePaxa.Attempts} attempts rather than one.");
+            failures.Require(quePaxa.ConflictRecomputes == 0, $"{placement.Name} at {replicaCount}: a lone QuePaxa writer reported {quePaxa.ConflictRecomputes} conflicts.");
+            failures.Require(quePaxa.CommittedValue == "a", $"{placement.Name} at {replicaCount}: the lone QuePaxa writer committed '{quePaxa.CommittedValue}' rather than its own token alone.");
+            failures.Require(quePaxa.CommitMicroseconds == computed.QuePaxaLeaderRoundTrip, $"{placement.Name} at {replicaCount}: the simulated QuePaxa read-modify-write took {quePaxa.CommitMicroseconds}us against the computed majority radius of {computed.QuePaxaLeaderRoundTrip}us.");
+
+            //THE ORACLE READS THE REPLICAS, so a lone writer that committed and told nobody is a broken fold
+            //rather than a clean one: dissemination is what makes the next version servable, and a cluster that
+            //holds nothing is not a cluster that holds this writer's change.
+            failures.Require(quePaxaTrial.FinalValue == "a", $"{placement.Name} at {replicaCount}: the replicas hold '{quePaxaTrial.FinalValue ?? "nothing"}' after the lone QuePaxa write committed 'a'.");
+            failures.Require(quePaxaTrial.Fold.Holds, $"{placement.Name} at {replicaCount}: the uncontended QuePaxa fold broke: {quePaxaTrial.Fold.Reason}");
+
+            RmwTrialOutcome<RmwFastWriterMeasurement> fast = RmwFastCasPaxosArm.RunTrial(new RmwFastTrialRequest(
+                placement, 1, [0], TimeSpan.Zero, SeedMixer.TrialSeed(89, replicaCount), JitterModel.None,
+                RmwFastCasPaxosArm.DefaultMaxRecoveryRounds, RmwFastCasPaxosArm.DefaultEventBudget));
+
+            RmwFastWriterMeasurement lone = fast.Writers[0];
+            failures.Require(lone.IsCommitted, $"{placement.Name} at {replicaCount}: the uncontended Fast CASPaxos read-modify-write did not commit.");
+            failures.Require(lone.ReachedFastQuorum, $"{placement.Name} at {replicaCount}: a lone writer has nobody to split its round with and must reach its fast quorum.");
+            failures.Require(lone.PhasesExecuted == 1, $"{placement.Name} at {replicaCount}: the uncontended Fast CASPaxos read-modify-write executed {lone.PhasesExecuted} phases rather than one.");
+            failures.Require(lone.ConflictRounds == 0, $"{placement.Name} at {replicaCount}: a lone Fast CASPaxos writer reported {lone.ConflictRounds} conflict rounds.");
+            failures.Require(lone.CommittedValue == "a", $"{placement.Name} at {replicaCount}: the lone Fast CASPaxos writer committed '{lone.CommittedValue}' rather than its own token alone, so its blind round carried something other than its change.");
+            failures.Require(lone.CommitMicroseconds == computed.FastShippedRoundTrip, $"{placement.Name} at {replicaCount}: the simulated Fast CASPaxos read-modify-write took {lone.CommitMicroseconds}us against the computed farthest round trip of {computed.FastShippedRoundTrip}us.");
+            failures.Require(fast.FinalValue == "a", $"{placement.Name} at {replicaCount}: the acceptors hold '{fast.FinalValue ?? "nothing"}' after the lone Fast CASPaxos write committed 'a'.");
+            failures.Require(fast.Fold.Holds, $"{placement.Name} at {replicaCount}: the uncontended Fast CASPaxos fold broke: {fast.Fold.Reason}");
+        }
+    }
+
+
+    /// <summary>
+    /// A QUEPAXA WRITE THAT LOST ITS VERSION RECOMPUTES AGAINST THE WINNER AND DOES NOT RE-PROPOSE ITS OWN
+    /// STALE VALUE. The value it finally commits is exactly the winner it last recomputed against with its own
+    /// token appended, so a proposer carrying its first computation forward would be a different value rather
+    /// than a slower one, and the fold would lose the winner's change.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwQuePaxaRecomputesAgainstTheWinner(VectorFailures failures)
+    {
+        int conflicted = 0;
+        int folds = 0;
+        for(int seed = 0; seed < RmwSweepSeeds; seed++)
+        {
+            RmwTrialOutcome<RmwQuePaxaWriterMeasurement> trial = RmwQuePaxaTrial(seed, JitterModel.None);
+            folds += trial.Fold.Holds ? 1 : 0;
+            failures.Require(trial.Fold.Holds, $"The QuePaxa read-modify-write fold broke at seed {seed}: {trial.Fold.Reason}");
+
+            foreach(RmwQuePaxaWriterMeasurement measurement in trial.Writers)
+            {
+                if(measurement.ConflictRecomputes == 0)
+                {
+                    continue;
+                }
+
+                conflicted++;
+                failures.Require(measurement.LastConflictBase is not null, $"Writer {measurement.Writer} at seed {seed} reported {measurement.ConflictRecomputes} conflicts and no value it recomputed against.");
+                failures.Require(measurement.RecomposedAgainstAnotherWriter, $"Writer {measurement.Writer} at seed {seed} recomputed against '{measurement.LastConflictBase}', which carries no other writer's change, so nothing superseded it.");
+                failures.Require(!RmwFold.Carries(measurement.LastConflictBase, measurement.Token), $"Writer {measurement.Writer} at seed {seed} recomputed against '{measurement.LastConflictBase}', which already carries its own change.");
+
+                if(measurement.IsCommitted)
+                {
+                    string expected = RmwFold.Apply(measurement.LastConflictBase, measurement.Token);
+                    failures.Require(measurement.CommittedValue == expected, $"Writer {measurement.Writer} at seed {seed} committed '{measurement.CommittedValue}' after last recomputing against '{measurement.LastConflictBase}', which is not that winner with its own change appended.");
+                }
+            }
+        }
+
+        failures.Require(conflicted > 0, $"No QuePaxa writer lost its version over {RmwSweepSeeds} simultaneous three-writer trials, so this vector pins nothing about the recompute at all.");
+        failures.Require(folds == RmwSweepSeeds, $"{folds} of {RmwSweepSeeds} QuePaxa folds held.");
+    }
+
+
+    /// <summary>
+    /// A FAST CASPAXOS WRITE APPLIES ITS CHANGE TO THE VALUE THE ROUND RECOVERED, INSIDE THAT ROUND. The value
+    /// it commits is exactly what its last round recovered with its own token appended, so a proposer applying
+    /// its change to the value it knew before the round would drop whatever that round recovered.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwFastComposesInsideTheRound(VectorFailures failures)
+    {
+        int composed = 0;
+        for(int seed = 0; seed < RmwSweepSeeds; seed++)
+        {
+            RmwTrialOutcome<RmwFastWriterMeasurement> trial = RmwFastTrial(seed, JitterModel.None);
+            failures.Require(trial.Fold.Holds, $"The Fast CASPaxos read-modify-write fold broke at seed {seed}: {trial.Fold.Reason}");
+
+            foreach(RmwFastWriterMeasurement measurement in trial.Writers)
+            {
+                if(!measurement.RecomposedAgainstAnotherWriter)
+                {
+                    continue;
+                }
+
+                composed++;
+                failures.Require(measurement.RecoveryEntered, $"Writer {measurement.Writer} at seed {seed} composed against another writer's change without entering a classic round, so the composition did not happen inside a round.");
+                failures.Require(measurement.ComposeCalls > 0, $"Writer {measurement.Writer} at seed {seed} composed against another writer's change with no in-round application at all.");
+
+                if(measurement.IsCommitted)
+                {
+                    string expected = RmwFold.Apply(measurement.LastRecoveredValue, measurement.Token);
+                    failures.Require(measurement.CommittedValue == expected, $"Writer {measurement.Writer} at seed {seed} committed '{measurement.CommittedValue}' after its last round recovered '{measurement.LastRecoveredValue}', which is not that recovered value with its own change appended.");
+                }
+            }
+        }
+
+        failures.Require(composed > 0, $"No Fast CASPaxos writer composed against another writer's change over {RmwSweepSeeds} simultaneous three-writer trials, so this vector pins nothing about the in-round application at all.");
+    }
+
+
+    /// <summary>
+    /// THE APPLY-ONCE TOKEN IS THE OBSERVABLE OF THE INTERCHANGEABILITY BOUNDARY. Fast CASPaxos recovers a
+    /// writer's own partially accepted value back into that writer's own round, so the token fires there and a
+    /// plain append would count one change twice. QuePaxa discards a superseded proposal whole rather than
+    /// composing it, and on this placement an attempt that decides nothing records nothing either, so the token
+    /// does not fire here at all. Both arms run the one change function, so the difference between the two
+    /// counts is the protocols' and not the workload's.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwApplyOnceTokenSeparatesTheTwoArms(VectorFailures failures)
+    {
+        int fastFirings = 0;
+        int quePaxaFirings = 0;
+        for(int seed = 0; seed < RmwSweepSeeds; seed++)
+        {
+            foreach(RmwFastWriterMeasurement measurement in RmwFastTrial(seed, JitterModel.None).Writers)
+            {
+                fastFirings += measurement.ApplyOnceTokenFirings;
+            }
+
+            foreach(RmwQuePaxaWriterMeasurement measurement in RmwQuePaxaTrial(seed, JitterModel.None).Writers)
+            {
+                quePaxaFirings += measurement.ApplyOnceTokenFirings;
+            }
+        }
+
+        failures.Require(fastFirings > 0, $"The apply-once token never fired on the Fast CASPaxos arm over {RmwSweepSeeds} contended trials, so nothing here shows that a recovery can tally a writer's own value back into its own round.");
+        failures.Require(quePaxaFirings == 0, $"The apply-once token fired {quePaxaFirings} times on the QuePaxa arm at a placement where a superseded proposal is the only way to lose, so a losing proposal was composed with the winner rather than discarded whole.");
+    }
+
+
+    /// <summary>
+    /// A read-modify-write run is a function of its seed, and the seed is shown to be load-bearing beside it.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwDeterminismQuePaxa(VectorFailures failures)
+    {
+        string first = RmwFingerprint(RmwQuePaxaTrial(0, JitterModel.ProportionalFifteenPercent));
+        string second = RmwFingerprint(RmwQuePaxaTrial(0, JitterModel.ProportionalFifteenPercent));
+        failures.Require(first == second, $"The QuePaxa read-modify-write arm returned two different runs at one seed: '{first}' against '{second}'.");
+
+        string other = RmwFingerprint(RmwQuePaxaTrial(1, JitterModel.ProportionalFifteenPercent));
+        failures.Require(first != other, $"The QuePaxa read-modify-write arm returned '{first}' at two different seeds, so the seed reaches no measurement and the same-seed check above pins nothing.");
+    }
+
+
+    /// <summary>
+    /// A read-modify-write run is a function of its seed, and the seed is shown to be load-bearing beside it.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwDeterminismFast(VectorFailures failures)
+    {
+        string first = RmwFingerprint(RmwFastTrial(0, JitterModel.ProportionalFifteenPercent));
+        string second = RmwFingerprint(RmwFastTrial(0, JitterModel.ProportionalFifteenPercent));
+        failures.Require(first == second, $"The Fast CASPaxos read-modify-write arm returned two different runs at one seed: '{first}' against '{second}'.");
+
+        string other = RmwFingerprint(RmwFastTrial(2, JitterModel.ProportionalFifteenPercent));
+        failures.Require(first != other, $"The Fast CASPaxos read-modify-write arm returned '{first}' at two different seeds, so the seed reaches no measurement and the same-seed check above pins nothing.");
+    }
+
+
+    /// <summary>
+    /// A QuePaxa read-modify-write writer is a member of the chain it writes to, so a trial with more writers
+    /// than replicas is refused rather than measured: a non-member proposes nothing at all, and counting its
+    /// refusal as a write would report contention that never happened.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwWriterCountCannotExceedTheReplicaCount(VectorFailures failures)
+    {
+        //A trial that ran anyway would put two registers on one replica, which is outside what a versioned
+        //register supports, so whatever it then did is caught and reported here rather than left to escape and
+        //take the whole vector suite down with it.
+        bool refused = false;
+        string escaped = string.Empty;
+        try
+        {
+            _ = RmwQuePaxaArm.RunTrial(new RmwQuePaxaTrialRequest(
+                Topologies.Global(3), 5, [0, 0, 0, 0, 0], 0, SeedMixer.TrialSeed(91, 0), JitterModel.None,
+                RmwQuePaxaArm.DefaultMaxAttempts, RmwQuePaxaArm.DefaultAttemptsPerRecorder, RmwQuePaxaArm.DefaultEventBudget));
+        }
+        catch(ArgumentException)
+        {
+            refused = true;
+        }
+        catch(Exception unexpected)
+        {
+            escaped = unexpected.GetType().Name;
+        }
+
+        failures.Require(refused, $"A read-modify-write trial ran five writers over three replicas{(escaped.Length == 0 ? " and returned a measurement" : $" and failed with {escaped}")} rather than refusing the request.");
+
+        //And the writer counts the rider does run are inside the bound at every replica count of the grid.
+        foreach(int replicaCount in Topologies.ReplicaCounts)
+        {
+            foreach(int writerCount in CellSweep.WriterCounts.Where(count => count <= replicaCount))
+            {
+                failures.Require(writerCount <= RmwFold.MaximumWriters, $"The rider's {writerCount}-writer cell at {replicaCount} replicas is outside the token alphabet.");
+            }
+        }
+    }
+
+
+    /// <summary>
+    /// The rider's two arms take the seed offsets a cell reserved for them, so no read-modify-write row draws
+    /// the trial-seed stream of a plain row and no cell aliases into the next one.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwSeedAllocationIsInjective(VectorFailures failures)
+    {
+        int[] arms = [CellSweep.QuePaxaArmSeedOffset, CellSweep.FastArmSeedOffset, RmwCellSweep.QuePaxaArmSeedOffset, RmwCellSweep.FastArmSeedOffset];
+        var allocated = new Dictionary<int, string>();
+
+        foreach(int replicaCount in Topologies.ReplicaCounts)
+        {
+            foreach(int writerCount in CellSweep.WriterCounts)
+            {
+                foreach(int arm in arms)
+                {
+                    int seedBase = CellSweep.DefaultSeedBase(replicaCount, writerCount) + arm;
+                    string owner = string.Create(CultureInfo.InvariantCulture, $"{replicaCount} replicas, {writerCount} writers, arm {arm}");
+                    failures.Require(!allocated.TryGetValue(seedBase, out string? held), $"The seed base {seedBase} serves both {owner} and {held}, so two rows draw one trial-seed stream.");
+                    allocated[seedBase] = owner;
+                }
+            }
+        }
+
+        failures.Require(arms.Distinct().Count() == arms.Length, $"The four arms of a cell take {arms.Distinct().Count()} distinct seed offsets.");
+        failures.Require(arms.Length <= CellSweep.SeedsPerCell, $"A cell reserves {CellSweep.SeedsPerCell} seed bases for {arms.Length} arms, so an arm aliases into the next cell.");
+    }
+
+
+    /// <summary>
+    /// The workload gate reads a rate keyed by protocol, rung and arrival spread. Keying it per configuration
+    /// is what lets a ladder rung that eliminated the conflicts survive the gate while an unstaggered one does
+    /// not, and leaving the mode out of the key is what gives a leaderless row the rate measured at its own
+    /// rung rather than leaving it silently ungated: the rider's QuePaxa arm is the versioned register, which
+    /// derives its leader and has no leaderless configuration to measure.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwGateInputIsKeyedByProtocolRungAndSpread(VectorFailures failures)
+    {
+        ImmutableArray<RmwRow> rider =
+        [
+            RmwGateRow(ConfigurationMode.QuePaxaLeadered, 0.00, 0.00, 0.80),
+            RmwGateRow(ConfigurationMode.QuePaxaLeadered, 1.00, 0.00, 0.02),
+            RmwGateRow(ConfigurationMode.QuePaxaLeadered, 1.00, 2.00, 0.50),
+            RmwGateRow(ConfigurationMode.FastUnhedged, 0.00, 0.00, 0.05)
+        ];
+
+        RetryRateDelegate rates = RmwRetryRates.For(rider);
+
+        failures.Require(rates(RmwGateRow(ConfigurationMode.QuePaxaLeadered, 0.00, 0.00, 0.0).Row) == 0.80, $"An unstaggered QuePaxa row read a rate of {rates(RmwGateRow(ConfigurationMode.QuePaxaLeadered, 0.00, 0.00, 0.0).Row)} rather than the 0.80 measured at its own rung.");
+        failures.Require(rates(RmwGateRow(ConfigurationMode.QuePaxaLeadered, 1.00, 0.00, 0.0).Row) == 0.02, $"A staggered QuePaxa row read a rate of {rates(RmwGateRow(ConfigurationMode.QuePaxaLeadered, 1.00, 0.00, 0.0).Row)}, so the rung is not in the key and one rate would decide every rung of the cell.");
+        failures.Require(rates(RmwGateRow(ConfigurationMode.QuePaxaLeadered, 1.00, 2.00, 0.0).Row) == 0.50, $"A row at another arrival spread read a rate of {rates(RmwGateRow(ConfigurationMode.QuePaxaLeadered, 1.00, 2.00, 0.0).Row)}, so the spread is not in the key.");
+        failures.Require(rates(RmwGateRow(ConfigurationMode.QuePaxaLeaderless, 1.00, 0.00, 0.0).Row) == 0.02, $"A leaderless QuePaxa row read {rates(RmwGateRow(ConfigurationMode.QuePaxaLeaderless, 1.00, 0.00, 0.0).Row)?.ToString(CultureInfo.InvariantCulture) ?? "no rate at all"}, so the mode is in the key and the plain grid's leaderless configurations would go through the gate unmeasured.");
+        failures.Require(rates(RmwGateRow(ConfigurationMode.FastUnhedged, 0.00, 0.00, 0.0).Row) == 0.05, $"A Fast CASPaxos row read the QuePaxa rate, so the protocol is not in the key.");
+        failures.Require(rates(RmwGateRow(ConfigurationMode.QuePaxaLeadered, 0.25, 0.00, 0.0).Row) is null, $"A rung the rider never measured read a rate, so the gate would remove on something other than a measurement.");
+
+        //A rate two measurements disagreed on is not a rate, and a lookup that silently kept the last one
+        //would make the gate depend on the order the sweep happened to run in.
+        bool refused = false;
+        try
+        {
+            _ = RmwRetryRates.For([RmwGateRow(ConfigurationMode.QuePaxaLeadered, 0.00, 0.00, 0.10), RmwGateRow(ConfigurationMode.QuePaxaLeadered, 0.00, 0.00, 0.90)]);
+        }
+        catch(ArgumentException)
+        {
+            refused = true;
+        }
+
+        failures.Require(refused, $"Two rider rows at one protocol, rung and spread were folded into one rate.");
+    }
+
+
+    /// <summary>
+    /// The rider's verdict is read at the writer the plain cell's verdict is read at, which is the median site
+    /// by majority radius. A rider that spoke for a different writer could not be compared with the cell it
+    /// came from at all.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwVerdictIsReadAtThePlainCellRepresentativeWriter(VectorFailures failures)
+    {
+        foreach(int replicaCount in Topologies.ReplicaCounts)
+        {
+            foreach(Topology placement in Topologies.Grid(replicaCount))
+            {
+                ImmutableArray<ComputedSiteCost> computed = QuorumDistance.For(placement);
+                foreach(int writerCount in CellSweep.WriterCounts.Where(count => count <= replicaCount))
+                {
+                    int representative = CellSweep.RepresentativeWriter(computed, writerCount);
+                    long[] radii = [.. Enumerable.Range(0, writerCount).Select(writer => computed[writer % computed.Length].MajorityRoundTrip).Order()];
+                    long median = radii[(writerCount - 1) / 2];
+
+                    failures.Require(representative >= 0 && representative < writerCount, $"{placement.Name} at {replicaCount} replicas and {writerCount} writers speaks for writer {representative}, which is not a writer of the cell.");
+                    failures.Require(computed[representative % computed.Length].MajorityRoundTrip == median, $"{placement.Name} at {replicaCount} replicas and {writerCount} writers speaks for a writer paying {computed[representative % computed.Length].MajorityRoundTrip}us against the median {median}us.");
+                }
+            }
+        }
+    }
+
+
+    /// <summary>
+    /// A WHOLE CELL, MEASURED AND REDUCED. The rider's rows carry the conflict rate the gate reads, the gate
+    /// removes the QuePaxa configurations that are above the ceiling and only those, and the two readings of
+    /// the gate are the same cell answered two ways. A lone writer conflicts with nobody, so its cell is where
+    /// the gate must remove nothing at all; a contended cell is where it must remove something, and a rider
+    /// whose rate never reached the gate would leave the two readings identical in both.
+    /// </summary>
+    /// <param name="failures">The vector's failure collector.</param>
+    private static void RmwCellFeedsTheGateItsOwnMeasuredRates(VectorFailures failures)
+    {
+        RmwCellOutcome contended = RmwCellSweep.Measure(RmwPlacement, RmwWriters, JitterModel.None, 6, 4200);
+
+        failures.Require(contended.Agreed, $"The contended read-modify-write cell did not agree, so the fold broke somewhere in it.");
+        failures.Require(contended.Rows.Length == 27, $"The contended cell measured {contended.Rows.Length} rows rather than the nine configurations at each of three arrival spreads.");
+        failures.Require(contended.Rows.All(row => row.Row.Agreed && row.FoldBreaches == 0), $"{contended.Rows.Count(row => row.FoldBreaches > 0)} rows of the contended cell carry a fold breach.");
+
+        ImmutableArray<RmwRow> quePaxa = [.. contended.Rows.Where(row => row.Row.Protocol == ProtocolKind.QuePaxa)];
+        failures.Require(quePaxa.All(row => row.ConflictRetryRate > VerdictReducer.RetryRateCeiling), $"{quePaxa.Count(row => row.ConflictRetryRate <= VerdictReducer.RetryRateCeiling)} of the cell's {quePaxa.Length} QuePaxa rows re-proposed at or below the ceiling, so the rows the gate is meant to remove are not the rows the rider measured.");
+        failures.Require(contended.GatedVerdicts.All(verdict => verdict.Removed.Any(removal => removal.Row.Protocol == ProtocolKind.QuePaxa && removal.Reason.Contains("gate B", StringComparison.Ordinal))), $"A contended spread's gated verdict removed no QuePaxa configuration under gate B, so the rate the rider measured never reached the reducer.");
+        failures.Require(contended.GatedVerdicts.All(verdict => verdict.Removed.All(removal => removal.Row.Protocol == ProtocolKind.QuePaxa)), $"The gate removed a Fast CASPaxos configuration, and the settled rule binds QuePaxa alone.");
+        failures.Require(contended.InertVerdicts.All(verdict => verdict.Removed.IsEmpty), $"The inert reading removed {contended.InertVerdicts.Sum(verdict => verdict.Removed.Length)} configurations, so the gate is not inert without a measured rate.");
+
+        //THE LADDER IS LOAD-BEARING. A rung an operator configures has to reach the register's own hedging
+        //delay, or every rung of the QuePaxa ladder would measure the unstaggered row.
+        double unstaggered = quePaxa.First(row => row.Row.Rung == 0.00 && row.Row.Spread == 0.00).Row.RepresentativeAddedWaitMicroseconds;
+        double staggered = quePaxa.First(row => row.Row.Rung == 1.00 && row.Row.Spread == 0.00).Row.RepresentativeAddedWaitMicroseconds;
+        failures.Require(unstaggered == 0.0, $"The unstaggered QuePaxa row reports an added wait of {unstaggered}us.");
+        failures.Require(staggered > unstaggered, $"The QuePaxa row at rung 1.00 reports an added wait of {staggered}us against the unstaggered row's {unstaggered}us, so the rung reaches no delay at all.");
+
+        //A FAST CASPAXOS FALLBACK IS NOT A CONFLICT. The blind round splitting is what the classic round exists
+        //to absorb, and only a ballot another proposer pre-empted costs a further round; a conflict column that
+        //counted the fallback would report the two protocols' costs in one currency they do not share.
+        RmwRow settled = contended.Rows.First(row => row.Row.Protocol == ProtocolKind.FastCasPaxos && row.Row.Rung == 1.50 && row.Row.Spread == 0.00);
+        failures.Require(settled.ConflictRetryRate == 0.0, $"The fully hedged Fast CASPaxos row reports a conflict rate of {settled.ConflictRetryRate:F3}, so its unduelled classic rounds are counted as re-proposals.");
+        failures.Require(settled.Row.WriterFastRate < 1.0, $"Every write of the fully hedged Fast CASPaxos row settled on the blind round, so the row cannot show that a fallback is not a conflict.");
+
+        RmwCellOutcome lone = RmwCellSweep.Measure(RmwPlacement, 1, JitterModel.None, 4, 4204);
+
+        failures.Require(lone.Rows.Length == 6, $"The one-writer cell measured {lone.Rows.Length} rows rather than the two configurations at each of three arrival spreads.");
+        failures.Require(lone.Rows.All(row => row.ConflictRetryRate == 0.0), $"A lone writer reported a conflict rate above zero, so the column counts something other than another writer getting in first.");
+        failures.Require(lone.GatedVerdicts.All(verdict => verdict.Removed.IsEmpty), $"The gate removed a configuration in a cell with nobody to conflict with.");
+        failures.Require(lone.Rows.All(row => row.ApplyOnceRate == 0.0), $"A lone writer's change found itself already applied, which needs a rival's round to be possible at all.");
+    }
+
+
+    /// <summary>
+    /// A rider row carrying only what the workload gate's lookup reads.
+    /// </summary>
+    /// <param name="mode">The configuration.</param>
+    /// <param name="rung">The ladder rung as an operator configures it.</param>
+    /// <param name="spread">The arrival spread.</param>
+    /// <param name="rate">The conflict rate the gate would read.</param>
+    /// <returns>The row.</returns>
+    private static RmwRow RmwGateRow(ConfigurationMode mode, double rung, double spread, double rate) => new(
+        new MeasuredRow(
+            mode,
+            rung,
+            0,
+            spread,
+            PercentileReading.None,
+            PercentileReading.At(100.0),
+            PercentileReading.None,
+            PercentileReading.None,
+            PercentileReading.At(100.0),
+            PercentileReading.None,
+            0,
+            0,
+            0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            true),
+        rate,
+        rate,
+        0.0,
+        0.0,
+        0,
+        0,
+        string.Empty);
+
+
+    private static string RmwFingerprint(RmwTrialOutcome<RmwQuePaxaWriterMeasurement> outcome) => string.Join(
+        "|",
+        outcome.FinalValue ?? "(unwritten)",
+        string.Join(
+            ";",
+            outcome.Writers.Select(measurement => string.Create(
+                CultureInfo.InvariantCulture,
+                $"{measurement.Writer}:{measurement.IsCommitted}:{measurement.Attempts}:{measurement.ConflictRecomputes}:{measurement.UndecidedRecomputes}:{measurement.ApplyOnceTokenFirings}:{measurement.CommitMicroseconds}:{measurement.CommittedValue}"))));
+
+
+    private static string RmwFingerprint(RmwTrialOutcome<RmwFastWriterMeasurement> outcome) => string.Join(
+        "|",
+        outcome.FinalValue ?? "(unwritten)",
+        string.Join(
+            ";",
+            outcome.Writers.Select(measurement => string.Create(
+                CultureInfo.InvariantCulture,
+                $"{measurement.Writer}:{measurement.IsCommitted}:{measurement.RecoveryRounds}:{measurement.ConflictRounds}:{measurement.PhasesExecuted}:{measurement.ComposeCalls}:{measurement.ApplyOnceTokenFirings}:{measurement.CommitMicroseconds}:{measurement.CommittedValue}"))));
 
 
     private static IEnumerable<(int ReplicaCount, Topology Placement)> EveryPlacement()
