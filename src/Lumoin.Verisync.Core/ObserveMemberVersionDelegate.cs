@@ -24,5 +24,11 @@ namespace Lumoin.Verisync.Core;
 /// reached are different situations, and a readiness gate that confused them would clear a decommission
 /// against a silent cluster.
 /// </para>
+/// <para>
+/// It is the flat seam beside a curried one. <see cref="ResolveCommittedRecordReaderDelegate{TValue}"/>,
+/// its per-member neighbour in the register's constructor, returns a query that is invoked in a second
+/// call, while this one answers in the call it is given; the difference is the resolve step, not the
+/// question asked.
+/// </para>
 /// </remarks>
 public delegate ValueTask<RegisterVersion> ObserveMemberVersionDelegate(ReplicaId member, CancellationToken cancellationToken);

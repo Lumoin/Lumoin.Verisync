@@ -86,7 +86,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <param name="genesis">The chain's genesis membership, which is deployment configuration and the membership the first instance runs under.</param>
     /// <param name="self">This replica, which need not be a member of <paramref name="genesis"/>.</param>
     /// <param name="baseDelay">The hedging delay increment per position in the membership order. Zero activates every replica at once.</param>
-    /// <param name="resolveRecorder">Answers which transport reaches one member, called per member per attempt.</param>
+    /// <param name="resolveRecorder">Resolves the transport that reaches one member, called per member per attempt; the attempt's requests then go through the endpoint it returns.</param>
     /// <param name="drawPriority">The source of the phase-zero priority draw.</param>
     /// <param name="attemptsPerRecorder">How many times one step may send to one recorder before abandoning it for that step. Must be at least one.</param>
     /// <param name="timeProvider">The clock the hedging delay runs against.</param>
@@ -96,11 +96,12 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// activates on its delay.
     /// </param>
     /// <param name="resolveCommittedRecordReader">
-    /// An optional per-member catch-up query used by <see cref="ReadAsync"/> to learn versions this replica
-    /// missed. When <see langword="null"/> the register can still write, and <see cref="ReadAsync"/> reports
-    /// only what it already holds. A host driven by a <see cref="QuePaxaVersionedRunner{TValue}"/> supplies
-    /// that runner's <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>, which answers through
-    /// the loop after making its state durable.
+    /// An optional resolver of per-member catch-up queries: <see cref="ReadAsync"/> invokes it with a member
+    /// and then invokes the query it returns to learn versions this replica missed. When
+    /// <see langword="null"/> the register can still write, and <see cref="ReadAsync"/> reports only what it
+    /// already holds. A host driven by a <see cref="QuePaxaVersionedRunner{TValue}"/> resolves to that
+    /// runner's <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>, which answers through the
+    /// loop after making its state durable.
     /// </param>
     /// <param name="publishCommittedRecord">
     /// An optional sink offered every record an attempt decides, this replica's own and another's alike,
@@ -110,6 +111,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// </param>
     /// <param name="observeMemberVersion">
     /// An optional per-member version query, which is what <see cref="ReadReadinessAsync"/> is built from.
+    /// Unlike its resolver neighbours it is the query itself, invoked directly with the member and the token.
     /// When <see langword="null"/> this register reports no readiness at all rather than reporting an empty
     /// one.
     /// </param>
@@ -396,7 +398,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <param name="value">The value to propose.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>What the attempt established.</returns>
-    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if the version range is spent, or if a recorder answered for an instance other than the one addressed or naming a member other than the one addressed.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if the version range is spent, or if the round decided a record carrying a version other than the instance's own, which is a misrouted decision refused rather than adopted. A recorder whose reply mis-answers its envelope — another instance's version, or another member's name — is absorbed as an unreachable recorder instead and surfaces as an undecided outcome, never as this throw.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled.</exception>
     /// <remarks>
     /// One attempt and no retry, so an undecided outcome is reported rather than retried. A caller that wants
@@ -431,7 +433,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <returns>What the write established.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="update"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="maxAttempts"/> is less than one.</exception>
-    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if the version range is spent, or if a recorder answered for an instance other than the one addressed or naming a member other than the one addressed.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if the version range is spent, or if the round decided a record carrying a version other than the instance's own, which is a misrouted decision refused rather than adopted. A recorder whose reply mis-answers its envelope — another instance's version, or another member's name — is absorbed as an unreachable recorder instead and surfaces as an undecided outcome, never as this throw.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled.</exception>
     /// <remarks>
     /// <para>
@@ -484,7 +486,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <returns>What the reconfiguration established, which names the record that installed the membership.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="change"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="maxAttempts"/> is less than one.</exception>
-    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if nothing is committed yet, if the version range is spent, or if a recorder answered for an instance other than the one addressed or naming a member other than the one addressed.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if nothing is committed yet, if the version range is spent, or if the round decided a record carrying a version other than the instance's own, which is a misrouted decision refused rather than adopted. A recorder whose reply mis-answers its envelope — another instance's version, or another member's name — is absorbed as an unreachable recorder instead and surfaces as an undecided outcome, never as this throw.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled.</exception>
     /// <remarks>
     /// <para>

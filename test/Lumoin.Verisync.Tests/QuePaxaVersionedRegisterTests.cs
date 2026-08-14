@@ -365,6 +365,49 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
+    //The envelope guards refuse a transport that mis-answers the wrapper, and this is the arm they cannot
+    //see: every envelope is honest while the record inside each gathered proposal carries another version,
+    //so the round concludes a decision the instance was never addressed with. The write faults before
+    //adoption, because a misrouted decision let into the committed state would set the next instance's
+    //leader.
+    [TestMethod]
+    public async Task ADecisionCarryingAnotherVersionFaultsTheWriteRatherThanBeingAdopted()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, resolve: member =>
+        {
+            VersionedRecorderEndpointDelegate<VersionedValue<string>> inner = cluster.Resolve(member);
+
+            return async (request, token) =>
+            {
+                VersionedRecordReply<VersionedValue<string>> reply = await inner(request, token).ConfigureAwait(false);
+
+                return reply with { Reply = Reversion(reply.Reply) };
+            };
+        });
+
+        InvalidOperationException reported = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            async () => await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.Contains("decided a record carrying version", reported.Message);
+        Assert.IsNull(register.Committed, "A record the write refused was adopted anyway.");
+
+        static PrioritizedProposal<VersionedValue<string>> Rewrap(PrioritizedProposal<VersionedValue<string>> proposal)
+        {
+            return proposal with { Value = proposal.Value with { Version = proposal.Value.Version.Next() } };
+        }
+
+        static RecordReply<VersionedValue<string>> Reversion(RecordReply<VersionedValue<string>> reply)
+        {
+            return reply with
+            {
+                First = Rewrap(reply.First),
+                PriorAggregate = reply.PriorAggregate is { } prior ? Rewrap(prior) : null,
+            };
+        }
+    }
+
+
     [TestMethod]
     public async Task AConcurrentWriteIsRefusedRatherThanSharingALane()
     {

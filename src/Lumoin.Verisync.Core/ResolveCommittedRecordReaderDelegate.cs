@@ -12,7 +12,10 @@ namespace Lumoin.Verisync.Core;
 /// It is the read side of <see cref="ResolveRecorderEndpointDelegate{TValue}"/> and follows the same rules:
 /// called per member, synchronous, and asked about identities a configuration change introduced. A member it
 /// cannot resolve reports so by throwing or by returning a query that faults, which a read skips like any
-/// other failing host.
+/// other failing host. The one rule the two do not share is the nesting level: the query returned here is
+/// instantiated at <typeparamref name="TValue"/> and yields the record as its result, where the resolved
+/// endpoint is itself instantiated at <see cref="VersionedValue{TValue}"/>, so the two resolvers' inner type
+/// arguments differ by exactly the record wrap.
 /// </para>
 /// <para>
 /// Nothing here is counted, unlike the recorder side. A catch-up takes no quorum, because a committed record

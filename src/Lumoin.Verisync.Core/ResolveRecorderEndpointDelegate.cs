@@ -7,7 +7,10 @@ namespace Lumoin.Verisync.Core;
 /// </summary>
 /// <typeparam name="TValue">The application value type.</typeparam>
 /// <param name="member">The member to reach.</param>
-/// <returns>The endpoint that carries requests to that member.</returns>
+/// <returns>The endpoint that carries requests to that member: a
+/// <see cref="VersionedRecorderEndpointDelegate{TValue}"/> instantiated at <see cref="VersionedValue{TValue}"/>
+/// rather than at <typeparamref name="TValue"/>, because a versioned register's consensus value is the record
+/// and not the application value inside it.</returns>
 /// <remarks>
 /// <para>
 /// It is called once per member per attempt, synchronously and on the attempt's own path, so it looks a
