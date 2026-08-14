@@ -21,7 +21,8 @@ namespace Lumoin.Verisync.Tests;
 /// It sits beside <see cref="VersionedQuePaxaCluster{TValue}"/> with the same observations,
 /// <see cref="Served"/>, <see cref="Declined"/> and <see cref="Recorded"/>, plus <see cref="Sent"/>, which
 /// only a wire bench needs, and the same <see cref="Partition"/> and <see cref="Heal"/>. The controls the
-/// runner's ownership forces to differ are named for it: learns are <see cref="LearnAtAsync"/> and
+/// runner's ownership forces to differ are named for it: learns are <see cref="LearnAtAsync"/>,
+/// <see cref="LearnInMemoryAtAsync"/> and
 /// <see cref="LearnAllAsync"/> because they queue through the runner, a catch-up read is served by
 /// <see cref="Readers"/> over the wire because nothing may touch a node the runner owns,
 /// <see cref="DrainAsync"/> is the barrier the wire adds, and reply corruption is injected as bytes at
@@ -36,7 +37,8 @@ namespace Lumoin.Verisync.Tests;
 /// <para>
 /// An observation a serve loop writes is complete only after <see cref="DrainAsync"/>, unless the test can
 /// show no frame can yet be in flight: a clock that has not advanced, or an outcome only a served frame
-/// could have produced. <see cref="Served"/>, <see cref="Declined"/> and <see cref="Recorded"/> are written
+/// could have produced. <see cref="Served"/>, <see cref="Declined"/>, <see cref="Recorded"/> and
+/// <see cref="Answered"/> are written
 /// by the serve loops, and a write's outcome is no barrier for a frame still in flight, because a proposer
 /// that abandoned a slow recorder leaves a request the host has yet to answer. A test therefore drains
 /// first and asserts afterwards, and the tests that take the exemption carry the argument for it at the
@@ -58,10 +60,12 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The channels, gates and enumerators built here are held in this instance's arrays and disposed by DisposeAsync.")]
     private SocketVersionedQuePaxaCluster(
         QuePaxaLeaderSchedule schedule,
+        QuePaxaConfiguration? genesis,
         Action<Utf8JsonWriter, TValue> writeValue,
         Func<JsonElement, TValue> readValue,
         VersionedValue<TValue>? committed,
         TamperReplyPayloadDelegate? tamperReplyPayload,
+        PersistVersionedNodeDelegate<TValue>[]? persistNodes,
         TcpListener[] listeners,
         TcpClient[] clients,
         TcpClient[] servers,
@@ -70,7 +74,7 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         int hostCount = listeners.Length;
 
         Schedule = schedule;
-        Genesis = QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
+        Genesis = genesis ?? QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
         TamperReplyPayload = tamperReplyPayload;
         Listeners = listeners;
         Clients = clients;
@@ -99,7 +103,7 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         for(int index = 0; index < hostCount; index++)
         {
             Runners[index] = new QuePaxaVersionedRunner<TValue>(new QuePaxaVersionedNode<TValue>(Genesis, schedule.Schedule.Order[index], committed));
-            RunTasks[index] = Runners[index].RunAsync(cancellationToken: cancellationToken);
+            RunTasks[index] = Runners[index].RunAsync(persistNodes is null ? null : persistNodes[index], cancellationToken);
         }
 
         for(int index = 0; index < hostCount; index++)
@@ -127,9 +131,15 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     public QuePaxaLeaderSchedule Schedule { get; }
 
     /// <summary>
-    /// The genesis membership every host of this cluster runs under, minted from the agreed order so that a
-    /// register over the same order stamps the value the hosts derive.
+    /// The genesis membership every host of this cluster runs under, which is minted from the agreed order
+    /// unless a scenario supplied one, so that a register over the same chain stamps the value the hosts
+    /// derive.
     /// </summary>
+    /// <remarks>
+    /// A supplied genesis need not name every host. A replica this cluster runs a host for while the
+    /// membership leaves it out is a joiner before the change that admits it, and a bench whose membership is
+    /// its host list cannot state that at all.
+    /// </remarks>
     public QuePaxaConfiguration Genesis { get; }
 
     public int HostCount => Runners.Length;
@@ -190,6 +200,26 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     }
 
     /// <summary>
+    /// Which member answered at which version, in arrival order, complete only after
+    /// <see cref="DrainAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// A host that declined the instance is not an answer, so the reading is taken where the host replied
+    /// rather than where the request arrived. What it reports is whose answers a quorum could have been
+    /// counted over, which is a claim about identities and not only about how many there were.
+    /// </remarks>
+    public IReadOnlyList<(ReplicaId Member, RegisterVersion Version)> Answered
+    {
+        get
+        {
+            lock(Observations)
+            {
+                return [.. AnsweredVersions];
+            }
+        }
+    }
+
+    /// <summary>
     /// The number of record replies the endpoints decoded, which separates a rejection by the register's
     /// guard from a rejection by the codec.
     /// </summary>
@@ -243,6 +273,8 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
     private List<RegisterVersion> DeclinedVersions { get; } = [];
 
+    private List<(ReplicaId Member, RegisterVersion Version)> AnsweredVersions { get; } = [];
+
     private List<(RegisterVersion Version, ProposalKey Key)> RecordedKeys { get; } = [];
 
     private TamperReplyPayloadDelegate? TamperReplyPayload { get; }
@@ -272,10 +304,19 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     /// <param name="cancellationToken">The token the runner loops, the serve loops and the connect run under.</param>
     /// <param name="committed">The record every host starts having learned, or <see langword="null"/> for a fresh cluster.</param>
     /// <param name="tamperReplyPayload">An optional rewrite of the reply bytes a record endpoint receives.</param>
+    /// <param name="genesis">The chain's genesis membership, which need not name every host; minted from the agreed order when <see langword="null"/>.</param>
+    /// <param name="persistNodes">One store per host, or <see langword="null"/> for hosts whose loops run without one.</param>
     /// <returns>A connected cluster.</returns>
     /// <remarks>
+    /// <para>
     /// This is a factory rather than a constructor because the connections must be established before the
     /// instance exists, and a socket cannot be connected without awaiting.
+    /// </para>
+    /// <para>
+    /// The stores are per scenario and never blanket. A store makes every reply a host hands back wait on a
+    /// write, so a cluster given one is a cluster whose per-request work differs from every other scenario's,
+    /// and only a scenario that reads what was written is entitled to that cost.
+    /// </para>
     /// </remarks>
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The listeners and clients are handed to the instance, which disposes them in DisposeAsync, and a failure before that instance exists disposes everything started here.")]
     public static async Task<SocketVersionedQuePaxaCluster<TValue>> ConnectAsync(
@@ -285,12 +326,18 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         Func<JsonElement, TValue> readValue,
         CancellationToken cancellationToken,
         VersionedValue<TValue>? committed = null,
-        TamperReplyPayloadDelegate? tamperReplyPayload = null)
+        TamperReplyPayloadDelegate? tamperReplyPayload = null,
+        QuePaxaConfiguration? genesis = null,
+        PersistVersionedNodeDelegate<TValue>[]? persistNodes = null)
     {
         ArgumentNullException.ThrowIfNull(schedule);
         ArgumentOutOfRangeException.ThrowIfLessThan(hostCount, 1);
         ArgumentNullException.ThrowIfNull(writeValue);
         ArgumentNullException.ThrowIfNull(readValue);
+        if(persistNodes is not null && persistNodes.Length != hostCount)
+        {
+            throw new ArgumentException("A cluster takes one store per host, so a shorter list would leave a host's durability decided by its position.", nameof(persistNodes));
+        }
 
         List<TcpListener> listeners = new(hostCount);
         List<TcpClient> clients = new(hostCount);
@@ -316,7 +363,7 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
             TcpClient[] servers = await Task.WhenAll(acceptTasks).ConfigureAwait(false);
 
-            return new SocketVersionedQuePaxaCluster<TValue>(schedule, writeValue, readValue, committed, tamperReplyPayload, [.. listeners], [.. clients], servers, cancellationToken);
+            return new SocketVersionedQuePaxaCluster<TValue>(schedule, genesis, writeValue, readValue, committed, tamperReplyPayload, persistNodes, [.. listeners], [.. clients], servers, cancellationToken);
         }
         catch(Exception)
         {
@@ -375,6 +422,23 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     public async Task<bool> LearnAtAsync(int index, VersionedValue<TValue> committed, CancellationToken cancellationToken)
     {
         return await Runners[index].LearnAsync(committed, LearnDurability.Durable, cancellationToken).ConfigureAwait(false);
+    }
+
+
+    /// <summary>Tells one host about a committed record, requiring nothing of that host's store.</summary>
+    /// <param name="index">The host.</param>
+    /// <param name="committed">A decided record.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns><see langword="true"/> when the record advanced that host.</returns>
+    /// <remarks>
+    /// This is the other half of the durability contract <see cref="LearnAtAsync"/> names, kept as a separate
+    /// seam so a scenario states which obligation the sender took on. A record that installs a membership is
+    /// made durable under either naming, which is what leaves the ordinary record as the one shape the two
+    /// namings can be told apart on.
+    /// </remarks>
+    public async Task<bool> LearnInMemoryAtAsync(int index, VersionedValue<TValue> committed, CancellationToken cancellationToken)
+    {
+        return await Runners[index].LearnAsync(committed, LearnDurability.InMemory, cancellationToken).ConfigureAwait(false);
     }
 
 
@@ -780,6 +844,10 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         lock(Observations)
         {
             ServedCounts[host]++;
+
+            //Recorded where the host answered rather than where the request arrived, so a host that declined
+            //the instance is one this reading does not count as an answer.
+            AnsweredVersions.Add((Schedule.Schedule.Order[host], reply.Version));
         }
 
         var buffer = new ArrayBufferWriter<byte>();

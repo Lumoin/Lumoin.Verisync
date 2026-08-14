@@ -63,6 +63,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     private static ReplicaId First { get; } = Replica(1);
     private static ReplicaId Second { get; } = Replica(2);
     private static ReplicaId Third { get; } = Replica(3);
+    private static ReplicaId Fourth { get; } = Replica(4);
 
     /// <summary>
     /// The membership every record in this suite carries, minted from the agreed order the hosts run under.
@@ -538,6 +539,264 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     }
 
 
+    /// <summary>
+    /// An ordinary record pushed to a host whose runner keeps a store is durable at that host before the push
+    /// completes. The membership the record names is the one the host already runs under, so the durability
+    /// the sender required is the only thing that can have written it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The store is this scenario's alone. Every reply a host with a store hands back waits on a write, so a
+    /// cluster given one does per-request work no other scenario does, and only a scenario that reads what
+    /// was written earns that.
+    /// </para>
+    /// <para>
+    /// A record that installs a membership is made durable whatever the sender named, because it may be the
+    /// only copy of that membership inside the membership it installs. That leaves the ordinary record as the
+    /// one shape on which the two namings differ at all, which is why the reading below is taken over a
+    /// record carrying the membership forward and the arm after it is taken over one that does not.
+    /// </para>
+    /// <para>
+    /// The drain is the barrier the count needs. A proposer that abandoned a slow recorder can leave a
+    /// request the host has yet to answer, and every answer this host serves costs it a write, so a count
+    /// taken while one is in flight would be counting the round rather than the push.
+    /// </para>
+    /// </remarks>
+    [TestMethod]
+    public async Task AnOrdinaryPushedRecordIsDurableAtTheReceivingHostBeforeTheLearnCompletes()
+    {
+        RecordingNodeStore[] stores = [new(), new(), new()];
+        SocketVersionedQuePaxaCluster<string> cluster = await ConnectAsync(
+            Schedule(),
+            persistNodes: [.. stores.Select(store => (PersistVersionedNodeDelegate<string>)store.PersistAsync)]).ConfigureAwait(false);
+        try
+        {
+            QuePaxaVersionedRegister<string> register = Register(cluster, First);
+
+            QuePaxaWriteOutcome<string> committed = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(QuePaxaWriteStatus.Committed, committed.Status);
+
+            await cluster.DrainAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+            VersionedValue<string> record = register.Committed!;
+            RecordingNodeStore receiving = stores[2];
+            int writtenBeforeThePush = receiving.States.Count;
+
+            Assert.IsGreaterThan(0, writtenBeforeThePush, "The host wrote nothing while it served the round, so this store is not the one its loop was given.");
+            Assert.IsNull(receiving.States[^1].Committed, "The host had the record before it was pushed one, so a state carrying it afterwards would say nothing about the push.");
+            Assert.AreEqual(cluster.Genesis, record.NextConfiguration, "The pushed record moves the membership, and a record that installs one is made durable whatever the sender named.");
+
+            bool advanced = await cluster.LearnAtAsync(2, record, TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.IsTrue(advanced);
+            Assert.HasCount(writtenBeforeThePush + 1, receiving.States, "The pushed learn completed without a write, so the durability its sender named is a word rather than an obligation the receiver met.");
+            Assert.AreEqual(record, receiving.States[^1].Committed, "The state made durable by the push does not carry the record that was pushed.");
+
+            //The other half of the asymmetry, and the reason the reading above is taken over an ordinary
+            //record: a record that installs a membership is written even where the sender required nothing.
+            VersionedValue<string> installing = new(record.Version.Next(), First, cluster.Genesis.With(Fourth), "b");
+            int writtenBeforeTheInstall = receiving.States.Count;
+
+            Assert.IsTrue(await cluster.LearnInMemoryAtAsync(2, installing, TestContext.CancellationToken).ConfigureAwait(false));
+            Assert.HasCount(writtenBeforeTheInstall + 1, receiving.States, "A learn that installed a membership completed without a write, so the record carrying that membership is one a crash takes with it.");
+            Assert.AreEqual(installing.NextConfiguration, receiving.States[^1].ActiveConfiguration, "The state made durable by the installing learn runs under the membership the record replaced.");
+        }
+        finally
+        {
+            await cluster.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+
+    /// <summary>
+    /// A chain founded on a member list that is not in ascending replica order keeps that order across the
+    /// wire. The replica the genesis lists first leads, and the membership that comes back inside the decided
+    /// record lists the members in the order they were encoded.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every other cluster in this suite is founded on an ascending list, where a decoder that sorted what it
+    /// read and one that read it faithfully produce the same list and no vector can separate them. A
+    /// deployment's genesis order is its own, and it is load-bearing: the chain identity is the digest of that
+    /// ordered list, and the first member is the bootstrap leader.
+    /// </para>
+    /// <para>
+    /// Protocol progress cannot pin the order. Every host and the register decode the same bytes the same way,
+    /// so a transform applied alike everywhere leaves them agreeing with each other and the round proceeds;
+    /// what sees it is a comparison of what came back against what went in. Two are read here: the write's own
+    /// status, which compares the whole decided record against the one proposed, and a record read back off a
+    /// host's connection.
+    /// </para>
+    /// </remarks>
+    [TestMethod]
+    public async Task AGenesisWhoseMemberOrderIsNotAscendingCrossesTheWireInTheOrderItWasEncoded()
+    {
+        ImmutableArray<ReplicaId> order = [Third, First, Second];
+        SocketVersionedQuePaxaCluster<string> cluster = await ConnectAsync(new QuePaxaLeaderSchedule(HedgingSchedule.Create(order, BaseDelay))).ConfigureAwait(false);
+        try
+        {
+            Assert.AreSequenceEqual(order, cluster.Genesis.Members, "The chain was founded on a different list than the one this scenario rests on.");
+
+            QuePaxaVersionedRegister<string> register = Register(cluster, Third);
+
+            Assert.AreEqual(TimeSpan.Zero, register.Delay, "The replica the genesis lists first is not the one that writes without waiting, so the order read here is not the membership's own.");
+
+            QuePaxaWriteOutcome<string> committed = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+            //The decided record came back off the wire, and the status is a comparison of that whole record
+            //against the one that went onto it, so a decoder that reordered the members reports this
+            //register's own write as somebody else's.
+            Assert.AreEqual(QuePaxaWriteStatus.Committed, committed.Status, "The register's own record did not come back equal to the one it proposed, so something between the two rewrote it.");
+            Assert.IsTrue(committed.TookFastPath, "The bootstrap leader of a genesis in this order lost its reserved claim, so the hosts derive the leader from a list other than the one they were given.");
+            Assert.AreSequenceEqual(order, register.ActiveConfiguration.Members, "The membership that crossed the wire does not list the members in the order they were encoded.");
+            Assert.AreEqual(cluster.Genesis.Cluster, register.ActiveConfiguration.Cluster, "The membership that crossed the wire names another chain than the genesis it was minted on.");
+
+            //And once more through a host: the record is handed to every host and read back over that host's
+            //own connection, so what this compares is a membership encoded here, held there and decoded again.
+            await cluster.LearnAllAsync(register.Committed!, TestContext.CancellationToken).ConfigureAwait(false);
+
+            VersionedValue<string>? readBack = await cluster.ResolveReader(First)(TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.IsNotNull(readBack, "The host reported no record after it was handed one.");
+            Assert.AreEqual(register.Committed, readBack, "The record read back off a host's connection is not the one that was handed to it.");
+            Assert.AreSequenceEqual(order, readBack.NextConfiguration.Members, "The membership read back off a host's connection lists the members in another order than the one encoded.");
+
+            //Writing continues over the order the deployment named, which is what says the order that survived
+            //is also the one the schedule and the quorum are taken over.
+            QuePaxaWriteOutcome<string> next = await register.TryWriteAsync("b", TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(QuePaxaWriteStatus.Committed, next.Status);
+            Assert.AreEqual(new RegisterVersion(2UL), next.Version);
+        }
+        finally
+        {
+            await cluster.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+
+    /// <summary>
+    /// A membership grown over sockets, every member of it caught up, and then one member's route cut: the
+    /// write after the change is gathered from the three members that remain reachable, each of them named,
+    /// while the fourth holds the installing record the whole time and could have answered.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An answering set on a write owes a quorum and not a census, so a reading that names members is only
+    /// legitimate where the quorum cannot be met without each of them. Here it cannot: the membership has
+    /// four members and a quorum of three, one route is cut, and the three that remain are exactly a quorum,
+    /// so every name in the reading is required rather than observed.
+    /// </para>
+    /// <para>
+    /// What separates this from a member that was never disseminated to is the fourth member's state. It
+    /// holds the record that installed the membership and its host is up, so it is an answerer the write
+    /// could have been gathered from, and the reading afterwards says which three it actually was. The
+    /// readiness read taken once the route is healed is what shows the member was able all along.
+    /// </para>
+    /// <para>
+    /// The versions before the boundary are read as a subset of the membership plus the quorum floor, because
+    /// there several members could serve and which of them answered is the run's timing.
+    /// </para>
+    /// </remarks>
+    [TestMethod]
+    public async Task AWriteAfterAGrowIsGatheredFromThreeNamedMembersWhileAFourthCouldHaveAnswered()
+    {
+        //Four hosts and three members: the fourth runs on the chain's genesis like the rest, because it
+        //belongs to the chain from the moment its deployment starts it and only the membership is behind.
+        ImmutableArray<ReplicaId> hosts = [First, Second, Third, Fourth];
+        QuePaxaConfiguration genesis = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+        SocketVersionedQuePaxaCluster<string> cluster = await ConnectAsync(
+            new QuePaxaLeaderSchedule(HedgingSchedule.Create(hosts, BaseDelay)),
+            hostCount: hosts.Length,
+            genesis: genesis).ConfigureAwait(false);
+        try
+        {
+            QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: cluster.ObserveMemberVersionAsync);
+
+            QuePaxaWriteOutcome<string> bootstrap = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(QuePaxaWriteStatus.Committed, bootstrap.Status);
+
+            //Dissemination is explicit here, as in a deployment: only the members of the membership that
+            //decided the first record are told about it.
+            foreach(ReplicaId member in genesis.Members)
+            {
+                Assert.IsTrue(await cluster.LearnAtAsync(hosts.IndexOf(member), register.Committed!, TestContext.CancellationToken).ConfigureAwait(false));
+            }
+
+            QuePaxaWriteOutcome<string> grown = await register.ReconfigureAsync(current => current.With(Fourth), maxAttempts: 2, TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(QuePaxaWriteStatus.Committed, grown.Status);
+            Assert.AreSequenceEqual(new[] { First, Second, Third, Fourth }, register.ActiveConfiguration.Members, "The membership that crossed the wire does not list the members that were encoded, in that order.");
+            Assert.AreEqual(3, register.ActiveConfiguration.Quorum, "A membership of four does not count a quorum of three, so the arithmetic the reading below rests on is not the one measured here.");
+
+            //EVERY MEMBER CATCHES UP, THE JOINER INCLUDED. That is what makes the reading at the end a claim
+            //about which members answered rather than about which of them was able to.
+            await cluster.LearnAllAsync(register.Committed!, TestContext.CancellationToken).ConfigureAwait(false);
+
+            RegisterReadiness ready = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+            TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness once the whole installed membership caught up: {Describe(ready)}"));
+            Assert.AreEqual(4, ready.Reachable, "A member that answers over its connection was reported unreachable.");
+            Assert.AreEqual(grown.Version, ready.Members.Single(member => member.Member.Equals(Fourth)).Version, "The joiner does not hold the record that admitted it, so it is not an answerer the write below could have been gathered from.");
+
+            //The route to the third member is cut, which leaves exactly a quorum able to answer.
+            cluster.Partition(hosts.IndexOf(Third));
+
+            QuePaxaWriteOutcome<string> across = await register.TryWriteAsync("b", TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(QuePaxaWriteStatus.Committed, across.Status);
+            Assert.AreEqual(new RegisterVersion(3UL), across.Version);
+
+            //Healing before the reading is what shows the fourth answerer was a route and never a host: the
+            //member that could not be asked answers again with the record it held all along.
+            cluster.Heal(hosts.IndexOf(Third));
+
+            RegisterReadiness healed = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+            TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness once the cut route is restored: {Describe(healed)}"));
+            Assert.AreEqual(grown.Version, healed.Members.Single(member => member.Member.Equals(Third)).Version, "The member whose route was cut does not hold the installing record, so it could not have served the write that ran without it.");
+
+            await cluster.DrainAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+            ImmutableArray<ReplicaId> firstVersion = AnsweredAt(cluster, hosts, bootstrap.Version);
+
+            Assert.IsTrue(firstVersion.All(genesis.Members.Contains), "The first version was answered outside the membership it ran under.");
+            Assert.IsGreaterThanOrEqualTo(genesis.Quorum, firstVersion.Length, "The first version was answered by fewer members than the quorum it committed on.");
+
+            //EVERY ANSWER IS REQUIRED BY NAME. The membership has four members and a quorum of three, and one
+            //route is cut, so the write could not have committed without each of the three named here.
+            Assert.AreSequenceEqual(new[] { First, Second, Fourth }, AnsweredAt(cluster, hosts, across.Version), "The write after the change was not gathered from the joiner and the two reachable incumbents, so the quorum it committed on is not the one the installed membership names.");
+        }
+        finally
+        {
+            await cluster.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+
+    /// <summary>The members of <paramref name="hosts"/> that answered at <paramref name="version"/>.</summary>
+    /// <param name="cluster">The cluster whose serve loops recorded the answers, drained before this is read.</param>
+    /// <param name="hosts">The hosts to read, in the order the reading reports them.</param>
+    /// <param name="version">The instance to read.</param>
+    /// <returns>Those members, each named once.</returns>
+    /// <remarks>
+    /// The arrival order across hosts is the run's timing rather than a property of the protocol, so the
+    /// reading is ordered by the host list, and a member that answered several steps of one instance is named
+    /// once because what is read is which recorders a quorum could have been counted over.
+    /// </remarks>
+    private static ImmutableArray<ReplicaId> AnsweredAt(
+        SocketVersionedQuePaxaCluster<string> cluster,
+        ImmutableArray<ReplicaId> hosts,
+        RegisterVersion version)
+    {
+        IReadOnlyList<(ReplicaId Member, RegisterVersion Version)> answered = cluster.Answered;
+
+        return [.. hosts.Where(host => answered.Any(entry => entry.Version == version && entry.Member.Equals(host)))];
+    }
+
+
     /// <summary>One readiness report as a line, per member, for the run's own record.</summary>
     /// <param name="readiness">The report.</param>
     /// <returns>The line.</returns>
@@ -581,15 +840,22 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     }
 
 
-    private Task<SocketVersionedQuePaxaCluster<string>> ConnectAsync(QuePaxaLeaderSchedule schedule, TamperReplyPayloadDelegate? tamperReplyPayload = null)
+    private Task<SocketVersionedQuePaxaCluster<string>> ConnectAsync(
+        QuePaxaLeaderSchedule schedule,
+        TamperReplyPayloadDelegate? tamperReplyPayload = null,
+        int? hostCount = null,
+        QuePaxaConfiguration? genesis = null,
+        PersistVersionedNodeDelegate<string>[]? persistNodes = null)
     {
         return SocketVersionedQuePaxaCluster<string>.ConnectAsync(
             schedule,
-            HostCount,
+            hostCount ?? HostCount,
             static (writer, value) => writer.WriteStringValue(value),
             static element => element.GetString()!,
             TestContext.CancellationToken,
-            tamperReplyPayload: tamperReplyPayload);
+            tamperReplyPayload: tamperReplyPayload,
+            genesis: genesis,
+            persistNodes: persistNodes);
     }
 
 
@@ -641,5 +907,25 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
         buffer[0] = id;
 
         return ReplicaId.FromSpan(buffer);
+    }
+
+
+    /// <summary>A store that records every state it is asked to write and completes at once.</summary>
+    private sealed class RecordingNodeStore
+    {
+        /// <summary>Every state written, in the order the host's loop wrote them.</summary>
+        public List<QuePaxaVersionedNodeState<string>> States { get; } = [];
+
+
+        /// <summary>Writes <paramref name="state"/>, which is this store's persist delegate.</summary>
+        /// <param name="state">The state to make durable.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>A completed task, because nothing here can be slow.</returns>
+        public ValueTask PersistAsync(QuePaxaVersionedNodeState<string> state, CancellationToken cancellationToken)
+        {
+            States.Add(state);
+
+            return ValueTask.CompletedTask;
+        }
     }
 }

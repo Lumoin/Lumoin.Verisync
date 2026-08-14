@@ -43,9 +43,17 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
     private static ReplicaId Second { get; } = Replica(2);
     private static ReplicaId Third { get; } = Replica(3);
     private static ReplicaId Fourth { get; } = Replica(4);
+    private static ReplicaId Fifth { get; } = Replica(5);
+    private static ReplicaId Sixth { get; } = Replica(6);
 
     /// <summary>The replicas every scenario runs a host for, members and outsiders alike.</summary>
     private static ImmutableArray<ReplicaId> AllHosts { get; } = [First, Second, Third, Fourth];
+
+    /// <summary>
+    /// The replicas a change between two memberships sharing no member runs a host for, which needs a second
+    /// full membership standing outside the first.
+    /// </summary>
+    private static ImmutableArray<ReplicaId> AllHostsAndASecondMembership { get; } = [First, Second, Third, Fourth, Fifth, Sixth];
 
     /// <summary>The chain three of those four hosts found, leaving the fourth running outside it.</summary>
     private static QuePaxaConfiguration ThreeMemberGenesis { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
@@ -277,6 +285,197 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
         Assert.IsLessThanOrEqualTo(AttemptBudget, resumed.Attempts, "The write that followed the cleared gate did not commit inside its budget.");
 
         AssertUniqueHighestCommittedPerVersion(cluster, leastVersions: 3, "a boundary whose quorum learns late");
+    }
+
+
+    /// <summary>
+    /// Two operators change the membership at one instance, one admitting a host and one dropping another.
+    /// One change wins the instance and the other is superseded; the superseded one re-applies its delta
+    /// against the membership that won, so both operators' intentions survive and neither undoes the other.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The two deltas are chosen so that composing against the winner and composing against the register's
+    /// genesis give different memberships. A change that starts at genesis, or one that computes the same
+    /// result under both, cannot tell the two apart at all, and every change with one of those shapes leaves
+    /// the composition rule unstated. Here the loser removes a host the winner never touched while the winner
+    /// admits one the loser never named, so a composition against genesis drops the host the winner admitted.
+    /// </para>
+    /// <para>
+    /// THE SUPERSESSION IS ARRANGED AND NOT RACED. A rival's record closes the instance at every host that
+    /// learns it, and a proposer arriving after that is declined rather than told what won, so a scenario that
+    /// let the winner's dissemination land would leave the loser undecided and never reach the retry. The
+    /// hosts are held back while the winning change is decided, which leaves them serving the instance with
+    /// the decided record in their recorder registers, and released before the losing change runs, so the
+    /// loser's own attempt learns the winner and its own publish makes the winner's record servable for the
+    /// retry.
+    /// </para>
+    /// </remarks>
+    [TestMethod]
+    public async Task ASupersededChangeReAppliesItsDeltaAgainstTheMembershipThatWonTheInstance()
+    {
+        InterleavedVersionedQuePaxaCluster<string> cluster = new(ThreeMemberGenesis, AllHosts, BaseDelay, seed: 32);
+        QuePaxaVersionedRegister<string> growing = cluster.CreateRegister(First, AttemptsPerRecorder);
+        QuePaxaVersionedRegister<string> shrinking = cluster.CreateRegister(Second, AttemptsPerRecorder);
+
+        QuePaxaWriteOutcome<string> bootstrap = await DriveAsync(cluster, growing.WriteAsync(_ => "a", AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, bootstrap.Status);
+
+        //The second operator's register catches up before it changes anything, because a reconfiguration
+        //carries a committed value forward and this register has written none of its own.
+        _ = await DriveAsync(cluster, shrinking.ReadAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(bootstrap.Version, shrinking.Committed!.Version, "The second operator's register did not catch up, so its change would be refused for want of a value rather than contend for the instance.");
+
+        foreach(ReplicaId host in AllHosts)
+        {
+            cluster.HoldDissemination(host);
+        }
+
+        QuePaxaWriteOutcome<string> grown = await DriveAsync(cluster, growing.ReconfigureAsync(current => current.With(Fourth), AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, grown.Status);
+        Assert.AreEqual(new RegisterVersion(2UL), grown.Version);
+        Assert.AreEqual(1, grown.Attempts, "The change that won the instance spent more than one attempt, so what the other one meets is not a single decided record.");
+        foreach(ReplicaId member in ThreeMemberGenesis.Members)
+        {
+            Assert.AreEqual(bootstrap.Version, cluster.CommittedAt(member)!.Version, "A host took the record the winning change decided, so it declines the losing change rather than telling it what won.");
+        }
+
+        foreach(ReplicaId host in AllHosts)
+        {
+            cluster.ResumeDissemination(host);
+        }
+
+        //The second operator's change captured the same instance and meets the record that closed it. Its own
+        //attempt adopts that record, publishes it, and the retry runs at the version after it.
+        QuePaxaWriteOutcome<string> shrunk = await DriveAsync(cluster, shrinking.ReconfigureAsync(current => current.Without(Third), AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"the change that won committed at version {grown.Version.Value} over {grown.Attempts} attempts, the one that composed at version {shrunk.Version.Value} over {shrunk.Attempts}"));
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, shrunk.Status);
+
+        //A change that was never superseded commits at the version it captured, so the version after it and
+        //the second attempt are what say a retry ran at all, and the whole reading below rests on that.
+        Assert.AreEqual(new RegisterVersion(3UL), shrunk.Version, "The second change committed at the version it captured, so it was never superseded and no retry re-applied a delta.");
+        Assert.AreEqual(2, shrunk.Attempts, "The second change committed on its first attempt, so it did not lose the instance and compose against what won it.");
+        Assert.AreEqual("a", shrunk.Value, "The change that retried did not carry the committed value forward.");
+
+        //THE DELTA COMPOSES AGAINST THE WINNER. Both operators' intentions are installed, which is what a
+        //delta re-applied against the membership that won gives; one re-applied against the register's genesis
+        //would drop the host the winner admitted, because the genesis never named it.
+        VersionedValue<string> installed = cluster.CommittedAt(First)!;
+
+        Assert.AreEqual(new RegisterVersion(3UL), installed.Version, "The host holds an earlier record than the one the retry decided.");
+        Assert.AreSequenceEqual(new[] { First, Second, Fourth }, installed.NextConfiguration.Members, "The installed membership is not what the two deltas compose to, so the retry re-applied its change against a membership other than the one that won the instance.");
+        Assert.AreSequenceEqual(new[] { First, Second, Fourth }, shrinking.ActiveConfiguration.Members, "The register that retried runs under a membership other than the one its own retry installed.");
+
+        AssertUniqueHighestCommittedPerVersion(cluster, leastVersions: 3, "a change superseded by a rival change");
+    }
+
+
+    /// <summary>
+    /// A change to a membership sharing no member with the current one commits and is reported, and the write
+    /// after it cannot proceed until dissemination has reached a quorum of the membership that change
+    /// installed. Safe, and immediately unavailable.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The library does not refuse such a change. Reachability is not a fact a register holds, so a refusal
+    /// would forbid the operation whenever an operator does know the incoming membership is up, and the
+    /// pre-flight is a readiness read rather than a rule.
+    /// </para>
+    /// <para>
+    /// Safe is asserted twice over: the instance that decided the change ran entirely under the membership
+    /// that existed before it, so no version is held as two records, and every replica of that membership
+    /// reports itself outside the one it installed rather than writing on.
+    /// </para>
+    /// <para>
+    /// Unavailable is asserted as a bounded observation and never as a wait. The two incoming members that
+    /// hold no record decline the instance, so the attempt budget is what ends the write, and the outcome is
+    /// an undecided report with the budget spent rather than a call that never returns.
+    /// </para>
+    /// </remarks>
+    [TestMethod]
+    public async Task AChangeToADisjointMembershipCommitsAndTheWriteAfterItWaitsForThatMembershipToCatchUp()
+    {
+        InterleavedVersionedQuePaxaCluster<string> cluster = new(ThreeMemberGenesis, AllHostsAndASecondMembership, BaseDelay, seed: 33);
+        QuePaxaVersionedRegister<string> outgoing = cluster.CreateRegister(First, AttemptsPerRecorder);
+        QuePaxaVersionedRegister<string> incoming = cluster.CreateRegister(Fourth, AttemptsPerRecorder);
+
+        QuePaxaWriteOutcome<string> bootstrap = await DriveAsync(cluster, outgoing.WriteAsync(_ => "a", AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, bootstrap.Status);
+
+        //Two of the three hosts the change installs answer everything and take nothing, so the record that
+        //installs them reaches one of them and never a quorum of them.
+        cluster.HoldDissemination(Fifth);
+        cluster.HoldDissemination(Sixth);
+
+        RegisterReadiness before = await DriveAsync(cluster, outgoing.ReadReadinessAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+
+        TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness before the change: {Describe(before)}"));
+        Assert.IsTrue(before.QuorumHasLearned(bootstrap.Version), "The membership the change is decided under has not learned the record it builds on, so the change would be unavailable for a reason this scenario is not about.");
+
+        QuePaxaWriteOutcome<string> moved = await DriveAsync(cluster, outgoing.ReconfigureAsync(
+            current => current.With(Fourth).With(Fifth).With(Sixth).Without(First).Without(Second).Without(Third),
+            AttemptBudget,
+            TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, moved.Status, "A change to a membership sharing no member with the current one was refused, and reachability is not a fact the register holds.");
+        Assert.AreEqual(new RegisterVersion(2UL), moved.Version);
+        Assert.AreSequenceEqual(new[] { Fourth, Fifth, Sixth }, outgoing.ActiveConfiguration.Members, "The membership installed is not the disjoint one the delta computed.");
+        Assert.AreEqual(ThreeMemberGenesis.Cluster, outgoing.ActiveConfiguration.Cluster, "The disjoint membership names another chain, so the change founded a cluster rather than reconfiguring one.");
+
+        //Safe: every replica of the membership that decided the change is now outside the one it installed,
+        //and each reports that rather than writing on.
+        QuePaxaWriteOutcome<string> refused = await DriveAsync(cluster, outgoing.WriteAsync(_ => "b", AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.OutsideConfiguration, refused.Status, "A replica the change removed kept writing, so the two memberships can both decide.");
+        Assert.AreEqual(0, refused.Attempts, "The refusal spent budget on an answer only another configuration change can change.");
+
+        //The boundary push reaches the incoming member it can, and the two held ones take nothing, so exactly
+        //one of the three the change installed holds the record that installed it.
+        Assert.AreEqual(moved.Version, cluster.CommittedAt(Fourth)!.Version, "The one incoming host that takes records was not handed the record that admitted it.");
+        Assert.IsNull(cluster.CommittedAt(Fifth), "A held host took the record it was offered, so nothing here is behind.");
+        Assert.IsNull(cluster.CommittedAt(Sixth), "A held host took the record it was offered, so nothing here is behind.");
+
+        //The incoming register stands on genesis until it reads: its host holds the installing record and its
+        //register does not, and the catch-up is what moves it onto the membership that record installs.
+        _ = await DriveAsync(cluster, incoming.ReadAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreSequenceEqual(new[] { Fourth, Fifth, Sixth }, incoming.ActiveConfiguration.Members, "The catch-up read did not move the incoming register onto the membership it is a member of.");
+
+        RegisterReadiness cold = await DriveAsync(cluster, incoming.ReadReadinessAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+
+        TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness while the incoming membership is behind: {Describe(cold)}"));
+        Assert.AreEqual(3, cold.Reachable, "A member that answers was reported unreachable, so this reading cannot tell an unavailable membership from a behind one.");
+        Assert.IsFalse(cold.QuorumHasLearned(moved.Version), "A quorum was claimed at a version only one of the three incoming members holds.");
+
+        QuePaxaWriteOutcome<string> stalled = await DriveAsync(cluster, incoming.WriteAsync(_ => "b", AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Undecided, stalled.Status, "A write committed over a membership whose quorum has not learned the record that installed it.");
+        Assert.AreEqual(AttemptBudget, stalled.Attempts, "The write returned without spending its budget, so the budget is not what bounded it and the unavailability read here is not a bounded observation.");
+        Assert.AreEqual(moved.Version, incoming.Committed!.Version, "The register moved on a write that decided nothing.");
+
+        //The catch-up a deployment owns, which is the only route left: nothing in the protocol walks a record
+        //forward to hosts that hold none of the memberships naming them.
+        cluster.ResumeDissemination(Fifth);
+        cluster.ResumeDissemination(Sixth);
+        cluster.Disseminate(cluster.CommittedAt(Fourth)!, [Fifth, Sixth]);
+        cluster.RunToQuiescence([]);
+
+        RegisterReadiness warm = await DriveAsync(cluster, incoming.ReadReadinessAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+
+        TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness once the incoming membership caught up: {Describe(warm)}"));
+        Assert.IsTrue(warm.QuorumHasLearned(moved.Version), "The catch-up landed and the report still shows no quorum at the installing version.");
+
+        QuePaxaWriteOutcome<string> resumed = await DriveAsync(cluster, incoming.WriteAsync(_ => "b", AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, resumed.Status, "The write after the gate cleared did not commit, so the unavailability read above is not the dissemination it was attributed to.");
+        Assert.AreEqual(new RegisterVersion(3UL), resumed.Version);
+
+        AssertUniqueHighestCommittedPerVersion(cluster, leastVersions: 3, "a change to a disjoint membership");
     }
 
 
