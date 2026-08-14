@@ -35,7 +35,9 @@ internal sealed class QuePaxaVersionedRegisterTests
     private static int[] LanesZeroToTwo { get; } = [0, 1, 2];
 
 
-    //The decision step is asserted because a commit at phase two would satisfy every other assertion here.
+    /// <summary>
+    /// The decision step is asserted because a commit at phase two would satisfy every other assertion here.
+    /// </summary>
     [TestMethod]
     public async Task TheBootstrapLeaderCommitsTheFirstVersionOnTheFastPath()
     {
@@ -77,7 +79,9 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //The change function records its input because a retry re-proposing the original value would still pass.
+    /// <summary>
+    /// The change function records its input because a retry re-proposing the original value would still pass.
+    /// </summary>
     [TestMethod]
     public async Task ASupersededWriteAdoptsTheWinnerAndRecomputesFromIt()
     {
@@ -138,9 +142,13 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //An undecided proposal may be decided later, so treating it as a conflict would abandon a live write. Two
-    //of three hosts are partitioned so the quorum is missed while the third still records what it was asked,
-    //which is what lets the lanes be read rather than inferred from the attempt count.
+    /// <summary>
+    /// An undecided proposal may be decided later, so treating it as a conflict would abandon a live write.
+    /// </summary>
+    /// <remarks>
+    /// Two of three hosts are partitioned so the quorum is missed while the third still records what it was
+    /// asked, which is what lets the lanes be read rather than inferred from the attempt count.
+    /// </remarks>
     [TestMethod]
     public async Task AnUndecidedWriteRetriesAtTheSameVersionOnAFreshLane()
     {
@@ -175,10 +183,14 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //The lane is a property of the register and the version rather than of the call, so a caller cannot put a
-    //second value under the first attempt's key by calling the single-attempt entry point again. For the
-    //version's leader the key is the reserved priority on lane zero and so is identical whatever the value,
-    //which makes reuse a silent divergence rather than a detectable one.
+    /// <summary>
+    /// The lane is a property of the register and the version rather than of the call, so a caller cannot put
+    /// a second value under the first attempt's key by calling the single-attempt entry point again.
+    /// </summary>
+    /// <remarks>
+    /// For the version's leader the key is the reserved priority on lane zero and so is identical whatever the
+    /// value, which makes reuse a silent divergence rather than a detectable one.
+    /// </remarks>
     [TestMethod]
     public async Task ASecondSingleAttemptWriteAtAnUndecidedVersionRunsOnAFreshLane()
     {
@@ -203,9 +215,14 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //A superseded attempt runs at a version this register has never proposed at, so its lane counter starts
-    //again rather than continuing. Without this the lane would climb across versions and the reserved
-    //priority, which is granted to lane zero alone, would be unreachable after the first retry.
+    /// <summary>
+    /// A superseded attempt runs at a version this register has never proposed at, so its lane counter starts
+    /// again rather than continuing.
+    /// </summary>
+    /// <remarks>
+    /// Without this the lane would climb across versions and the reserved priority, which is granted to lane
+    /// zero alone, would be unreachable after the first retry.
+    /// </remarks>
     [TestMethod]
     public async Task TheLaneCounterStartsAgainAtAVersionThisRegisterHasNotProposedAt()
     {
@@ -275,7 +292,9 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //This is the only vector that fails if the stand-down is hoisted out of the delay guard.
+    /// <summary>
+    /// This is the only vector that fails if the stand-down is hoisted out of the delay guard.
+    /// </summary>
     [TestMethod]
     public async Task AZeroBaseDelayActivatesEveryWriterEvenWhenTheVersionIsReportedCommitted()
     {
@@ -290,7 +309,9 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //This pins the liveness cost that the single-live-instance rule pays for its safety.
+    /// <summary>
+    /// This pins the liveness cost that the single-live-instance rule pays for its safety.
+    /// </summary>
     [TestMethod]
     public async Task AWriteReachesAQuorumOnlyWhereThePreviousVersionHasBeenDisseminated()
     {
@@ -320,7 +341,10 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //Counting a reply from another instance would decide on a set that is a minority of the instance it names.
+    /// <summary>
+    /// Counting a reply from another instance would decide on a set that is a minority of the instance it
+    /// names.
+    /// </summary>
     [TestMethod]
     public async Task AVersionSwappingTransportYieldsNoDecisionRatherThanAWrongOne()
     {
@@ -343,9 +367,14 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //Two slots answered by one host would count one replica twice, and a quorum counted over distinct members
-    //is what majority intersection rests on. Two of the three slots are pointed at the first host, so an
-    //unchecked register sees three answers where one replica answered and commits on a minority of one.
+    /// <summary>
+    /// Two slots answered by one host would count one replica twice, and a quorum counted over distinct
+    /// members is what majority intersection rests on.
+    /// </summary>
+    /// <remarks>
+    /// Two of the three slots are pointed at the first host, so an unchecked register sees three answers where
+    /// one replica answered and commits on a minority of one.
+    /// </remarks>
     [TestMethod]
     public async Task AReplyFromAMemberOtherThanTheOneAddressedIsRefusedRatherThanCounted()
     {
@@ -365,11 +394,16 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //The envelope guards refuse a transport that mis-answers the wrapper, and this is the arm they cannot
-    //see: every envelope is honest while the record inside each gathered proposal carries another version,
-    //so the round concludes a decision the instance was never addressed with. The write faults before
-    //adoption, because a misrouted decision let into the committed state would set the next instance's
-    //leader.
+    /// <summary>
+    /// A round that decided a record carrying another version faults the write rather than being adopted.
+    /// </summary>
+    /// <remarks>
+    /// The envelope guards refuse a transport that mis-answers the wrapper, and this is the arm they cannot
+    /// see: every envelope is honest while the record inside each gathered proposal carries another version,
+    /// so the round concludes a decision the instance was never addressed with. The write faults before
+    /// adoption, because a misrouted decision let into the committed state would set the next instance's
+    /// leader.
+    /// </remarks>
     [TestMethod]
     public async Task ADecisionCarryingAnotherVersionFaultsTheWriteRatherThanBeingAdopted()
     {
@@ -451,9 +485,14 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //A register for a replica the membership does not list is how a joiner starts and what a removed replica
-    //becomes, so construction cannot refuse it and the write reports it per version instead. The write spends
-    //no attempt and sends nothing at all, which is what separates a settled refusal from an unlucky round.
+    /// <summary>
+    /// A register for a replica the membership does not list is how a joiner starts and what a removed replica
+    /// becomes, so construction cannot refuse it and the write reports it per version instead.
+    /// </summary>
+    /// <remarks>
+    /// The write spends no attempt and sends nothing at all, which is what separates a settled refusal from an
+    /// unlucky round.
+    /// </remarks>
     [TestMethod]
     public async Task AWriteFromOutsideTheMembershipIsReportedWithoutSpendingAnAttempt()
     {
@@ -489,7 +528,9 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //One honest host settles it because a committed record is a decided fact under the crash-fault model.
+    /// <summary>
+    /// One honest host settles it because a committed record is a decided fact under the crash-fault model.
+    /// </summary>
     [TestMethod]
     public async Task AReadAdoptsTheHighestRecordAnyHostReports()
     {
@@ -516,9 +557,11 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //The record the register learns while it is parked moves both the version and the membership, so an
-    //attempt that resolved anything after its delay would send the version it computed before the delay to
-    //the recorder set of a membership it learned after it.
+    /// <summary>
+    /// The record the register learns while it is parked moves both the version and the membership, so an
+    /// attempt that resolved anything after its delay would send the version it computed before the delay to
+    /// the recorder set of a membership it learned after it.
+    /// </summary>
     [TestMethod]
     public async Task AnAttemptAddressesTheInstanceItCapturedEvenWhenTheRecordMovesDuringTheDelay()
     {
@@ -552,9 +595,14 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //The quorum is the endpoint array's own length, so a member left out because nothing resolves it does not
-    //make the cluster smaller: it makes the majority smaller. The second arm is the one that separates a
-    //full-length array from a filtered one, because a filtered array of one decides on one host.
+    /// <summary>
+    /// The quorum is the endpoint array's own length, so a member left out because nothing resolves it does
+    /// not make the cluster smaller: it makes the majority smaller.
+    /// </summary>
+    /// <remarks>
+    /// The second arm is the one that separates a full-length array from a filtered one, because a filtered
+    /// array of one decides on one host.
+    /// </remarks>
     [TestMethod]
     public async Task AnUnresolvableMemberKeepsItsSlotSoTheQuorumStaysTheMembershipsOwn()
     {
@@ -580,8 +628,13 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //A prohibition is absent code, so it is pinned by what the records actually carry. Both arms matter: the
-    //membership a chain starts with is carried forward, and so is one a change installed.
+    /// <summary>
+    /// A prohibition is absent code, so it is pinned by what the records actually carry.
+    /// </summary>
+    /// <remarks>
+    /// Both arms matter: the membership a chain starts with is carried forward, and so is one a change
+    /// installed.
+    /// </remarks>
     [TestMethod]
     public async Task AnOrdinaryWriteCarriesTheMembershipForwardUnchanged()
     {
@@ -609,8 +662,13 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //A change that keeps the writer keeps that writer leading, so growing or shrinking the membership around
-    //it must cost the next instance nothing. Only the decision step separates the two paths.
+    /// <summary>
+    /// A change that keeps the writer keeps that writer leading, so growing or shrinking the membership around
+    /// it must cost the next instance nothing.
+    /// </summary>
+    /// <remarks>
+    /// Only the decision step separates the two paths.
+    /// </remarks>
     [TestMethod]
     public async Task AConfigurationChangeThatKeepsTheWriterKeepsTheOneRoundTripPath()
     {
@@ -707,8 +765,10 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //Publish runs after the decision is taken and after it is learned, so a caller told its write failed
-    //would retry a write that landed.
+    /// <summary>
+    /// Publish runs after the decision is taken and after it is learned, so a caller told its write failed
+    /// would retry a write that landed.
+    /// </summary>
     [TestMethod]
     public async Task AThrowingPublisherLeavesTheDecidedWriteDecided()
     {
@@ -730,8 +790,10 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //The stub fires the caller's own token and throws bound to it, which is the one fault a guard written to
-    //re-raise cancellation would let through.
+    /// <summary>
+    /// The stub fires the caller's own token and throws bound to it, which is the one fault a guard written to
+    /// re-raise cancellation would let through.
+    /// </summary>
     [TestMethod]
     public async Task ACancellingPublisherLeavesTheDecidedWriteDecided()
     {
@@ -755,10 +817,15 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //Two arms of one rule. At a boundary the audience is the union, so a leaver is handed the record that
-    //removed it and a joiner is handed the record that admitted it; at an ordinary decide the union
-    //degenerates, and the arm runs immediately after a completed removal so a departed member exists to be
-    //wrongly included. Every assertion is by key on the content rather than on the length.
+    /// <summary>
+    /// Two arms of one rule.
+    /// </summary>
+    /// <remarks>
+    /// At a boundary the audience is the union, so a leaver is handed the record that removed it and a joiner
+    /// is handed the record that admitted it; at an ordinary decide the union degenerates, and the arm runs
+    /// immediately after a completed removal so a departed member exists to be wrongly included. Every
+    /// assertion is by key on the content rather than on the length.
+    /// </remarks>
     [TestMethod]
     public async Task TheAudienceIsTheUnionAtABoundaryAndTheMembershipAtAnOrdinaryDecide()
     {
@@ -812,7 +879,7 @@ internal sealed class QuePaxaVersionedRegisterTests
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
         QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (member, _) => member.Equals(Third)
             ? throw new IOException("The third member is unreachable.")
-            : new ValueTask<RegisterVersion>(member.Equals(First) ? new RegisterVersion(4UL) : new RegisterVersion(3UL)));
+            : new ValueTask<MemberVersionReport>(new MemberVersionReport(member, member.Equals(First) ? new RegisterVersion(4UL) : new RegisterVersion(3UL))));
 
         RegisterReadiness readiness = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -839,6 +906,62 @@ internal sealed class QuePaxaVersionedRegisterTests
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             async () => await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+
+    /// <summary>
+    /// A version probe answered by another member fails the report rather than being counted.
+    /// </summary>
+    /// <remarks>
+    /// Two probe routes landing on one host let one replica fill two slots of a report counted over distinct
+    /// members, and a decommission gate cleared on it would retire a host on fewer distinct answers than the
+    /// arithmetic claims. The refusal is loud rather than a null slot, because the defect is the deployment's
+    /// endpoint map and never any member's availability.
+    /// </remarks>
+    [TestMethod]
+    public async Task AReadinessProbeAnsweredByAnotherMemberFailsTheReportRatherThanCounting()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (_, _) =>
+            new ValueTask<MemberVersionReport>(new MemberVersionReport(First, new RegisterVersion(3UL))));
+
+        InvalidOperationException reported = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            async () => await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.Contains("was answered by", reported.Message);
+    }
+
+
+    /// <summary>
+    /// Readiness is measurable over a membership the register does not yet run under.
+    /// </summary>
+    /// <remarks>
+    /// The incoming side of an admission is gated before any register runs under it, so the report takes the
+    /// membership as an argument: the joiner is asked by name, its unreachability is its answer, and the
+    /// quorum arithmetic is the incoming membership's own. A membership of another chain is refused, because
+    /// a report over it would answer a question about a different register.
+    /// </remarks>
+    [TestMethod]
+    public async Task ReadinessIsMeasurableOverAnIncomingMembershipBeforeTheChangeCommits()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (member, _) => member.Equals(Fourth)
+            ? throw new IOException("The joiner is not serving yet.")
+            : new ValueTask<MemberVersionReport>(new MemberVersionReport(member, new RegisterVersion(2UL))));
+
+        QuePaxaConfiguration incoming = cluster.Genesis.With(Fourth);
+        RegisterReadiness readiness = await register.ReadReadinessAsync(incoming, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(incoming, readiness.Configuration);
+        Assert.AreSequenceEqual(new[] { First, Second, Third, Fourth }, readiness.Members.Select(member => member.Member));
+        Assert.IsFalse(readiness.Members.Single(member => member.Member.Equals(Fourth)).Reachable);
+        Assert.IsTrue(readiness.QuorumHasLearned(new RegisterVersion(2UL)), "Three of four answered at the version, which is the incoming membership's own quorum.");
+
+        QuePaxaConfiguration foreign = QuePaxaConfiguration.CreateGenesis([First, Second]);
+        ArgumentException refused = await Assert.ThrowsExactlyAsync<ArgumentException>(
+            async () => await register.ReadReadinessAsync(foreign, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.Contains("another chain", refused.Message);
     }
 
 
@@ -895,8 +1018,13 @@ internal sealed class QuePaxaVersionedRegisterTests
     }
 
 
-    //The distinct lanes one replica proposed on at one version, in the order they first arrived. A proposal
-    //key repeats across the steps of one attempt, so the distinct lanes are what count the attempts.
+    /// <summary>
+    /// The distinct lanes one replica proposed on at one version, in the order they first arrived.
+    /// </summary>
+    /// <remarks>
+    /// A proposal key repeats across the steps of one attempt, so the distinct lanes are what count the
+    /// attempts.
+    /// </remarks>
     private static int[] LanesAt(VersionedQuePaxaCluster<string> cluster, RegisterVersion version, ReplicaId replica)
     {
         return [.. cluster.Recorded

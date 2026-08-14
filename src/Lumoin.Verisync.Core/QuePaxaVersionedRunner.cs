@@ -98,7 +98,17 @@ public sealed class QuePaxaVersionedRunner<TValue>
     }
 
 
-    private QuePaxaVersionedNode<TValue> Node { get; }
+    /// <summary>
+    /// The host this runner drives. Its documented off-loop reads —
+    /// <see cref="QuePaxaVersionedNode{TValue}.Committed"/>, <see cref="QuePaxaVersionedNode{TValue}.LiveVersion"/>,
+    /// <see cref="QuePaxaVersionedNode{TValue}.Serves"/>, <see cref="QuePaxaVersionedNode{TValue}.Instance"/>,
+    /// <see cref="QuePaxaVersionedNode{TValue}.Recorder"/>, and the immutable
+    /// <see cref="QuePaxaVersionedNode{TValue}.Genesis"/> and <see cref="QuePaxaVersionedNode{TValue}.Self"/> —
+    /// stay open beside the running loop, which is what a wire host serves an operations endpoint from
+    /// without keeping a second reference to the node. Every mutating member throws under the loop's
+    /// ownership claim, so the export widens what a host can read and nothing it can interleave.
+    /// </summary>
+    public QuePaxaVersionedNode<TValue> Node { get; }
 
 
     /// <summary>

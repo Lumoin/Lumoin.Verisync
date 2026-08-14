@@ -74,9 +74,9 @@ namespace Lumoin.Verisync.Core;
 /// <see cref="QuePaxaVersionedRunner{TValue}.RunAsync"/> claims this host for the life of its loop, and
 /// while it holds the claim <see cref="Handle"/>, <see cref="Learn"/>, <see cref="MakeDurableAsync"/> and
 /// <see cref="ToState"/> refuse rather than interleaving with it; the runner's own producers are the
-/// sequenced paths there. <see cref="Committed"/>, <see cref="LiveVersion"/>, <see cref="Serves"/> and
-/// <see cref="Recorder"/> stay open, because each answers from one read of one reference and an off-loop
-/// reader therefore sees a stale answer but never a torn one;
+/// sequenced paths there. <see cref="Committed"/>, <see cref="LiveVersion"/>, <see cref="Serves"/>,
+/// <see cref="Instance"/> and <see cref="Recorder"/> stay open, because each answers from one read of one
+/// reference and an off-loop reader therefore sees a stale answer but never a torn one;
 /// <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/> is the sequenced read.
 /// <see cref="ToState"/> is not among them because a snapshot pairs two references a learn replaces in
 /// two stores, which is the one composite read on this surface.
@@ -140,9 +140,9 @@ public sealed class QuePaxaVersionedNode<TValue>
         Committed = committed;
         ActiveConfiguration = active;
         LeaderSchedule = ScheduleFor(active);
-        Instance = new QuePaxaNode<VersionedValue<TValue>>(LeaderSchedule.RecorderFor<VersionedValue<TValue>>(committed?.Writer));
+        Serving = new QuePaxaNode<VersionedValue<TValue>>(LeaderSchedule.RecorderFor<VersionedValue<TValue>>(committed?.Writer));
         PersistedCommitted = committed;
-        PersistedRecorder = Instance.Recorder;
+        PersistedRecorder = Serving.Recorder;
     }
 
 
@@ -159,7 +159,7 @@ public sealed class QuePaxaVersionedNode<TValue>
         Committed = committed;
         ActiveConfiguration = active;
         LeaderSchedule = schedule;
-        Instance = node;
+        Serving = node;
         PersistedCommitted = committed;
         PersistedRecorder = node.Recorder;
     }
@@ -209,6 +209,28 @@ public sealed class QuePaxaVersionedNode<TValue>
     public RegisterVersion LiveVersion => LiveVersionFor(Committed);
 
     /// <summary>
+    /// The instance this host serves, as one read: the version, the membership it runs under and the
+    /// previous writer, every field derived from a single capture of the committed record.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it.</exception>
+    /// <remarks>
+    /// The three facts are also readable one property at a time, and a reader beside a running loop must not
+    /// pair them that way: a learn replaces the record and then the derived memos, so separate reads can pair
+    /// a new record with an old membership. This is the pairing-safe read, on the rule
+    /// <see cref="QuePaxaVersionedRegister{TValue}.Instance"/> exists for one layer up, and it stays open off
+    /// the loop for the reason <see cref="Committed"/> does.
+    /// </remarks>
+    public RegisterInstance Instance
+    {
+        get
+        {
+            VersionedValue<TValue>? committed = Committed;
+
+            return new RegisterInstance(LiveVersionFor(committed), ConfigurationFor(committed, Genesis), committed?.Writer);
+        }
+    }
+
+    /// <summary>
     /// The register serving <see cref="LiveVersion"/>, which a request folds into and a learn replaces.
     /// </summary>
     /// <remarks>
@@ -216,10 +238,10 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// it. Reading it while a runner owns this host is racy in the ordinary sense and never torn: the read is
     /// a single reference read, and a stale answer is a weaker one rather than a wrong one.
     /// </remarks>
-    public QuePaxaRecorder<VersionedValue<TValue>> Recorder => Instance.Recorder;
+    public QuePaxaRecorder<VersionedValue<TValue>> Recorder => Serving.Recorder;
 
     /// <summary>The recorder node serving <see cref="LiveVersion"/>.</summary>
-    private QuePaxaNode<VersionedValue<TValue>> Instance { get; set; }
+    private QuePaxaNode<VersionedValue<TValue>> Serving { get; set; }
 
     /// <summary>
     /// The committed record <see cref="MakeDurableAsync"/> last made durable, which its gate compares
@@ -310,7 +332,7 @@ public sealed class QuePaxaVersionedNode<TValue>
             throw RefusalFor(refusal, request);
         }
 
-        return new VersionedRecordReply<VersionedValue<TValue>>(LiveVersion, Self, Instance.Handle(request.Request));
+        return new VersionedRecordReply<VersionedValue<TValue>>(LiveVersion, Self, Serving.Handle(request.Request));
     }
 
 
@@ -493,7 +515,7 @@ public sealed class QuePaxaVersionedNode<TValue>
         Committed = committed;
         ActiveConfiguration = ConfigurationFor(committed, Genesis);
         LeaderSchedule = ScheduleFor(ActiveConfiguration);
-        Instance = new QuePaxaNode<VersionedValue<TValue>>(LeaderSchedule.RecorderFor<VersionedValue<TValue>>(committed.Writer));
+        Serving = new QuePaxaNode<VersionedValue<TValue>>(LeaderSchedule.RecorderFor<VersionedValue<TValue>>(committed.Writer));
 
         return true;
     }

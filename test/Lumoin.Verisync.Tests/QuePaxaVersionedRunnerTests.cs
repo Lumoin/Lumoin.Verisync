@@ -67,6 +67,37 @@ internal sealed class QuePaxaVersionedRunnerTests
     }
 
 
+    /// <summary>
+    /// The node stays readable beside its own loop, and every mutating touch still throws under the claim.
+    /// </summary>
+    /// <remarks>
+    /// The export is what a wire host serves an operations endpoint from — which membership am I in, which
+    /// version do I serve — without keeping a second reference beside the runner. It widens what a host can
+    /// read and nothing it can interleave, because the ownership claim guards every mutating member for the
+    /// life of the loop.
+    /// </remarks>
+    [TestMethod]
+    public async Task TheNodeStaysReadableBesideItsOwnLoop()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedRunner<string> runner = new(host);
+        Task run = runner.RunAsync(null, TestContext.CancellationToken);
+
+        //A served call proves the loop is live and the ownership claim installed, so the reads and the
+        //refusal below are measured beside a genuinely running loop rather than before it.
+        VersionedRecordReply<VersionedValue<string>> reply = await runner.RecordAsync(Request(5UL, ProposalPriority.Lowest, Second, "a"), TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(new RegisterVersion(5UL), reply.Version);
+        Assert.AreSame(host, runner.Node);
+        Assert.AreEqual(new RegisterVersion(5UL), runner.Node.Instance.Version);
+        Assert.AreEqual(Configuration, runner.Node.Instance.Configuration);
+        _ = Assert.ThrowsExactly<InvalidOperationException>(() => runner.Node.Learn(Record(5UL, First)));
+
+        runner.Complete();
+        await run.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+
     [TestMethod]
     public async Task ARequestThatChangesNothingCostsNoFurtherWriteAndIsStillAnswered()
     {

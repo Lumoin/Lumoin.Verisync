@@ -56,6 +56,7 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     private const byte RecordKind = 0;
     private const byte ReadKind = 1;
     private const byte LearnKind = 2;
+    private const byte VersionKind = 3;
 
     private static byte[] JsonNull { get; } = "null"u8.ToArray();
     private static byte[] JsonTrue { get; } = "true"u8.ToArray();
@@ -286,8 +287,13 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
     private SemaphoreSlim[] Gates { get; }
 
-    //A gate this cluster holds, taken by the drain or by teardown and never given back. Teardown waits only on
-    //the gates nobody has taken yet, because waiting on one it holds itself would never return.
+    /// <summary>
+    /// A gate this cluster holds, taken by the drain or by teardown and never given back.
+    /// </summary>
+    /// <remarks>
+    /// Teardown waits only on the gates nobody has taken yet, because waiting on one it holds itself would
+    /// never return.
+    /// </remarks>
     private bool[] GateTaken { get; }
 
     private int[] NextIds { get; }
@@ -527,14 +533,6 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
 
     /// <summary>
-    /// The record endpoints, one per host, over this cluster's shared per-host connections.
-    /// </summary>
-    /// <returns>One endpoint per host.</returns>
-    /// <remarks>
-    /// Every call returns endpoints over the same connections, gates and correlation counters, so two
-    /// registers built from two calls contend for one wire per host exactly as two writers in a deployment do.
-    /// </remarks>
-    /// <summary>
     /// Resolves the endpoint of one member, which is this cluster's
     /// <see cref="ResolveRecorderEndpointDelegate{TValue}"/>.
     /// </summary>
@@ -556,27 +554,41 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
     /// <summary>
     /// Reports which version the host that is <paramref name="member"/> holds, asked over that member's own
-    /// connection, which is this cluster's <see cref="ObserveMemberVersionDelegate"/>.
+    /// connection through a dedicated probe frame, which is this cluster's
+    /// <see cref="ObserveMemberVersionDelegate"/>.
     /// </summary>
     /// <param name="member">The member to ask.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>That member's highest committed version, which is <see cref="RegisterVersion.Unwritten"/> when it holds no record.</returns>
+    /// <returns>That member's answer, carrying the identity the answering serve loop asserts for itself
+    /// beside the version, which is <see cref="RegisterVersion.Unwritten"/> when it holds no record.</returns>
     /// <exception cref="InvalidOperationException">Thrown when no host of this cluster is that member.</exception>
     /// <exception cref="IOException">Thrown when the call to that member faults, which is what a host behind a cut route or a drained cluster answers with.</exception>
     /// <remarks>
     /// The question crosses the wire rather than reading the state behind it, which is what lets a report
     /// separate a member that has learned nothing from one nothing reaches: the first answers unwritten over a
-    /// working connection and the second answers not at all. A query that read the node directly could report
-    /// neither, and would report a version for a host no caller could have obtained one from.
+    /// working connection and the second answers not at all. The identity travels in the reply's own field,
+    /// asserted by the serve loop that answered rather than copied from the member this side aimed at, so the
+    /// register's mis-wiring refusal compares against a genuine claim.
     /// </remarks>
-    public async ValueTask<RegisterVersion> ObserveMemberVersionAsync(ReplicaId member, CancellationToken cancellationToken)
+    public async ValueTask<MemberVersionReport> ObserveMemberVersionAsync(ReplicaId member, CancellationToken cancellationToken)
     {
-        VersionedValue<TValue>? held = await ResolveReader(member)(cancellationToken).ConfigureAwait(false);
+        byte[] payload = await ExchangeAsync(IndexOf(member), VersionKind, JsonNull, cancellationToken).ConfigureAwait(false);
+        using JsonDocument document = JsonDocument.Parse(payload);
+        ReplicaId recorder = ReplicaId.FromSpan(Convert.FromHexString(document.RootElement.GetProperty("recorder").GetString()!));
+        var version = new RegisterVersion(document.RootElement.GetProperty("version").GetUInt64());
 
-        return held is null ? RegisterVersion.Unwritten : held.Version;
+        return new MemberVersionReport(recorder, version);
     }
 
 
+    /// <summary>
+    /// The record endpoints, one per host, over this cluster's shared per-host connections.
+    /// </summary>
+    /// <returns>One endpoint per host.</returns>
+    /// <remarks>
+    /// Every call returns endpoints over the same connections, gates and correlation counters, so two
+    /// registers built from two calls contend for one wire per host exactly as two writers in a deployment do.
+    /// </remarks>
     public VersionedRecorderEndpointDelegate<VersionedValue<TValue>>[] Endpoints()
     {
         var endpoints = new VersionedRecorderEndpointDelegate<VersionedValue<TValue>>[HostCount];
@@ -871,6 +883,7 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
                 {
                     ReadKind => await ServeReadAsync(host, frame, cancellationToken).ConfigureAwait(false),
                     LearnKind => await ServeLearnAsync(host, frame, cancellationToken).ConfigureAwait(false),
+                    VersionKind => await ServeVersionAsync(host, frame, cancellationToken).ConfigureAwait(false),
                     _ => await ServeRecordAsync(host, frame, cancellationToken).ConfigureAwait(false),
                 };
             }
@@ -967,6 +980,25 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     }
 
 
+    private async Task<CorrelatedFrame> ServeVersionAsync(int host, CorrelatedFrame frame, CancellationToken cancellationToken)
+    {
+        VersionedValue<TValue>? record = await Runners[host].ReadCommittedAsync(cancellationToken).ConfigureAwait(false);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        using(var writer = new Utf8JsonWriter(buffer))
+        {
+            //The identity is the serve loop's own, never echoed off the request, so the probe's reply carries
+            //a genuine claim the register's mis-wiring refusal can compare against.
+            writer.WriteStartObject();
+            writer.WriteString("recorder", Convert.ToHexStringLower(Schedule.Schedule.Order[host].AsSpan()));
+            writer.WriteNumber("version", record is null ? RegisterVersion.Unwritten.Value : record.Version.Value);
+            writer.WriteEndObject();
+        }
+
+        return new CorrelatedFrame(frame.Id, VersionKind, buffer.WrittenSpan.ToArray());
+    }
+
+
     private static void WriteFrame(CorrelatedFrame frame, IBufferWriter<byte> destination)
     {
         using var writer = new Utf8JsonWriter(destination);
@@ -1002,8 +1034,8 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
 
     /// <summary>
-    /// One framed call or answer. The kind tells a record exchange from a catch-up read and from a learn
-    /// offer, and an absent
+    /// One framed call or answer. The kind tells a record exchange from a catch-up read, a learn offer and a
+    /// version probe, and an absent
     /// payload is the opaque fault an answer carries when the host could not serve the call.
     /// </summary>
     private sealed record CorrelatedFrame(int Id, byte Kind, byte[]? Payload);

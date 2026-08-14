@@ -110,7 +110,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// by some other route.
     /// </param>
     /// <param name="observeMemberVersion">
-    /// An optional per-member version query, which is what <see cref="ReadReadinessAsync"/> is built from.
+    /// An optional per-member version query, which is what <see cref="ReadReadinessAsync(CancellationToken)"/> is built from.
     /// Unlike its resolver neighbours it is the query itself, invoked directly with the member and the token.
     /// When <see langword="null"/> this register reports no readiness at all rather than reporting an empty
     /// one.
@@ -339,7 +339,26 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>One entry per member, in the membership's own order, beside the membership it was measured over.</returns>
-    /// <exception cref="InvalidOperationException">Thrown if this register was built without a per-member version query.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if this register was built without a per-member version query, and if a member's probe was answered by a host asserting another member's identity.</exception>
+    /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled, and if a member answers with a cancellation of its own.</exception>
+    /// <remarks>
+    /// The active-membership form of <see cref="ReadReadinessAsync(QuePaxaConfiguration, CancellationToken)"/>,
+    /// which carries the rules: what the report gates, why an unwired query is refused, why a fault is a
+    /// member's answer, and why an answer naming another member fails the report.
+    /// </remarks>
+    public Task<RegisterReadiness> ReadReadinessAsync(CancellationToken cancellationToken) => ReadReadinessAsync(ActiveConfiguration, cancellationToken);
+
+
+    /// <summary>
+    /// Asks every member of <paramref name="membership"/> how far it has caught up, whether or not that
+    /// membership is the one this register runs under.
+    /// </summary>
+    /// <param name="membership">The membership to measure over.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>One entry per member, in the membership's own order, beside the membership it was measured over.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="membership"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">Thrown if <paramref name="membership"/> names a chain other than this register's.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if this register was built without a per-member version query, and if a member's probe was answered by a host asserting another member's identity.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled, and if a member answers with a cancellation of its own.</exception>
     /// <remarks>
     /// <para>
@@ -347,6 +366,13 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// then written through, and a host is decommissioned only once a quorum that excludes it has learned the
     /// record that removed it; both gates are a quorum-has-learned question about named replicas, which is
     /// what this answers and what no aggregate can.
+    /// </para>
+    /// <para>
+    /// The membership parameter is what makes the incoming side of a change observable before the change
+    /// commits: an operator gating an admission asks the membership the change would install, while no
+    /// register yet runs under it, and a post-outage sweep asks over whatever membership a surviving record
+    /// names. A membership of another chain is refused, because a report over it would answer a question
+    /// about a different register.
     /// </para>
     /// <para>
     /// It refuses rather than reporting nothing when no query was supplied. An empty or all-unreachable report
@@ -359,24 +385,37 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// unavailability is its answer rather than an error. A cancellation is a member's answer too unless it is
     /// the caller's own signal.
     /// </para>
+    /// <para>
+    /// An answer naming another member fails the report loudly rather than being counted or reported
+    /// unreachable. The report is counted over distinct members of the membership it measures, reached
+    /// through an endpoint map a deployment wires by hand, and two probe routes landing on one host would let
+    /// one replica fill two slots and a decommission gate clear on fewer distinct replicas than it claims —
+    /// the wiring error the record path refuses at its quorum. The identity is the answering host's own claim
+    /// and is not authentication.
+    /// </para>
     /// </remarks>
-    public async Task<RegisterReadiness> ReadReadinessAsync(CancellationToken cancellationToken)
+    public async Task<RegisterReadiness> ReadReadinessAsync(QuePaxaConfiguration membership, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(membership);
+        if(!membership.Cluster.Equals(ActiveConfiguration.Cluster))
+        {
+            throw new ArgumentException("The membership names another chain, so a report over it would answer a question about a different register.", nameof(membership));
+        }
+
         if(ObserveMemberVersion is null)
         {
             throw new InvalidOperationException("This register was built without a per-member version query and cannot report readiness. A report of nothing is indistinguishable from a cluster that answered nothing, and a decommission gate cleared against the second is how a quorum is lost.");
         }
 
-        QuePaxaConfiguration measured = ActiveConfiguration;
-        ImmutableArray<MemberReadiness>.Builder reports = ImmutableArray.CreateBuilder<MemberReadiness>(measured.Members.Length);
-        foreach(ReplicaId member in measured.Members)
+        ImmutableArray<MemberReadiness>.Builder reports = ImmutableArray.CreateBuilder<MemberReadiness>(membership.Members.Length);
+        foreach(ReplicaId member in membership.Members)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            MemberVersionReport reported;
             try
             {
-                RegisterVersion reported = await ObserveMemberVersion(member, cancellationToken).ConfigureAwait(false);
-                reports.Add(new MemberReadiness(member, reported));
+                reported = await ObserveMemberVersion(member, cancellationToken).ConfigureAwait(false);
             }
             catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested)
             {
@@ -385,10 +424,21 @@ public sealed class QuePaxaVersionedRegister<TValue>
             catch(Exception)
             {
                 reports.Add(new MemberReadiness(member, null));
+
+                continue;
             }
+
+            //An answer from another member would let one host fill two slots of a report counted over
+            //distinct members, so it is a wiring defect surfaced loudly rather than a weaker reading.
+            if(!reported.Recorder.Equals(member))
+            {
+                throw new InvalidOperationException($"The version probe for member {member} was answered by {reported.Recorder}, so this deployment's endpoint map does not reach the membership it names. A readiness report counting that answer would clear a decommission gate on fewer distinct replicas than it claims.");
+            }
+
+            reports.Add(new MemberReadiness(member, reported.Version));
         }
 
-        return new RegisterReadiness(measured, reports.ToImmutable());
+        return new RegisterReadiness(membership, reports.ToImmutable());
     }
 
 
@@ -654,7 +704,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// The register owes this guard whatever the delegate's signature says, which is why the delegate has no
     /// result type reporting failure: a .NET delegate can always throw, so a result would add a second route
     /// for the same event and leave this guard standing anyway. What a caller reads instead is
-    /// <see cref="ReadReadinessAsync"/>, which reports what the hosts actually hold rather than what a push
+    /// <see cref="ReadReadinessAsync(CancellationToken)"/>, which reports what the hosts actually hold rather than what a push
     /// attempt claimed.
     /// </para>
     /// </remarks>

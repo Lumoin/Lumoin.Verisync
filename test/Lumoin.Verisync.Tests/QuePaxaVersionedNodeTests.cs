@@ -49,7 +49,10 @@ internal sealed class QuePaxaVersionedNodeTests
     }
 
 
-    //The version is asserted literally, because comparing the two derivations alone would pass at any version.
+    /// <summary>
+    /// The version is asserted literally, because comparing the two derivations alone would pass at any
+    /// version.
+    /// </summary>
     [TestMethod]
     public void TheLiveInstanceFollowsTheCommittedRecordAndCarriesItsWritersLane()
     {
@@ -58,6 +61,29 @@ internal sealed class QuePaxaVersionedNodeTests
         Assert.AreEqual(new RegisterVersion(5UL), host.LiveVersion);
         Assert.AreEqual(host.LeaderSchedule.LeaderFor(Second), host.Recorder.ConfiguredLeader);
         Assert.AreEqual(ProposerLane.For(Second), host.Recorder.ConfiguredLeader);
+    }
+
+
+    /// <summary>
+    /// The instance triple derives from one capture of the committed record, so its fields agree with the
+    /// one-property reads and with each other.
+    /// </summary>
+    /// <remarks>
+    /// The three facts are also readable one property at a time, and a reader beside a running loop must not
+    /// pair them that way: a learn replaces the record and then the derived memos, so separate reads can pair
+    /// a new record with an old membership. The triple is the pairing-safe read, which is the register's own
+    /// rule for the same tear.
+    /// </remarks>
+    [TestMethod]
+    public void TheInstanceTripleDerivesFromOneCaptureOfTheCommittedRecord()
+    {
+        QuePaxaVersionedNode<string> fresh = new(Configuration, First);
+
+        Assert.AreEqual(new RegisterInstance(RegisterVersion.First, Configuration, null), fresh.Instance);
+
+        QuePaxaVersionedNode<string> caughtUp = new(Configuration, First, Record(4UL, Second));
+
+        Assert.AreEqual(new RegisterInstance(new RegisterVersion(5UL), Configuration, Second), caughtUp.Instance);
     }
 
 
@@ -81,7 +107,9 @@ internal sealed class QuePaxaVersionedNodeTests
     }
 
 
-    //A host that checked only the upper bound would pass every above-version vector and still be wrong.
+    /// <summary>
+    /// A host that checked only the upper bound would pass every above-version vector and still be wrong.
+    /// </summary>
     [TestMethod]
     public void ARequestForAnyOtherVersionIsRefusedAtBothBounds()
     {
@@ -115,8 +143,10 @@ internal sealed class QuePaxaVersionedNodeTests
     }
 
 
-    //The identity assertion alone passes a host that rewrote the leader in place; the leader assertion alone
-    //passes one that kept the old recorder.
+    /// <summary>
+    /// The identity assertion alone passes a host that rewrote the leader in place; the leader assertion alone
+    /// passes one that kept the old recorder.
+    /// </summary>
     [TestMethod]
     public void LearningBuildsANewInstanceAndLeavesTheRunningOnesLeaderAlone()
     {
@@ -140,7 +170,9 @@ internal sealed class QuePaxaVersionedNodeTests
     }
 
 
-    //The derivation reads only agreed inputs, so every host makes this instance leaderless and none differs.
+    /// <summary>
+    /// The derivation reads only agreed inputs, so every host makes this instance leaderless and none differs.
+    /// </summary>
     [TestMethod]
     public void AWriterOutsideTheOrderMakesTheNextInstanceLeaderlessRatherThanUnservable()
     {

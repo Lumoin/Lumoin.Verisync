@@ -50,8 +50,10 @@ namespace Lumoin.Verisync.Tests;
 /// </remarks>
 internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
 {
-    //A livelock is the one failure mode a synchronous pump turns into a hung suite rather than a red test, so
-    //the pump is bounded well above any behaviour the attempt budget admits and reports rather than spins.
+    /// <summary>
+    /// A livelock is the one failure mode a synchronous pump turns into a hung suite rather than a red test, so
+    /// the pump is bounded well above any behaviour the attempt budget admits and reports rather than spins.
+    /// </summary>
     private const int MaxEvents = 200_000;
 
     private uint randomState;
@@ -723,20 +725,30 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     /// A member this bench runs no host for faults rather than answering unwritten, because a report cannot
     /// tell a member that has learned nothing from one nothing reaches unless the two answer differently.
     /// </remarks>
-    private ValueTask<RegisterVersion> ObserveMemberAsync(ReplicaId member, CancellationToken cancellationToken)
+    private ValueTask<MemberVersionReport> ObserveMemberAsync(ReplicaId member, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         int host = TryHostIndexOf(member);
         if(host < 0)
         {
-            return ValueTask.FromException<RegisterVersion>(new InvalidOperationException($"No host of this bench is {member}."));
+            return ValueTask.FromException<MemberVersionReport>(new InvalidOperationException($"No host of this bench is {member}."));
         }
 
         TaskCompletionSource<RegisterVersion> completion = new();
         Enqueue(new ObserveCall(host, completion));
 
-        return new ValueTask<RegisterVersion>(completion.Task);
+        return AttributeAsync(member, completion.Task);
+    }
+
+
+    /// <summary>
+    /// Labels a version answer with the identity of the host that produced it, which this bench resolved the
+    /// probe to: the routing is the bench's own, so the assertion is honest by construction.
+    /// </summary>
+    private static async ValueTask<MemberVersionReport> AttributeAsync(ReplicaId recorder, Task<RegisterVersion> answer)
+    {
+        return new MemberVersionReport(recorder, await answer.ConfigureAwait(false));
     }
 
 
@@ -912,9 +924,14 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
         VersionedRecordRequest<VersionedValue<TValue>> Request,
         TaskCompletionSource<VersionedRecordReply<VersionedValue<TValue>>> Completion): Message(Host)
     {
-        //The priority is part of the kind so that the delivery trace records what a request proposed and not
-        //only that one was sent. A replay comparison over a trace without it cannot tell a seeded draw from
-        //an unpredictable one, because the message schedule is the same either way.
+        /// <summary>
+        /// The priority is part of the kind so that the delivery trace records what a request proposed and not
+        /// only that one was sent.
+        /// </summary>
+        /// <remarks>
+        /// A replay comparison over a trace without it cannot tell a seeded draw from an unpredictable one,
+        /// because the message schedule is the same either way.
+        /// </remarks>
         public override string Kind => $"record:p{Request.Request.Proposal.Key.Priority.Value}";
 
         public override void Lose(Exception cause) => Completion.SetException(cause);

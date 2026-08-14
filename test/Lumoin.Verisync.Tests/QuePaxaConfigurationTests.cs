@@ -44,7 +44,9 @@ internal sealed class QuePaxaConfigurationTests
     private static ReplicaId D { get; } = Replica(4);
     private static ReplicaId Absent { get; } = Replica(9);
 
-    //Differs from A only past the fourth byte, so it is a different replica that hashes exactly as A does.
+    /// <summary>
+    /// Differs from A only past the fourth byte, so it is a different replica that hashes exactly as A does.
+    /// </summary>
     private static ReplicaId ATwin { get; } = Replica(1, 0, 0, 0, 9);
 
     private static ClusterId Chain { get; } = ClusterId.FromGenesisMembers([A, B, C]);
@@ -52,6 +54,44 @@ internal sealed class QuePaxaConfigurationTests
 
 
     public TestContext TestContext { get; set; } = null!;
+
+
+    /// <summary>
+    /// The membership delta names who a change admits and who it retires, in the memberships' own orders.
+    /// </summary>
+    /// <remarks>
+    /// The boundary is where an operator acts — the joiners are who an admission disseminates to first and
+    /// the leavers are who a readiness gate must stop counting — so the delta is a first-class read rather
+    /// than a set walk every consumer rewrites.
+    /// </remarks>
+    [TestMethod]
+    public void TheMembershipDeltaNamesJoinersAndLeavers()
+    {
+        QuePaxaConfiguration outgoing = QuePaxaConfiguration.Create(Chain, [A, B, C]);
+        QuePaxaConfiguration incoming = outgoing.Without(B).With(D);
+
+        Assert.AreSequenceEqual(new[] { D }, outgoing.Joining(incoming));
+        Assert.AreSequenceEqual(new[] { B }, outgoing.Leaving(incoming));
+        Assert.IsEmpty(outgoing.Joining(outgoing));
+        Assert.IsEmpty(outgoing.Leaving(outgoing));
+    }
+
+
+    /// <summary>
+    /// A delta against another chain's membership is refused, because the two never were one fleet.
+    /// </summary>
+    [TestMethod]
+    public void TheMembershipDeltaRefusesAnotherChain()
+    {
+        QuePaxaConfiguration ours = QuePaxaConfiguration.Create(Chain, [A, B, C]);
+        QuePaxaConfiguration foreign = QuePaxaConfiguration.Create(OtherChain, [A, B, C]);
+
+        ArgumentException joining = Assert.ThrowsExactly<ArgumentException>(() => ours.Joining(foreign));
+        ArgumentException leaving = Assert.ThrowsExactly<ArgumentException>(() => ours.Leaving(foreign));
+
+        Assert.Contains("another chain", joining.Message);
+        Assert.Contains("another chain", leaving.Message);
+    }
 
 
     [TestMethod]

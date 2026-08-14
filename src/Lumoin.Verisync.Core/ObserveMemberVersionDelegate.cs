@@ -9,7 +9,9 @@ namespace Lumoin.Verisync.Core;
 /// </summary>
 /// <param name="member">The member to ask.</param>
 /// <param name="cancellationToken">The cancellation token.</param>
-/// <returns>The highest committed version that member reports, or <see cref="RegisterVersion.Unwritten"/> when it has learned none.</returns>
+/// <returns>That member's answer: the highest committed version it reports beside the identity it asserts
+/// for itself, with <see cref="RegisterVersion.Unwritten"/> the version of a member that has learned
+/// none.</returns>
 /// <remarks>
 /// <para>
 /// It sits beside <see cref="ObserveCommittedVersionDelegate"/> rather than replacing it, because the two
@@ -17,6 +19,14 @@ namespace Lumoin.Verisync.Core;
 /// version anywhere matters and which host holds it does not. This one is what a readiness report is built
 /// from, where the answer is worthless without the identity beside it: an operator deciding whether a joiner
 /// has caught up, or whether a host may be decommissioned, is asking about one named replica.
+/// </para>
+/// <para>
+/// The answer names its answerer because the report it feeds is counted over distinct members. An
+/// implementation carries the identity from the answering host itself — the wire reply's own field, never
+/// the member the caller aimed at — and the register refuses an answer naming another member rather than
+/// counting it or reporting it unreachable, because two probe routes landing on one host is the wiring error
+/// a decommission gate must not clear through. The identity is the host's own claim and is not
+/// authentication.
 /// </para>
 /// <para>
 /// A member that does not answer is reported unreachable rather than reported at
@@ -31,4 +41,4 @@ namespace Lumoin.Verisync.Core;
 /// question asked.
 /// </para>
 /// </remarks>
-public delegate ValueTask<RegisterVersion> ObserveMemberVersionDelegate(ReplicaId member, CancellationToken cancellationToken);
+public delegate ValueTask<MemberVersionReport> ObserveMemberVersionDelegate(ReplicaId member, CancellationToken cancellationToken);

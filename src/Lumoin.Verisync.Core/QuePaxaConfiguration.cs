@@ -188,6 +188,74 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
 
 
     /// <summary>
+    /// The members of <paramref name="incoming"/> this membership does not hold: who a change to it would
+    /// admit.
+    /// </summary>
+    /// <param name="incoming">The membership a change would install.</param>
+    /// <returns>The joiners, in <paramref name="incoming"/>'s own order.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="incoming"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">Thrown if <paramref name="incoming"/> names another chain.</exception>
+    /// <remarks>
+    /// The delta is exported because the boundary is where an operator acts: the joiners are who an admission
+    /// disseminates to first, and the leavers are who a readiness gate must stop counting. Two memberships of
+    /// different chains have no delta, because they never were one fleet.
+    /// </remarks>
+    public ImmutableArray<ReplicaId> Joining(QuePaxaConfiguration incoming)
+    {
+        ArgumentNullException.ThrowIfNull(incoming);
+        if(!Cluster.Equals(incoming.Cluster))
+        {
+            throw new ArgumentException("The membership names another chain, so the two never were one fleet and have no delta.", nameof(incoming));
+        }
+
+        ImmutableArray<ReplicaId>.Builder joiners = ImmutableArray.CreateBuilder<ReplicaId>();
+        foreach(ReplicaId member in incoming.Members)
+        {
+            if(!Contains(member))
+            {
+                joiners.Add(member);
+            }
+        }
+
+        return joiners.ToImmutable();
+    }
+
+
+    /// <summary>
+    /// The members this membership holds that <paramref name="incoming"/> does not: who a change to it would
+    /// retire.
+    /// </summary>
+    /// <param name="incoming">The membership a change would install.</param>
+    /// <returns>The leavers, in this membership's own order.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="incoming"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">Thrown if <paramref name="incoming"/> names another chain.</exception>
+    /// <remarks>
+    /// The other half of <see cref="Joining(QuePaxaConfiguration)"/>, and the half a decommission gate reads:
+    /// a leaver is retired only once a quorum of the incoming membership has learned the record that removes
+    /// it.
+    /// </remarks>
+    public ImmutableArray<ReplicaId> Leaving(QuePaxaConfiguration incoming)
+    {
+        ArgumentNullException.ThrowIfNull(incoming);
+        if(!Cluster.Equals(incoming.Cluster))
+        {
+            throw new ArgumentException("The membership names another chain, so the two never were one fleet and have no delta.", nameof(incoming));
+        }
+
+        ImmutableArray<ReplicaId>.Builder leavers = ImmutableArray.CreateBuilder<ReplicaId>();
+        foreach(ReplicaId member in Members)
+        {
+            if(!incoming.Contains(member))
+            {
+                leavers.Add(member);
+            }
+        }
+
+        return leavers.ToImmutable();
+    }
+
+
+    /// <summary>
     /// Determines whether <paramref name="other"/> names the same chain and the same members in the same
     /// order.
     /// </summary>
