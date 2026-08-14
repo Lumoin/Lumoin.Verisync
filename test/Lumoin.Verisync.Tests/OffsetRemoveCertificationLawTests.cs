@@ -35,10 +35,14 @@ internal sealed class OffsetRemoveCertificationLawTests
     private static ImmutableArray<string> TripleBase { get; } = ["b0", "b1", "b2"];
 
 
-    //T7 — THE load-bearing determinism regression: M1 observed a live remove and a base removal that M2
-    //did not; both compact at a frontier certifying NEITHER. Ghost-retention or retain-on-uncertified
-    //would fork the base value arrays; the pending-removed conversion keeps them byte-identical, the
-    //generation identities equal, and the two states mergeable.
+    /// <summary>
+    /// T7 — THE load-bearing determinism regression: M1 observed a live remove and a base removal that M2 did
+    /// not; both compact at a frontier certifying NEITHER.
+    /// </summary>
+    /// <remarks>
+    /// Ghost-retention or retain-on-uncertified would fork the base value arrays; the pending-removed
+    /// conversion keeps them byte-identical, the generation identities equal, and the two states mergeable.
+    /// </remarks>
     [TestMethod]
     public void TwoMembersDisagreeingOnAnUncertifiedRemoveCompactToTheIdenticalBase()
     {
@@ -84,11 +88,16 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //Base-axis LAW-RG under deferred reclamation: an uncertified base removal keeps the slot in the
-    //certified projection — the determinism inclusion on the base axis — while a certified one drops it
-    //from the projection. In BOTH cases the slot survives compaction as the hidden ordering placeholder
-    //with its marking riding to the shifted offset: observation gates the certification, and reclamation
-    //waits for a consensus-carried follow-on.
+    /// <summary>
+    /// Base-axis LAW-RG under deferred reclamation: an uncertified base removal keeps the slot in the certified
+    /// projection — the determinism inclusion on the base axis — while a certified one drops it from the
+    /// projection.
+    /// </summary>
+    /// <remarks>
+    /// In BOTH cases the slot survives compaction as the hidden ordering placeholder with its marking riding to
+    /// the shifted offset: observation gates the certification, and reclamation waits for a consensus-carried
+    /// follow-on.
+    /// </remarks>
     [TestMethod]
     public void ABaseRemovalObservationGatesTheCertification()
     {
@@ -144,13 +153,17 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //NR-base under deferred reclamation, now under the §17 insert-quiescence contract: a certified base
-    //removal rides its marking through a base-changing compaction and stays hidden, two same-generation
-    //members that disagree on an uncertified LIVE remove still converge to the identical base, and a
-    //previous-generation operand is fenced rather than resurrecting the value. The divergent-child
-    //re-anchor §17 identified is foreclosed at the source — compacting a member that carries an
-    //above-frontier child fails closed — so cross-member agreement is reached by compacting quiescent
-    //states, with divergence confined to removes.
+    /// <summary>
+    /// NR-base under deferred reclamation, now under the §17 insert-quiescence contract: a certified base
+    /// removal rides its marking through a base-changing compaction and stays hidden, two same-generation
+    /// members that disagree on an uncertified LIVE remove still converge to the identical base, and a
+    /// previous-generation operand is fenced rather than resurrecting the value.
+    /// </summary>
+    /// <remarks>
+    /// The divergent-child re-anchor §17 identified is foreclosed at the source — compacting a member that
+    /// carries an above-frontier child fails closed — so cross-member agreement is reached by compacting
+    /// quiescent states, with divergence confined to removes.
+    /// </remarks>
     [TestMethod]
     public void ACertifiedBaseRemovalStaysHiddenAcrossGenerationsAndMerges()
     {
@@ -195,9 +208,11 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //Concurrent base removals of the same offset union per offset in both merge orders, and certification
-    //needs only ONE of the unioned remove-dots below the frontier: the slot leaves the certified
-    //projection, while compaction keeps it as the hidden placeholder — reclamation is deferred.
+    /// <summary>
+    /// Concurrent base removals of the same offset union per offset in both merge orders, and certification
+    /// needs only ONE of the unioned remove-dots below the frontier: the slot leaves the certified projection,
+    /// while compaction keeps it as the hidden placeholder — reclamation is deferred.
+    /// </summary>
     [TestMethod]
     public void AConcurrentBaseRemovalConverges()
     {
@@ -236,22 +251,28 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //T9 re-pointed to the deferred-reclamation posture: value cycles are unconstructible without
-    //reclamation, so the generation fence is pinned directly. Two hand-built states carry EQUAL base
-    //value arrays but DIFFERENT generation identities — the shape a reclaim-then-reconstruct cycle would
-    //produce — and Merge throws in both orders, which bare BaseEqual would pass. The stamping rule the
-    //fence rests on is pinned alongside: a converting compaction stamps the identity, a drop-only one
-    //carries it unchanged.
-    //
-    //These sub-cases do NOT discriminate trap-2 — a base-changed flag derived from
-    //!BaseEqual(newBase, Base) rather than from the conversion branches. Under deferred reclamation the
-    //two derivations agree on every reachable input, because a value-cycling generation ([a]->..->[a])
-    //is unconstructible without reclamation, so this suite CANNOT tell them apart. Trap-1 (a
-    //conversion-counter flag that omits the pending-removed branch) is covered by T7. The white-box
-    //regression that WOULD discriminate trap-2 — a compaction whose newBase value-array equals the
-    //pre-compaction base yet must still stamp a new BaseFrontier — is a REQUIRED gate of the reclamation
-    //follow-on, where value cycles first become constructible and the !BaseEqual derivation would
-    //silently break the NR-base fence.
+    /// <summary>
+    /// T9 re-pointed to the deferred-reclamation posture: value cycles are unconstructible without reclamation,
+    /// so the generation fence is pinned directly.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two hand-built states carry EQUAL base value arrays but DIFFERENT generation identities — the shape a
+    /// reclaim-then-reconstruct cycle would produce — and Merge throws in both orders, which bare BaseEqual
+    /// would pass. The stamping rule the fence rests on is pinned alongside: a converting compaction stamps the
+    /// identity, a drop-only one carries it unchanged.
+    /// </para>
+    /// <para>
+    /// These sub-cases do NOT discriminate trap-2 — a base-changed flag derived from !BaseEqual(newBase, Base)
+    /// rather than from the conversion branches. Under deferred reclamation the two derivations agree on every
+    /// reachable input, because a value-cycling generation ([a]->..->[a]) is unconstructible without
+    /// reclamation, so this suite CANNOT tell them apart. Trap-1 (a conversion-counter flag that omits the
+    /// pending-removed branch) is covered by T7. The white-box regression that WOULD discriminate trap-2 — a
+    /// compaction whose newBase value-array equals the pre-compaction base yet must still stamp a new
+    /// BaseFrontier — is a REQUIRED gate of the reclamation follow-on, where value cycles first become
+    /// constructible and the !BaseEqual derivation would silently break the NR-base fence.
+    /// </para>
+    /// </remarks>
     [TestMethod]
     public void AnEqualValueBaseCannotCrossGenerations()
     {
@@ -288,10 +309,14 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //The generation fence is an ORDINAL fence too, not only a frontier fence: two states carry the SAME
-    //base frontier but DIFFERENT base generations — the shape a forged or corrupt ordinal produces — and
-    //Merge throws in both orders behind the frontier fence, where bare frontier equality would pass. No
-    //honest history reaches this; the regression documents the forgery posture, like the fence test above.
+    /// <summary>
+    /// The generation fence is an ORDINAL fence too, not only a frontier fence: two states carry the SAME base
+    /// frontier but DIFFERENT base generations — the shape a forged or corrupt ordinal produces — and Merge
+    /// throws in both orders behind the frontier fence, where bare frontier equality would pass.
+    /// </summary>
+    /// <remarks>
+    /// No honest history reaches this; the regression documents the forgery posture, like the fence test above.
+    /// </remarks>
     [TestMethod]
     public void AForgedGenerationOrdinalAtTheSharedFrontierFailsTheMerge()
     {
@@ -312,12 +337,16 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //A prior-generation base address keeps translating correctly THROUGH a drop-only compaction. A
-    //base-changing seal (head-insert h converts, shifting b0 from offset 0 to offset 1) installs the map
-    //{0 -> AtBase(1)}. Inside that generation a childless x is inserted and certified-removed; compacting at
-    //a frontier covering everything drops x without converting anything, so the walk is DROP-ONLY and keeps
-    //the prior base-offset map. The generation-0 address of the prior slot still maps to its
-    //generation-1 offset — installing this walk's identity map would silently retarget it.
+    /// <summary>
+    /// A prior-generation base address keeps translating correctly THROUGH a drop-only compaction.
+    /// </summary>
+    /// <remarks>
+    /// A base-changing seal (head-insert h converts, shifting b0 from offset 0 to offset 1) installs the map {0
+    /// -> AtBase(1)}. Inside that generation a childless x is inserted and certified-removed; compacting at a
+    /// frontier covering everything drops x without converting anything, so the walk is DROP-ONLY and keeps the
+    /// prior base-offset map. The generation-0 address of the prior slot still maps to its generation-1 offset
+    /// — installing this walk's identity map would silently retarget it.
+    /// </remarks>
     [TestMethod]
     public void ADropOnlyCompactionPreservesPriorGenerationBaseAnchorTranslation()
     {
@@ -348,15 +377,19 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //The exactness pin: one offset, two generations, two answers. A base-changing seal over base [a, b]
-    //converts head-inserted h to offset 0 and shifts a and b up, installing the map
-    //{0 -> AtBase(1), 1 -> AtBase(2)}. A CURRENT-generation address of offset 0 or 1 translates to itself
-    //through the identity arm; the same integers presented as PRIOR-generation addresses translate through
-    //the map to offsets 1 and 2. A drop-only compaction on the new generation must keep every
-    //current-generation base address servable too — the identity arm answers whether or not the kept map
-    //holds a prior-generation key for the same integer. Two flavors exercise it: a base-changing seal
-    //leaves a non-empty kept map whose keys do not cover the highest current offset, and a genesis
-    //generation leaves an empty kept map. A null on either shape orphans live current-generation content.
+    /// <summary>
+    /// The exactness pin: one offset, two generations, two answers.
+    /// </summary>
+    /// <remarks>
+    /// A base-changing seal over base [a, b] converts head-inserted h to offset 0 and shifts a and b up,
+    /// installing the map {0 -> AtBase(1), 1 -> AtBase(2)}. A CURRENT-generation address of offset 0 or 1
+    /// translates to itself through the identity arm; the same integers presented as PRIOR-generation addresses
+    /// translate through the map to offsets 1 and 2. A drop-only compaction on the new generation must keep
+    /// every current-generation base address servable too — the identity arm answers whether or not the kept
+    /// map holds a prior-generation key for the same integer. Two flavors exercise it: a base-changing seal
+    /// leaves a non-empty kept map whose keys do not cover the highest current offset, and a genesis generation
+    /// leaves an empty kept map. A null on either shape orphans live current-generation content.
+    /// </remarks>
     [TestMethod]
     public void ADropOnlyCompactionKeepsCurrentGenerationBaseAnchorsServable()
     {
@@ -423,10 +456,14 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //A base address older than the one generation the map serves fails closed. Two base-changing
-    //compactions carry the sequence to generation 2; its map serves generation 1 only. A generation-2
-    //address is the identity, a generation-1 address maps, and a generation-0 address — two generations
-    //old — translates to null rather than being mis-served as current or as one-prior.
+    /// <summary>
+    /// A base address older than the one generation the map serves fails closed.
+    /// </summary>
+    /// <remarks>
+    /// Two base-changing compactions carry the sequence to generation 2; its map serves generation 1 only. A
+    /// generation-2 address is the identity, a generation-1 address maps, and a generation-0 address — two
+    /// generations old — translates to null rather than being mis-served as current or as one-prior.
+    /// </remarks>
     [TestMethod]
     public void ABaseAddressOlderThanTheServedWindowTranslatesToNull()
     {
@@ -438,9 +475,14 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //A base address whose generation is newer than the sequence's current one is forged — no honest
-    //history mints it — and translates to null. A single base-changing compaction reaches generation 1;
-    //a generation-2 address is refused while the current generation-1 address is the identity.
+    /// <summary>
+    /// A base address whose generation is newer than the sequence's current one is forged — no honest history
+    /// mints it — and translates to null.
+    /// </summary>
+    /// <remarks>
+    /// A single base-changing compaction reaches generation 1; a generation-2 address is refused while the
+    /// current generation-1 address is the identity.
+    /// </remarks>
     [TestMethod]
     public void ABaseAddressNewerThanTheCurrentGenerationTranslatesToNull()
     {
@@ -453,11 +495,15 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //The edit paths validate the address generation at the door: a base address of a stale generation is
-    //refused by InsertAfter and Remove alike, while the current-generation address of the same offset
-    //works. The generation check precedes the range check, so a stale address whose offset is also out of
-    //range is refused for the generation — the truthful diagnosis — and a current-generation address out
-    //of range is refused for the range.
+    /// <summary>
+    /// The edit paths validate the address generation at the door: a base address of a stale generation is
+    /// refused by InsertAfter and Remove alike, while the current-generation address of the same offset works.
+    /// </summary>
+    /// <remarks>
+    /// The generation check precedes the range check, so a stale address whose offset is also out of range is
+    /// refused for the generation — the truthful diagnosis — and a current-generation address out of range is
+    /// refused for the range.
+    /// </remarks>
     [TestMethod]
     public void EditsAtAStaleGenerationBaseAddressFailClosed()
     {
@@ -493,11 +539,15 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //The §16 follow-on invariant the merge conflicting-vertex detector's premise rests on: a SUCCESSFUL
-    //compaction retains NO vertex — a corollary of the insert-quiescence guard, since every vertex is then
-    //stable and so converts, converts pending-removed, or drops, with the ghost arm unreachable. Several
-    //inserts and removes over a base, compacted at the full context, leave the compacted state's vertices
-    //empty.
+    /// <summary>
+    /// The §16 follow-on invariant the merge conflicting-vertex detector's premise rests on: a SUCCESSFUL
+    /// compaction retains NO vertex — a corollary of the insert-quiescence guard, since every vertex is then
+    /// stable and so converts, converts pending-removed, or drops, with the ghost arm unreachable.
+    /// </summary>
+    /// <remarks>
+    /// Several inserts and removes over a base, compacted at the full context, leave the compacted state's
+    /// vertices empty.
+    /// </remarks>
     [TestMethod]
     public void ASuccessfulCompactionRetainsNoVertex()
     {
@@ -517,11 +567,15 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //RE-POINTED under §17: the pre-§17 A-killer compacted a laggard carrying above-frontier inserts (c
-    //under the tombstoned x, g after d) to check the ghost held c UNDER x. The insert-quiescence guard
-    //forecloses that whole shape — a non-quiescent compaction fails closed rather than reorder the
-    //visible sequence into the ghost region — so only the quiescent peer compaction is admitted, and the
-    //laggard and the merged state both throw.
+    /// <summary>
+    /// RE-POINTED under §17: the pre-§17 A-killer compacted a laggard carrying above-frontier inserts (c under
+    /// the tombstoned x, g after d) to check the ghost held c UNDER x.
+    /// </summary>
+    /// <remarks>
+    /// The insert-quiescence guard forecloses that whole shape — a non-quiescent compaction fails closed rather
+    /// than reorder the visible sequence into the ghost region — so only the quiescent peer compaction is
+    /// admitted, and the laggard and the merged state both throw.
+    /// </remarks>
     [TestMethod]
     public void ACompactionCarryingAnAboveFrontierInsertAfterATombstonedElementFailsClosed()
     {
@@ -553,11 +607,15 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //§17 REGRESSION (skeptic: deferred-reclamation, the ghost-chain reorder). U hangs off the ghost chain
-    //P->G while its stable sibling V converts. Pre-§17, base slots linearize after the Head region, so V
-    //(a converted base slot) jumped PAST U (still under the ghost G), silently reordering committed live
-    //content. The insert-quiescence guard forecloses it: U is an unstable vertex, so the compaction fails
-    //closed rather than materialize a line the ghost chain would reorder.
+    /// <summary>
+    /// §17 REGRESSION (skeptic: deferred-reclamation, the ghost-chain reorder).
+    /// </summary>
+    /// <remarks>
+    /// U hangs off the ghost chain P->G while its stable sibling V converts. Pre-§17, base slots linearize
+    /// after the Head region, so V (a converted base slot) jumped PAST U (still under the ghost G), silently
+    /// reordering committed live content. The insert-quiescence guard forecloses it: U is an unstable vertex,
+    /// so the compaction fails closed rather than materialize a line the ghost chain would reorder.
+    /// </remarks>
     [TestMethod]
     public void AGhostChainReorderFailsClosedUnderTheQuiescenceGuard()
     {
@@ -571,11 +629,15 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //§17 REGRESSION (skeptic: certification/taxonomy, the certified-ghost sibling-conversion reorder). P
-    //is certified-removed and ghost-retained because its concurrent child C2 is unstable, while its stable
-    //child C1 converts into a base slot. Pre-§17, C1 (canonically ahead of C2) was torn out of the ghost's
-    //Head subtree into the base region, which linearizes AFTER it, so C1 landed behind C2 and the visible
-    //order changed. The guard forecloses it: C2 is an unstable vertex, so the compaction fails closed.
+    /// <summary>
+    /// §17 REGRESSION (skeptic: certification/taxonomy, the certified-ghost sibling-conversion reorder).
+    /// </summary>
+    /// <remarks>
+    /// P is certified-removed and ghost-retained because its concurrent child C2 is unstable, while its stable
+    /// child C1 converts into a base slot. Pre-§17, C1 (canonically ahead of C2) was torn out of the ghost's
+    /// Head subtree into the base region, which linearizes AFTER it, so C1 landed behind C2 and the visible
+    /// order changed. The guard forecloses it: C2 is an unstable vertex, so the compaction fails closed.
+    /// </remarks>
     [TestMethod]
     public void ACertifiedGhostSiblingConversionReorderFailsClosedUnderTheQuiescenceGuard()
     {
@@ -593,12 +655,16 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //§17 REGRESSION (skeptic: deferred-reclamation, the frontier-path wedge). Pre-§17 a member could
-    //compact along a path that left U unstable (F) and reach a base ordered differently from a member that
-    //compacted once U was stable (F'), yet both stamped the SAME generation identity — honest members
-    //permanently unmergeable on the BaseEqual assertion, their same-frontier projections divergent. The
-    //guard admits only the quiescent path: the non-quiescent frontier throws, and the quiescent one
-    //preserves the visible order.
+    /// <summary>
+    /// §17 REGRESSION (skeptic: deferred-reclamation, the frontier-path wedge).
+    /// </summary>
+    /// <remarks>
+    /// Pre-§17 a member could compact along a path that left U unstable (F) and reach a base ordered
+    /// differently from a member that compacted once U was stable (F'), yet both stamped the SAME generation
+    /// identity — honest members permanently unmergeable on the BaseEqual assertion, their same-frontier
+    /// projections divergent. The guard admits only the quiescent path: the non-quiescent frontier throws, and
+    /// the quiescent one preserves the visible order.
+    /// </remarks>
     [TestMethod]
     public void AFrontierPathWedgeFailsClosedUnderTheQuiescenceGuard()
     {
@@ -617,9 +683,13 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //G4: a 10,000-deep tombstoned chain must classify, walk, and enumerate iteratively without stack
-    //growth. Every remove is certified at the state's own context, so the whole chain drops and every
-    //dropped dot translates to the base slot it hung under.
+    /// <summary>
+    /// G4: a 10,000-deep tombstoned chain must classify, walk, and enumerate iteratively without stack growth.
+    /// </summary>
+    /// <remarks>
+    /// Every remove is certified at the state's own context, so the whole chain drops and every dropped dot
+    /// translates to the base slot it hung under.
+    /// </remarks>
     [TestMethod]
     public void ADeepTombstoneRunCompactsWithoutRecursion()
     {
@@ -677,10 +747,12 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //T8 — the pending-removed lifecycle under deferred reclamation: an uncertified-removed stable vertex
-    //converts into the base as a pending-removed entry carrying its remove-dot; when a later frontier
-    //certifies the remove, the slot leaves the certified projection — RECLAIMABLE by a consensus-carried
-    //follow-on — yet the marking persists and the slot stays hidden in place.
+    /// <summary>
+    /// T8 — the pending-removed lifecycle under deferred reclamation: an uncertified-removed stable vertex
+    /// converts into the base as a pending-removed entry carrying its remove-dot; when a later frontier
+    /// certifies the remove, the slot leaves the certified projection — RECLAIMABLE by a consensus-carried
+    /// follow-on — yet the marking persists and the slot stays hidden in place.
+    /// </summary>
     [TestMethod]
     public void PendingRemovedConversionCarriesTheRemoveAcrossTheGeneration()
     {
@@ -723,11 +795,16 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //RE-POINTED under §17: Invariant RA guarded the re-anchoring of survivors across divergent unstable
-    //child sets. That re-anchoring is foreclosed at the source — a state with an above-frontier child is
-    //non-quiescent and Compact fails closed, so no survivor re-anchors and there is nothing to disagree
-    //on. The certified projection stays an UNRESTRICTED pure read, so two members with different unstable
-    //child sets still agree on it at the shared frontier; only the base-materializing compaction is gated.
+    /// <summary>
+    /// RE-POINTED under §17: Invariant RA guarded the re-anchoring of survivors across divergent unstable child
+    /// sets.
+    /// </summary>
+    /// <remarks>
+    /// That re-anchoring is foreclosed at the source — a state with an above-frontier child is non-quiescent
+    /// and Compact fails closed, so no survivor re-anchors and there is nothing to disagree on. The certified
+    /// projection stays an UNRESTRICTED pure read, so two members with different unstable child sets still
+    /// agree on it at the shared frontier; only the base-materializing compaction is gated.
+    /// </remarks>
     [TestMethod]
     public void DivergentUnstableChildrenAgreeOnTheProjectionButFailClosedOnCompaction()
     {
@@ -756,9 +833,13 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //Two base-changing compactions over the single base carry the sequence to generation 2: h1 converts
-    //to offset 0 shifting b0 to offset 1, then h2 converts to offset 0 shifting the rest up. The result's
-    //base-offset map serves generation 1 only.
+    /// <summary>
+    /// Two base-changing compactions over the single base carry the sequence to generation 2: h1 converts to
+    /// offset 0 shifting b0 to offset 1, then h2 converts to offset 0 shifting the rest up.
+    /// </summary>
+    /// <remarks>
+    /// The result's base-offset map serves generation 1 only.
+    /// </remarks>
     private static OffsetAnchoredSequence<string> TwoBaseChangesOverSingleBase()
     {
         (OffsetAnchoredSequence<string> withH1, _) = OffsetAnchoredSequence<string>.WithBase(SingleBase).InsertAtHead("h1", R1);
@@ -772,10 +853,15 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //The ghost-chain shape shared by the §17 reorder and wedge regressions: P at head, G and V after P, U
-    //after the ghost G, then P and G removed — so U hangs off the ghost chain P->G while V is P's stable
-    //sibling. A laggard that never observed U pins its axis at zero, so a min-fold frontier certifies the
-    //P and G removes yet floors U below the waterline. Returns the sequence and the laggard's context.
+    /// <summary>
+    /// The ghost-chain shape shared by the §17 reorder and wedge regressions: P at head, G and V after P, U
+    /// after the ghost G, then P and G removed — so U hangs off the ghost chain P->G while V is P's stable
+    /// sibling.
+    /// </summary>
+    /// <remarks>
+    /// A laggard that never observed U pins its axis at zero, so a min-fold frontier certifies the P and G
+    /// removes yet floors U below the waterline. Returns the sequence and the laggard's context.
+    /// </remarks>
     private static (OffsetAnchoredSequence<string> Sequence, VectorClock Laggard) BuildGhostChainShape()
     {
         (OffsetAnchoredSequence<string> seq, OffsetAddress p) = OffsetAnchoredSequence<string>.Empty.InsertAtHead("P", R1);
@@ -793,8 +879,10 @@ internal sealed class OffsetRemoveCertificationLawTests
     }
 
 
-    //Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect
-    //the element-wise minimum but keep the digests honest.
+    /// <summary>
+    /// Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect the
+    /// element-wise minimum but keep the digests honest.
+    /// </summary>
     private static VectorClock FrontierOf(params VectorClock[] memberContexts)
     {
         var digests = new List<GossipDigest>(memberContexts.Length);
@@ -810,10 +898,15 @@ internal sealed class OffsetRemoveCertificationLawTests
     private static DotState DotStateOf(Dot dot) => new(ImmutableArray.Create(dot.Replica.AsSpan()), dot.Counter);
 
 
-    //A base slot's projection identity is the FULL 32-byte sentinel {254, 0x31 zeroes} with counter =
-    //base offset + 1. Production ReplicaId has NO reserved range; non-collision rests on the sentinel's
-    //entropy — a random 32-byte id equals it with negligible probability — and no code may ever detect
-    //placeholders by their first byte.
+    /// <summary>
+    /// A base slot's projection identity is the FULL 32-byte sentinel {254, 0x31 zeroes} with counter = base
+    /// offset + 1.
+    /// </summary>
+    /// <remarks>
+    /// Production ReplicaId has NO reserved range; non-collision rests on the sentinel's entropy — a random
+    /// 32-byte id equals it with negligible probability — and no code may ever detect placeholders by their
+    /// first byte.
+    /// </remarks>
     private static DotState SentinelDot(int offset)
     {
         Span<byte> sentinel = stackalloc byte[ReplicaId.Size];

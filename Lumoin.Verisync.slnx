@@ -21,6 +21,7 @@
   </Folder>
   <Folder Name="/test/">
     <Project Path="test/Lumoin.Verisync.Benchmarks/Lumoin.Verisync.Benchmarks.csproj" />
+    <Project Path="test/Lumoin.Verisync.DecisionTable/Lumoin.Verisync.DecisionTable.csproj" />
     <Project Path="test/Lumoin.Verisync.Tests/Lumoin.Verisync.Tests.csproj" />
   </Folder>
 </Solution>

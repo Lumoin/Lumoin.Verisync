@@ -2,6 +2,9 @@
 
   <PropertyGroup>
     <RootNamespace>Lumoin.Verisync.Cbor</RootNamespace>
+    <!-- The XML documentation ships with the package, and generating it makes the compiler validate every
+         doc comment, param tag and cref on every build. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <Description>System.Formats.Cbor serialization adapters for Lumoin.Verisync message channels. Deterministic canonical CBOR for digest-stable encoding.</Description>
     <!-- This project implements serialization, so it opts out of the serialization banlist. -->
     <EnableSerializationBan>false</EnableSerializationBan>

@@ -32,8 +32,11 @@ internal sealed class DirtyMemoryPool: MemoryPool<byte>
     }
 
 
-    //The owner hands out exactly its dirty buffer and does not clear on dispose; the point is that the buffer
-    //the consumer holds starts non-zero, so only the consumer's own clear or overwrite can make it read clean.
+    /// <summary>
+    /// The owner hands out exactly its dirty buffer and does not clear on dispose; the point is that the buffer
+    /// the consumer holds starts non-zero, so only the consumer's own clear or overwrite can make it read
+    /// clean.
+    /// </summary>
     private sealed class DirtyOwner(byte[] buffer): IMemoryOwner<byte>
     {
         public Memory<byte> Memory => buffer;

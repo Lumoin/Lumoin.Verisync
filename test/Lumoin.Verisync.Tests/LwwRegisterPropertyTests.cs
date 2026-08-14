@@ -10,8 +10,10 @@ internal sealed class LwwRegisterPropertyTests
 {
     private static ReplicaId[] Replicas { get; } = [Replica(0), Replica(1), Replica(2)];
 
-    //Value is derived from (writer, timestamp) so an equal (timestamp, writer) pair always carries an
-    //equal value; that is the well-definedness assumption the register's tie-break relies on.
+    /// <summary>
+    /// Value is derived from (writer, timestamp) so an equal (timestamp, writer) pair always carries an equal
+    /// value; that is the well-definedness assumption the register's tie-break relies on.
+    /// </summary>
     private static Gen<LwwRegister<int>> GenRegister { get; } =
         Gen.Select(Gen.Int[0, 2], Gen.Int[0, 5], Gen.Bool, (writer, ticks, present) => Build(writer, ticks, present));
 

@@ -88,7 +88,9 @@ internal sealed class RaftSocketClusterTests
 
     //--- Helpers --------------------------------------------------------------------------------------------
 
-    //Triggers an election on the first node and drives heartbeats until exactly one node is leader, returning it.
+    /// <summary>
+    /// Triggers an election on the first node and drives heartbeats until exactly one node is leader, returning it.
+    /// </summary>
     private static async Task<ReplicaId> ElectAnyLeaderAsync(SocketMesh mesh, CancellationToken cancellationToken)
     {
         await mesh.Runner(mesh.Members[0]).TriggerElectionAsync(cancellationToken).ConfigureAwait(false);
@@ -98,8 +100,12 @@ internal sealed class RaftSocketClusterTests
     }
 
 
-    //Drives heartbeats from the current leader and polls the predicate under the bounded timeout. The timeout —
-    //not a fixed sleep — is the synchronization boundary; the short delay is only loop back-off.
+    /// <summary>
+    /// Drives heartbeats from the current leader and polls the predicate under the bounded timeout.
+    /// </summary>
+    /// <remarks>
+    /// The timeout — not a fixed sleep — is the synchronization boundary; the short delay is only loop back-off.
+    /// </remarks>
     private static async Task DriveUntilAsync(SocketMesh mesh, Func<bool> satisfied, CancellationToken cancellationToken)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -125,9 +131,11 @@ internal sealed class RaftSocketClusterTests
     }
 
 
-    //Collapses the applied entries to one command per committed index, in index order: apply is at-least-once
-    //across a restart, so de-duplicating by index keeps the comparison about converged content, not counts.
-    private static string[] Commands(IReadOnlyCollection<(long Index, string Command)> applied)
+    /// <summary>
+    /// Collapses the applied entries to one command per committed index, in index order: apply is at-least-once
+    /// across a restart, so de-duplicating by index keeps the comparison about converged content, not counts.
+    /// </summary>
+    private static string[] Commands(IReadOnlyCollection<(LogIndex Index, string Command)> applied)
     {
         return applied
             .GroupBy(entry => entry.Index)
@@ -137,9 +145,14 @@ internal sealed class RaftSocketClusterTests
     }
 
 
-    //A localhost socket mesh of runners. Each node has its own listener and a directed outbound link to every
-    //peer; a peer's inbound link is read by a loop that feeds the local runner's SubmitAsync. Everything is
-    //tracked so DisposeAsync can tear it all down even if a test fails mid-flight.
+    /// <summary>
+    /// A localhost socket mesh of runners.
+    /// </summary>
+    /// <remarks>
+    /// Each node has its own listener and a directed outbound link to every peer; a peer's inbound link is read
+    /// by a loop that feeds the local runner's SubmitAsync. Everything is tracked so DisposeAsync can tear it
+    /// all down even if a test fails mid-flight.
+    /// </remarks>
     private sealed class SocketMesh: IAsyncDisposable
     {
         private static readonly SerializeMessageDelegate<RaftEnvelope<string>> SerializeEnvelope =
@@ -155,7 +168,7 @@ internal sealed class RaftSocketClusterTests
         private readonly Dictionary<ReplicaId, RaftNode<string>> nodes = [];
         private readonly Dictionary<ReplicaId, RaftRunner<string>> runners = [];
         private readonly Dictionary<ReplicaId, Task> runTasks = [];
-        private readonly Dictionary<ReplicaId, ConcurrentQueue<(long Index, string Command)>> applied = [];
+        private readonly Dictionary<ReplicaId, ConcurrentQueue<(LogIndex Index, string Command)>> applied = [];
         private readonly Dictionary<ReplicaId, RaftNodeState<string>> lastPersisted = [];
         private readonly Dictionary<ReplicaId, int> persistCounts = [];
         private readonly Dictionary<(ReplicaId From, ReplicaId To), MessageChannelWriter<RaftEnvelope<string>>> outbound = [];
@@ -177,14 +190,16 @@ internal sealed class RaftSocketClusterTests
         public RaftRunner<string> Runner(ReplicaId id) => runners[id];
 
 
-        public ConcurrentQueue<(long Index, string Command)> Applied(ReplicaId id) => applied[id];
+        public ConcurrentQueue<(LogIndex Index, string Command)> Applied(ReplicaId id) => applied[id];
 
 
         public int PersistCount(ReplicaId id) => persistCounts[id];
 
 
-        //Stands up the full mesh: a listener per node, a directed socket per ordered pair, the reader loops
-        //that feed each node, and a started runner per node wired to send through the outbound writers.
+        /// <summary>
+        /// Stands up the full mesh: a listener per node, a directed socket per ordered pair, the reader loops
+        /// that feed each node, and a started runner per node wired to send through the outbound writers.
+        /// </summary>
         public static async Task<SocketMesh> BuildAsync(int count, CancellationToken cancellationToken)
         {
             ImmutableArray<ReplicaId> members = [.. Enumerable.Range(1, count).Select(i => Replica((byte)i))];
@@ -205,8 +220,10 @@ internal sealed class RaftSocketClusterTests
         }
 
 
-        //Restarts a node from its last persisted state behind a fresh node, runner, and applied queue, leaving
-        //the existing socket links in place so heartbeats flow straight back to the rejoined runner.
+        /// <summary>
+        /// Restarts a node from its last persisted state behind a fresh node, runner, and applied queue, leaving
+        /// the existing socket links in place so heartbeats flow straight back to the rejoined runner.
+        /// </summary>
         public async Task RestartFromLastPersistedAsync(ReplicaId id, CancellationToken token)
         {
             runners[id].Complete();
@@ -215,7 +232,7 @@ internal sealed class RaftSocketClusterTests
             RaftNodeState<string> state = lastPersisted[id];
             nodes[id] = RaftNode<string>.FromState(id, members, state);
             runners[id] = new RaftRunner<string>(nodes[id]);
-            applied[id] = new ConcurrentQueue<(long, string)>();
+            applied[id] = new ConcurrentQueue<(LogIndex, string)>();
             runTasks[id] = runners[id].RunAsync(MakeSend(id), MakePersist(id), MakeApply(id), token);
         }
 
@@ -327,7 +344,7 @@ internal sealed class RaftSocketClusterTests
                 ReplicaId id = members[i];
                 nodes[id] = new RaftNode<string>(id, members);
                 runners[id] = new RaftRunner<string>(nodes[id]);
-                applied[id] = new ConcurrentQueue<(long, string)>();
+                applied[id] = new ConcurrentQueue<(LogIndex, string)>();
                 persistCounts[id] = 0;
             }
 
@@ -351,8 +368,10 @@ internal sealed class RaftSocketClusterTests
         }
 
 
-        //Reads framed envelopes off one inbound socket and submits each to the owning node's current runner; a
-        //runner restart swaps runners[owner], so the lookup happens per message rather than being captured.
+        /// <summary>
+        /// Reads framed envelopes off one inbound socket and submits each to the owning node's current runner; a
+        /// runner restart swaps runners[owner], so the lookup happens per message rather than being captured.
+        /// </summary>
         private async Task ReadInboundAsync(ReplicaId owner, TcpClient server)
         {
             NetworkStream stream = server.GetStream();
@@ -392,7 +411,7 @@ internal sealed class RaftSocketClusterTests
 
         private ApplyCommittedDelegate<string> MakeApply(ReplicaId id)
         {
-            ConcurrentQueue<(long Index, string Command)> sink = applied[id];
+            ConcurrentQueue<(LogIndex Index, string Command)> sink = applied[id];
 
             return (index, command, _) =>
             {

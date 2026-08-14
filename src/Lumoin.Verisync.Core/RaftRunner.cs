@@ -46,7 +46,7 @@ public sealed class RaftRunner<TCommand>
 
     //Runner-local applied watermark; the highest index already handed to the apply hook this process lifetime.
     //Volatile bookkeeping like the node's commit index, it starts at zero and is touched only by RunAsync.
-    private long lastApplied;
+    private LogIndex lastApplied;
 
     //Guards single entry into RunAsync. The node's single-threaded contract assumes exactly one consumer.
     private int started;
@@ -181,7 +181,7 @@ public sealed class RaftRunner<TCommand>
     /// <param name="command">The command to replicate.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>
-    /// A task that completes with the command's 1-based log index once the leader has appended it, or faults
+    /// A task that completes with the command's log index once the leader has appended it, or faults
     /// with <see cref="InvalidOperationException"/> when this node is not the leader or when the runner loop
     /// ends before the proposal completes (the inner exception then carries the loop failure). The task is
     /// cancelled when the runner is cancelled before the proposal completes.
@@ -197,9 +197,9 @@ public sealed class RaftRunner<TCommand>
     /// work — <see cref="Complete"/> was called or the loop has ended — faults with
     /// <see cref="ChannelClosedException"/> instead of hanging on a loop that will never dispatch it.
     /// </remarks>
-    public Task<long> ProposeAsync(TCommand command, CancellationToken cancellationToken = default)
+    public Task<LogIndex> ProposeAsync(TCommand command, CancellationToken cancellationToken = default)
     {
-        var source = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var source = new TaskCompletionSource<LogIndex>(TaskCreationOptions.RunContinuationsAsynchronously);
         ValueTask write = work.Writer.WriteAsync(new ProposeItem(command, source), cancellationToken);
         if(write.IsCompletedSuccessfully)
         {
@@ -248,7 +248,7 @@ public sealed class RaftRunner<TCommand>
     }
 
 
-    private static async Task<long> AwaitWriteThenSource(ValueTask write, TaskCompletionSource<long> source)
+    private static async Task<LogIndex> AwaitWriteThenSource(ValueTask write, TaskCompletionSource<LogIndex> source)
     {
         await write.ConfigureAwait(false);
 
@@ -386,7 +386,7 @@ public sealed class RaftRunner<TCommand>
             return;
         }
 
-        long index = node.Propose(proposeItem.Command);
+        LogIndex index = node.Propose(proposeItem.Command);
         await PersistAsync(persistState, cancellationToken).ConfigureAwait(false);
         await ApplyAsync(applyCommitted, cancellationToken).ConfigureAwait(false);
         proposeItem.Source.TrySetResult(index);
@@ -407,14 +407,13 @@ public sealed class RaftRunner<TCommand>
 
     private async ValueTask ApplyAsync(ApplyCommittedDelegate<TCommand>? applyCommitted, CancellationToken cancellationToken)
     {
-        long commitIndex = node.CommitIndex;
+        LogIndex commitIndex = node.CommitIndex;
         while(lastApplied < commitIndex)
         {
-            long next = lastApplied + 1;
+            LogIndex next = lastApplied.Next();
             if(applyCommitted is not null)
             {
-                //Protocol index next is the entry at zero-based position next - 1.
-                await applyCommitted(next, node.Log[(int)(next - 1)].Command, cancellationToken).ConfigureAwait(false);
+                await applyCommitted(next, node.Log[next.Position].Command, cancellationToken).ConfigureAwait(false);
             }
 
             lastApplied = next;
@@ -494,7 +493,7 @@ public sealed class RaftRunner<TCommand>
     private sealed record EnvelopeItem(RaftEnvelope<TCommand> Envelope): WorkItem;
 
 
-    private sealed record ProposeItem(TCommand Command, TaskCompletionSource<long> Source): WorkItem;
+    private sealed record ProposeItem(TCommand Command, TaskCompletionSource<LogIndex> Source): WorkItem;
 
 
     private sealed record ElectionItem: WorkItem

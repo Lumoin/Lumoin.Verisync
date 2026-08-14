@@ -23,9 +23,14 @@ internal sealed class CheckpointSealTests
     private static ReplicaId RHigh { get; } = Replica(30);
 
 
-    //A won seal commits its commitment, compacts the live sequence at the frontier, and records the dotted
-    //certified projection. T5: a,b inserted by R1, b removed; the projection at the full context is [a] and
-    //the dropped b translates to a.
+    /// <summary>
+    /// A won seal commits its commitment, compacts the live sequence at the frontier, and records the dotted
+    /// certified projection.
+    /// </summary>
+    /// <remarks>
+    /// T5: a,b inserted by R1, b removed; the projection at the full context is [a] and the dropped b
+    /// translates to a.
+    /// </remarks>
     [TestMethod]
     public void ASealCommitsCompactsAndRecordsTheDottedCheckpoint()
     {
@@ -58,8 +63,10 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //A non-sealer over the same full state applies the committed seal and converges component-wise — the
-    //determinism theorem end to end.
+    /// <summary>
+    /// A non-sealer over the same full state applies the committed seal and converges component-wise — the
+    /// determinism theorem end to end.
+    /// </summary>
     [TestMethod]
     public void ANonSealerAppliesTheCommittedSealAndConverges()
     {
@@ -85,10 +92,15 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //Re-applying an already-applied seal is idempotent for the identity-stable RGA strategy: its compaction
-    //preserves projection identities, so the applier's projection at the committed frontier still matches the
-    //digest on the second application and the container is unchanged. The base-materializing offset analog
-    //instead fails closed once the seal converted live content — pinned in OffsetCheckpointSealTests.
+    /// <summary>
+    /// Re-applying an already-applied seal is idempotent for the identity-stable RGA strategy: its compaction
+    /// preserves projection identities, so the applier's projection at the committed frontier still matches the
+    /// digest on the second application and the container is unchanged.
+    /// </summary>
+    /// <remarks>
+    /// The base-materializing offset analog instead fails closed once the seal converted live content — pinned
+    /// in OffsetCheckpointSealTests.
+    /// </remarks>
     [TestMethod]
     public void ReapplyingAnAppliedSealIsIdempotentForAnIdentityStableStrategy()
     {
@@ -112,8 +124,10 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //A competing seal that is behind aborts unchanged, re-proposing the winner's commitment; a later seal
-    //that strictly dominates the winner succeeds — the committed chain only ascends.
+    /// <summary>
+    /// A competing seal that is behind aborts unchanged, re-proposing the winner's commitment; a later seal
+    /// that strictly dominates the winner succeeds — the committed chain only ascends.
+    /// </summary>
     [TestMethod]
     public void ACompetingSealAbortsUnchangedAndSucceedsAboveTheWinner()
     {
@@ -154,9 +168,11 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //Re-sealing the identical state at the identical frontier under a higher ballot hits the equal arm and
-    //seals again idempotently: live, checkpoint, and commitment equal the first seal's, only the recorded
-    //ballot advances.
+    /// <summary>
+    /// Re-sealing the identical state at the identical frontier under a higher ballot hits the equal arm and
+    /// seals again idempotently: live, checkpoint, and commitment equal the first seal's, only the recorded
+    /// ballot advances.
+    /// </summary>
     [TestMethod]
     public void AnEqualFrontierResealIsIdempotent()
     {
@@ -180,9 +196,11 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //Two states with byte-identical contexts but different values (a dishonest construction: R1 mints (R1,1)
-    //carrying "x" in one and "y" in the other) collide at the equal frontier with divergent digests; the
-    //second sealer is refused and its container is returned unchanged.
+    /// <summary>
+    /// Two states with byte-identical contexts but different values (a dishonest construction: R1 mints (R1,1)
+    /// carrying "x" in one and "y" in the other) collide at the equal frontier with divergent digests; the
+    /// second sealer is refused and its container is returned unchanged.
+    /// </summary>
     [TestMethod]
     public void AnEqualFrontierDivergentDigestIsRefused()
     {
@@ -207,9 +225,11 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //Committed seals apply in chain order: a stale earlier commitment is rejected by frontier order even
-    //when its digest coincides with the applier's projection at that earlier frontier — the digest check
-    //alone cannot see the regression, so the chain-order guard must.
+    /// <summary>
+    /// Committed seals apply in chain order: a stale earlier commitment is rejected by frontier order even
+    /// when its digest coincides with the applier's projection at that earlier frontier — the digest check
+    /// alone cannot see the regression, so the chain-order guard must.
+    /// </summary>
     [TestMethod]
     public void ApplyingAStaleEarlierSealFailsClosedByChainOrder()
     {
@@ -232,9 +252,11 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //The rejoin recipe end to end: a rejoiner seeds a fresh container around a healthy donor's full
-    //sequence state with Adopt and applies the committed seal, whose digest verification is the adoption
-    //check; the result converges component-wise with the sealer.
+    /// <summary>
+    /// The rejoin recipe end to end: a rejoiner seeds a fresh container around a healthy donor's full
+    /// sequence state with Adopt and applies the committed seal, whose digest verification is the adoption
+    /// check; the result converges component-wise with the sealer.
+    /// </summary>
     [TestMethod]
     public void ARejoinerAdoptsADonorStateAndAppliesTheCommittedSeal()
     {
@@ -262,9 +284,11 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //Applying a committed seal whose digest disagrees with the applier's own certified projection at the
-    //committed frontier fails closed, even with the precondition satisfied — the "y" container applying the
-    //"x" commitment.
+    /// <summary>
+    /// Applying a committed seal whose digest disagrees with the applier's own certified projection at the
+    /// committed frontier fails closed, even with the precondition satisfied — the "y" container applying the
+    /// "x" commitment.
+    /// </summary>
     [TestMethod]
     public void ApplyCommittedSealFailsClosedOnADivergentDigest()
     {
@@ -280,9 +304,13 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //A strategy that certifies no projection cannot seal: the plain non-compacting RGA strategy throws.
-    //offset.v2 satisfies the seal preconditions, pinned here by a minimal smoke seal — the offset seal
-    //end-to-end suite lives in OffsetCheckpointSealTests.
+    /// <summary>
+    /// A strategy that certifies no projection cannot seal: the plain non-compacting RGA strategy throws.
+    /// </summary>
+    /// <remarks>
+    /// offset.v2 satisfies the seal preconditions, pinned here by a minimal smoke seal — the offset seal
+    /// end-to-end suite lives in OffsetCheckpointSealTests.
+    /// </remarks>
     [TestMethod]
     public void SealRequiresACertifyingStrategy()
     {
@@ -306,8 +334,12 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //Unstable edits above the frontier do not make Seal throw — the finding-3 false-throw shape is gone. The
-    //checkpoint excludes the unstable edits, and a later seal covering them succeeds again.
+    /// <summary>
+    /// Unstable edits above the frontier do not make Seal throw — the finding-3 false-throw shape is gone.
+    /// </summary>
+    /// <remarks>
+    /// The checkpoint excludes the unstable edits, and a later seal covering them succeeds again.
+    /// </remarks>
     [TestMethod]
     public void ASealWithUnstableEditsPresentSucceeds()
     {
@@ -334,8 +366,10 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //Seal and ApplyCommittedSeal reject null arguments, and a register that cannot reach a prepare quorum
-    //(pre-promised at a higher ballot) leaves the seal unchosen and the container unchanged.
+    /// <summary>
+    /// Seal and ApplyCommittedSeal reject null arguments, and a register that cannot reach a prepare quorum
+    /// (pre-promised at a higher ballot) leaves the seal unchosen and the container unchanged.
+    /// </summary>
     [TestMethod]
     public void SealAndApplyRejectNullsAndReportQuorumFailure()
     {
@@ -367,8 +401,10 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //A frontier that covers R1's axis up to the given counter, the honest "every member observed the first
-    //n R1 events" shape these single-replica seals use.
+    /// <summary>
+    /// A frontier that covers R1's axis up to the given counter, the honest "every member observed the first
+    /// n R1 events" shape these single-replica seals use.
+    /// </summary>
     private static VectorClock FrontierTo(int counter)
     {
         VectorClock frontier = VectorClock.Empty;
@@ -393,7 +429,9 @@ internal sealed class CheckpointSealTests
     }
 
 
-    //The canonical bytes cover the dot AND the value deterministically: replica hex, counter, then value.
+    /// <summary>
+    /// The canonical bytes cover the dot AND the value deterministically: replica hex, counter, then value.
+    /// </summary>
     private static ReadOnlyMemory<byte> Canonicalize(ImmutableArray<SequenceCheckpointEntry<string>> entries)
     {
         var builder = new StringBuilder();

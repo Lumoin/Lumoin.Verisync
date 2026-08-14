@@ -20,7 +20,9 @@ internal sealed class RgaStrategyLawTests: SequenceStrategyLawTests<Rga<int>, in
     protected override SequenceCrdtContext<Rga<int>, int, Dot> Context { get; } = WellKnownSequenceStrategies.CreateRga<int>();
 
 
-    //The sentinel sits outside every generator's value range (replica * 1000 + ordinal, all non-negative).
+    /// <summary>
+    /// The sentinel sits outside every generator's value range (replica * 1000 + ordinal, all non-negative).
+    /// </summary>
     protected override int FreshValue => -1;
 
 
@@ -50,9 +52,14 @@ internal sealed class RgaStrategyLawTests: SequenceStrategyLawTests<Rga<int>, in
     }
 
 
-    //Plain RGA runs LAW-NFD for uniformity: an op history of inserts and dotted removes over an empty
-    //Rga with a strict prefix cut. Its semantic coverage coincides with the rga-rle registration — both
-    //wire the identical Rga<int>.Merge — so it is uniformity, not new merge coverage.
+    /// <summary>
+    /// Plain RGA runs LAW-NFD for uniformity: an op history of inserts and dotted removes over an empty Rga
+    /// with a strict prefix cut.
+    /// </summary>
+    /// <remarks>
+    /// Its semantic coverage coincides with the rga-rle registration — both wire the identical
+    /// Rga&lt;int&gt;.Merge — so it is uniformity, not new merge coverage.
+    /// </remarks>
     protected override Gen<(Rga<int> Full, Rga<int> Behind)> GenFullAndBehindHistory { get; } =
         Gen.Select(
             Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 8],

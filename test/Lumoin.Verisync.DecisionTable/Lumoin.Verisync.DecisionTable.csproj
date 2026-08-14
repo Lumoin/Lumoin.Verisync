@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Lumoin.Verisync.DecisionTable</RootNamespace>
+
+    <!--
+      The harness is a measurement tool rather than a shipped library. It is never packed,
+      never trimmed and never published ahead of time, so the repository-wide ahead-of-time
+      analyzers have nothing to protect here and their warnings would only be noise.
+    -->
+    <IsAotCompatible>false</IsAotCompatible>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
+
+    <!--
+      CA1303: Do not pass literals as localized parameters. Every line this harness prints is a
+              measurement report read by one engineer, and a resource table for it would hide
+              the numbers behind indirection.
+      CA1812: Avoid uninstantiated internal classes. The measurement records are constructed
+              through factory paths the analyzer does not follow.
+    -->
+    <NoWarn>$(NoWarn);CA1303;CA1812</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    The repository marks browser a supported platform for every project that is not a test or a
+    benchmark project. This harness runs on a desktop runtime only, and claiming browser support
+    would make the platform-compatibility analyzer police an audience it does not have.
+  -->
+  <ItemGroup>
+    <SupportedPlatform Remove="browser" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Lumoin.Verisync.Core\Lumoin.Verisync.Core.csproj" />
+  </ItemGroup>
+
+</Project>

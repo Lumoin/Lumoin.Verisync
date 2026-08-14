@@ -18,8 +18,10 @@ internal sealed class ReconciliationLawTests
     private static ReconciliationContract Contract { get; } =
         new(ReconciliationItemDomain.Structural, 8, 8, ReconciliationContract.WellKnownChecksumKeyLow, ReconciliationContract.WellKnownChecksumKeyHigh);
 
-    //Disjoint seed ranges per bucket guarantee the three item lists are pairwise disjoint by construction;
-    //items are the 8 little-endian bytes of each seed, distinct within a bucket (dedupe by seed).
+    /// <summary>
+    /// Disjoint seed ranges per bucket guarantee the three item lists are pairwise disjoint by construction;
+    /// items are the 8 little-endian bytes of each seed, distinct within a bucket (dedupe by seed).
+    /// </summary>
     private static Gen<(byte[][] Shared, byte[][] LeftOnly, byte[][] RightOnly)> GenDifference { get; } =
         Gen.Select(
             GenBucket(1L),

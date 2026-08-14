@@ -12,7 +12,7 @@ namespace Lumoin.Verisync.Core;
 /// <typeparam name="TValue">The register value type.</typeparam>
 /// <remarks>
 /// <para>
-/// <see cref="Change(Ballot, Func{TValue, TValue})"/> runs the two CASPaxos phases over the acceptors:
+/// <see cref="Change(Ballot, ChangeRegisterValueDelegate{TValue})"/> runs the two CASPaxos phases over the acceptors:
 /// a prepare phase that promises the ballot on a majority and recovers any in-progress value, then an
 /// accept phase that commits the new value (the change function applied to the recovered value) on a
 /// majority. A value is chosen only when both phases reach a quorum.
@@ -70,7 +70,7 @@ public sealed class CasPaxosRegister<TValue>
     /// </param>
     /// <returns>The register after the attempt and the outcome.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="update"/> is <see langword="null"/>.</exception>
-    public (CasPaxosRegister<TValue> Register, ChangeOutcome<TValue> Outcome) Change(Ballot ballot, Func<TValue?, TValue> update)
+    public (CasPaxosRegister<TValue> Register, ChangeOutcome<TValue> Outcome) Change(Ballot ballot, ChangeRegisterValueDelegate<TValue> update)
     {
         ArgumentNullException.ThrowIfNull(update);
 
@@ -96,7 +96,7 @@ public sealed class CasPaxosRegister<TValue>
 
         if(promises < Quorum)
         {
-            return (new CasPaxosRegister<TValue>(working.ToImmutable()), new ChangeOutcome<TValue>(false, default));
+            return (new CasPaxosRegister<TValue>(working.ToImmutable()), new ChangeOutcome<TValue>(false, default, 0));
         }
 
         TValue newValue = update(recovered);
@@ -113,8 +113,8 @@ public sealed class CasPaxosRegister<TValue>
         }
 
         ChangeOutcome<TValue> outcome = accepts >= Quorum
-            ? new ChangeOutcome<TValue>(true, newValue)
-            : new ChangeOutcome<TValue>(false, default);
+            ? new ChangeOutcome<TValue>(true, newValue, accepts)
+            : new ChangeOutcome<TValue>(false, default, accepts);
 
         return (new CasPaxosRegister<TValue>(working.ToImmutable()), outcome);
     }

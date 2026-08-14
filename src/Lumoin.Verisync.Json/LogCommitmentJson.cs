@@ -132,7 +132,7 @@ public static class LogCommitmentJson
     /// <param name="writeProof">Writes a single proof to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeProof"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<SegmentSeal<TProof>> CreateSegmentSealSerializer<TProof>(Action<Utf8JsonWriter, TProof> writeProof)
+    public static SerializeMessageDelegate<SegmentSeal<TProof>> CreateSegmentSealSerializer<TProof>(WriteValueDelegate<Utf8JsonWriter, TProof> writeProof)
     {
         ArgumentNullException.ThrowIfNull(writeProof);
 
@@ -177,7 +177,7 @@ public static class LogCommitmentJson
     /// mismatch — the signature of a tampered seal — throws a <see cref="JsonException"/>.
     /// </remarks>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readProof"/> or <paramref name="computeDigest"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<SegmentSeal<TProof>> CreateSegmentSealDeserializer<TProof>(Func<JsonElement, TProof> readProof, ComputeDigestDelegate computeDigest)
+    public static DeserializeMessageDelegate<SegmentSeal<TProof>> CreateSegmentSealDeserializer<TProof>(ReadValueDelegate<JsonElement, TProof> readProof, ComputeDigestDelegate computeDigest)
     {
         ArgumentNullException.ThrowIfNull(readProof);
         ArgumentNullException.ThrowIfNull(computeDigest);

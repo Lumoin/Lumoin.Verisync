@@ -23,4 +23,4 @@ namespace Lumoin.Verisync.Core;
 /// can lose a committed entry, breaking election safety and log matching. The persist-before-reply
 /// obligation is the same fail-closed sequencing <see cref="ConsensusNode{TValue}"/> documents.
 /// </remarks>
-public sealed record RaftNodeState<TCommand>(long CurrentTerm, ImmutableArray<byte> VotedFor, ImmutableArray<RaftLogEntry<TCommand>> Log);
+public sealed record RaftNodeState<TCommand>(Term CurrentTerm, ImmutableArray<byte> VotedFor, ImmutableArray<RaftLogEntry<TCommand>> Log);

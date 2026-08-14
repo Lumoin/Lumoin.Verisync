@@ -1,11 +1,30 @@
 param(
-    [int]$Workers = 4
+    [int]$Workers = 4,
+    [string]$ToolchainPath = $env:TLAPLUS_HOME
 )
 
 $ErrorActionPreference = "Stop"
 
-$sany = "C:\tools\tlaplus\sany.cmd"
-$tlc = "C:\tools\tlaplus\tlc.cmd"
+# The toolchain is located rather than assumed, so a checkout carries no machine's directory layout:
+# TLAPLUS_HOME or -ToolchainPath names the directory holding the wrappers, and without either they
+# are taken from PATH.
+function Resolve-TlaWrapper {
+    param([string]$Base)
+
+    # The wrapper's extension belongs to the operating system rather than to this repository, so each
+    # shape is tried in turn and the first that resolves is taken.
+    foreach ($candidate in "$Base.cmd", "$Base.bat", "$Base.sh", $Base) {
+        $path = if ($ToolchainPath) { Join-Path $ToolchainPath $candidate } else { $candidate }
+        if (Get-Command $path -ErrorAction SilentlyContinue) {
+            return $path
+        }
+    }
+
+    throw "No $Base wrapper was found. Set TLAPLUS_HOME to the TLA+ toolchain directory, pass -ToolchainPath, or put the wrappers on PATH."
+}
+
+$sany = Resolve-TlaWrapper "sany"
+$tlc = Resolve-TlaWrapper "tlc"
 
 $modules = @(
     ".\SessionPair.tla",

@@ -74,6 +74,32 @@ internal sealed class LogCommitmentJsonTests
     }
 
 
+    /// <summary>
+    /// THE ENTRY INDICES ARE UNSIGNED SIXTY-FOUR AND THE TOP OF THAT RANGE IS ABOVE TWO TO THE FIFTY-THIRD, so a
+    /// reader that parsed JSON numbers as doubles would lose them.
+    /// </summary>
+    /// <remarks>
+    /// The pin needs BOTH the maximum and the value one below it: a double round-trips the maximum intact,
+    /// because the double saturates back to it, and only the value one below collapses onto it. A single-value
+    /// pin would therefore be green against the very defect it exists to rule out.
+    /// </remarks>
+    [TestMethod]
+    public void EntryIndicesAtTheTopOfTheRangeRoundTripExactly()
+    {
+        //The first index is non-zero, so the seal's own chain rule requires a previous digest; what is pinned
+        //here is the unsigned round trip and not that rule.
+        SegmentSeal<string> first = SegmentSeal<string>.Create(0, 2, null, new byte[] { 0x11 }, [], Sha256);
+        SegmentSeal<string> seal = SegmentSeal<string>.Create(ulong.MaxValue - 1, ulong.MaxValue, first.Digest, new byte[] { 0xAB }, [], Sha256);
+
+        SegmentSeal<string> back = RoundTripSeal(seal);
+
+        Assert.AreEqual(ulong.MaxValue - 1, back.FirstIndex);
+        Assert.AreEqual(ulong.MaxValue, back.LastIndex);
+        Assert.AreNotEqual(back.FirstIndex, back.LastIndex);
+        Assert.AreEqual(seal, back);
+    }
+
+
     [TestMethod]
     public void FirstSegmentSealWithNullPreviousDigestRoundTrips()
     {

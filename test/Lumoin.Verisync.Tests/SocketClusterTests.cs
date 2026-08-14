@@ -3,11 +3,13 @@ using Lumoin.Verisync.Json;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -174,8 +176,8 @@ internal sealed class SocketClusterTests
                 MessageChannelReader<ConsensusRequest<string>> requests = new(PipeReader.Create(serverStream), requestDeserialize);
                 MessageChannelWriter<ConsensusReply<string>> replies = new(PipeWriter.Create(serverStream, new StreamPipeWriterOptions(leaveOpen: true)), replySerialize);
 
-                //The hook records each state-changing acceptor before its reply is sent: a stand-in for the
-                //fsync a durable host would do. RunAsync only invokes it when the request changed the acceptor.
+                //The hook records each acceptor state before its reply is sent: a stand-in for the fsync a
+                //durable host would do. RunAsync only invokes it when the acceptor is not already durable.
                 ConcurrentQueue<FastAcceptor<string>> sink = persisted[i];
                 PersistAcceptorDelegate<string> persist = (acceptor, _) =>
                 {
@@ -406,5 +408,179 @@ internal sealed class SocketClusterTests
         }
 
         return lengths;
+    }
+
+
+    /// <summary>
+    /// A versioned recorder host's decline is a host act with no protocol field, so a wire host reduces it to
+    /// an opaque fault frame carrying the call's correlation and nothing else, and the next request on the
+    /// same connection is answered normally — which a transport that dropped the decline could not do.
+    /// </summary>
+    [TestMethod]
+    public async Task ADeclineOverASocketReachesTheProposerAsAFaultAndTheConnectionKeepsServing()
+    {
+        SerializeMessageDelegate<VersionedRecordRequest<VersionedValue<string>>> requestSerialize =
+            QuePaxaMessageJson.CreateVersionedRequestSerializer(QuePaxaMessageJson.CreateVersionedValueWriter<string>((writer, value) => writer.WriteStringValue(value)));
+        DeserializeMessageDelegate<VersionedRecordRequest<VersionedValue<string>>> requestDeserialize =
+            QuePaxaMessageJson.CreateVersionedRequestDeserializer(QuePaxaMessageJson.CreateVersionedValueReader<string>(element => element.GetString()!));
+        SerializeMessageDelegate<VersionedRecordReply<VersionedValue<string>>> replySerialize =
+            QuePaxaMessageJson.CreateVersionedReplySerializer(QuePaxaMessageJson.CreateVersionedValueWriter<string>((writer, value) => writer.WriteStringValue(value)));
+        DeserializeMessageDelegate<VersionedRecordReply<VersionedValue<string>>> replyDeserialize =
+            QuePaxaMessageJson.CreateVersionedReplyDeserializer(QuePaxaMessageJson.CreateVersionedValueReader<string>(element => element.GetString()!));
+
+        ReplicaId second = VersionedReplica(2);
+        QuePaxaVersionedNode<string> host = new(VersionedMembership, second, new VersionedValue<string>(new RegisterVersion(4UL), second, VersionedMembership, "committed"));
+        QuePaxaVersionedRunner<string> runner = new(host);
+        Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
+
+        TcpListener listener = new(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            Task<TcpClient> accept = listener.AcceptTcpClientAsync(TestContext.CancellationToken).AsTask();
+            using TcpClient client = new();
+            await client.ConnectAsync(IPAddress.Loopback, port, TestContext.CancellationToken).ConfigureAwait(false);
+            using TcpClient server = await accept.ConfigureAwait(false);
+
+            //The server answers EVERY frame, with the reply or with a fault frame carrying the id alone:
+            //the opaque reduction the runner documents, since the decline names the live version in prose.
+            NetworkStream serverStream = server.GetStream();
+            MessageChannelReader<CorrelatedFrame> serverRequests = new(PipeReader.Create(serverStream), ReadFrame);
+            MessageChannelWriter<CorrelatedFrame> serverResponses = new(PipeWriter.Create(serverStream, new StreamPipeWriterOptions(leaveOpen: true)), WriteFrame);
+            Task serving = Task.Run(async () =>
+            {
+                await foreach(CorrelatedFrame frame in serverRequests.ReadAllAsync(TestContext.CancellationToken).ConfigureAwait(false))
+                {
+                    CorrelatedFrame response;
+                    try
+                    {
+                        VersionedRecordRequest<VersionedValue<string>> request = requestDeserialize(new ReadOnlySequence<byte>(frame.Payload!));
+                        VersionedRecordReply<VersionedValue<string>> reply = await runner.RecordAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+                        var buffer = new ArrayBufferWriter<byte>();
+                        replySerialize(reply, buffer);
+                        response = new CorrelatedFrame(frame.Id, buffer.WrittenSpan.ToArray());
+                    }
+                    catch(Exception)
+                    {
+                        response = new CorrelatedFrame(frame.Id, null);
+                    }
+
+                    await serverResponses.WriteAsync(response, TestContext.CancellationToken).ConfigureAwait(false);
+                }
+            }, TestContext.CancellationToken);
+
+            NetworkStream clientStream = client.GetStream();
+            MessageChannelWriter<CorrelatedFrame> clientRequests = new(PipeWriter.Create(clientStream, new StreamPipeWriterOptions(leaveOpen: true)), WriteFrame);
+            MessageChannelReader<CorrelatedFrame> clientResponses = new(PipeReader.Create(clientStream), ReadFrame);
+            IAsyncEnumerator<CorrelatedFrame> responses = clientResponses.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+            try
+            {
+                int nextId = 1;
+                VersionedRecorderEndpointDelegate<VersionedValue<string>> endpoint = async (request, token) =>
+                {
+                    int id = nextId++;
+                    var buffer = new ArrayBufferWriter<byte>();
+                    requestSerialize(request, buffer);
+                    await clientRequests.WriteAsync(new CorrelatedFrame(id, buffer.WrittenSpan.ToArray()), token).ConfigureAwait(false);
+                    _ = await responses.MoveNextAsync().ConfigureAwait(false);
+                    CorrelatedFrame answer = responses.Current;
+                    Assert.AreEqual(id, answer.Id);
+                    if(answer.Payload is null)
+                    {
+                        throw new IOException($"Call {answer.Id} faulted at the recorder host.");
+                    }
+
+                    return replyDeserialize(new ReadOnlySequence<byte>(answer.Payload));
+                };
+
+                IOException declined = await Assert.ThrowsExactlyAsync<IOException>(
+                    async () => _ = await endpoint(VersionedSocketRequest(7UL, second), TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+                //The fault that crossed the wire is the client's own opaque text, so nothing of the host's
+                //exception prose — which names the version it serves — ever left the process.
+                Assert.AreEqual("Call 1 faulted at the recorder host.", declined.Message);
+
+                VersionedRecordReply<VersionedValue<string>> reply = await endpoint(VersionedSocketRequest(5UL, second), TestContext.CancellationToken).ConfigureAwait(false);
+
+                Assert.AreEqual(new RegisterVersion(5UL), reply.Version);
+
+                client.Client.Shutdown(SocketShutdown.Send);
+                await serving.WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                await responses.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            listener.Dispose();
+        }
+
+        runner.Complete();
+        await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+
+    private sealed record CorrelatedFrame(int Id, byte[]? Payload);
+
+
+    private static void WriteFrame(CorrelatedFrame frame, IBufferWriter<byte> destination)
+    {
+        using var writer = new Utf8JsonWriter(destination);
+        writer.WriteStartObject();
+        writer.WriteNumber("id", frame.Id);
+        if(frame.Payload is null)
+        {
+            writer.WriteBoolean("fault", true);
+        }
+        else
+        {
+            writer.WritePropertyName("payload");
+            writer.WriteRawValue(frame.Payload);
+        }
+
+        writer.WriteEndObject();
+    }
+
+
+    private static CorrelatedFrame ReadFrame(ReadOnlySequence<byte> payload)
+    {
+        using JsonDocument document = JsonDocument.Parse(payload);
+        int id = document.RootElement.GetProperty("id").GetInt32();
+        if(document.RootElement.TryGetProperty("payload", out JsonElement inner))
+        {
+            return new CorrelatedFrame(id, Encoding.UTF8.GetBytes(inner.GetRawText()));
+        }
+
+        return new CorrelatedFrame(id, null);
+    }
+
+
+    private static VersionedRecordRequest<VersionedValue<string>> VersionedSocketRequest(ulong version, ReplicaId owner)
+    {
+        RegisterVersion at = new(version);
+        VersionedValue<string> record = new(at, owner, VersionedMembership, "value");
+        PrioritizedProposal<VersionedValue<string>> proposal = new(new ProposalKey(ProposalPriority.Lowest, ProposerLane.For(owner)), record);
+
+        return new VersionedRecordRequest<VersionedValue<string>>(at, new RecordRequest<VersionedValue<string>>(RecorderStep.RoundOnePhaseZero, proposal));
+    }
+
+
+    /// <summary>
+    /// The membership the versioned records in this suite carry, minted from the order the versioned host runs
+    /// under.
+    /// </summary>
+    private static QuePaxaConfiguration VersionedMembership { get; } =
+        QuePaxaConfiguration.CreateGenesis([VersionedReplica(1), VersionedReplica(2), VersionedReplica(3)]);
+
+
+    private static ReplicaId VersionedReplica(byte id)
+    {
+        Span<byte> buffer = stackalloc byte[ReplicaId.Size];
+        buffer[0] = id;
+
+        return ReplicaId.FromSpan(buffer);
     }
 }

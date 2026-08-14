@@ -49,14 +49,17 @@ public sealed class RaftNode<TCommand>
     private readonly List<RaftLogEntry<TCommand>> log = [];
     private readonly ImmutableArray<ReplicaId> members;
 
-    //Leader-only volatile bookkeeping, reinitialized each time the node becomes leader. Keyed by every
-    //peer (all members except self). For a peer p: nextIndex[p] is the next log index the leader will send,
-    //matchIndex[p] is the highest index known replicated on p.
-    private readonly Dictionary<ReplicaId, long> nextIndex = [];
-    private readonly Dictionary<ReplicaId, long> matchIndex = [];
+    //Leader-only volatile bookkeeping, reinitialized each time the node becomes leader. Indexed by position
+    //in the membership rather than keyed by identity, so a replica outside the membership has no slot to
+    //write to and cannot be recorded at all.
+    private readonly FollowerProgress[] progress;
 
-    //Votes collected in the current candidacy, including the implicit self-vote. Cleared on every term change.
-    private readonly HashSet<ReplicaId> votesReceived = [];
+    //Votes collected in the current candidacy, including the implicit self-vote, indexed by position in the
+    //membership so a replica outside it has no slot to grant one. Cleared on every term change.
+    private readonly bool[] votesGranted;
+
+    //This node's own position in the membership, which the constructor establishes is present.
+    private readonly int selfIndex;
 
 
     /// <summary>
@@ -84,6 +87,9 @@ public sealed class RaftNode<TCommand>
 
         Id = id;
         this.members = members;
+        progress = new FollowerProgress[members.Length];
+        votesGranted = new bool[members.Length];
+        selfIndex = IndexOf(id);
     }
 
 
@@ -101,19 +107,19 @@ public sealed class RaftNode<TCommand>
     public RaftRole Role { get; private set; } = RaftRole.Follower;
 
     /// <summary>The latest term this node has seen. Monotonically non-decreasing.</summary>
-    public long CurrentTerm { get; private set; }
+    public Term CurrentTerm { get; private set; }
 
     /// <summary>The candidate this node voted for in <see cref="CurrentTerm"/>, or <see langword="null"/> if it has not voted.</summary>
     public ReplicaId? VotedFor { get; private set; }
 
     /// <summary>
-    /// The replicated log. Protocol indices are 1-based: protocol index <c>i</c> is <c>Log[i - 1]</c>, and
-    /// index zero denotes "before the first entry".
+    /// The replicated log. Protocol indices are 1-based: protocol index <c>i</c> is <c>Log[i - 1]</c>, which
+    /// is what <see cref="LogIndex.Position"/> converts.
     /// </summary>
     public IReadOnlyList<RaftLogEntry<TCommand>> Log => log;
 
     /// <summary>The highest log index known to be committed. Committed entries are safe to apply, in order.</summary>
-    public long CommitIndex { get; private set; }
+    public LogIndex CommitIndex { get; private set; }
 
     /// <summary>
     /// The last leader this node observed (the source of an accepted current-term
@@ -156,10 +162,13 @@ public sealed class RaftNode<TCommand>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
     /// Thrown by the constructor when <paramref name="members"/> is empty or omits <paramref name="id"/>, and
-    /// when the durable state is internally impossible: a negative <see cref="RaftNodeState{TCommand}.CurrentTerm"/>;
-    /// a <see cref="RaftNodeState{TCommand}.VotedFor"/> that is neither empty nor exactly
-    /// <see cref="ReplicaId.Size"/> bytes; a non-empty vote that is not a member; a log entry with a term below
-    /// one; log terms that decrease; or a last log term above the current term.
+    /// when the durable state is internally impossible in a way only the whole state shows: a
+    /// <see cref="RaftNodeState{TCommand}.VotedFor"/> that is neither empty nor exactly
+    /// <see cref="ReplicaId.Size"/> bytes; a non-empty vote that is not a member; log terms that decrease; or
+    /// a last log term above the current term. Everything a single value can be wrong about is refused before
+    /// a state can be built at all: an out-of-range term or index by <see cref="Term"/> and
+    /// <see cref="LogIndex"/>, and a log entry tagged below <see cref="Term.First"/> by
+    /// <see cref="RaftLogEntry{TCommand}"/>.
     /// </exception>
     public static RaftNode<TCommand> FromState(ReplicaId id, ImmutableArray<ReplicaId> members, RaftNodeState<TCommand> state)
     {
@@ -167,11 +176,6 @@ public sealed class RaftNode<TCommand>
 
         //The constructor performs the membership checks (non-empty, contains id) and throws ArgumentException.
         var node = new RaftNode<TCommand>(id, members);
-
-        if(state.CurrentTerm < 0)
-        {
-            throw new ArgumentException($"A restored current term cannot be negative, got {state.CurrentTerm}.", nameof(state));
-        }
 
         ReplicaId? votedFor = null;
         if(!state.VotedFor.IsDefaultOrEmpty)
@@ -191,18 +195,13 @@ public sealed class RaftNode<TCommand>
         }
 
         ImmutableArray<RaftLogEntry<TCommand>> log = state.Log.IsDefault ? [] : state.Log;
-        long previousTerm = 0;
+        Term previousTerm = Term.Zero;
         for(int i = 0; i < log.Length; i++)
         {
-            long entryTerm = log[i].Term;
-            if(entryTerm < 1)
-            {
-                throw new ArgumentException($"A restored log entry term is at least one, got {entryTerm} at index {i + 1}.", nameof(state));
-            }
-
+            Term entryTerm = log[i].Term;
             if(entryTerm < previousTerm)
             {
-                throw new ArgumentException($"Restored log terms cannot decrease, got {entryTerm} after {previousTerm} at index {i + 1}.", nameof(state));
+                throw new ArgumentException($"Restored log terms cannot decrease, got {entryTerm.Value} after {previousTerm.Value} at index {i + 1}.", nameof(state));
             }
 
             previousTerm = entryTerm;
@@ -210,7 +209,7 @@ public sealed class RaftNode<TCommand>
 
         if(previousTerm > state.CurrentTerm)
         {
-            throw new ArgumentException($"A restored last log term ({previousTerm}) cannot exceed the current term ({state.CurrentTerm}).", nameof(state));
+            throw new ArgumentException($"A restored last log term ({previousTerm.Value}) cannot exceed the current term ({state.CurrentTerm.Value}).", nameof(state));
         }
 
         node.CurrentTerm = state.CurrentTerm;
@@ -227,6 +226,10 @@ public sealed class RaftNode<TCommand>
     /// members.
     /// </summary>
     /// <returns>The vote request to broadcast.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when <see cref="CurrentTerm"/> is <see cref="Term.MaxValue"/> and the term range is therefore
+    /// spent. A cluster that has held two to the fifty-third elections is reconfigured rather than wrapped.
+    /// </exception>
     /// <remarks>
     /// <para>
     /// This is the sole entry point for liveness. The node never calls it itself; the host invokes it when
@@ -241,16 +244,16 @@ public sealed class RaftNode<TCommand>
     /// </remarks>
     public RequestVoteRequest StartElection()
     {
-        CurrentTerm++;
+        CurrentTerm = CurrentTerm.Next();
         Role = RaftRole.Candidate;
         VotedFor = Id;
-        votesReceived.Clear();
-        votesReceived.Add(Id);
+        ClearVotes();
+        votesGranted[selfIndex] = true;
 
         var request = new RequestVoteRequest(CurrentTerm, Id, LastLogIndex, LastLogTerm);
 
         //A lone node is its own majority; with no peers to reply there is no later ReceiveVote to win on.
-        if(votesReceived.Count >= Quorum)
+        if(VoteCount >= Quorum)
         {
             BecomeLeader();
         }
@@ -266,9 +269,21 @@ public sealed class RaftNode<TCommand>
     /// <param name="request">The vote request to evaluate.</param>
     /// <returns>The reply, carrying this node's (possibly updated) term and whether the vote was granted.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="request"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// A candidate outside <see cref="Members"/> is discarded before anything else, including the term rule.
+    /// Only a member can win an election over this membership, and <see cref="FromState"/> refuses to restore
+    /// a vote naming a non-member, so granting one would put the node in a state its own restore path
+    /// rejects. Filtering first also denies a non-member the term: a stranger that cannot win an election
+    /// could otherwise still raise this node's term and unseat a leader the cluster had agreed on.
+    /// </remarks>
     public RequestVoteReply HandleRequestVote(RequestVoteRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        if(!members.Contains(request.CandidateId))
+        {
+            return new RequestVoteReply(CurrentTerm, false);
+        }
 
         if(request.Term < CurrentTerm)
         {
@@ -305,12 +320,29 @@ public sealed class RaftNode<TCommand>
     /// </returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="reply"/> is <see langword="null"/>.</exception>
     /// <remarks>
+    /// <para>
     /// A reply whose term exceeds this node's term still forces a step-down, even though no vote is counted —
     /// the universal "greater term seen" rule applies to replies as well as requests.
+    /// </para>
+    /// <para>
+    /// A reply from a replica outside <see cref="Members"/> is discarded before anything else, including the
+    /// term rule. The quorum is a majority of the configured membership, so a vote from anywhere else could
+    /// complete one without a majority of the cluster having granted it, and <paramref name="from"/> arrives
+    /// as wire data that no codec checks. Filtering before the term rule denies a stranger the one lever it
+    /// would otherwise keep, which is raising this node's term and unseating an agreed leader.
+    /// </para>
     /// </remarks>
     public bool ReceiveVote(ReplicaId from, RequestVoteReply reply)
     {
         ArgumentNullException.ThrowIfNull(reply);
+
+        //A non-member holds no position in the tally, so it cannot contribute to a majority of the membership
+        //the quorum is computed from. It is looked up before the term rule so it cannot move the term either.
+        int fromIndex = IndexOf(from);
+        if(fromIndex < 0)
+        {
+            return false;
+        }
 
         if(reply.Term > CurrentTerm)
         {
@@ -325,9 +357,9 @@ public sealed class RaftNode<TCommand>
             return false;
         }
 
-        bool alreadyHadMajority = votesReceived.Count >= Quorum;
-        votesReceived.Add(from);
-        bool nowHasMajority = votesReceived.Count >= Quorum;
+        bool alreadyHadMajority = VoteCount >= Quorum;
+        votesGranted[fromIndex] = true;
+        bool nowHasMajority = VoteCount >= Quorum;
 
         if(nowHasMajority && !alreadyHadMajority)
         {
@@ -341,11 +373,10 @@ public sealed class RaftNode<TCommand>
 
 
     /// <summary>
-    /// Appends <paramref name="command"/> to the leader's log in the current term and returns its 1-based
-    /// index.
+    /// Appends <paramref name="command"/> to the leader's log in the current term and returns its index.
     /// </summary>
     /// <param name="command">The command to replicate.</param>
-    /// <returns>The 1-based log index of the newly appended entry.</returns>
+    /// <returns>The log index of the newly appended entry.</returns>
     /// <exception cref="InvalidOperationException">Thrown if this node is not currently the leader.</exception>
     /// <remarks>
     /// On a multi-node cluster the entry is durable on this node only; it commits and becomes safe to apply
@@ -353,7 +384,7 @@ public sealed class RaftNode<TCommand>
     /// <see cref="CommitIndex"/> past it. On a single-node cluster the leader is already its own majority, so
     /// the commit advance attempted here moves <see cref="CommitIndex"/> immediately.
     /// </remarks>
-    public long Propose(TCommand command)
+    public LogIndex Propose(TCommand command)
     {
         if(Role != RaftRole.Leader)
         {
@@ -361,11 +392,11 @@ public sealed class RaftNode<TCommand>
         }
 
         log.Add(new RaftLogEntry<TCommand>(CurrentTerm, command));
-        long index = log.Count;
+        LogIndex index = LastLogIndex;
 
         //The leader trivially matches its own log; keep matchIndex consistent for commit counting, including
         //the single-node case where the leader is the whole majority and there is no peer reply to wait for.
-        matchIndex[Id] = index;
+        progress[selfIndex] = progress[selfIndex].Confirmed(index);
         TryAdvanceCommitIndex();
 
         return index;
@@ -391,15 +422,22 @@ public sealed class RaftNode<TCommand>
             throw new InvalidOperationException("Only the leader can create AppendEntries requests.");
         }
 
-        long next = nextIndex.TryGetValue(follower, out long stored) ? stored : LastLogIndex + 1;
-        long prevLogIndex = next - 1;
-        long prevLogTerm = prevLogIndex >= 1 && prevLogIndex <= log.Count ? log[(int)(prevLogIndex - 1)].Term : 0;
+        int followerIndex = IndexOf(follower);
+        if(followerIndex < 0)
+        {
+            throw new ArgumentException("A request can only be built for a member of the cluster.", nameof(follower));
+        }
+
+        LogIndex next = progress[followerIndex].NextIndex;
+        LogIndex prevLogIndex = next.Previous();
+        Term prevLogTerm = !prevLogIndex.IsBeforeFirst && prevLogIndex <= LastLogIndex ? log[prevLogIndex.Position].Term : Term.Zero;
 
         ImmutableArray<RaftLogEntry<TCommand>> entries;
-        if(next <= log.Count)
+        if(next <= LastLogIndex)
         {
-            ImmutableArray<RaftLogEntry<TCommand>>.Builder builder = ImmutableArray.CreateBuilder<RaftLogEntry<TCommand>>(log.Count - (int)next + 1);
-            for(int i = (int)next - 1; i < log.Count; i++)
+            int from = next.Position;
+            ImmutableArray<RaftLogEntry<TCommand>>.Builder builder = ImmutableArray.CreateBuilder<RaftLogEntry<TCommand>>(log.Count - from);
+            for(int i = from; i < log.Count; i++)
             {
                 builder.Add(log[i]);
             }
@@ -422,13 +460,24 @@ public sealed class RaftNode<TCommand>
     /// <param name="request">The append request to apply.</param>
     /// <returns>The reply, carrying this node's term, whether the append succeeded, and the resulting match index.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="request"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// A request naming a leader outside <see cref="Members"/> is refused before anything else, including the
+    /// term rule. Only a member can win an election over this membership, so no such request comes from a
+    /// leader this cluster elected, and appending its entries would replicate a log no quorum ever agreed on.
+    /// Filtering first also denies a non-member the term, which is the lever it would otherwise keep.
+    /// </remarks>
     public AppendEntriesReply HandleAppendEntries(AppendEntriesRequest<TCommand> request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        if(!members.Contains(request.LeaderId))
+        {
+            return new AppendEntriesReply(CurrentTerm, false, LogIndex.BeforeFirst);
+        }
+
         if(request.Term < CurrentTerm)
         {
-            return new AppendEntriesReply(CurrentTerm, false, 0);
+            return new AppendEntriesReply(CurrentTerm, false, LogIndex.BeforeFirst);
         }
 
         //Term is current or newer: there is a legitimate leader for this term. Adopt the term if newer, and
@@ -442,13 +491,13 @@ public sealed class RaftNode<TCommand>
         Role = RaftRole.Follower;
         LeaderId = request.LeaderId;
 
-        //Consistency check: the log must contain an entry at PrevLogIndex whose term matches PrevLogTerm.
-        //Index zero is the empty-prefix sentinel and always matches.
-        if(request.PrevLogIndex > 0)
+        //Consistency check: the log must contain an entry at PrevLogIndex whose term matches PrevLogTerm. The
+        //empty prefix names no entry and always matches.
+        if(!request.PrevLogIndex.IsBeforeFirst)
         {
-            if(request.PrevLogIndex > log.Count || log[(int)(request.PrevLogIndex - 1)].Term != request.PrevLogTerm)
+            if(request.PrevLogIndex > LastLogIndex || log[request.PrevLogIndex.Position].Term != request.PrevLogTerm)
             {
-                return new AppendEntriesReply(CurrentTerm, false, 0);
+                return new AppendEntriesReply(CurrentTerm, false, LogIndex.BeforeFirst);
             }
         }
 
@@ -457,7 +506,7 @@ public sealed class RaftNode<TCommand>
         //the first conflicting term truncates everything from that point, and the remainder is appended.
         for(int i = 0; i < request.Entries.Length; i++)
         {
-            int logPosition = (int)request.PrevLogIndex + i;
+            int logPosition = request.PrevLogIndex.Advance(i + 1).Position;
 
             if(logPosition < log.Count)
             {
@@ -473,17 +522,16 @@ public sealed class RaftNode<TCommand>
             log.Add(request.Entries[i]);
         }
 
+        LogIndex indexOfLastNewEntry = request.PrevLogIndex.Advance(request.Entries.Length);
+
         //LeaderCommit can only ever raise our commit index, never lower it, and never past the last entry
         //this request actually delivered (or our log end, whichever is smaller).
         if(request.LeaderCommit > CommitIndex)
         {
-            long indexOfLastNewEntry = request.PrevLogIndex + request.Entries.Length;
-            CommitIndex = Math.Min(request.LeaderCommit, indexOfLastNewEntry);
+            CommitIndex = LogIndex.Min(request.LeaderCommit, indexOfLastNewEntry);
         }
 
-        long matchIndexResult = request.PrevLogIndex + request.Entries.Length;
-
-        return new AppendEntriesReply(CurrentTerm, true, matchIndexResult);
+        return new AppendEntriesReply(CurrentTerm, true, indexOfLastNewEntry);
     }
 
 
@@ -498,11 +546,19 @@ public sealed class RaftNode<TCommand>
     /// <remarks>
     /// A reply whose term exceeds this node's term forces a step-down; a stale reply (from an old term, or
     /// arriving when this node is no longer the leader) is ignored. The commit advance applies the Figure 8
-    /// rule and is the only place <see cref="CommitIndex"/> moves on the leader.
+    /// rule and is the only place <see cref="CommitIndex"/> moves on the leader. A reply from a replica
+    /// outside <see cref="Members"/> is discarded before anything else, including the term rule: the
+    /// per-follower indices are addressed by membership position, so a non-member has no slot at all.
     /// </remarks>
     public void ReceiveAppendEntriesReply(ReplicaId from, AppendEntriesReply reply)
     {
         ArgumentNullException.ThrowIfNull(reply);
+
+        int fromIndex = IndexOf(from);
+        if(fromIndex < 0)
+        {
+            return;
+        }
 
         if(reply.Term > CurrentTerm)
         {
@@ -518,32 +574,24 @@ public sealed class RaftNode<TCommand>
 
         if(reply.Success)
         {
-            //Out-of-order replies must not regress what we already know is replicated.
-            long knownMatch = matchIndex.TryGetValue(from, out long existingMatch) ? existingMatch : 0;
-            if(reply.MatchIndex > knownMatch)
-            {
-                matchIndex[from] = reply.MatchIndex;
-            }
-
-            nextIndex[from] = reply.MatchIndex + 1;
+            progress[fromIndex] = progress[fromIndex].Confirmed(reply.MatchIndex);
             TryAdvanceCommitIndex();
 
             return;
         }
 
-        //Same-term failure: the consistency check missed, so retreat nextIndex by one (never below 1) and
-        //the next CreateAppendEntries will probe a longer prefix.
-        long current = nextIndex.TryGetValue(from, out long storedNext) ? storedNext : LastLogIndex + 1;
-        nextIndex[from] = Math.Max(1, current - 1);
+        //Same-term failure: the consistency check missed, so the next CreateAppendEntries probes a longer
+        //prefix.
+        progress[fromIndex] = progress[fromIndex].Retreated();
     }
 
 
-    /// <summary>The 1-based index of the last log entry, or zero when the log is empty.</summary>
-    private long LastLogIndex => log.Count;
+    /// <summary>The index of the last log entry, or <see cref="LogIndex.BeforeFirst"/> when the log is empty.</summary>
+    private LogIndex LastLogIndex => new(log.Count);
 
 
-    /// <summary>The term of the last log entry, or zero when the log is empty.</summary>
-    private long LastLogTerm => log.Count == 0 ? 0 : log[^1].Term;
+    /// <summary>The term of the last log entry, or <see cref="Term.Zero"/> when the log is empty.</summary>
+    private Term LastLogTerm => log.Count == 0 ? Term.Zero : log[^1].Term;
 
 
     /// <summary>A strict majority of the cluster.</summary>
@@ -551,46 +599,83 @@ public sealed class RaftNode<TCommand>
 
 
     /// <summary>
-    /// Reverts to a follower in <paramref name="newTerm"/>, clearing the vote and any candidacy state. The
-    /// observed leader is preserved; the caller updates it when the new term has a known leader.
+    /// The position <paramref name="replica"/> holds in the membership, or a negative value when it holds
+    /// none.
     /// </summary>
-    /// <param name="newTerm">The newer term to adopt.</param>
-    private void StepDownTo(long newTerm)
+    /// <param name="replica">The identity to locate.</param>
+    /// <returns>The membership index, or a negative value for a non-member.</returns>
+    /// <remarks>
+    /// The per-follower indices are addressed through this, so a non-member has no slot to be written to and
+    /// cannot be recorded at all. A linear scan is what a Raft membership wants: it is a handful of entries,
+    /// held contiguously, and comparing them costs less than hashing an identity.
+    /// </remarks>
+    private int IndexOf(ReplicaId replica)
     {
-        CurrentTerm = newTerm;
-        Role = RaftRole.Follower;
-        VotedFor = null;
-        votesReceived.Clear();
+        for(int i = 0; i < members.Length; i++)
+        {
+            if(members[i].Equals(replica))
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
 
     /// <summary>
+    /// Reverts to a follower in <paramref name="newTerm"/>, clearing the vote and any candidacy state. The
+    /// observed leader is preserved; the caller updates it when the new term has a known leader.
+    /// </summary>
+    /// <param name="newTerm">The newer term to adopt.</param>
+    private void StepDownTo(Term newTerm)
+    {
+        CurrentTerm = newTerm;
+        Role = RaftRole.Follower;
+        VotedFor = null;
+        ClearVotes();
+    }
+
+
+    /// <summary>The number of members that have granted this node a vote in the current candidacy.</summary>
+    private int VoteCount
+    {
+        get
+        {
+            int granted = 0;
+            for(int i = 0; i < votesGranted.Length; i++)
+            {
+                if(votesGranted[i])
+                {
+                    granted++;
+                }
+            }
+
+            return granted;
+        }
+    }
+
+
+    private void ClearVotes() => Array.Clear(votesGranted);
+
+
+    /// <summary>
     /// Transitions a winning candidate to leader and initializes per-peer replication state: every peer's
-    /// <c>nextIndex</c> to the entry just past the leader's log, its <c>matchIndex</c> to zero.
+    /// <see cref="FollowerProgress"/> to the entry just past the leader's log with nothing known replicated.
     /// </summary>
     private void BecomeLeader()
     {
         Role = RaftRole.Leader;
         LeaderId = Id;
 
-        nextIndex.Clear();
-        matchIndex.Clear();
-
-        long initialNext = LastLogIndex + 1;
+        FollowerProgress initial = FollowerProgress.StartingFrom(LastLogIndex);
         for(int i = 0; i < members.Length; i++)
         {
-            ReplicaId member = members[i];
-            if(member.Equals(Id))
-            {
-                continue;
-            }
-
-            nextIndex[member] = initialNext;
-            matchIndex[member] = 0;
+            progress[i] = initial;
         }
 
         //The leader always matches its own complete log; this seeds the majority count for commit decisions.
-        matchIndex[Id] = LastLogIndex;
+        progress[selfIndex] = initial.Confirmed(LastLogIndex);
     }
 
 
@@ -600,12 +685,12 @@ public sealed class RaftNode<TCommand>
     /// restriction: a higher last term wins outright, and on an equal last term the longer (or equal) log wins.
     /// </summary>
     /// <param name="candidateLastTerm">The term of the candidate's last log entry.</param>
-    /// <param name="candidateLastIndex">The 1-based index of the candidate's last log entry.</param>
+    /// <param name="candidateLastIndex">The index of the candidate's last log entry.</param>
     /// <returns><see langword="true"/> if the candidate's log is at least as up-to-date as this node's.</returns>
-    private bool IsCandidateLogAtLeastAsUpToDate(long candidateLastTerm, long candidateLastIndex)
+    private bool IsCandidateLogAtLeastAsUpToDate(Term candidateLastTerm, LogIndex candidateLastIndex)
     {
-        long ourLastTerm = LastLogTerm;
-        long ourLastIndex = LastLogIndex;
+        Term ourLastTerm = LastLogTerm;
+        LogIndex ourLastIndex = LastLogIndex;
 
         if(candidateLastTerm != ourLastTerm)
         {
@@ -625,10 +710,10 @@ public sealed class RaftNode<TCommand>
     /// </summary>
     private void TryAdvanceCommitIndex()
     {
-        for(long candidate = log.Count; candidate > CommitIndex; candidate--)
+        for(LogIndex candidate = LastLogIndex; candidate > CommitIndex; candidate = candidate.Previous())
         {
             //Figure 8: only entries from the leader's current term are committed by counting replicas.
-            if(log[(int)(candidate - 1)].Term != CurrentTerm)
+            if(log[candidate.Position].Term != CurrentTerm)
             {
                 continue;
             }
@@ -636,8 +721,7 @@ public sealed class RaftNode<TCommand>
             int replicatedCount = 0;
             for(int i = 0; i < members.Length; i++)
             {
-                long memberMatch = matchIndex.TryGetValue(members[i], out long value) ? value : 0;
-                if(memberMatch >= candidate)
+                if(progress[i].MatchIndex >= candidate)
                 {
                     replicatedCount++;
                 }
@@ -653,5 +737,5 @@ public sealed class RaftNode<TCommand>
     }
 
 
-    private string DebuggerDisplay => $"RaftNode: {Role}, term {CurrentTerm}, log {log.Count}, commit {CommitIndex}";
+    private string DebuggerDisplay => $"RaftNode: {Role}, term {CurrentTerm.Value}, log {log.Count}, commit {CommitIndex.Value}";
 }

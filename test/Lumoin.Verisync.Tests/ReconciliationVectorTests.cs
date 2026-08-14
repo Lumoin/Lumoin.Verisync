@@ -11,12 +11,16 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class ReconciliationVectorTests
 {
-    //The canonical SipHash key bytes 00 01 .. 0f split into little-endian halves.
+    /// <summary>
+    /// The canonical SipHash key bytes 00 01 .. 0f split into little-endian halves.
+    /// </summary>
     private const ulong KeyLow = 0x0706050403020100UL;
     private const ulong KeyHigh = 0x0F0E0D0C0B0A0908UL;
 
 
-    //W3 = 01 02 03 04 05 06 07 08, used as a1 in the stream and difference vectors.
+    /// <summary>
+    /// W3 = 01 02 03 04 05 06 07 08, used as a1 in the stream and difference vectors.
+    /// </summary>
     private static byte[] W3 { get; } = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
 
     private static byte[] W1 { get; } = [.. Enumerable.Range(0, 32).Select(i => (byte)i)];

@@ -2,7 +2,10 @@
 
   <PropertyGroup>
     <RootNamespace>Lumoin.Verisync.Core</RootNamespace>
-    <Description>Core primitives for Lumoin.Verisync: replica identity, causal contexts, version vectors, dot stores, and base CRDT shapes.</Description>
+    <!-- The XML documentation ships with the package, and generating it makes the compiler validate every
+         doc comment, param tag and cref on every build. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Description>Core primitives for Lumoin.Verisync: replica identity, causal contexts, version vectors, dot stores, base CRDT shapes, and the consensus registers - the QuePaxa versioned register with dynamic membership and readiness reporting, and the Fast CASPaxos rewritable register.</Description>
   </PropertyGroup>
 
   <ItemGroup>

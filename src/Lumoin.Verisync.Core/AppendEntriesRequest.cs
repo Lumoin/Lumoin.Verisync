@@ -10,10 +10,10 @@ namespace Lumoin.Verisync.Core;
 /// <param name="Term">The leader's term.</param>
 /// <param name="LeaderId">The leader sending the request, so a follower can redirect clients to it.</param>
 /// <param name="PrevLogIndex">
-/// The 1-based index of the log entry immediately preceding <paramref name="Entries"/>, or zero when the
-/// entries start at the head of the log.
+/// The index of the log entry immediately preceding <paramref name="Entries"/>, or
+/// <see cref="LogIndex.BeforeFirst"/> when the entries start at the head of the log.
 /// </param>
-/// <param name="PrevLogTerm">The term of the entry at <paramref name="PrevLogIndex"/>, ignored when that index is zero.</param>
+/// <param name="PrevLogTerm">The term of the entry at <paramref name="PrevLogIndex"/>, ignored when that index is the empty prefix.</param>
 /// <param name="Entries">
 /// The entries to store, beginning at <paramref name="PrevLogIndex"/> + 1. Empty for a pure heartbeat.
 /// </param>
@@ -25,9 +25,9 @@ namespace Lumoin.Verisync.Core;
 /// <c>nextIndex</c> backwards on rejection until a matching prefix is found.
 /// </remarks>
 public sealed record AppendEntriesRequest<TCommand>(
-    long Term,
+    Term Term,
     ReplicaId LeaderId,
-    long PrevLogIndex,
-    long PrevLogTerm,
+    LogIndex PrevLogIndex,
+    Term PrevLogTerm,
     ImmutableArray<RaftLogEntry<TCommand>> Entries,
-    long LeaderCommit);
+    LogIndex LeaderCommit);

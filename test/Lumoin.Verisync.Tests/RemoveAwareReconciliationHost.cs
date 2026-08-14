@@ -25,10 +25,14 @@ internal sealed class RemoveAwareReconciliationHost
 
     private DottedReconciliationProjection<string> Projection { get; }
 
-    //The replica's causal context at session start, the baseline the apply rule classifies a received dot
-    //against: a fetched dot the pinned context already covers is a local tombstone, not a fresh add. The
-    //running Current.Context cannot serve this — the applies fold the peer context as the session runs, so
-    //a read of Current.Context would classify against a moving baseline instead of the exchange-start one.
+    /// <summary>
+    /// The replica's causal context at session start, the baseline the apply rule classifies a received dot
+    /// against: a fetched dot the pinned context already covers is a local tombstone, not a fresh add.
+    /// </summary>
+    /// <remarks>
+    /// The running Current.Context cannot serve this — the applies fold the peer context as the session runs,
+    /// so a read of Current.Context would classify against a moving baseline instead of the exchange-start one.
+    /// </remarks>
     private VectorClock PinnedContext { get; }
 
 
@@ -40,20 +44,30 @@ internal sealed class RemoveAwareReconciliationHost
     }
 
 
-    //The current converged state, read after the session completes.
+    /// <summary>
+    /// The current converged state, read after the session completes.
+    /// </summary>
     public DottedVersionVectorSet<string> Current { get; private set; }
 
-    //The pinned items the session encodes, one per present dotted entry.
+    /// <summary>
+    /// The pinned items the session encodes, one per present dotted entry.
+    /// </summary>
     public ReadOnlyMemory<byte>[] Items => [.. Projection.Items];
 
-    //The local causal context the session ships once, the projected state's context.
+    /// <summary>
+    /// The local causal context the session ships once, the projected state's context.
+    /// </summary>
     public VectorClockState LocalContext => Projection.Context;
 
 
-    //The initiator classifier mirroring DottedVersionVectorSet.Merge. A decoded item held here is a
-    //present-here, absent-there dot: covered by the peer context means the peer observed and removed it, so it
-    //is a local drop; otherwise it is pushed for the peer to add. A decoded item not held here is fetched; the
-    //fetch answer carries the dot.
+    /// <summary>
+    /// The initiator classifier mirroring DottedVersionVectorSet.Merge.
+    /// </summary>
+    /// <remarks>
+    /// A decoded item held here is a present-here, absent-there dot: covered by the peer context means the peer
+    /// observed and removed it, so it is a local drop; otherwise it is pushed for the peer to add. A decoded
+    /// item not held here is fetched; the fetch answer carries the dot.
+    /// </remarks>
     public ReconciliationDifferenceResolution<DottedEntry<string>> ResolveDifference(IReadOnlyList<ReadOnlyMemory<byte>> decodedItems, VectorClockState peerContext)
     {
         VectorClock peer = VectorClock.FromState(peerContext);
@@ -85,8 +99,10 @@ internal sealed class RemoveAwareReconciliationHost
     }
 
 
-    //The responder serves a fetch with elements only: it holds every requested item, so each resolves to its
-    //dotted entry and no drop arises.
+    /// <summary>
+    /// The responder serves a fetch with elements only: it holds every requested item, so each resolves to its
+    /// dotted entry and no drop arises.
+    /// </summary>
     [SuppressMessage("Performance", "CA1859", Justification = "ServeFetch is a ServeReconciliationFetchDelegate target, so its return type must be the delegate's IReadOnlyList rather than the concrete List.")]
     public IReadOnlyList<ReconciliationElementEntry<DottedEntry<string>>> ServeFetch(IReadOnlyList<ReadOnlyMemory<byte>> items)
     {
@@ -105,9 +121,14 @@ internal sealed class RemoveAwareReconciliationHost
     }
 
 
-    //The uniform apply rule. Each received entry the local pre-fold context already covers is a local
-    //tombstone returned as a push-drop and not added; the rest are added under their exact dots. The peer
-    //context is folded together with the inserts so the merged context dominates every retained dot.
+    /// <summary>
+    /// The uniform apply rule.
+    /// </summary>
+    /// <remarks>
+    /// Each received entry the local pre-fold context already covers is a local tombstone returned as a
+    /// push-drop and not added; the rest are added under their exact dots. The peer context is folded together
+    /// with the inserts so the merged context dominates every retained dot.
+    /// </remarks>
     public ValueTask<ImmutableArray<DotState>> ApplyElements(IReadOnlyList<ReconciliationElementEntry<DottedEntry<string>>> entries, VectorClockState peerContext, CancellationToken cancellationToken)
     {
         VectorClock peer = VectorClock.FromState(peerContext);
@@ -133,8 +154,10 @@ internal sealed class RemoveAwareReconciliationHost
     }
 
 
-    //Drops each present entry a dot names, keeps the rest, and folds the peer context so the merged context
-    //dominates the dropped dot — the removed entry never resurrects.
+    /// <summary>
+    /// Drops each present entry a dot names, keeps the rest, and folds the peer context so the merged context
+    /// dominates the dropped dot — the removed entry never resurrects.
+    /// </summary>
     public ValueTask ApplyDrops(IReadOnlyList<DotState> dots, VectorClockState peerContext, CancellationToken cancellationToken)
     {
         VectorClock peer = VectorClock.FromState(peerContext);
@@ -161,8 +184,10 @@ internal sealed class RemoveAwareReconciliationHost
     }
 
 
-    //The terminal fold for the paths where no apply ran: the context advances to the merged context while the
-    //entries stay as they are.
+    /// <summary>
+    /// The terminal fold for the paths where no apply ran: the context advances to the merged context while the
+    /// entries stay as they are.
+    /// </summary>
     public ValueTask MergeContext(VectorClockState peerContext, CancellationToken cancellationToken)
     {
         VectorClock peer = VectorClock.FromState(peerContext);
@@ -174,10 +199,15 @@ internal sealed class RemoveAwareReconciliationHost
     }
 
 
-    //Rebuilds the set with the additions folded in under their exact dots and the context advanced to the
-    //merged context. The added dots come from the peer whose context dominates them and the retained dots are
-    //dominated by the local context, so the merged context dominates every retained dot — the reconstruction
-    //invariant FromState enforces.
+    /// <summary>
+    /// Rebuilds the set with the additions folded in under their exact dots and the context advanced to the
+    /// merged context.
+    /// </summary>
+    /// <remarks>
+    /// The added dots come from the peer whose context dominates them and the retained dots are dominated by
+    /// the local context, so the merged context dominates every retained dot — the reconstruction invariant
+    /// FromState enforces.
+    /// </remarks>
     private DottedVersionVectorSet<string> RebuildWithAdditions(List<DottedEntry<string>> additions, VectorClock peer)
     {
         DottedVersionVectorSetState<string> state = Current.ToState();
@@ -191,18 +221,24 @@ internal sealed class RemoveAwareReconciliationHost
     }
 
 
-    //contextCovers(ctx, dot) = ctx[dot.Replica] >= dot.Counter, the literal Merge rule reading the context
-    //entry for the dot's replica against the dot's counter.
+    /// <summary>
+    /// contextCovers(ctx, dot) = ctx[dot.Replica] >= dot.Counter, the literal Merge rule reading the context
+    /// entry for the dot's replica against the dot's counter.
+    /// </summary>
     private static bool ContextCovers(VectorClock context, DottedEntry<string> entry)
     {
         return context[ReplicaId.FromSpan(entry.Replica.AsSpan())] >= entry.Counter;
     }
 
 
-    //The canonical value bytes are the UTF-8 encoding of the string, as the slice-1 projection tests use.
+    /// <summary>
+    /// The canonical value bytes are the UTF-8 encoding of the string, as the slice-1 projection tests use.
+    /// </summary>
     private static ReadOnlyMemory<byte> Canonicalize(string value) => Encoding.UTF8.GetBytes(value);
 
 
-    //The digest is SHA-256 over the frame, the 32-byte content-hash the default contract expects.
+    /// <summary>
+    /// The digest is SHA-256 over the frame, the 32-byte content-hash the default contract expects.
+    /// </summary>
     private static ReadOnlyMemory<byte> Digest(ReadOnlyMemory<byte> canonicalBytes) => SHA256.HashData(canonicalBytes.Span);
 }

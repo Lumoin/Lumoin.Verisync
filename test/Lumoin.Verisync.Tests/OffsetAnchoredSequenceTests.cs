@@ -167,10 +167,14 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
-    //An address is canonical at construction: the anchor is non-null, a base anchor carries a
-    //non-negative generation, and a live or head anchor carries exactly zero. Record equality is then
-    //meaningful for every shape — two base addresses of one offset differ exactly by their generation,
-    //and two live addresses of one element are equal regardless of when they were read.
+    /// <summary>
+    /// An address is canonical at construction: the anchor is non-null, a base anchor carries a non-negative
+    /// generation, and a live or head anchor carries exactly zero.
+    /// </summary>
+    /// <remarks>
+    /// Record equality is then meaningful for every shape — two base addresses of one offset differ exactly by
+    /// their generation, and two live addresses of one element are equal regardless of when they were read.
+    /// </remarks>
     [TestMethod]
     public void OffsetAddressConstructionIsCanonicalAndFailClosed()
     {
@@ -197,9 +201,11 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
-    //The canonical shape survives the copy path: a with-expression re-validates each changed member
-    //against the retained other, so it can never yield an address the constructor refuses, and a live
-    //address's equality stays generation-invariant.
+    /// <summary>
+    /// The canonical shape survives the copy path: a with-expression re-validates each changed member against
+    /// the retained other, so it can never yield an address the constructor refuses, and a live address's
+    /// equality stays generation-invariant.
+    /// </summary>
     [TestMethod]
     public void AWithExpressionRevalidatesTheCanonicalShape()
     {
@@ -233,9 +239,14 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
-    //The projected addresses carry the sequence's current generation: a genesis generation stamps its
-    //base elements with zero, and a base-changing compaction advances the generation so every base
-    //element it projects carries the new one. A live element carries the canonical zero throughout.
+    /// <summary>
+    /// The projected addresses carry the sequence's current generation: a genesis generation stamps its base
+    /// elements with zero, and a base-changing compaction advances the generation so every base element it
+    /// projects carries the new one.
+    /// </summary>
+    /// <remarks>
+    /// A live element carries the canonical zero throughout.
+    /// </remarks>
     [TestMethod]
     public void VisibleElementAddressesCarryTheCurrentGeneration()
     {
@@ -318,10 +329,14 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
-    //RE-POINTED under §17: a certified-removed parent kept alive because its child is retained is the
-    //ghost the taxonomy describes, but it can only exist above the waterline — its child is unstable — so
-    //compaction fails closed rather than materialize it. The certified projection is unrestricted and
-    //still excludes the certified-removed parent.
+    /// <summary>
+    /// RE-POINTED under §17: a certified-removed parent kept alive because its child is retained is the ghost
+    /// the taxonomy describes, but it can only exist above the waterline — its child is unstable — so
+    /// compaction fails closed rather than materialize it.
+    /// </summary>
+    /// <remarks>
+    /// The certified projection is unrestricted and still excludes the certified-removed parent.
+    /// </remarks>
     [TestMethod]
     public void CompactFailsClosedOnACertifiedTombstoneThatStillRootsAnUnstableChild()
     {
@@ -340,11 +355,15 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
-    //RE-POINTED under §17: an uncertified-removed stable vertex converting pending-removed WITH a retained
-    //child would re-anchor that child at the gap — but the child is unstable, so the state is not
-    //insert-quiescent and compaction fails closed. The pending-removed conversion itself is exercised
-    //quiescently by the certification law suite. The certified projection is unrestricted and still
-    //carries the uncertified-removed parent with its real dot.
+    /// <summary>
+    /// RE-POINTED under §17: an uncertified-removed stable vertex converting pending-removed WITH a retained
+    /// child would re-anchor that child at the gap — but the child is unstable, so the state is not
+    /// insert-quiescent and compaction fails closed.
+    /// </summary>
+    /// <remarks>
+    /// The pending-removed conversion itself is exercised quiescently by the certification law suite. The
+    /// certified projection is unrestricted and still carries the uncertified-removed parent with its real dot.
+    /// </remarks>
     [TestMethod]
     public void CompactFailsClosedOnAnUncertifiedTombstoneWithAnUnstableChild()
     {
@@ -385,9 +404,11 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
-    //A prior-generation base address translates through the map: b1 sits at base offset 1 in the
-    //pre-compaction generation and at offset 2 after x converts ahead of it, so the generation-0 address
-    //of offset 1 resolves to the generation-1 address of offset 2 and serves a following insert.
+    /// <summary>
+    /// A prior-generation base address translates through the map: b1 sits at base offset 1 in the
+    /// pre-compaction generation and at offset 2 after x converts ahead of it, so the generation-0 address of
+    /// offset 1 resolves to the generation-1 address of offset 2 and serves a following insert.
+    /// </summary>
     [TestMethod]
     public void CompactTranslatesPreviousGenerationBaseOffsets()
     {
@@ -471,9 +492,14 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
-    //The map's §5a trace, green-but-unsound before offset.v2: a laggard that never saw the remove slips
-    //the base gate (a tombstone-only drop leaves the base unchanged) and the union used to resurrect the
-    //element cluster-wide. The stale-replay detector now fails it closed in both merge orders.
+    /// <summary>
+    /// The map's §5a trace, green-but-unsound before offset.v2: a laggard that never saw the remove slips the
+    /// base gate (a tombstone-only drop leaves the base unchanged) and the union used to resurrect the element
+    /// cluster-wide.
+    /// </summary>
+    /// <remarks>
+    /// The stale-replay detector now fails it closed in both merge orders.
+    /// </remarks>
     [TestMethod]
     public void AStalePreRemoveLaggardFailsClosedAgainstACompactedRemove()
     {
@@ -518,9 +544,11 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
-    //T-O2-1, probe basics: the empty state and a pure-base state probe empty at any frontier — base
-    //slots mint no insert-dots — and a state with vertices probed at the empty frontier reports every
-    //vertex insert-dot in (Replica, Counter) ascending order.
+    /// <summary>
+    /// T-O2-1, probe basics: the empty state and a pure-base state probe empty at any frontier — base slots
+    /// mint no insert-dots — and a state with vertices probed at the empty frontier reports every vertex
+    /// insert-dot in (Replica, Counter) ascending order.
+    /// </summary>
     [TestMethod]
     public void TheProbeIsEmptyOnAnEmptyStateAndListsEveryVertexInOrder()
     {
@@ -545,10 +573,14 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
-    //T-O2-2: remove-dots never block insert-quiescence — the probe reads INSERT stability only. A
-    //frontier covering both inserts but not the remove-dot probes empty on both members, the certified
-    //projection still carries the locally hidden element, and both members compact to byte-identical
-    //base value arrays: the remover converts it pending-removed, the laggard converts it visible.
+    /// <summary>
+    /// T-O2-2: remove-dots never block insert-quiescence — the probe reads INSERT stability only.
+    /// </summary>
+    /// <remarks>
+    /// A frontier covering both inserts but not the remove-dot probes empty on both members, the certified
+    /// projection still carries the locally hidden element, and both members compact to byte-identical base
+    /// value arrays: the remover converts it pending-removed, the laggard converts it visible.
+    /// </remarks>
     [TestMethod]
     public void RemoveDotsAboveTheFrontierNeverBlockInsertQuiescence()
     {
@@ -588,12 +620,15 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
-    //The probe/guard-agreement property: over generated op histories on the empty base, the probe at a
-    //snapshot-cut frontier is empty EXACTLY when the base-materializing compaction passes its
-    //quiescence guard, and the probe's content equals a naively recomputed uncovered set in
-    //(Replica, Counter) order. Sampled over BOTH regions — histories with at least one post-cut insert
-    //(probe provably non-empty) and histories with none (probe provably empty) — so neither half of
-    //the iff can go vacuous.
+    /// <summary>
+    /// The probe/guard-agreement property: over generated op histories on the empty base, the probe at a
+    /// snapshot-cut frontier is empty EXACTLY when the base-materializing compaction passes its quiescence
+    /// guard, and the probe's content equals a naively recomputed uncovered set in (Replica, Counter) order.
+    /// </summary>
+    /// <remarks>
+    /// Sampled over BOTH regions — histories with at least one post-cut insert (probe provably non-empty) and
+    /// histories with none (probe provably empty) — so neither half of the iff can go vacuous.
+    /// </remarks>
     [TestMethod]
     public void TheProbeIsEmptyExactlyWhenCompactionPasses()
     {
@@ -634,12 +669,16 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
-    //The replica axes the probe property's op histories mint on; one replica per operand index.
+    /// <summary>
+    /// The replica axes the probe property's op histories mint on; one replica per operand index.
+    /// </summary>
     private static ReplicaId[] HistoryReplicas { get; } = [Replica(10), Replica(11), Replica(12)];
 
 
-    //A replica-honest op history over the EMPTY base with a snapshot cut: the probed state is the full
-    //history and the frontier is the cut snapshot's own causal context.
+    /// <summary>
+    /// A replica-honest op history over the EMPTY base with a snapshot cut: the probed state is the full
+    /// history and the frontier is the cut snapshot's own causal context.
+    /// </summary>
     private static Gen<(OffsetAnchoredSequence<int> Full, VectorClock Frontier)> GenProbeCase { get; } =
         Gen.Select(
             Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 8],
@@ -652,8 +691,10 @@ internal sealed class OffsetAnchoredSequenceTests
             });
 
 
-    //Live-axis op histories over the EMPTY base: head and live-anchored inserts plus dotted removes of
-    //still-visible elements.
+    /// <summary>
+    /// Live-axis op histories over the EMPTY base: head and live-anchored inserts plus dotted removes of
+    /// still-visible elements.
+    /// </summary>
     private static (OffsetAnchoredSequence<int> Full, IReadOnlyList<OffsetAnchoredSequence<int>> Snapshots) BuildSnapshots((int Replica, int Seed)[] ops)
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.Empty;
@@ -694,8 +735,10 @@ internal sealed class OffsetAnchoredSequenceTests
     }
 
 
-    //The naive uncovered set: every vertex insert-dot the frontier does not cover, recomputed from the
-    //serialized state and sorted by (Replica, Counter) — the completeness oracle the probe must equal.
+    /// <summary>
+    /// The naive uncovered set: every vertex insert-dot the frontier does not cover, recomputed from the
+    /// serialized state and sorted by (Replica, Counter) — the completeness oracle the probe must equal.
+    /// </summary>
     private static Dot[] NaiveUncoveredInsertDots(OffsetAnchoredSequence<int> sequence, VectorClock frontier)
     {
         var uncovered = new List<Dot>();

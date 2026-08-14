@@ -18,7 +18,7 @@
          their PackageVersion items) after the project body, so their versions are steered
          through these SDK-recognized properties; PackageReference/PackageVersion Update blocks
          never match the injected items. Only deviations from the Sdk defaults are set here. -->
-    <MicrosoftTestingExtensionsCodeCoverageVersion>18.9.0</MicrosoftTestingExtensionsCodeCoverageVersion>
+    <MicrosoftTestingExtensionsCodeCoverageVersion>18.10.0</MicrosoftTestingExtensionsCodeCoverageVersion>
     <!-- Tests define source-generated JSON contexts and CBOR encoders to exercise the serialization
          adapters, so they opt out of the serialization banlist. -->
     <EnableSerializationBan>false</EnableSerializationBan>

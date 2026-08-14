@@ -36,7 +36,10 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class PeerReconciliationPublicKeyChosenContentGateProbe
 {
-    //ContentHashDefault pins the PUBLIC WellKnownChecksumKeyLow/High — exactly the "public key" the finding names.
+    /// <summary>
+    /// ContentHashDefault pins the PUBLIC WellKnownChecksumKeyLow/High — exactly the "public key" the finding
+    /// names.
+    /// </summary>
     private static ReconciliationContract PublicKeyContract { get; } = ReconciliationContract.ContentHashDefault;
 
     private static byte[] HashA { get; } = Digest("a");
@@ -121,7 +124,9 @@ internal sealed class PeerReconciliationPublicKeyChosenContentGateProbe
     }
 
 
-    //Models RepairCoordinator round 1: recover the symmetric difference of the survivors and the peer set.
+    /// <summary>
+    /// Models RepairCoordinator round 1: recover the symmetric difference of the survivors and the peer set.
+    /// </summary>
     private static IReadOnlyList<ReadOnlyMemory<byte>> Reconcile(ReconciliationContract contract, byte[][] leftItems, byte[][] rightItems, out bool isComplete)
     {
         using ReconciliationEncoder left = LoadEncoder(contract, leftItems);
@@ -140,8 +145,10 @@ internal sealed class PeerReconciliationPublicKeyChosenContentGateProbe
     }
 
 
-    //Models RepairCoordinator.HealedSetMatchesGenerationSketch: reconcile the healed set against the
-    //generation's own at-rest record and report the residual completeness and count.
+    /// <summary>
+    /// Models RepairCoordinator.HealedSetMatchesGenerationSketch: reconcile the healed set against the
+    /// generation's own at-rest record and report the residual completeness and count.
+    /// </summary>
     private static (bool IsComplete, int RecoveredCount) Residual(ReconciliationContract contract, byte[][] healed, byte[][] generationRecord)
     {
         IReadOnlyList<ReadOnlyMemory<byte>> residual = Reconcile(contract, healed, generationRecord, out bool complete);

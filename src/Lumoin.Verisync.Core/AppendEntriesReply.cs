@@ -17,4 +17,4 @@ namespace Lumoin.Verisync.Core;
 /// reply (rather than re-deriving it on the leader) keeps the leader's <c>matchIndex</c> bookkeeping correct
 /// even when replies arrive out of order.
 /// </param>
-public sealed record AppendEntriesReply(long Term, bool Success, long MatchIndex);
+public sealed record AppendEntriesReply(Term Term, bool Success, LogIndex MatchIndex);
