@@ -186,6 +186,29 @@ jobs:
             "$path"
         done
 
+    # The SBOM inside each package is regenerated at pack time and accumulates stale
+    # self-referential entries when packed over residual obj state, so the release
+    # artifact is asserted clean here: exactly one self-entry per package, at the
+    # packed version. A failure means the pack ran over a dirty tree and the
+    # packages must not ship.
+    - name: Verify packed SBOM versions
+      if: ${{ matrix.os == 'ubuntu-latest' && github.repository_owner == 'lumoin' }}
+      run: |
+        version="${PACKAGE_VERSION%%+*}"
+        for package in nupkgs/*.nupkg; do
+          name=$(basename "$package" ".$version.nupkg")
+          entries=$(unzip -p "$package" '_manifest/spdx_2.2/manifest.spdx.json' | jq --arg name "$name" '[.packages[] | select(.name == $name)]')
+          count=$(echo "$entries" | jq 'length')
+          stale=$(echo "$entries" | jq --arg version "$version" '[.[] | select(.versionInfo != $version)] | length')
+          if [ "$count" -ne 1 ] || [ "$stale" -ne 0 ]; then
+            echo "::error::$package carries $count SBOM self-entries of which $stale are not at $version."
+            echo "$entries" | jq -r '.[] | "\(.name) \(.versionInfo)"'
+            exit 1
+          fi
+          echo "$package SBOM self-entry is exactly one, at $version."
+        done
+      shell: bash
+
     # Sigstore artifact attestation needs the public-good Fulcio/Rekor transparency
     # log, unavailable while the repository is private — the step errors with the
     # current plan. Gated on repository visibility so it is skipped while private and
