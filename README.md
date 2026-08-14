@@ -67,6 +67,8 @@ dotnet add package Lumoin.Verisync.Cbor
 
 The codebase runs on Windows, Linux, and macOS.
 
+Protocol designs are model-checked with TLA+ before implementation. The modules and the re-runnable model configurations are in the `tla/` directory.
+
 Press **.** on the repository page to open the codebase in VS Code web editor for quick exploration.
 
 ## Vulnerability disclosure
