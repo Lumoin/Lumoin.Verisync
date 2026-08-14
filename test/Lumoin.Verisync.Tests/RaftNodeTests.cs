@@ -11,6 +11,7 @@ internal sealed class RaftNodeTests
     private static ReplicaId N3 { get; } = Replica(3);
     private static ReplicaId N4 { get; } = Replica(4);
     private static ReplicaId N5 { get; } = Replica(5);
+    private static ReplicaId Stranger { get; } = Replica(9);
 
 
     [TestMethod]
@@ -26,31 +27,136 @@ internal sealed class RaftNodeTests
 
         ElectLeader(leader, follower2, follower3);
         Assert.AreEqual(RaftRole.Leader, leader.Role);
-        Assert.AreEqual(1, leader.CurrentTerm);
+        Assert.AreEqual(Term.First, leader.CurrentTerm);
 
         leader.Propose("set-a");
         leader.Propose("set-b");
         Assert.HasCount(2, leader.Log);
-        Assert.AreEqual(0, leader.CommitIndex);
+        Assert.AreEqual(LogIndex.BeforeFirst, leader.CommitIndex);
         //The followers hold nothing yet, so the commit point cannot have moved off zero anywhere.
-        Assert.AreEqual(0, follower2.CommitIndex);
-        Assert.AreEqual(0, follower3.CommitIndex);
+        Assert.AreEqual(LogIndex.BeforeFirst, follower2.CommitIndex);
+        Assert.AreEqual(LogIndex.BeforeFirst, follower3.CommitIndex);
 
         //First replication round delivers both entries to both followers. Once a majority of matchIndex
         //(the leader itself plus at least one follower) reaches index 2 and that entry is of the current
         //term, the leader's own CommitIndex advances to the majority point.
         ReplicateRound(leader, follower2, follower3);
-        Assert.AreEqual(2, leader.CommitIndex);
+        Assert.AreEqual(new LogIndex(2), leader.CommitIndex);
         Assert.HasCount(2, follower2.Log);
         Assert.HasCount(2, follower3.Log);
 
         //A second round is a heartbeat carrying the leader's now-advanced LeaderCommit. Each follower sets
         //CommitIndex = min(LeaderCommit, its last matching index), so both reach the leader's commit point.
         ReplicateRound(leader, follower2, follower3);
-        Assert.AreEqual(2, follower2.CommitIndex);
-        Assert.AreEqual(2, follower3.CommitIndex);
+        Assert.AreEqual(new LogIndex(2), follower2.CommitIndex);
+        Assert.AreEqual(new LogIndex(2), follower3.CommitIndex);
 
         AssertLogsIdentical(leader, follower2, follower3);
+    }
+
+
+    /// <summary>
+    /// The quorum is a majority of the configured membership, so only a member can contribute to it.
+    /// </summary>
+    /// <remarks>
+    /// The identity arrives as wire data that no codec checks, and the same membership filter is already
+    /// applied when a vote is restored and when a commit quorum is counted, so the election tally was the one
+    /// count that omitted it. A candidate one short of a majority must not be carried over the line by a
+    /// stranger.
+    /// </remarks>
+    [TestMethod]
+    public void AVoteFromOutsideTheMembershipDoesNotCountTowardsTheElectionQuorum()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3, N4, N5];
+        RaftNode<string> candidate = new(N1, members);
+        RaftNode<string> member = new(N2, members);
+
+        RequestVoteRequest request = candidate.StartElection();
+
+        //Two of five: the candidate's own vote and one member's. A majority here is three.
+        Assert.IsFalse(candidate.ReceiveVote(N2, member.HandleRequestVote(request)));
+        Assert.AreEqual(RaftRole.Candidate, candidate.Role);
+
+        RequestVoteReply granted = new(request.Term, true);
+
+        Assert.IsFalse(candidate.ReceiveVote(Stranger, granted), "A non-member completed the election quorum.");
+        Assert.AreEqual(RaftRole.Candidate, candidate.Role);
+
+        //The same reply from a member does complete it, so the vector fails for membership rather than
+        //because the reply itself was malformed.
+        Assert.IsTrue(candidate.ReceiveVote(N3, granted));
+        Assert.AreEqual(RaftRole.Leader, candidate.Role);
+    }
+
+
+    /// <summary>
+    /// Membership is fixed, so every identity that arrives from the wire is filtered against it.
+    /// </summary>
+    /// <remarks>
+    /// A vote for a non-member is the sharpest case: FromState refuses to restore one, so granting it would
+    /// put the node in a state its own restore path rejects. Entries from a non-member leader would replicate
+    /// a log no quorum agreed on, and a non-member reply would seed per-follower bookkeeping the leader never
+    /// sends to.
+    /// </remarks>
+    [TestMethod]
+    public void EveryWireIdentityIsFilteredAgainstTheMembership()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> node = new(N1, members);
+
+        RequestVoteReply refusedVote = node.HandleRequestVote(new RequestVoteRequest(Term.First, Stranger, LogIndex.BeforeFirst, Term.Zero));
+
+        Assert.IsFalse(refusedVote.VoteGranted, "A non-member was granted a vote.");
+        Assert.IsNull(node.VotedFor);
+
+        //The same request from a member is granted, so the refusal is about membership and not the log rule.
+        Assert.IsTrue(node.HandleRequestVote(new RequestVoteRequest(Term.First, N2, LogIndex.BeforeFirst, Term.Zero)).VoteGranted);
+        Assert.AreEqual(N2, node.VotedFor);
+
+        RaftNode<string> follower = new(N1, members);
+        AppendEntriesReply refusedAppend = follower.HandleAppendEntries(
+            new AppendEntriesRequest<string>(Term.First, Stranger, LogIndex.BeforeFirst, Term.Zero, [new RaftLogEntry<string>(Term.First, "x")], LogIndex.BeforeFirst));
+
+        Assert.IsFalse(refusedAppend.Success, "A non-member leader appended entries.");
+        Assert.IsEmpty(follower.Log);
+        Assert.IsNull(follower.LeaderId);
+    }
+
+
+    /// <summary>
+    /// The filter runs before the term rule, so a non-member cannot raise this node's term either.
+    /// </summary>
+    /// <remarks>
+    /// It is the weaker lever and the one a tally-only filter leaves open: a stranger that can never complete
+    /// a quorum could still unseat a leader the cluster agreed on by making every member adopt a higher term.
+    /// </remarks>
+    [TestMethod]
+    public void ANonMemberCannotRaiseTheTerm()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> leader = new(N1, members);
+
+        _ = leader.StartElection();
+        _ = leader.ReceiveVote(N2, new RequestVoteReply(leader.CurrentTerm, true));
+
+        Assert.AreEqual(RaftRole.Leader, leader.Role);
+
+        Term term = leader.CurrentTerm;
+        Term higher = new(term.Value + 5);
+
+        _ = leader.HandleRequestVote(new RequestVoteRequest(higher, Stranger, LogIndex.BeforeFirst, Term.Zero));
+        _ = leader.HandleAppendEntries(new AppendEntriesRequest<string>(higher, Stranger, LogIndex.BeforeFirst, Term.Zero, [], LogIndex.BeforeFirst));
+        _ = leader.ReceiveVote(Stranger, new RequestVoteReply(higher, false));
+        leader.ReceiveAppendEntriesReply(Stranger, new AppendEntriesReply(higher, false, LogIndex.BeforeFirst));
+
+        Assert.AreEqual(term, leader.CurrentTerm, "A non-member raised the term.");
+        Assert.AreEqual(RaftRole.Leader, leader.Role, "A non-member unseated the leader.");
+
+        //The same higher term from a member does step the leader down, so the refusal is about membership.
+        _ = leader.HandleAppendEntries(new AppendEntriesRequest<string>(higher, N2, LogIndex.BeforeFirst, Term.Zero, [], LogIndex.BeforeFirst));
+
+        Assert.AreEqual(higher, leader.CurrentTerm);
+        Assert.AreEqual(RaftRole.Follower, leader.Role);
     }
 
 
@@ -69,13 +175,13 @@ internal sealed class RaftNodeTests
         RaftNode<string> d = new(N4, members);
         RaftNode<string> e = new(N5, members);
 
-        List<(long Term, ReplicaId Leader)> leadersSeen = [];
+        List<(Term Term, ReplicaId Leader)> leadersSeen = [];
 
         //Both A and B campaign for the same term. ReceiveVote must return false while below majority and the
         //candidate must stay a Candidate — never a Leader — for the contested term.
         RequestVoteRequest aVote = a.StartElection();
         RequestVoteRequest bVote = b.StartElection();
-        long contestedTerm = aVote.Term;
+        Term contestedTerm = aVote.Term;
         Assert.AreEqual(contestedTerm, bVote.Term);
 
         //C grants A, D grants B; E grants A but its reply is dropped on the wire. No candidate is delivered a
@@ -117,8 +223,8 @@ internal sealed class RaftNodeTests
         //The safety property: never two distinct leaders in one term, across the whole run. The contested
         //term contributed zero leaders; the resolving term contributed exactly one.
         Assert.HasCount(0, leadersSeen.Where(p => p.Term == contestedTerm).ToList());
-        IEnumerable<IGrouping<long, ReplicaId>> byTerm = leadersSeen.GroupBy(p => p.Term, p => p.Leader);
-        foreach(IGrouping<long, ReplicaId> term in byTerm)
+        IEnumerable<IGrouping<Term, ReplicaId>> byTerm = leadersSeen.GroupBy(p => p.Term, p => p.Leader);
+        foreach(IGrouping<Term, ReplicaId> term in byTerm)
         {
             Assert.HasCount(1, term.Distinct().ToList());
         }
@@ -136,23 +242,23 @@ internal sealed class RaftNodeTests
 
         //Give the voter a log of [term1, term2] by replicating from a synthetic leader of term 2.
         AppendEntriesReply r1 = voter.HandleAppendEntries(new AppendEntriesRequest<string>(
-            2, N2, 0, 0, [new RaftLogEntry<string>(1, "x"), new RaftLogEntry<string>(2, "y")], 0));
+            new Term(2), N2, LogIndex.BeforeFirst, Term.Zero, [new RaftLogEntry<string>(new Term(1), "x"), new RaftLogEntry<string>(new Term(2), "y")], LogIndex.BeforeFirst));
         Assert.IsTrue(r1.Success);
         Assert.HasCount(2, voter.Log);
-        Assert.AreEqual(2, voter.CurrentTerm);
+        Assert.AreEqual(new Term(2), voter.CurrentTerm);
 
         //Branch 1: candidate's LastLogTerm (1) is strictly lower than the voter's last term (2) → denied,
         //even though the candidate claims a longer index.
-        RequestVoteReply lowerTerm = voter.HandleRequestVote(new RequestVoteRequest(3, N3, 9, 1));
+        RequestVoteReply lowerTerm = voter.HandleRequestVote(new RequestVoteRequest(new Term(3), N3, new LogIndex(9), new Term(1)));
         Assert.IsFalse(lowerTerm.VoteGranted);
 
         //Branch 2: equal LastLogTerm (2) but a strictly shorter LastLogIndex (1 < voter's 2) → denied.
-        RequestVoteReply shorterIndex = voter.HandleRequestVote(new RequestVoteRequest(4, N3, 1, 2));
+        RequestVoteReply shorterIndex = voter.HandleRequestVote(new RequestVoteRequest(new Term(4), N3, new LogIndex(1), new Term(2)));
         Assert.IsFalse(shorterIndex.VoteGranted);
 
         //Control: an equal-or-better log (same term, index >= ours) is granted, proving the denials above
         //were the up-to-dateness rule and not a blanket refusal.
-        RequestVoteReply upToDate = voter.HandleRequestVote(new RequestVoteRequest(5, N3, 2, 2));
+        RequestVoteReply upToDate = voter.HandleRequestVote(new RequestVoteRequest(new Term(5), N3, new LogIndex(2), new Term(2)));
         Assert.IsTrue(upToDate.VoteGranted);
     }
 
@@ -184,19 +290,19 @@ internal sealed class RaftNodeTests
         ReplicateRound(s1, s2, s3, s4, s5);
         foreach(RaftNode<string> n in new[] { s1, s2, s3, s4, s5 })
         {
-            Assert.AreEqual(1, n.CommitIndex);
+            Assert.AreEqual(LogIndex.First, n.CommitIndex);
         }
 
         //--- Still S1's term: it proposes a second entry at index 2 but reaches only a minority (S2). ---
         s1.Propose("e2-original-leader");
-        long s1ProposalTerm = s1.CurrentTerm;
+        Term s1ProposalTerm = s1.CurrentTerm;
         AppendEntriesRequest<string> toS2 = s1.CreateAppendEntries(N2);
         AppendEntriesReply s2Reply = s2.HandleAppendEntries(toS2);
         Assert.IsTrue(s2Reply.Success);
         s1.ReceiveAppendEntriesReply(N2, s2Reply);
 
         //Only S1 and S2 (a 2-of-5 minority) hold index 2, so it is NOT committed despite being current-term.
-        Assert.AreEqual(1, s1.CommitIndex);
+        Assert.AreEqual(LogIndex.First, s1.CommitIndex);
         Assert.HasCount(2, s1.Log);
         Assert.HasCount(2, s2.Log);
 
@@ -212,7 +318,7 @@ internal sealed class RaftNodeTests
         }
 
         Assert.AreEqual(RaftRole.Leader, s3.Role);
-        long competingTerm = s3.CurrentTerm;
+        Term competingTerm = s3.CurrentTerm;
         Assert.IsGreaterThan(s1ProposalTerm, competingTerm);
 
         //S3 appends its OWN competing entry at index 2 locally only (it crashes before replicating it).
@@ -224,7 +330,7 @@ internal sealed class RaftNodeTests
         //line deterministically, S1 first adopts the competing term (a higher-term RPC forces term adoption and
         //a step-down to follower), then campaigns, incrementing past it. S4/S5 still hold only index 1, so S1's
         //index-2 entry is "at least as up to date" by term (its LastLogTerm >= their last term), granting votes. ---
-        s1.HandleRequestVote(new RequestVoteRequest(competingTerm, N5, 0, 0));
+        s1.HandleRequestVote(new RequestVoteRequest(competingTerm, N5, LogIndex.BeforeFirst, Term.Zero));
         Assert.AreEqual(competingTerm, s1.CurrentTerm);
         RequestVoteRequest s1Vote = s1.StartElection();
         Assert.IsGreaterThan(competingTerm, s1Vote.Term);
@@ -236,7 +342,7 @@ internal sealed class RaftNodeTests
         }
 
         Assert.AreEqual(RaftRole.Leader, s1.Role);
-        long currentTerm = s1.CurrentTerm;
+        Term currentTerm = s1.CurrentTerm;
 
         //S1's log is still [e1, e2-original-leader]; index 2 carries its OLD (prior) term, not the current term.
         Assert.HasCount(2, s1.Log);
@@ -255,7 +361,7 @@ internal sealed class RaftNodeTests
         Assert.HasCount(2, s3.Log);
         Assert.HasCount(2, s4.Log);
         Assert.HasCount(2, s5.Log);
-        Assert.AreEqual(1, s1.CommitIndex);
+        Assert.AreEqual(LogIndex.First, s1.CommitIndex);
 
         //Now S1 proposes a CURRENT-term entry at index 3 and replicates it to a majority. Committing index 3
         //(current term, majority) lawfully carries index 2 with it, so BOTH commit together.
@@ -270,7 +376,7 @@ internal sealed class RaftNodeTests
 
         //A current-term entry reached a majority, so the commit point advances all the way to index 3,
         //sweeping the previously-uncommittable index-2 entry into the committed prefix.
-        Assert.AreEqual(3, s1.CommitIndex);
+        Assert.AreEqual(new LogIndex(3), s1.CommitIndex);
     }
 
 
@@ -286,26 +392,26 @@ internal sealed class RaftNodeTests
         //--- Truncation path. The follower has [t1, t2(bad)]; the leader of term 3 carries [t1, t3(good)]. ---
         RaftNode<string> diverged = new(N2, members);
         AppendEntriesReply seed = diverged.HandleAppendEntries(new AppendEntriesRequest<string>(
-            2, N1, 0, 0, [new RaftLogEntry<string>(1, "shared"), new RaftLogEntry<string>(2, "stale-suffix")], 0));
+            new Term(2), N1, LogIndex.BeforeFirst, Term.Zero, [new RaftLogEntry<string>(new Term(1), "shared"), new RaftLogEntry<string>(new Term(2), "stale-suffix")], LogIndex.BeforeFirst));
         Assert.IsTrue(seed.Success);
         Assert.HasCount(2, diverged.Log);
 
         //The leader's request matches at index 1 (term 1) but conflicts at index 2 (term 3 vs the held term 2),
         //so the follower truncates index 2 and adopts the new entry.
         AppendEntriesReply healed = diverged.HandleAppendEntries(new AppendEntriesRequest<string>(
-            3, N1, 1, 1, [new RaftLogEntry<string>(3, "authoritative")], 0));
+            new Term(3), N1, LogIndex.First, Term.First, [new RaftLogEntry<string>(new Term(3), "authoritative")], LogIndex.BeforeFirst));
         Assert.IsTrue(healed.Success);
         Assert.HasCount(2, diverged.Log);
-        Assert.AreEqual(3, diverged.Log[1].Term);
+        Assert.AreEqual(new Term(3), diverged.Log[1].Term);
         Assert.AreEqual("authoritative", diverged.Log[1].Command);
 
         //--- Idempotency path. A follower already holding [t1, t2] re-receives the exact same request. ---
         RaftNode<string> stable = new(N3, members);
         AppendEntriesRequest<string> original = new(
-            2, N1, 0, 0, [new RaftLogEntry<string>(1, "a"), new RaftLogEntry<string>(2, "b")], 2);
+            new Term(2), N1, LogIndex.BeforeFirst, Term.Zero, [new RaftLogEntry<string>(new Term(1), "a"), new RaftLogEntry<string>(new Term(2), "b")], new LogIndex(2));
         Assert.IsTrue(stable.HandleAppendEntries(original).Success);
         Assert.HasCount(2, stable.Log);
-        Assert.AreEqual(2, stable.CommitIndex);
+        Assert.AreEqual(new LogIndex(2), stable.CommitIndex);
 
         //Re-delivering the identical request (a network duplicate) must succeed without truncating: the
         //prefix already matches, so the log and commit index are unchanged.
@@ -313,12 +419,12 @@ internal sealed class RaftNodeTests
         Assert.IsTrue(duplicate.Success);
         Assert.HasCount(2, stable.Log);
         Assert.AreEqual("b", stable.Log[1].Command);
-        Assert.AreEqual(2, stable.CommitIndex);
+        Assert.AreEqual(new LogIndex(2), stable.CommitIndex);
 
         //A stale-prefix request (only the first entry, already present and matching) is likewise a no-op that
         //must not chop off the second, more recent entry the follower correctly holds.
         AppendEntriesReply stalePrefix = stable.HandleAppendEntries(new AppendEntriesRequest<string>(
-            2, N1, 0, 0, [new RaftLogEntry<string>(1, "a")], 1));
+            new Term(2), N1, LogIndex.BeforeFirst, Term.Zero, [new RaftLogEntry<string>(new Term(1), "a")], LogIndex.First));
         Assert.IsTrue(stalePrefix.Success);
         Assert.HasCount(2, stable.Log);
         Assert.AreEqual("b", stable.Log[1].Command);
@@ -334,17 +440,17 @@ internal sealed class RaftNodeTests
 
         //A node advanced to term 5 must reject lower-term AppendEntries and RequestVote, reporting term 5.
         RaftNode<string> advanced = new(N1, members);
-        advanced.HandleRequestVote(new RequestVoteRequest(5, N2, 0, 0));
-        Assert.AreEqual(5, advanced.CurrentTerm);
+        advanced.HandleRequestVote(new RequestVoteRequest(new Term(5), N2, LogIndex.BeforeFirst, Term.Zero));
+        Assert.AreEqual(new Term(5), advanced.CurrentTerm);
 
         AppendEntriesReply staleAppend = advanced.HandleAppendEntries(new AppendEntriesRequest<string>(
-            4, N2, 0, 0, [], 0));
+            new Term(4), N2, LogIndex.BeforeFirst, Term.Zero, [], LogIndex.BeforeFirst));
         Assert.IsFalse(staleAppend.Success);
-        Assert.AreEqual(5, staleAppend.Term);
+        Assert.AreEqual(new Term(5), staleAppend.Term);
 
-        RequestVoteReply staleVote = advanced.HandleRequestVote(new RequestVoteRequest(4, N3, 0, 0));
+        RequestVoteReply staleVote = advanced.HandleRequestVote(new RequestVoteRequest(new Term(4), N3, LogIndex.BeforeFirst, Term.Zero));
         Assert.IsFalse(staleVote.VoteGranted);
-        Assert.AreEqual(5, staleVote.Term);
+        Assert.AreEqual(new Term(5), staleVote.Term);
 
         //A leader that hears a higher term in a reply must step down to follower and adopt that term.
         RaftNode<string> leader = new(N1, members);
@@ -353,8 +459,8 @@ internal sealed class RaftNodeTests
         ElectLeader(leader, peerB, peerC);
         Assert.AreEqual(RaftRole.Leader, leader.Role);
 
-        long higher = leader.CurrentTerm + 7;
-        leader.ReceiveAppendEntriesReply(N2, new AppendEntriesReply(higher, false, 0));
+        Term higher = new(leader.CurrentTerm.Value + 7);
+        leader.ReceiveAppendEntriesReply(N2, new AppendEntriesReply(higher, false, LogIndex.BeforeFirst));
         Assert.AreEqual(RaftRole.Follower, leader.Role);
         Assert.AreEqual(higher, leader.CurrentTerm);
 
@@ -365,7 +471,7 @@ internal sealed class RaftNodeTests
         Assert.AreEqual(RaftRole.Candidate, candidate.Role);
 
         AppendEntriesReply yielded = candidate.HandleAppendEntries(new AppendEntriesRequest<string>(
-            campaign.Term, N1, 0, 0, [], 0));
+            campaign.Term, N1, LogIndex.BeforeFirst, Term.Zero, [], LogIndex.BeforeFirst));
         Assert.IsTrue(yielded.Success);
         Assert.AreEqual(RaftRole.Follower, candidate.Role);
         Assert.AreEqual(N1, candidate.LeaderId);
@@ -392,9 +498,9 @@ internal sealed class RaftNodeTests
         ReplicateRound(leader, follower2, follower3);
         ReplicateRound(leader, follower2, follower3);
 
-        Assert.AreEqual(3, leader.CommitIndex);
-        Assert.AreEqual(3, follower2.CommitIndex);
-        Assert.AreEqual(3, follower3.CommitIndex);
+        Assert.AreEqual(new LogIndex(3), leader.CommitIndex);
+        Assert.AreEqual(new LogIndex(3), follower2.CommitIndex);
+        Assert.AreEqual(new LogIndex(3), follower3.CommitIndex);
 
         //The committed prefix of every replica must be the identical command sequence.
         List<string> leaderApplied = CommittedCommands(leader);
@@ -438,8 +544,10 @@ internal sealed class RaftNodeTests
 
     //--- Helpers --------------------------------------------------------------------------------------------
 
-    //Runs one full election: the leader campaigns and every listed peer that grants its vote is counted,
-    //which (for a clean cluster) carries the candidate to a majority and the leader role.
+    /// <summary>
+    /// Runs one full election: the leader campaigns and every listed peer that grants its vote is counted,
+    /// which (for a clean cluster) carries the candidate to a majority and the leader role.
+    /// </summary>
     private static void ElectLeader(RaftNode<string> leader, params RaftNode<string>[] peers)
     {
         RequestVoteRequest request = leader.StartElection();
@@ -451,8 +559,10 @@ internal sealed class RaftNodeTests
     }
 
 
-    //One replication round: the leader sends each follower its tailored AppendEntries and folds the reply
-    //back so nextIndex/matchIndex and the leader's CommitIndex advance.
+    /// <summary>
+    /// One replication round: the leader sends each follower its tailored AppendEntries and folds the reply
+    /// back so nextIndex/matchIndex and the leader's CommitIndex advance.
+    /// </summary>
     private static void ReplicateRound(RaftNode<string> leader, params RaftNode<string>[] followers)
     {
         foreach(RaftNode<string> follower in followers)
@@ -464,8 +574,13 @@ internal sealed class RaftNodeTests
     }
 
 
-    //Repeatedly sends AppendEntries to one follower until it accepts, draining any nextIndex back-off the
-    //leader needs to find the follower's matching prefix. Bounded to keep a buggy node from looping forever.
+    /// <summary>
+    /// Repeatedly sends AppendEntries to one follower until it accepts, draining any nextIndex back-off the
+    /// leader needs to find the follower's matching prefix.
+    /// </summary>
+    /// <remarks>
+    /// Bounded to keep a buggy node from looping forever.
+    /// </remarks>
     private static void DeliverUntilCaughtUp(RaftNode<string> leader, RaftNode<string> follower, ReplicaId followerId)
     {
         for(int attempt = 0; attempt < 64; attempt++)
@@ -473,7 +588,7 @@ internal sealed class RaftNodeTests
             AppendEntriesRequest<string> request = leader.CreateAppendEntries(followerId);
             AppendEntriesReply reply = follower.HandleAppendEntries(request);
             leader.ReceiveAppendEntriesReply(followerId, reply);
-            if(reply.Success && reply.MatchIndex >= leader.Log.Count)
+            if(reply.Success && reply.MatchIndex >= new LogIndex(leader.Log.Count))
             {
                 return;
             }
@@ -499,9 +614,9 @@ internal sealed class RaftNodeTests
     private static List<string> CommittedCommands(RaftNode<string> node)
     {
         List<string> commands = [];
-        for(int i = 0; i < node.CommitIndex; i++)
+        for(LogIndex index = LogIndex.First; index <= node.CommitIndex; index = index.Next())
         {
-            commands.Add(node.Log[i].Command);
+            commands.Add(node.Log[index.Position].Command);
         }
 
         return commands;

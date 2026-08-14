@@ -16,10 +16,15 @@ namespace Lumoin.Verisync.Core;
 /// <typeparam name="TMessage">The message type.</typeparam>
 /// <remarks>
 /// <para>
-/// Enumeration ends when the pipe is completed by the writer or the token is signalled. A pipe that ends
-/// part-way through a frame is a protocol violation and throws, as is a frame whose declared length
-/// exceeds the configured maximum — the length prefix is attacker-controlled on an untrusted transport,
-/// so it is never trusted beyond that bound.
+/// Enumeration ends when the pipe is completed by the writer, when the token is signalled, or when
+/// <see cref="CancelPendingRead"/> cancels a read. The last is the consumer's own graceful stop: the canceled
+/// read itself yields nothing and ends the enumeration without the partial-frame check, because the consumer
+/// ended the stream rather than the peer. Frames already read from the pipe into the buffer in hand are still
+/// yielded until that buffer is exhausted, so the stop takes effect at the next read from the pipe; a consumer
+/// that must not observe further messages stops consuming rather than relying on the cancel. A pipe that ends
+/// part-way through a frame is a protocol
+/// violation and throws, as is a frame whose declared length exceeds the configured maximum — the length
+/// prefix is attacker-controlled on an untrusted transport, so it is never trusted beyond that bound.
 /// </para>
 /// <para>
 /// With a <see cref="FramePadding"/> policy, the outer prefix declares a padded bucket length and the frame
@@ -64,6 +69,13 @@ public sealed class MessageChannelReader<TMessage>
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>An async stream of deserialized messages.</returns>
+    /// <remarks>
+    /// The channel ends three ways: the writer completes the pipe, the token is signalled, or
+    /// <see cref="CancelPendingRead"/> cancels a read. The canceled read yields no message and ends the
+    /// enumeration without the partial-frame check, while frames already taken from the pipe into the buffer
+    /// in hand are yielded until that buffer is exhausted, so the stop takes effect at the next read from the
+    /// pipe.
+    /// </remarks>
     /// <exception cref="InvalidOperationException">Thrown if the channel ends part-way through a frame, or a frame declares a payload longer than the configured maximum.</exception>
     public async IAsyncEnumerable<TMessage> ReadAllAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -74,6 +86,13 @@ public sealed class MessageChannelReader<TMessage>
             while(true)
             {
                 ReadResult result = await Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                if(result.IsCanceled)
+                {
+                    Reader.AdvanceTo(result.Buffer.Start);
+
+                    break;
+                }
+
                 ReadOnlySequence<byte> buffer = result.Buffer;
 
                 while(FrameReader.TryReadFrame(ref buffer, MaxFrameLength, out ReadOnlySequence<byte> frame))
@@ -99,4 +118,13 @@ public sealed class MessageChannelReader<TMessage>
             await Reader.CompleteAsync().ConfigureAwait(false);
         }
     }
+
+
+    /// <summary>
+    /// Cancels the read in flight, or the next one, without completing the pipe. The enumeration then ends
+    /// gracefully: a pending MoveNextAsync completes false, so a consumer stopping mid-stream can observe the
+    /// end and dispose the enumerator. Callable from any thread, and tolerated after the enumeration has
+    /// already ended.
+    /// </summary>
+    public void CancelPendingRead() => Reader.CancelPendingRead();
 }

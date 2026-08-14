@@ -32,12 +32,16 @@ internal sealed class DottedReconciliationProjectionTests
 {
     private static ReconciliationContract ContentHashContract { get; } = ReconciliationContract.ContentHashDefault;
 
-    //The pinned canonical value frame is UTF-8 of the string; the dot alone still distinguishes two entries
-    //sharing a value, so the value bytes may even be empty.
+    /// <summary>
+    /// The pinned canonical value frame is UTF-8 of the string; the dot alone still distinguishes two entries
+    /// sharing a value, so the value bytes may even be empty.
+    /// </summary>
     private static CanonicalizeReconciliationValueDelegate<string> CanonicalizeUtf8 { get; } =
         static value => Encoding.UTF8.GetBytes(value);
 
-    //The production digest: SHA-256 of the frame, exactly 32 bytes, matching the content-hash contract width.
+    /// <summary>
+    /// The production digest: SHA-256 of the frame, exactly 32 bytes, matching the content-hash contract width.
+    /// </summary>
     private static ComputeDigestDelegate Sha256Digest { get; } =
         static frame => SHA256.HashData(frame.Span).AsMemory();
 
@@ -337,9 +341,11 @@ internal sealed class DottedReconciliationProjectionTests
     }
 
 
-    //Resolves the projection's item for the given dot and value by framing the same pinned layout the
-    //projection commits to — replica(32) || counterU64LE(8) || UTF-8 value — and SHA-256-ing it, then
-    //confirming the projection produced exactly that item and resolves it back to the matching entry.
+    /// <summary>
+    /// Resolves the projection's item for the given dot and value by framing the same pinned layout the
+    /// projection commits to — replica(32) || counterU64LE(8) || UTF-8 value — and SHA-256-ing it, then
+    /// confirming the projection produced exactly that item and resolves it back to the matching entry.
+    /// </summary>
     private static ReadOnlyMemory<byte> ItemFor(DottedReconciliationProjection<string> projection, ReplicaId replica, int counter, string value)
     {
         byte[] valueBytes = Encoding.UTF8.GetBytes(value);
@@ -358,7 +364,10 @@ internal sealed class DottedReconciliationProjectionTests
     }
 
 
-    //A content key for an entry independent of how the projection digests it: replica hex, counter, and value.
+    /// <summary>
+    /// A content key for an entry independent of how the projection digests it: replica hex, counter, and
+    /// value.
+    /// </summary>
     private static string EntryKey(DottedEntry<string> entry)
     {
         return $"{Convert.ToHexString(entry.Replica.AsSpan())}:{entry.Counter}:{entry.Value}";

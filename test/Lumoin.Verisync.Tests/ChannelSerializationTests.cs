@@ -86,6 +86,40 @@ internal sealed class ChannelSerializationTests
 
 
     [TestMethod]
+    public async Task ACanceledPendingReadEndsTheEnumerationOverALocalhostSocket()
+    {
+        //A consumer stopping mid-stream cancels its own pending read rather than completing the pipe. The
+        //parked MoveNextAsync then completes false within the bound, and only a call that has completed
+        //leaves an enumerator that disposes cleanly, which is what a teardown over a real socket rests on.
+        DeserializeMessageDelegate<SampleMessage> deserialize = JsonChannelSerialization.CreateDeserializer(SampleJsonContext.Default.SampleMessage);
+
+        using TcpListener listener = new(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        using TcpClient client = new();
+        Task<TcpClient> acceptTask = listener.AcceptTcpClientAsync(TestContext.CancellationToken).AsTask();
+        await client.ConnectAsync(IPAddress.Loopback, port, TestContext.CancellationToken).ConfigureAwait(false);
+        using TcpClient server = await acceptTask.ConfigureAwait(false);
+
+        MessageChannelReader<SampleMessage> reader = new(PipeReader.Create(server.GetStream()), deserialize);
+        IAsyncEnumerator<SampleMessage> messages = reader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+
+        //The peer sends nothing, so this call is still parked in the socket read when the cancel lands.
+        Task<bool> pending = messages.MoveNextAsync().AsTask();
+        Assert.IsFalse(pending.IsCompleted, "The read completed before the peer sent anything, so no read was in flight to cancel.");
+
+        reader.CancelPendingRead();
+
+        Assert.IsFalse(
+            await pending.WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false),
+            "A canceled read delivered a message instead of ending the enumeration.");
+
+        await messages.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+
+    [TestMethod]
     public void JsonDeserializerRejectsLiteralNullPayload()
     {
         //A channel message is never null. The JSON literal "null" deserializes to a null reference, which
@@ -149,6 +183,21 @@ internal sealed class ChannelSerializationTests
         byte[] truncatedArray = [0x82, 0x01];
 
         Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeCbor(truncatedArray));
+    }
+
+
+    [TestMethod]
+    public void CborDeserializerRejectsTrailingDataAsTheUniformException()
+    {
+        //Surplus bytes after a complete message are refused rather than ignored, matching the JSON side.
+        //Allowing them would let several distinct byte sequences decode to one message, which is the
+        //canonical-bytes assumption the deterministic conformance mode exists to hold. Frames carry their own
+        //length, so anything past the message is slack the sender chose to add.
+        byte[] message = [0x82, 0x01, 0x63, 0x6F, 0x6E, 0x65];
+        byte[] withTrailingByte = [.. message, 0x01];
+
+        Assert.AreEqual(new SampleMessage(1, "one"), DeserializeCbor(message));
+        Assert.ThrowsExactly<MessageDeserializationException>(() => DeserializeCbor(withTrailingByte));
     }
 
 

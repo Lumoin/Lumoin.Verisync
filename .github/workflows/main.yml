@@ -95,7 +95,7 @@ jobs:
     steps:
     - name: Harden Runner
       if: ${{ matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-24.04-arm' }}
-      uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920
+      uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40
       with:
         disable-sudo: true
         egress-policy: block
@@ -183,8 +183,34 @@ jobs:
             --no-build \
             --output nupkgs \
             --property:PackageVersion="${PACKAGE_VERSION%%+*}" \
+            --property:Version="${PACKAGE_VERSION%%+*}" \
             "$path"
         done
+
+    # The SBOM inside each package is regenerated at pack time, its root entry reads
+    # the Version property's own evaluation rather than the packed PackageVersion —
+    # which is why the pack stamps both — and packing over residual obj state
+    # accumulates stale self-referential entries. The release artifact is therefore
+    # asserted clean here: the root entry carries the packed version and no
+    # self-entry carries any other. A healthy pack still shows two self-entries,
+    # the root and the component detector's, so the count is not asserted.
+    - name: Verify packed SBOM versions
+      if: ${{ matrix.os == 'ubuntu-latest' && github.repository_owner == 'lumoin' }}
+      run: |
+        version="${PACKAGE_VERSION%%+*}"
+        for package in nupkgs/*.nupkg; do
+          name=$(basename "$package" ".$version.nupkg")
+          manifest=$(unzip -p "$package" '_manifest/spdx_2.2/manifest.spdx.json')
+          root=$(echo "$manifest" | jq -r '.packages[] | select(.SPDXID == "SPDXRef-RootPackage") | .versionInfo')
+          stale=$(echo "$manifest" | jq --arg name "$name" --arg version "$version" '[.packages[] | select(.name == $name and .versionInfo != $version)] | length')
+          if [ "$root" != "$version" ] || [ "$stale" -ne 0 ]; then
+            echo "::error::$package SBOM root is at ${root:-<absent>} with $stale stale self-entries; expected $version throughout."
+            echo "$manifest" | jq -r --arg name "$name" '.packages[] | select(.name == $name) | "\(.SPDXID) \(.versionInfo)"'
+            exit 1
+          fi
+          echo "$package SBOM self-entries are all at $version."
+        done
+      shell: bash
 
     # Sigstore artifact attestation needs the public-good Fulcio/Rekor transparency
     # log, unavailable while the repository is private — the step errors with the
@@ -215,7 +241,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40
         with:
           disable-sudo: true
           egress-policy: block
@@ -248,7 +274,7 @@ jobs:
     environment: Release
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40
         with:
           disable-sudo: true
           egress-policy: block

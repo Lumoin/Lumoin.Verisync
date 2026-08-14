@@ -31,6 +31,16 @@ namespace Lumoin.Verisync.Core;
 /// frame whose declared length exceeds the configured maximum, and a configured
 /// <see cref="FramePadding"/> policy must match the writing peer's.
 /// </para>
+/// <para>
+/// Enumeration ends when the pipe is completed by the writer, when the token is signalled, or when
+/// <see cref="CancelPendingRead"/> cancels a read. The last is the consumer's own graceful stop: the canceled
+/// read itself yields nothing and ends the enumeration without the partial-frame check, because the consumer
+/// ended the stream rather than the peer. Frames already read from the pipe into the buffer in hand are still
+/// yielded until that buffer is exhausted, so the stop takes effect at the next read from the pipe; a consumer
+/// that must not observe further values stops consuming rather than relying on the cancel. The canceled read
+/// rents nothing, since an owned value rents its memory at deserialization and that read reaches no frame; a
+/// value yielded from the buffer in hand is released by the consumer as every other value is.
+/// </para>
 /// </remarks>
 public sealed class OwnedMessageChannelReader<TMessage>
 {
@@ -72,6 +82,13 @@ public sealed class OwnedMessageChannelReader<TMessage>
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>An async stream of owned, deserialized messages.</returns>
+    /// <remarks>
+    /// The channel ends three ways: the writer completes the pipe, the token is signalled, or
+    /// <see cref="CancelPendingRead"/> cancels a read. The canceled read yields no value and ends the
+    /// enumeration without the partial-frame check, while frames already taken from the pipe into the buffer
+    /// in hand are yielded until that buffer is exhausted, so the stop takes effect at the next read from the
+    /// pipe.
+    /// </remarks>
     /// <exception cref="InvalidOperationException">Thrown if the channel ends part-way through a frame, or a frame declares a payload longer than the configured maximum.</exception>
     public async IAsyncEnumerable<TMessage> ReadAllAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -82,6 +99,13 @@ public sealed class OwnedMessageChannelReader<TMessage>
             while(true)
             {
                 ReadResult result = await Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                if(result.IsCanceled)
+                {
+                    Reader.AdvanceTo(result.Buffer.Start);
+
+                    break;
+                }
+
                 ReadOnlySequence<byte> buffer = result.Buffer;
 
                 while(FrameReader.TryReadFrame(ref buffer, MaxFrameLength, out ReadOnlySequence<byte> frame))
@@ -109,4 +133,13 @@ public sealed class OwnedMessageChannelReader<TMessage>
             await Reader.CompleteAsync().ConfigureAwait(false);
         }
     }
+
+
+    /// <summary>
+    /// Cancels the read in flight, or the next one, without completing the pipe. The enumeration then ends
+    /// gracefully: a pending MoveNextAsync completes false, so a consumer stopping mid-stream can observe the
+    /// end and dispose the enumerator. Callable from any thread, and tolerated after the enumeration has
+    /// already ended.
+    /// </summary>
+    public void CancelPendingRead() => Reader.CancelPendingRead();
 }

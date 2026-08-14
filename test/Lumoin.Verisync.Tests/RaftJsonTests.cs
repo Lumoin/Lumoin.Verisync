@@ -24,7 +24,7 @@ internal sealed class RaftJsonTests
     public void VoteRequestEnvelopeRoundTrips()
     {
         //A candidate's vote solicitation survives the wire with its term and log shape intact.
-        RaftEnvelope<int> envelope = RaftEnvelope<int>.ForVoteRequest(N1, new RequestVoteRequest(3, N1, 2, 1));
+        RaftEnvelope<int> envelope = RaftEnvelope<int>.ForVoteRequest(N1, new RequestVoteRequest(new Term(3), N1, new LogIndex(2), Term.First));
 
         RaftEnvelope<int> back = RoundTripEnvelope(envelope);
 
@@ -40,7 +40,7 @@ internal sealed class RaftJsonTests
     public void VoteReplyEnvelopeRoundTrips()
     {
         //A granted vote reply carries the voter's term and the grant bit across the wire.
-        RaftEnvelope<int> envelope = RaftEnvelope<int>.ForVoteReply(N2, new RequestVoteReply(3, true));
+        RaftEnvelope<int> envelope = RaftEnvelope<int>.ForVoteReply(N2, new RequestVoteReply(new Term(3), true));
 
         RaftEnvelope<int> back = RoundTripEnvelope(envelope);
 
@@ -54,7 +54,7 @@ internal sealed class RaftJsonTests
     {
         //A non-heartbeat append with entries round-trips, including each entry's term and command value.
         AppendEntriesRequest<int> request = new(
-            5, N1, 1, 2, [new RaftLogEntry<int>(4, 41), new RaftLogEntry<int>(5, 42)], 1);
+            new Term(5), N1, LogIndex.First, new Term(2), [new RaftLogEntry<int>(new Term(4), 41), new RaftLogEntry<int>(new Term(5), 42)], LogIndex.First);
         RaftEnvelope<int> envelope = RaftEnvelope<int>.ForAppendRequest(N1, request);
 
         RaftEnvelope<int> back = RoundTripEnvelope(envelope);
@@ -76,7 +76,7 @@ internal sealed class RaftJsonTests
     public void AppendRequestEnvelopeAsHeartbeatRoundTrips()
     {
         //An empty-entries heartbeat is the degenerate append; the empty array must survive intact.
-        AppendEntriesRequest<int> heartbeat = new(5, N1, 0, 0, [], 0);
+        AppendEntriesRequest<int> heartbeat = new(new Term(5), N1, LogIndex.BeforeFirst, Term.Zero, [], LogIndex.BeforeFirst);
         RaftEnvelope<int> envelope = RaftEnvelope<int>.ForAppendRequest(N1, heartbeat);
 
         RaftEnvelope<int> back = RoundTripEnvelope(envelope);
@@ -95,7 +95,7 @@ internal sealed class RaftJsonTests
     public void AppendReplyEnvelopeRoundTrips()
     {
         //A successful append reply carries the follower's term, success bit, and resulting match index.
-        RaftEnvelope<int> envelope = RaftEnvelope<int>.ForAppendReply(N2, new AppendEntriesReply(5, true, 3));
+        RaftEnvelope<int> envelope = RaftEnvelope<int>.ForAppendReply(N2, new AppendEntriesReply(new Term(5), true, new LogIndex(3)));
 
         RaftEnvelope<int> back = RoundTripEnvelope(envelope);
 
@@ -108,7 +108,7 @@ internal sealed class RaftJsonTests
     public void NodeStateRoundTripsWithVoteAndLog()
     {
         //The durable triple round-trips: the term, a cast vote (hex), and the log of int commands.
-        RaftNodeState<int> state = new(4, [.. N1.AsSpan()], [new RaftLogEntry<int>(2, 7), new RaftLogEntry<int>(4, 9)]);
+        RaftNodeState<int> state = new(new Term(4), [.. N1.AsSpan()], [new RaftLogEntry<int>(new Term(2), 7), new RaftLogEntry<int>(new Term(4), 9)]);
 
         RaftNodeState<int> back = RoundTripState(state);
 
@@ -123,13 +123,13 @@ internal sealed class RaftJsonTests
     public void NodeStateWithNoVoteRoundTripsAsAnEmptyVotedFor()
     {
         //An absent vote is written as a null votedFor and reads back as the empty "no vote" encoding.
-        RaftNodeState<int> state = new(0, [], []);
+        RaftNodeState<int> state = new(Term.Zero, [], []);
 
         RaftNodeState<int> back = RoundTripState(state);
 
         Assert.HasCount(0, back.VotedFor);
         Assert.HasCount(0, back.Log);
-        Assert.AreEqual(0, back.CurrentTerm);
+        Assert.AreEqual(Term.Zero, back.CurrentTerm);
     }
 
 
@@ -176,10 +176,29 @@ internal sealed class RaftJsonTests
     [TestMethod]
     public void ZeroLogEntryTermIsRejected()
     {
-        //A real log entry's term is at least one; term zero is the empty-prefix sentinel, never an entry.
+        //A real log entry's term is at least one; term zero is the term a node holds before any election. The
+        //codec carries no rule of its own here, so this pins that RaftLogEntry's own validator runs on the
+        //decode path and reaches a reader as the uniform failure.
         string json = """{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"appendRequest","payload":{"term":2,"leaderId":"0100000000000000000000000000000000000000000000000000000000000000","prevLogIndex":0,"prevLogTerm":0,"entries":[{"term":0,"command":1}],"leaderCommit":0}}""";
 
         Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope(json));
+    }
+
+
+    [TestMethod]
+    public void ATermAboveTheExactlyRepresentableRangeIsRejected()
+    {
+        //Two to the fifty-third and above cannot survive a double-parsing consumer intact, and a term that
+        //two readers disagree about is one a comparison rule reads differently at either end of the wire.
+        string json = """{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"voteReply","payload":{"term":9007199254740992,"voteGranted":true}}""";
+
+        Assert.Throws<MessageDeserializationException>(() => DeserializeEnvelope(json));
+
+        //One below the bound is legal and decodes, so the refusal above is the cap and not a width limit the
+        //accessor imposes.
+        string atBound = """{"from":"0100000000000000000000000000000000000000000000000000000000000000","type":"voteReply","payload":{"term":9007199254740991,"voteGranted":true}}""";
+
+        Assert.AreEqual(Term.MaxValue, DeserializeEnvelope(atBound).VoteReply!.Term);
     }
 
 
@@ -209,10 +228,10 @@ internal sealed class RaftJsonTests
     {
         //Two payloads is unrepresentable on the wire, so the invariant is asserted at construction: every
         //factory yields an envelope with exactly one non-null payload and the others null.
-        RaftEnvelope<int> voteRequest = RaftEnvelope<int>.ForVoteRequest(N1, new RequestVoteRequest(1, N1, 0, 0));
-        RaftEnvelope<int> voteReply = RaftEnvelope<int>.ForVoteReply(N1, new RequestVoteReply(1, true));
-        RaftEnvelope<int> appendRequest = RaftEnvelope<int>.ForAppendRequest(N1, new AppendEntriesRequest<int>(1, N1, 0, 0, [], 0));
-        RaftEnvelope<int> appendReply = RaftEnvelope<int>.ForAppendReply(N1, new AppendEntriesReply(1, true, 0));
+        RaftEnvelope<int> voteRequest = RaftEnvelope<int>.ForVoteRequest(N1, new RequestVoteRequest(Term.First, N1, LogIndex.BeforeFirst, Term.Zero));
+        RaftEnvelope<int> voteReply = RaftEnvelope<int>.ForVoteReply(N1, new RequestVoteReply(Term.First, true));
+        RaftEnvelope<int> appendRequest = RaftEnvelope<int>.ForAppendRequest(N1, new AppendEntriesRequest<int>(Term.First, N1, LogIndex.BeforeFirst, Term.Zero, [], LogIndex.BeforeFirst));
+        RaftEnvelope<int> appendReply = RaftEnvelope<int>.ForAppendReply(N1, new AppendEntriesReply(Term.First, true, LogIndex.BeforeFirst));
 
         AssertExactlyOnePayload(voteRequest);
         AssertExactlyOnePayload(voteReply);
@@ -226,7 +245,7 @@ internal sealed class RaftJsonTests
     {
         //A hand-built envelope that violates the single-payload invariant has no legal wire shape; the codec
         //refuses it rather than emit an ambiguous frame.
-        RaftEnvelope<int> malformed = new(N1, new RequestVoteRequest(1, N1, 0, 0), new RequestVoteReply(1, true), null, null);
+        RaftEnvelope<int> malformed = new(N1, new RequestVoteRequest(Term.First, N1, LogIndex.BeforeFirst, Term.Zero), new RequestVoteReply(Term.First, true), null, null);
 
         SerializeMessageDelegate<RaftEnvelope<int>> serialize = RaftJson.CreateEnvelopeSerializer<int>((writer, value) => writer.WriteNumberValue(value));
 

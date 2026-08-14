@@ -367,11 +367,15 @@ internal sealed class ReconciliationMemoryAccountabilityTests
     }
 
 
-    //Builds a deterministic, distinct item of the given width without System.Random (CA5394). The group tag in
-    //the leading byte separates the shared, left-only, and right-only corpora, and the little-endian index in
-    //the following bytes makes every item within a group distinct across the few-hundred-item range; the
-    //remaining stride carries a position-derived tail. Distinct (group, index) pairs therefore yield distinct
-    //full-width items, so no enforcement is needed to keep them apart.
+    /// <summary>
+    /// Builds a deterministic, distinct item of the given width without System.Random (CA5394).
+    /// </summary>
+    /// <remarks>
+    /// The group tag in the leading byte separates the shared, left-only, and right-only corpora, and the
+    /// little-endian index in the following bytes makes every item within a group distinct across the
+    /// few-hundred-item range; the remaining stride carries a position-derived tail. Distinct (group, index)
+    /// pairs therefore yield distinct full-width items, so no enforcement is needed to keep them apart.
+    /// </remarks>
     private static byte[] BuildArenaItem(int stride, int group, int index)
     {
         byte[] item = new byte[stride];

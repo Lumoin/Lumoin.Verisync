@@ -29,8 +29,10 @@ internal sealed class WalkVersionDivergenceProbe
 {
     private static ReconciliationContract Contract { get; } = ReconciliationContract.ContentHashDefault;
 
-    //The real walk key, reused unchanged by the forked walk: the finding's scenario is a peer that shares the
-    //checksum key and the walk key but differs only in the gap constant.
+    /// <summary>
+    /// The real walk key, reused unchanged by the forked walk: the finding's scenario is a peer that shares the
+    /// checksum key and the walk key but differs only in the gap constant.
+    /// </summary>
     private const ulong WalkKeyLow = 0x636E797369726576UL;
     private const ulong WalkKeyHigh = 0x31302D6B6C61772DUL;
 

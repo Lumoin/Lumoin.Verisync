@@ -43,6 +43,7 @@ internal sealed class CasPaxosRegisterTests
 
         Assert.IsTrue(outcome.IsChosen);
         Assert.AreEqual("a", outcome.Value);
+        Assert.AreEqual(3, outcome.AcceptedCount);
     }
 
 

@@ -41,10 +41,15 @@ internal sealed class RentalAccountant: IDisposable
 
     public long Returned => Interlocked.Read(ref returned);
 
-    //The pool emits a +1 rent counter and a +1 return counter per operation; the active-rentals it also exposes
-    //is a pull-gauge the pool force-zeroes on its own disposal, so it cannot witness a leak after the scope. The
-    //emitted rent and return counters can: their difference is the net still-outstanding rentals, which must be
-    //zero once every owner and the pool are disposed.
+    /// <summary>
+    /// The pool emits a +1 rent counter and a +1 return counter per operation; the active-rentals it also
+    /// exposes is a pull-gauge the pool force-zeroes on its own disposal, so it cannot witness a leak after the
+    /// scope.
+    /// </summary>
+    /// <remarks>
+    /// The emitted rent and return counters can: their difference is the net still-outstanding rentals, which
+    /// must be zero once every owner and the pool are disposed.
+    /// </remarks>
     public long NetActive => Rented - Returned;
 
 

@@ -67,7 +67,10 @@ public sealed class FastProposer<TValue>
     /// preceding accept that piggybacked it as its <paramref name="next"/> ballot. Piggybacking a next fast
     /// ballot is a liveness optimization: a subsequent <see cref="TryFastWriteAsync"/> at that ballot succeeds
     /// on the acceptors that saw the raise, but safety never depends on how many did — an acceptor that missed
-    /// the piggyback simply rejects the next fast write, which then falls back to recovery.
+    /// the piggyback simply rejects the next fast write, which then falls back to recovery. Supply
+    /// <paramref name="next"/> only when this accept can reach at least <see cref="FastQuorum"/> acceptors: a
+    /// round armed on fewer is one no fast quorum can complete, so the write that follows it always falls
+    /// back. The returned accepted count is the breadth to apply that rule against.
     /// </remarks>
     public async Task<(int AcceptedCount, bool IsCommitted)> TryFastWriteAsync(FastBallot fastBallot, TValue value, CancellationToken cancellationToken, FastBallot? next = null)
     {
@@ -102,10 +105,20 @@ public sealed class FastProposer<TValue>
     /// <exception cref="ArgumentException">Thrown if <paramref name="classicBallot"/> is a fast ballot.</exception>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="update"/> is <see langword="null"/>.</exception>
     /// <remarks>
+    /// <para>
     /// Piggybacking a next fast ballot is a liveness optimization: a subsequent <see cref="TryFastWriteAsync"/>
     /// at that ballot succeeds on the acceptors that saw the raise, but safety never depends on how many did.
+    /// </para>
+    /// <para>
+    /// The arming rule for that piggyback is to supply <paramref name="next"/> only when the accept carrying
+    /// it can reach at least <see cref="FastQuorum"/> acceptors. An accept that lands on fewer arms a fast
+    /// round no quorum can complete, so the following fast write is a wasted round trip that always falls
+    /// back to recovery. <see cref="ChangeOutcome{TValue}.AcceptedCount"/> reports the breadth actually
+    /// reached, which is the signal for the rule on the next attempt; omitting <paramref name="next"/> keeps
+    /// the register in classic mode and is the conservative default.
+    /// </para>
     /// </remarks>
-    public async Task<ChangeOutcome<TValue>> RecoverAsync(FastBallot classicBallot, Func<TValue?, TValue> update, CancellationToken cancellationToken, FastBallot? next = null)
+    public async Task<ChangeOutcome<TValue>> RecoverAsync(FastBallot classicBallot, ChangeRegisterValueDelegate<TValue> update, CancellationToken cancellationToken, FastBallot? next = null)
     {
         if(classicBallot.IsFast)
         {
@@ -136,7 +149,7 @@ public sealed class FastProposer<TValue>
 
         if(promises < ClassicQuorum)
         {
-            return new ChangeOutcome<TValue>(false, default);
+            return new ChangeOutcome<TValue>(false, default, 0);
         }
 
         if(!highestAccepted.IsZero && highestAccepted.IsFast)
@@ -150,8 +163,8 @@ public sealed class FastProposer<TValue>
         int accepts = CountAccepts(acceptReplies);
 
         return accepts >= ClassicQuorum
-            ? new ChangeOutcome<TValue>(true, newValue)
-            : new ChangeOutcome<TValue>(false, default);
+            ? new ChangeOutcome<TValue>(true, newValue, accepts)
+            : new ChangeOutcome<TValue>(false, default, accepts);
     }
 
 

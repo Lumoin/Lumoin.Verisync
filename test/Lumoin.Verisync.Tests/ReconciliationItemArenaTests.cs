@@ -238,8 +238,10 @@ internal sealed class ReconciliationItemArenaTests
     }
 
 
-    //Builds a deterministic, index-derived item of the given width without System.Random (CA5394): a simple
-    //index-and-position pattern that is distinct per index and fills the whole stride.
+    /// <summary>
+    /// Builds a deterministic, index-derived item of the given width without System.Random (CA5394): a simple
+    /// index-and-position pattern that is distinct per index and fills the whole stride.
+    /// </summary>
     private static byte[] BuildItem(int stride, int index)
     {
         byte[] item = new byte[stride];

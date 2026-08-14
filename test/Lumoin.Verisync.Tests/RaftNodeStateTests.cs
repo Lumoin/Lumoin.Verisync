@@ -56,7 +56,7 @@ internal sealed class RaftNodeStateTests
         Assert.AreSequenceEqual(snapshot.VotedFor.ToArray(), restoredState.VotedFor.ToArray());
         Assert.HasCount(snapshot.Log.Length, restoredState.Log);
         Assert.AreEqual(RaftRole.Follower, restored.Role);
-        Assert.AreEqual(0, restored.CommitIndex);
+        Assert.AreEqual(LogIndex.BeforeFirst, restored.CommitIndex);
         Assert.IsNull(restored.LeaderId);
         Assert.AreSequenceEqual(Members.ToArray(), restored.Members.ToArray());
     }
@@ -66,22 +66,21 @@ internal sealed class RaftNodeStateTests
     public void FromStateAcceptsAnEmptyVotedForAsNoVote()
     {
         //An empty VotedFor is the documented "no vote yet" encoding, the LwwRegisterState.Writer precedent.
-        RaftNodeState<string> state = new(2, [], [new RaftLogEntry<string>(1, "x")]);
+        RaftNodeState<string> state = new(new Term(2), [], [new RaftLogEntry<string>(Term.First, "x")]);
 
         RaftNode<string> restored = RaftNode<string>.FromState(N1, Members, state);
 
         Assert.IsNull(restored.VotedFor);
-        Assert.AreEqual(2, restored.CurrentTerm);
+        Assert.AreEqual(new Term(2), restored.CurrentTerm);
     }
 
 
     [TestMethod]
-    public void FromStateRejectsANegativeCurrentTerm()
+    public void ADurableTripleCannotExpressANegativeCurrentTerm()
     {
-        //A term below zero is impossible: StartElection only ever increments from zero.
-        RaftNodeState<string> state = new(-1, [], []);
-
-        Assert.ThrowsExactly<ArgumentException>(() => RaftNode<string>.FromState(N1, Members, state));
+        //A term below zero is impossible: StartElection only ever increments from zero. The rejection belongs
+        //to the type rather than to FromState, so the state cannot be built to be refused.
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = new RaftNodeState<string>(new Term(-1), [], []));
     }
 
 
@@ -90,7 +89,7 @@ internal sealed class RaftNodeStateTests
     {
         //VotedFor must be either empty (no vote) or exactly one replica id wide; a stray short byte string is
         //neither.
-        RaftNodeState<string> state = new(1, [0x01, 0x02], []);
+        RaftNodeState<string> state = new(Term.First, [0x01, 0x02], []);
 
         Assert.ThrowsExactly<ArgumentException>(() => RaftNode<string>.FromState(N1, Members, state));
     }
@@ -101,19 +100,21 @@ internal sealed class RaftNodeStateTests
     {
         //A vote can only ever be cast for a cluster member; a non-member vote could only come from corruption.
         ReplicaId outsider = Replica(9);
-        RaftNodeState<string> state = new(1, [.. outsider.AsSpan()], []);
+        RaftNodeState<string> state = new(Term.First, [.. outsider.AsSpan()], []);
 
         Assert.ThrowsExactly<ArgumentException>(() => RaftNode<string>.FromState(N1, Members, state));
     }
 
 
     [TestMethod]
-    public void FromStateRejectsALogEntryTermBelowOne()
+    public void ALogEntryCannotExpressATermBelowOne()
     {
-        //Entry terms start at one; term zero is the empty-prefix sentinel and never tags a real entry.
-        RaftNodeState<string> state = new(1, [], [new RaftLogEntry<string>(0, "x")]);
+        //Entry terms start at one, because only an elected leader creates an entry and term zero is the term
+        //a node holds before any election. The rejection belongs to the entry rather than to FromState, so no
+        //log carrying one can be assembled to be refused.
+        ArgumentOutOfRangeException thrown = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = new RaftLogEntry<string>(Term.Zero, "x"));
 
-        Assert.ThrowsExactly<ArgumentException>(() => RaftNode<string>.FromState(N1, Members, state));
+        Assert.AreEqual("Term", thrown.ParamName);
     }
 
 
@@ -121,7 +122,7 @@ internal sealed class RaftNodeStateTests
     public void FromStateRejectsDecreasingLogTerms()
     {
         //Log terms are non-decreasing by construction; a drop means the log was reordered or forged.
-        RaftNodeState<string> state = new(3, [], [new RaftLogEntry<string>(2, "a"), new RaftLogEntry<string>(1, "b")]);
+        RaftNodeState<string> state = new(new Term(3), [], [new RaftLogEntry<string>(new Term(2), "a"), new RaftLogEntry<string>(Term.First, "b")]);
 
         Assert.ThrowsExactly<ArgumentException>(() => RaftNode<string>.FromState(N1, Members, state));
     }
@@ -131,7 +132,7 @@ internal sealed class RaftNodeStateTests
     public void FromStateRejectsALastLogTermAboveTheCurrentTerm()
     {
         //No entry can be tagged with a term the node has never reached; CurrentTerm bounds every entry term.
-        RaftNodeState<string> state = new(1, [], [new RaftLogEntry<string>(2, "a")]);
+        RaftNodeState<string> state = new(Term.First, [], [new RaftLogEntry<string>(new Term(2), "a")]);
 
         Assert.ThrowsExactly<ArgumentException>(() => RaftNode<string>.FromState(N1, Members, state));
     }

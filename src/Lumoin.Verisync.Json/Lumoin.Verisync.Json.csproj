@@ -2,7 +2,10 @@
 
   <PropertyGroup>
     <RootNamespace>Lumoin.Verisync.Json</RootNamespace>
-    <Description>System.Text.Json serialization adapters for Lumoin.Verisync message channels. AOT-safe via source-generated JsonTypeInfo.</Description>
+    <!-- The XML documentation ships with the package, and generating it makes the compiler validate every
+         doc comment, param tag and cref on every build. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Description>System.Text.Json serialization adapters for Lumoin.Verisync message channels and the QuePaxa consensus wire messages. AOT-safe; channel records use source-generated JsonTypeInfo.</Description>
     <!-- This project implements serialization, so it opts out of the serialization banlist. -->
     <EnableSerializationBan>false</EnableSerializationBan>
   </PropertyGroup>

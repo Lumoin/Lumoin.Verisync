@@ -43,11 +43,11 @@ internal sealed class RaftRunnerTests
         await using ConfiguredAsyncDisposable cleanup = runner.ConfigureAwait(false);
 
         await runner.TriggerElectionAsync().ConfigureAwait(false);
-        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteReply(N2, new RequestVoteReply(1, true))).ConfigureAwait(false);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteReply(N2, new RequestVoteReply(Term.First, true))).ConfigureAwait(false);
         await runner.DrainAsync().ConfigureAwait(false);
 
         Assert.AreEqual(RaftRole.Leader, runner.Node.Role);
-        Assert.AreEqual(1, runner.Node.CurrentTerm);
+        Assert.AreEqual(Term.First, runner.Node.CurrentTerm);
         Assert.IsGreaterThan(0L, runner.SendCount);
     }
 
@@ -62,20 +62,20 @@ internal sealed class RaftRunnerTests
         await using ConfiguredAsyncDisposable cleanup = runner.ConfigureAwait(false);
 
         await runner.TriggerElectionAsync().ConfigureAwait(false);
-        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteReply(N2, new RequestVoteReply(1, true))).ConfigureAwait(false);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteReply(N2, new RequestVoteReply(Term.First, true))).ConfigureAwait(false);
 
-        Task<long> first = runner.ProposeAsync("alpha");
-        Task<long> second = runner.ProposeAsync("beta");
-        Task<long> third = runner.ProposeAsync("gamma");
+        Task<LogIndex> first = runner.ProposeAsync("alpha");
+        Task<LogIndex> second = runner.ProposeAsync("beta");
+        Task<LogIndex> third = runner.ProposeAsync("gamma");
 
-        await runner.SubmitAsync(RaftEnvelope<string>.ForAppendReply(N2, new AppendEntriesReply(1, true, 3))).ConfigureAwait(false);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForAppendReply(N2, new AppendEntriesReply(Term.First, true, new LogIndex(3)))).ConfigureAwait(false);
         await runner.DrainAsync().ConfigureAwait(false);
 
-        Assert.AreEqual(1, await first.ConfigureAwait(false));
-        Assert.AreEqual(2, await second.ConfigureAwait(false));
-        Assert.AreEqual(3, await third.ConfigureAwait(false));
+        Assert.AreEqual(LogIndex.First, await first.ConfigureAwait(false));
+        Assert.AreEqual(new LogIndex(2), await second.ConfigureAwait(false));
+        Assert.AreEqual(new LogIndex(3), await third.ConfigureAwait(false));
 
-        (long Index, string Command)[] expected = [(1, "alpha"), (2, "beta"), (3, "gamma")];
+        (LogIndex Index, string Command)[] expected = [(LogIndex.First, "alpha"), (new LogIndex(2), "beta"), (new LogIndex(3), "gamma")];
         Assert.AreSequenceEqual(expected, runner.Applied.ToArray());
     }
 
@@ -89,8 +89,8 @@ internal sealed class RaftRunnerTests
         Runner runner = new(new RaftNode<string>(N2, Members), TestContext.CancellationToken);
         await using ConfiguredAsyncDisposable cleanup = runner.ConfigureAwait(false);
 
-        Task<long> first = runner.ProposeAsync("nope");
-        Task<long> second = runner.ProposeAsync("still-nope");
+        Task<LogIndex> first = runner.ProposeAsync("nope");
+        Task<LogIndex> second = runner.ProposeAsync("still-nope");
 
         await runner.DrainAsync().ConfigureAwait(false);
 
@@ -110,7 +110,7 @@ internal sealed class RaftRunnerTests
         await using ConfiguredAsyncDisposable cleanup = runner.ConfigureAwait(false);
 
         await runner.TriggerElectionAsync().ConfigureAwait(false);
-        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteReply(N2, new RequestVoteReply(1, true))).ConfigureAwait(false);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteReply(N2, new RequestVoteReply(Term.First, true))).ConfigureAwait(false);
         await runner.DrainAsync().ConfigureAwait(false);
 
         string[] events = runner.Events.ToArray();
@@ -131,18 +131,18 @@ internal sealed class RaftRunnerTests
         await using ConfiguredAsyncDisposable cleanup = runner.ConfigureAwait(false);
 
         await runner.TriggerElectionAsync().ConfigureAwait(false);
-        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteReply(N2, new RequestVoteReply(1, true))).ConfigureAwait(false);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteReply(N2, new RequestVoteReply(Term.First, true))).ConfigureAwait(false);
 
         for(int i = 0; i < 5; i++)
         {
             _ = runner.ProposeAsync($"cmd-{i}");
         }
 
-        await runner.SubmitAsync(RaftEnvelope<string>.ForAppendReply(N2, new AppendEntriesReply(1, true, 5))).ConfigureAwait(false);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForAppendReply(N2, new AppendEntriesReply(Term.First, true, new LogIndex(5)))).ConfigureAwait(false);
         await runner.DrainAsync().ConfigureAwait(false);
 
-        long[] indices = runner.Applied.Select(entry => entry.Index).ToArray();
-        long[] expected = [1, 2, 3, 4, 5];
+        LogIndex[] indices = runner.Applied.Select(entry => entry.Index).ToArray();
+        LogIndex[] expected = [LogIndex.First, new(2), new(3), new(4), new(5)];
         Assert.AreSequenceEqual(expected, indices);
     }
 
@@ -153,8 +153,8 @@ internal sealed class RaftRunnerTests
         //A follower restarted from its last persisted state (a fresh node via FromState behind a fresh runner)
         //rejoins, and a heartbeat catches it up so it reapplies the committed content. Apply is at-least-once
         //across restart, so convergence of the applied content is the assertion.
-        var entries = ImmutableArray.Create(new RaftLogEntry<string>(1, "one"), new RaftLogEntry<string>(1, "two"));
-        (long Index, string Command)[] expected = [(1, "one"), (2, "two")];
+        var entries = ImmutableArray.Create(new RaftLogEntry<string>(Term.First, "one"), new RaftLogEntry<string>(Term.First, "two"));
+        (LogIndex Index, string Command)[] expected = [(LogIndex.First, "one"), (new LogIndex(2), "two")];
         RaftNodeState<string> persisted;
 
         //First lifetime: the follower receives the two entries with a leader commit of two, applies them, and
@@ -163,7 +163,7 @@ internal sealed class RaftRunnerTests
             Runner original = new(new RaftNode<string>(N2, Members), TestContext.CancellationToken);
             await using ConfiguredAsyncDisposable cleanup = original.ConfigureAwait(false);
 
-            await original.SubmitAsync(RaftEnvelope<string>.ForAppendRequest(N1, new AppendEntriesRequest<string>(1, N1, 0, 0, entries, 2))).ConfigureAwait(false);
+            await original.SubmitAsync(RaftEnvelope<string>.ForAppendRequest(N1, new AppendEntriesRequest<string>(Term.First, N1, LogIndex.BeforeFirst, Term.Zero, entries, new LogIndex(2)))).ConfigureAwait(false);
             await original.DrainAsync().ConfigureAwait(false);
 
             Assert.AreSequenceEqual(expected, original.Applied.ToArray());
@@ -176,7 +176,7 @@ internal sealed class RaftRunnerTests
             Runner restarted = new(RaftNode<string>.FromState(N2, Members, persisted), TestContext.CancellationToken);
             await using ConfiguredAsyncDisposable cleanup = restarted.ConfigureAwait(false);
 
-            await restarted.SubmitAsync(RaftEnvelope<string>.ForAppendRequest(N1, new AppendEntriesRequest<string>(1, N1, 2, 1, [], 2))).ConfigureAwait(false);
+            await restarted.SubmitAsync(RaftEnvelope<string>.ForAppendRequest(N1, new AppendEntriesRequest<string>(Term.First, N1, new LogIndex(2), Term.First, [], new LogIndex(2)))).ConfigureAwait(false);
             await restarted.DrainAsync().ConfigureAwait(false);
 
             Assert.AreSequenceEqual(expected, restarted.Applied.ToArray());
@@ -223,11 +223,11 @@ internal sealed class RaftRunnerTests
         //A lone node is its own majority, so the triggered election makes it leader before the proposals.
         await runner.TriggerElectionAsync(cancellationToken).ConfigureAwait(false);
 
-        Task<long> inFlight = runner.ProposeAsync("first", cancellationToken);
+        Task<LogIndex> inFlight = runner.ProposeAsync("first", cancellationToken);
         await persistEntered.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         //The loop is parked inside the first proposal's persist, so the second proposal stays queued.
-        Task<long> queued = runner.ProposeAsync("second", cancellationToken);
+        Task<LogIndex> queued = runner.ProposeAsync("second", cancellationToken);
         Assert.IsFalse(inFlight.IsCompleted);
         Assert.IsFalse(queued.IsCompleted);
 
@@ -278,9 +278,9 @@ internal sealed class RaftRunnerTests
 
         await runner.TriggerElectionAsync(stopSource.Token).ConfigureAwait(false);
 
-        Task<long> inFlight = runner.ProposeAsync("hangs", stopSource.Token);
+        Task<LogIndex> inFlight = runner.ProposeAsync("hangs", stopSource.Token);
         await persistEntered.Task.WaitAsync(timeoutSource.Token).ConfigureAwait(false);
-        Task<long> queued = runner.ProposeAsync("waits", stopSource.Token);
+        Task<LogIndex> queued = runner.ProposeAsync("waits", stopSource.Token);
 
         await stopSource.CancelAsync().ConfigureAwait(false);
 
@@ -325,7 +325,7 @@ internal sealed class RaftRunnerTests
         RaftNode<string> node = new(N1, [N1]);
         RaftRunner<string> runner = new(node);
 
-        Task<long> pending = runner.ProposeAsync("orphan", cancellationToken);
+        Task<LogIndex> pending = runner.ProposeAsync("orphan", cancellationToken);
 
         ArgumentNullException validation = await Assert.ThrowsExactlyAsync<ArgumentNullException>(
             () => runner.RunAsync(null!, null, null, cancellationToken)).ConfigureAwait(false);
@@ -371,9 +371,9 @@ internal sealed class RaftRunnerTests
 
         await runner.TriggerElectionAsync(stopSource.Token).ConfigureAwait(false);
 
-        Task<long> inFlight = runner.ProposeAsync("hangs", stopSource.Token);
+        Task<LogIndex> inFlight = runner.ProposeAsync("hangs", stopSource.Token);
         await persistEntered.Task.WaitAsync(timeoutSource.Token).ConfigureAwait(false);
-        Task<long> queued = runner.ProposeAsync("waits", stopSource.Token);
+        Task<LogIndex> queued = runner.ProposeAsync("waits", stopSource.Token);
 
         await stopSource.CancelAsync().ConfigureAwait(false);
 
@@ -422,9 +422,9 @@ internal sealed class RaftRunnerTests
 
         await runner.TriggerElectionAsync(cancellationToken).ConfigureAwait(false);
 
-        Task<long> inFlight = runner.ProposeAsync("first", cancellationToken);
+        Task<LogIndex> inFlight = runner.ProposeAsync("first", cancellationToken);
         await persistEntered.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-        Task<long> queued = runner.ProposeAsync("second", cancellationToken);
+        Task<LogIndex> queued = runner.ProposeAsync("second", cancellationToken);
 
         persistGate.SetResult();
 
@@ -465,10 +465,15 @@ internal sealed class RaftRunnerTests
     }
 
 
-    //A single real RaftRunner wired to capturing delegates. Work is enqueued through the runner's own producer
-    //API; DrainAsync completes the channel and awaits the consumer loop, so every queued item is processed in
-    //FIFO order before control returns — a deterministic completion signal, never a timed wait. The capturing
-    //delegates run on the loop and their queues are read only after the run task has completed.
+    /// <summary>
+    /// A single real RaftRunner wired to capturing delegates.
+    /// </summary>
+    /// <remarks>
+    /// Work is enqueued through the runner's own producer API; DrainAsync completes the channel and awaits the
+    /// consumer loop, so every queued item is processed in FIFO order before control returns — a deterministic
+    /// completion signal, never a timed wait. The capturing delegates run on the loop and their queues are read
+    /// only after the run task has completed.
+    /// </remarks>
     private sealed class Runner: IAsyncDisposable
     {
         private readonly RaftRunner<string> runner;
@@ -486,9 +491,11 @@ internal sealed class RaftRunnerTests
 
         public RaftNode<string> Node { get; }
 
-        public ConcurrentQueue<(long Index, string Command)> Applied { get; } = new();
+        public ConcurrentQueue<(LogIndex Index, string Command)> Applied { get; } = new();
 
-        //Records each persist and send firing in order; the persist-before-send invariant is read off this.
+        /// <summary>
+        /// Records each persist and send firing in order; the persist-before-send invariant is read off this.
+        /// </summary>
         public ConcurrentQueue<string> Events { get; } = new();
 
         public RaftNodeState<string>? LastPersisted { get; private set; }
@@ -500,7 +507,7 @@ internal sealed class RaftRunnerTests
 
         public ValueTask SubmitAsync(RaftEnvelope<string> envelope) => runner.SubmitAsync(envelope);
 
-        public Task<long> ProposeAsync(string command) => runner.ProposeAsync(command);
+        public Task<LogIndex> ProposeAsync(string command) => runner.ProposeAsync(command);
 
 
         public async Task DrainAsync()
@@ -543,7 +550,7 @@ internal sealed class RaftRunnerTests
         }
 
 
-        private ValueTask Apply(long index, string command, CancellationToken cancellationToken)
+        private ValueTask Apply(LogIndex index, string command, CancellationToken cancellationToken)
         {
             Applied.Enqueue((index, command));
 

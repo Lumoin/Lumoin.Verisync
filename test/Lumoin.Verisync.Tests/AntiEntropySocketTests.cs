@@ -69,9 +69,13 @@ internal sealed class AntiEntropySocketTests
     }
 
 
-    //Stands up one fresh duplex socket connection, runs one full initiator/responder session to convergence,
-    //and returns both sides' resulting sets and the initiator's decoded count. The listener, client, and server
-    //are all disposed in the finally even when the proof fails mid-flight.
+    /// <summary>
+    /// Stands up one fresh duplex socket connection, runs one full initiator/responder session to convergence,
+    /// and returns both sides' resulting sets and the initiator's decoded count.
+    /// </summary>
+    /// <remarks>
+    /// The listener, client, and server are all disposed in the finally even when the proof fails mid-flight.
+    /// </remarks>
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The listener, client, and server are all disposed in the finally block.")]
     [SuppressMessage("Usage", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "The initiator run task is awaited directly before the finally, and the responder run, both reader, and pacing tasks are observed through SwallowAsync in the finally; every session-touching task has completed before the sessions and the linked token source are disposed. The analyzer cannot see completion across the direct await ordering and the helper.")]
     private async Task<RoundOutcome> RunRoundAsync(OrSet<string> initiatorSet, OrSet<string> responderSet)
@@ -224,8 +228,10 @@ internal sealed class AntiEntropySocketTests
     }
 
 
-    //Awaits a wind-down task, swallowing the failure shapes that socket disposal and cancellation induce so
-    //the original round failure stays the surfaced cause.
+    /// <summary>
+    /// Awaits a wind-down task, swallowing the failure shapes that socket disposal and cancellation induce so
+    /// the original round failure stays the surfaced cause.
+    /// </summary>
     private static async Task SwallowAsync(Task? task)
     {
         if(task is null)
@@ -243,8 +249,10 @@ internal sealed class AntiEntropySocketTests
     }
 
 
-    //Reads framed envelopes off one inbound channel and forwards each to the owning session's producer queue;
-    //the loop ends when the peer completes its writer.
+    /// <summary>
+    /// Reads framed envelopes off one inbound channel and forwards each to the owning session's producer queue;
+    /// the loop ends when the peer completes its writer.
+    /// </summary>
     private static async Task ForwardInboundAsync(MessageChannelReader<ReconciliationEnvelope<string>> inbound, AntiEntropySession<string> session, CancellationToken cancellationToken)
     {
         await foreach(ReconciliationEnvelope<string> envelope in inbound.ReadAllAsync(cancellationToken).ConfigureAwait(false))
@@ -254,8 +262,10 @@ internal sealed class AntiEntropySocketTests
     }
 
 
-    //Triggers responder batches under a short delay until its state leaves Reconciling — the done signal moves
-    //it to Resolving — capping the loop so a never-advancing peer fails the test instead of spinning forever.
+    /// <summary>
+    /// Triggers responder batches under a short delay until its state leaves Reconciling — the done signal moves
+    /// it to Resolving — capping the loop so a never-advancing peer fails the test instead of spinning forever.
+    /// </summary>
     private static async Task PaceResponderAsync(AntiEntropySession<string> responder, CancellationToken cancellationToken)
     {
         int triggers = 0;

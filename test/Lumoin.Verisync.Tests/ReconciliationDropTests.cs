@@ -92,15 +92,19 @@ internal sealed class ReconciliationDropTests
     }
 
 
-    //Builds the fixed 32-byte (ReplicaId.Size) replica bytes for a deterministic id, without System.Random
-    //(CA5394): the seed byte sits at position zero so distinct seeds yield distinct replicas.
+    /// <summary>
+    /// Builds the fixed 32-byte (ReplicaId.Size) replica bytes for a deterministic id, without System.Random
+    /// (CA5394): the seed byte sits at position zero so distinct seeds yield distinct replicas.
+    /// </summary>
     private static ImmutableArray<byte> ReplicaBytes(byte seed)
     {
         return ReplicaBytes(seed, ReplicaId.Size);
     }
 
 
-    //Builds replica bytes of an arbitrary length for the width-validation case; only ReplicaId.Size is valid.
+    /// <summary>
+    /// Builds replica bytes of an arbitrary length for the width-validation case; only ReplicaId.Size is valid.
+    /// </summary>
     private static ImmutableArray<byte> ReplicaBytes(byte seed, int length)
     {
         byte[] bytes = new byte[length];

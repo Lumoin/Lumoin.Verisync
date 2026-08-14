@@ -41,7 +41,7 @@ public static class ReconciliationJson
     /// <param name="writeElement">Writes an element value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeElement"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<ReconciliationEnvelope<TElement>> CreateEnvelopeSerializer<TElement>(Action<Utf8JsonWriter, TElement> writeElement)
+    public static SerializeMessageDelegate<ReconciliationEnvelope<TElement>> CreateEnvelopeSerializer<TElement>(WriteValueDelegate<Utf8JsonWriter, TElement> writeElement)
     {
         ArgumentNullException.ThrowIfNull(writeElement);
 
@@ -132,7 +132,7 @@ public static class ReconciliationJson
     /// </param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="contract"/> or <paramref name="readElement"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<ReconciliationEnvelope<TElement>> CreateEnvelopeDeserializer<TElement>(ReconciliationContract contract, Func<JsonElement, TElement> readElement)
+    public static DeserializeMessageDelegate<ReconciliationEnvelope<TElement>> CreateEnvelopeDeserializer<TElement>(ReconciliationContract contract, ReadValueDelegate<JsonElement, TElement> readElement)
     {
         ArgumentNullException.ThrowIfNull(contract);
         ArgumentNullException.ThrowIfNull(readElement);
@@ -305,7 +305,7 @@ public static class ReconciliationJson
     }
 
 
-    private static void WriteElements<TElement>(Utf8JsonWriter writer, ReconciliationElements<TElement> elements, Action<Utf8JsonWriter, TElement> writeElement)
+    private static void WriteElements<TElement>(Utf8JsonWriter writer, ReconciliationElements<TElement> elements, WriteValueDelegate<Utf8JsonWriter, TElement> writeElement)
     {
         writer.WriteStartObject();
         writer.WriteStartArray("entries");
@@ -323,7 +323,7 @@ public static class ReconciliationJson
     }
 
 
-    private static ReconciliationElements<TElement> ReadElements<TElement>(JsonElement element, ReconciliationContract contract, Func<JsonElement, TElement> readElement)
+    private static ReconciliationElements<TElement> ReadElements<TElement>(JsonElement element, ReconciliationContract contract, ReadValueDelegate<JsonElement, TElement> readElement)
     {
         JsonElement entriesElement = RequireArray(RequireProperty(element, "entries", "An elements message"), "An entries field");
         if(entriesElement.GetArrayLength() == 0)

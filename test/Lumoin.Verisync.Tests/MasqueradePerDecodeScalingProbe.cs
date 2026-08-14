@@ -2,6 +2,7 @@ using Lumoin.Base;
 using Lumoin.Verisync.Core;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -27,17 +28,26 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class MasqueradePerDecodeScalingProbe
 {
-    //Structural items, 8 bytes wide, a width-1 checksum: the sanctioned adversarial-test width where a
-    //degree-two cell masquerades with per-candidate probability 2^-8, under the well-known (unkeyed) key
-    //so random collisions occur naturally rather than being brute-forced.
+    public TestContext TestContext { get; set; } = null!;
+
+
+    /// <summary>
+    /// Structural items, 8 bytes wide, a width-1 checksum: the sanctioned adversarial-test width where a
+    /// degree-two cell masquerades with per-candidate probability 2^-8, under the well-known (unkeyed) key
+    /// so random collisions occur naturally rather than being brute-forced.
+    /// </summary>
     private static ReconciliationContract WeakContract { get; } =
         ReconciliationContract.ForAdversarialTesting(ReconciliationItemDomain.Structural, 8, 1, ReconciliationContract.WellKnownChecksumKeyLow, ReconciliationContract.WellKnownChecksumKeyHigh);
 
-    //The difference sizes swept; d = 1 is the control (no degree-two cell can arise, so no masquerade).
+    /// <summary>
+    /// The difference sizes swept; d = 1 is the control (no degree-two cell can arise, so no masquerade).
+    /// </summary>
     private static int[] DifferenceSizes { get; } = [1, 2, 4, 8, 16, 32];
 
-    //Independent decodes per size, each over a distinct disjoint item range so the sweep is a Monte-Carlo
-    //over which sets happen to carry a masquerade; fully deterministic (no System.Random).
+    /// <summary>
+    /// Independent decodes per size, each over a distinct disjoint item range so the sweep is a Monte-Carlo
+    /// over which sets happen to carry a masquerade; fully deterministic (no System.Random).
+    /// </summary>
     private const int TrialsPerSize = 250;
 
     private const double PerCandidateBound = 1.0 / 256.0;
@@ -74,10 +84,12 @@ internal sealed class MasqueradePerDecodeScalingProbe
             rangeBase += (long)TrialsPerSize * 1_000L * (d + 1);
         }
 
-        Console.WriteLine($"columns: d, trials, falseAccepts, incomplete, perDecodeFalseAcceptFraction; perCandidate(2^-8)={PerCandidateBound:F5}");
+        //The rows are a comma-separated table, so the decimal separator has to be invariant or a locale that
+        //writes decimal commas makes every row ambiguous.
+        TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"columns: d, trials, falseAccepts, incomplete, perDecodeFalseAcceptFraction; perCandidate(2^-8)={PerCandidateBound:F5}"));
         foreach((int d, int fa, int inc, double frac) in fractions)
         {
-            Console.WriteLine($"{d}, {TrialsPerSize}, {fa}, {inc}, {frac:F4}");
+            TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{d}, {TrialsPerSize}, {fa}, {inc}, {frac:F4}"));
         }
 
         double controlFraction = fractions[0].Fraction;
@@ -103,9 +115,11 @@ internal sealed class MasqueradePerDecodeScalingProbe
     }
 
 
-    //Encodes a size-d difference (d distinct items present on one side, none on the other), decodes it
-    //to the completion cap, and reports whether any decoded item is NOT a true difference item (a
-    //per-decode false-accept) and whether the decode reported completion.
+    /// <summary>
+    /// Encodes a size-d difference (d distinct items present on one side, none on the other), decodes it
+    /// to the completion cap, and reports whether any decoded item is NOT a true difference item (a
+    /// per-decode false-accept) and whether the decode reported completion.
+    /// </summary>
     private static (bool SawPhantom, bool Completed) DecodeOnce(int d, long trialBase)
     {
         var truth = new HashSet<string>(d);

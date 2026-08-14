@@ -53,8 +53,8 @@ internal sealed class FastCasPaxosRegisterTests
     [TestMethod]
     public void SplitFastRoundMissesFastQuorum()
     {
-        ImmutableArray<int> majority = [0, 1, 2];
-        ImmutableArray<int> minority = [3, 4];
+        ImmutableHashSet<int> majority = [0, 1, 2];
+        ImmutableHashSet<int> minority = [3, 4];
         FastCasPaxosRegister<string> register = FastCasPaxosRegister<string>.WithAcceptors(5);
 
         (FastCasPaxosRegister<string> afterX, int xCount) = register.ProposeFastReaching(FastBallot.Fast(1), "x", majority);
@@ -67,11 +67,32 @@ internal sealed class FastCasPaxosRegisterTests
     }
 
 
+    /// <summary>
+    /// The count a caller compares against the fast quorum must be a count of distinct acceptors.
+    /// </summary>
+    /// <remarks>
+    /// Four of five is a fast quorum here, so a repeat that was folded in rather than refused would
+    /// manufacture one.
+    /// </remarks>
+    [TestMethod]
+    public void ThreeDistinctAcceptorsCannotReportAFastQuorum()
+    {
+        ImmutableHashSet<int> three = [0, 1, 2];
+        FastCasPaxosRegister<string> register = FastCasPaxosRegister<string>.WithAcceptors(5);
+
+        (FastCasPaxosRegister<string> after, int accepted) = register.ProposeFastReaching(FastBallot.Fast(1), "x", three);
+
+        Assert.AreEqual(3, accepted);
+        Assert.IsFalse(after.IsFastQuorum(accepted));
+        Assert.AreEqual(4, after.FastQuorum);
+    }
+
+
     [TestMethod]
     public void RecoveryRecoversTheFastRoundWinner()
     {
-        ImmutableArray<int> majority = [0, 1, 2];
-        ImmutableArray<int> minority = [3, 4];
+        ImmutableHashSet<int> majority = [0, 1, 2];
+        ImmutableHashSet<int> minority = [3, 4];
         FastCasPaxosRegister<string> register = FastCasPaxosRegister<string>.WithAcceptors(5);
         (FastCasPaxosRegister<string> afterX, _) = register.ProposeFastReaching(FastBallot.Fast(1), "x", majority);
         (FastCasPaxosRegister<string> afterY, _) = afterX.ProposeFastReaching(FastBallot.Fast(1), "y", minority);
@@ -93,6 +114,7 @@ internal sealed class FastCasPaxosRegisterTests
 
         Assert.IsTrue(outcome.IsChosen);
         Assert.AreEqual("first", outcome.Value);
+        Assert.AreEqual(3, outcome.AcceptedCount);
     }
 
 

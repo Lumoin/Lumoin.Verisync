@@ -10,10 +10,15 @@ internal sealed class OrSetPropertyTests
 {
     private static ReplicaId[] Replicas { get; } = [Replica(0), Replica(1), Replica(2)];
 
-    //Each added element is a function of (replica, per-replica add ordinal). In a linear history the
-    //ordinal equals the replica's dot counter, so a given dot maps to one element globally even across
-    //independently generated sets — the invariant every real history maintains. Removes target this or
-    //a neighbouring replica's latest element, so cross-replica observed-removes are exercised too.
+    /// <summary>
+    /// Each added element is a function of (replica, per-replica add ordinal).
+    /// </summary>
+    /// <remarks>
+    /// In a linear history the ordinal equals the replica's dot counter, so a given dot maps to one element
+    /// globally even across independently generated sets — the invariant every real history maintains. Removes
+    /// target this or a neighbouring replica's latest element, so cross-replica observed-removes are exercised
+    /// too.
+    /// </remarks>
     private static Gen<OrSet<int>> GenSet { get; } =
         Gen.Select(Gen.Int[0, 2], Gen.Int[0, 7], (replica, action) => (replica, action))
             .Array[0, 8]

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 
@@ -95,7 +96,10 @@ public sealed class FastAcceptor<TValue>
     /// impossible — the piggyback only ever <em>adds</em> a coordinated round, never re-opens an uncoordinated
     /// one. Every reject rule is evaluated against the original ballot and ignores <paramref name="next"/>
     /// entirely; only a successful accept (including an idempotent retry of the already-accepted pair) applies
-    /// the raise, and a raise never lowers the promise because the new promise is taken as a maximum.
+    /// the raise, and a raise never lowers the promise because the new promise is taken as a maximum. The
+    /// proposer-side counterpart of this rule is the arming rule documented on
+    /// <see cref="FastProposer{TValue}.TryFastWriteAsync"/>: because an acceptor that missed the raise keeps
+    /// rejecting, a round armed on fewer than a fast quorum is one no later fast write can complete.
     /// </remarks>
     public (FastAcceptor<TValue> Acceptor, bool Accepted) Accept(FastBallot ballot, TValue value, FastBallot? next = null)
     {
@@ -139,7 +143,109 @@ public sealed class FastAcceptor<TValue>
     }
 
 
+    /// <summary>
+    /// Snapshots the acceptor's durable state: the promise, the accepted ballot and the accepted value.
+    /// </summary>
+    /// <returns>The durable state to make stable before any dependent reply is sent.</returns>
+    /// <remarks>
+    /// No copy is taken, because every field is immutable. Unlike <see cref="QuePaxaRecorder{TValue}.ToState"/>,
+    /// this pair is an inverse everywhere including the bottom of the range: <see cref="Initial"/> snapshots
+    /// and restores, because the initial acceptor is not unwritten but pre-promised to the initial fast
+    /// ballot, which is exactly the state a node that lost everything returns as.
+    /// </remarks>
+    public FastAcceptorState<TValue> ToState() => new(Promised, AcceptedBallot, AcceptedValue);
+
+
+    /// <summary>
+    /// Reconstructs an acceptor from durable <paramref name="state"/>, refusing fail-closed every state no
+    /// acceptor can hold.
+    /// </summary>
+    /// <param name="state">The durable state to restore.</param>
+    /// <returns>An acceptor standing at the restored promise.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when the durable state is one no acceptor can hold: a
+    /// <see cref="FastAcceptorState{TValue}.Promised"/> below <see cref="FastBallot.InitialFast"/>; a
+    /// <see cref="FastAcceptorState{TValue}.AcceptedBallot"/> that is neither <see cref="FastBallot.Zero"/>
+    /// nor at least <see cref="FastBallot.InitialFast"/>; an accepted ballot above the promise; or a
+    /// non-default <see cref="FastAcceptorState{TValue}.AcceptedValue"/> under the zero accepted ballot.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// The rules are read off <see cref="Prepare"/> and <see cref="Accept"/>: the promise starts pre-promised
+    /// at the initial fast ballot and only ever rises, and the accepted ballot is written only beside the
+    /// value and only by an accept whose ballot stood at or above the promise. That makes them exact in both
+    /// directions — they refuse every state those transitions cannot produce and admit every state they can —
+    /// so a state a host produced through this type restores unchanged, including the initial acceptor. Two
+    /// of the rules are range checks over a single slot, which would normally live in a value constructor,
+    /// but <see cref="FastBallot"/>'s constructor is public and unvalidated by necessity — the zero ballot is
+    /// its default and it is the ballot the wire carries — so the restore owns them.
+    /// </para>
+    /// <para>
+    /// The rules read what <see cref="Accept"/> can produce, not what this library's proposer chooses to
+    /// send: a promise raised by a classic ballot arriving as a piggybacked next ballot is a state
+    /// <see cref="Accept"/> produces and this library's proposer never asks for, and the restore admits it
+    /// because refusing it would refuse a state the type can hold. A fast accepted round above the first and
+    /// a fast accepted value under a later classic promise are the protocol's ordinary shapes, and the
+    /// restore admits them the same way.
+    /// </para>
+    /// <para>
+    /// The rules read one state, and that bounds what they refuse. A per-field mix of two states a faithful
+    /// host wrote can itself be a state an acceptor can hold, so it restores under these rules and still
+    /// contradicts a reply already sent from the older of its sources. Detecting that needs history no
+    /// snapshot carries, so the rules are not a substitute for the store landing the write whole, which is
+    /// <see cref="PersistAcceptorDelegate{TValue}"/>'s obligation.
+    /// </para>
+    /// <para>
+    /// The state carries no replica identity, because an acceptor has none, so restoring one replica's
+    /// snapshot onto another passes every rule while making two acceptors report an accept only one of them
+    /// made. Which snapshot belongs to which replica is the host's filing obligation, not a rule this factory
+    /// can own. The restore always allocates; that an initial-equal state comes back as a fresh instance
+    /// rather than <see cref="Initial"/> is deliberately not a contract.
+    /// </para>
+    /// </remarks>
+    public static FastAcceptor<TValue> FromState(FastAcceptorState<TValue> state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if(state.Promised < FastBallot.InitialFast())
+        {
+            throw new ArgumentException($"A restored promise cannot stand below the initial fast ballot, got {Describe(state.Promised)}. An acceptor is pre-promised to that ballot, a prepare promises only a ballot at or above the standing promise, and an accept raises the promise rather than lowering it, so no acceptor holds a promise below it.", nameof(state));
+        }
+
+        if(!state.AcceptedBallot.IsZero && state.AcceptedBallot < FastBallot.InitialFast())
+        {
+            throw new ArgumentException($"A restored accepted ballot is either the zero ballot or at least the initial fast ballot, got {Describe(state.AcceptedBallot)}. An accept records the ballot it accepted, which stood at or above the promise, and a promise never stands below the initial fast ballot, so the only accepted ballot below it is the zero ballot an acceptor that accepted nothing carries.", nameof(state));
+        }
+
+        if(state.AcceptedBallot > state.Promised)
+        {
+            throw new ArgumentException($"A restored promise cannot trail the accepted ballot, got {DescribeTrailingContrast(state.Promised, state.AcceptedBallot)}. Accepting raises the promise to at least the accepted ballot and nothing lowers it, which is what stops a stale lower-ballot accept arriving late from overwriting the record of a possibly-chosen value.", nameof(state));
+        }
+
+        if(state.AcceptedBallot.IsZero && !EqualityComparer<TValue>.Default.Equals(state.AcceptedValue, default))
+        {
+            throw new ArgumentException("A restored acceptor holding the zero accepted ballot cannot carry a value, because the accepted ballot and the accepted value are assigned together and only by an accept, whose ballot stands at or above the promise and so is never the zero ballot.", nameof(state));
+        }
+
+        return new FastAcceptor<TValue>(state.Promised, state.AcceptedBallot, state.AcceptedValue);
+    }
+
+
     private static FastBallot MaxBallot(FastBallot left, FastBallot right) => left >= right ? left : right;
+
+
+    private static string Describe(FastBallot ballot) => ballot.IsFast
+        ? $"round {ballot.Round} with no proposer"
+        : $"round {ballot.Round} with a proposer";
+
+
+    //Two classic ballots at one round differ only by proposer, which Describe deliberately does not render,
+    //so that shape gets its own sentence naming the discriminating dimension without identity bytes.
+    private static string DescribeTrailingContrast(FastBallot promised, FastBallot accepted) =>
+        promised.Round == accepted.Round && !promised.IsFast && !accepted.IsFast
+            ? $"a promise and an accepted ballot both at round {promised.Round}, each with a proposer, the accepted ballot's proposer ordering above the promise's"
+            : $"a promise at {Describe(promised)} under an accepted ballot at {Describe(accepted)}";
 
 
     private string DebuggerDisplay => $"FastAcceptor: promised={Promised}, accepted={AcceptedBallot}";

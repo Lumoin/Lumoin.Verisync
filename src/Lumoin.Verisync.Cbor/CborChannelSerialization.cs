@@ -1,4 +1,4 @@
-using Lumoin.Verisync.Core;
+﻿using Lumoin.Verisync.Core;
 using System;
 using System.Buffers;
 using System.Formats.Cbor;
@@ -23,7 +23,7 @@ public static class CborChannelSerialization
     /// <param name="encode">Writes the message's fields to a <see cref="CborWriter"/>.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="encode"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<TMessage> CreateSerializer<TMessage>(Action<CborWriter, TMessage> encode)
+    public static SerializeMessageDelegate<TMessage> CreateSerializer<TMessage>(WriteValueDelegate<CborWriter, TMessage> encode)
     {
         ArgumentNullException.ThrowIfNull(encode);
 
@@ -44,15 +44,25 @@ public static class CborChannelSerialization
     /// <param name="decode">Reads the message's fields from a <see cref="CborReader"/>.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="decode"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<TMessage> CreateDeserializer<TMessage>(Func<CborReader, TMessage> decode)
+    public static DeserializeMessageDelegate<TMessage> CreateDeserializer<TMessage>(ReadValueDelegate<CborReader, TMessage> decode)
     {
         ArgumentNullException.ThrowIfNull(decode);
 
         return CborMessageGuard.FailClosed<TMessage>(payload =>
         {
             var cborReader = new CborReader(payload.ToArray(), CborConformanceMode.Canonical);
+            TMessage message = decode(cborReader);
 
-            return decode(cborReader);
+            //Surplus bytes after the message are refused rather than ignored. Allowing them would let several
+            //distinct byte sequences decode to one message, which is the same canonical-bytes assumption the
+            //JSON channel refuses trailing data to keep, and which the determinism this class is built for
+            //depends on. Frames are length prefixed, so anything left here is slack the sender chose to add.
+            if(cborReader.BytesRemaining != 0)
+            {
+                throw new CborContentException("The CBOR payload carries trailing data after the message.");
+            }
+
+            return message;
         });
     }
 }

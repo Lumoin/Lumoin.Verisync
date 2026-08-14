@@ -23,8 +23,10 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class ReconciliationRemoveWireTests
 {
-    //The context and drop frames carry no item-width fields, so any pinned contract deserializes them; the
-    //content-hash default matches the 32-byte replica bytes these payloads encode.
+    /// <summary>
+    /// The context and drop frames carry no item-width fields, so any pinned contract deserializes them; the
+    /// content-hash default matches the 32-byte replica bytes these payloads encode.
+    /// </summary>
     private static ReconciliationContract LocalContract { get; } = ReconciliationContract.ContentHashDefault;
 
 
@@ -223,7 +225,10 @@ internal sealed class ReconciliationRemoveWireTests
     }
 
 
-    //Builds a vector clock state from (replica seed, count) pairs directly, without going through a live clock.
+    /// <summary>
+    /// Builds a vector clock state from (replica seed, count) pairs directly, without going through a live
+    /// clock.
+    /// </summary>
     private static VectorClockState ClockState(params (byte Seed, int Count)[] entries)
     {
         ImmutableArray<ReplicaCounterEntry>.Builder builder = ImmutableArray.CreateBuilder<ReplicaCounterEntry>(entries.Length);
@@ -236,7 +241,9 @@ internal sealed class ReconciliationRemoveWireTests
     }
 
 
-    //Builds a deterministic replica id with the seed byte at position zero, without System.Random (CA5394).
+    /// <summary>
+    /// Builds a deterministic replica id with the seed byte at position zero, without System.Random (CA5394).
+    /// </summary>
     private static ReplicaId Replica(byte seed)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];
@@ -246,7 +253,9 @@ internal sealed class ReconciliationRemoveWireTests
     }
 
 
-    //Builds the fixed 32-byte (ReplicaId.Size) replica bytes for a deterministic id, without System.Random.
+    /// <summary>
+    /// Builds the fixed 32-byte (ReplicaId.Size) replica bytes for a deterministic id, without System.Random.
+    /// </summary>
     private static ImmutableArray<byte> ReplicaBytes(byte seed)
     {
         byte[] bytes = new byte[ReplicaId.Size];

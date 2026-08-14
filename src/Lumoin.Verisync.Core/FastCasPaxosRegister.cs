@@ -20,7 +20,7 @@ namespace Lumoin.Verisync.Core;
 /// that any later classic recovery quorum still observes the fast-round winner as dominant.
 /// </para>
 /// <para>
-/// When the fast round splits, <see cref="Recover(FastBallot, Func{TValue, TValue})"/> runs a classic
+/// When the fast round splits, <see cref="Recover(FastBallot, ChangeRegisterValueDelegate{TValue})"/> runs a classic
 /// ballot: it prepares a majority, recovers the value by tallying the distinct values reported for the
 /// highest fast ballot and adopting the most frequent, then commits the change at the classic ballot. This
 /// is an in-memory model of the protocol's safety core; the networked proposer, retries, and mode-switching
@@ -83,7 +83,7 @@ public sealed class FastCasPaxosRegister<TValue>
     /// <exception cref="ArgumentException">Thrown if <paramref name="fastBallot"/> is not a fast ballot.</exception>
     public (FastCasPaxosRegister<TValue> Register, int AcceptedCount) ProposeFast(FastBallot fastBallot, TValue value)
     {
-        return ProposeFastReaching(fastBallot, value, Enumerable.Range(0, Acceptors.Length).ToImmutableArray());
+        return ProposeFastReaching(fastBallot, value, Enumerable.Range(0, Acceptors.Length).ToImmutableHashSet());
     }
 
 
@@ -93,25 +93,37 @@ public sealed class FastCasPaxosRegister<TValue>
     /// </summary>
     /// <param name="fastBallot">The fast-round ballot. Must be a fast ballot.</param>
     /// <param name="value">The value to propose.</param>
-    /// <param name="acceptorIndices">The indices of the acceptors the proposal reaches.</param>
+    /// <param name="acceptorIndices">The indices of the acceptors the proposal reaches. A set, because reaching one acceptor twice is not a thing a proposal can do.</param>
     /// <returns>The register after the proposal and the number of acceptors that accepted.</returns>
-    /// <exception cref="ArgumentException">Thrown if <paramref name="fastBallot"/> is not a fast ballot or an index is out of range.</exception>
-    public (FastCasPaxosRegister<TValue> Register, int AcceptedCount) ProposeFastReaching(FastBallot fastBallot, TValue value, ImmutableArray<int> acceptorIndices)
+    /// <exception cref="ArgumentException">Thrown if <paramref name="fastBallot"/> is not a fast ballot, or if an index is out of range.</exception>
+    /// <remarks>
+    /// The parameter is a set rather than a sequence so that a repeated index is unrepresentable rather than
+    /// refused. The returned count is what a caller compares against <see cref="FastQuorum"/>, and an
+    /// acceptor reached twice answers twice, because the second accept is an idempotent retry of the same
+    /// ballot and value and so succeeds; counting it would report a fast quorum that no set of distinct
+    /// acceptors ever formed.
+    /// </remarks>
+    public (FastCasPaxosRegister<TValue> Register, int AcceptedCount) ProposeFastReaching(FastBallot fastBallot, TValue value, ImmutableHashSet<int> acceptorIndices)
     {
         if(!fastBallot.IsFast)
         {
             throw new ArgumentException("A fast proposal requires a fast ballot.", nameof(fastBallot));
         }
 
+        ArgumentNullException.ThrowIfNull(acceptorIndices);
+
+        foreach(int index in acceptorIndices)
+        {
+            if(index < 0 || index >= Acceptors.Length)
+            {
+                throw new ArgumentException($"Acceptor index {index} is out of range.", nameof(acceptorIndices));
+            }
+        }
+
         ImmutableArray<FastAcceptor<TValue>>.Builder working = Acceptors.ToBuilder();
         int accepted = 0;
         foreach(int index in acceptorIndices)
         {
-            if(index < 0 || index >= working.Count)
-            {
-                throw new ArgumentException($"Acceptor index {index} is out of range.", nameof(acceptorIndices));
-            }
-
             (FastAcceptor<TValue> acceptor, bool ok) = working[index].Accept(fastBallot, value);
             working[index] = acceptor;
             if(ok)
@@ -134,7 +146,7 @@ public sealed class FastCasPaxosRegister<TValue>
     /// <returns>The register after recovery and the outcome.</returns>
     /// <exception cref="ArgumentException">Thrown if <paramref name="classicBallot"/> is a fast ballot.</exception>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="update"/> is <see langword="null"/>.</exception>
-    public (FastCasPaxosRegister<TValue> Register, ChangeOutcome<TValue> Outcome) Recover(FastBallot classicBallot, Func<TValue?, TValue> update)
+    public (FastCasPaxosRegister<TValue> Register, ChangeOutcome<TValue> Outcome) Recover(FastBallot classicBallot, ChangeRegisterValueDelegate<TValue> update)
     {
         if(classicBallot.IsFast)
         {
@@ -166,7 +178,7 @@ public sealed class FastCasPaxosRegister<TValue>
 
         if(promises < ClassicQuorum)
         {
-            return (new FastCasPaxosRegister<TValue>(working.ToImmutable()), new ChangeOutcome<TValue>(false, default));
+            return (new FastCasPaxosRegister<TValue>(working.ToImmutable()), new ChangeOutcome<TValue>(false, default, 0));
         }
 
         if(!highestAccepted.IsZero && highestAccepted.IsFast)
@@ -187,8 +199,8 @@ public sealed class FastCasPaxosRegister<TValue>
         }
 
         ChangeOutcome<TValue> outcome = accepts >= ClassicQuorum
-            ? new ChangeOutcome<TValue>(true, newValue)
-            : new ChangeOutcome<TValue>(false, default);
+            ? new ChangeOutcome<TValue>(true, newValue, accepts)
+            : new ChangeOutcome<TValue>(false, default, accepts);
 
         return (new FastCasPaxosRegister<TValue>(working.ToImmutable()), outcome);
     }

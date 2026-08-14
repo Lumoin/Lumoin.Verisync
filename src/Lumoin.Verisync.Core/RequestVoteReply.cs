@@ -8,4 +8,4 @@ namespace Lumoin.Verisync.Core;
 /// and reverts to follower.
 /// </param>
 /// <param name="VoteGranted"><see langword="true"/> if the voter granted its vote for this term to the candidate.</param>
-public sealed record RequestVoteReply(long Term, bool VoteGranted);
+public sealed record RequestVoteReply(Term Term, bool VoteGranted);
