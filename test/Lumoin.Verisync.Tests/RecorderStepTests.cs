@@ -10,9 +10,11 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class RecorderStepTests
 {
-    //THE BOUND IS A LITERAL AND NOT A RESTATEMENT OF THE CONSTANT. Every other assertion about the range is
-    //written relative to MaxRound, so lowering the constant would keep them all true while quietly shortening
-    //the protocol's budget and diverging from both reference implementations, which take 256 complete rounds.
+    /// <summary>
+    /// THE BOUND IS A LITERAL AND NOT A RESTATEMENT OF THE CONSTANT. Every other assertion about the range is
+    /// written relative to MaxRound, so lowering the constant would keep them all true while quietly shortening
+    /// the protocol's budget and diverging from both reference implementations, which take 256 complete rounds.
+    /// </summary>
     [TestMethod]
     public void TheStepBudgetIsTwoHundredAndFiftySixCompleteRounds()
     {
@@ -25,11 +27,15 @@ internal sealed class RecorderStepTests
     }
 
 
-    //THE ROUND BOUND IS CHECKED ON THE ROUND AND BEFORE THE ARITHMETIC. Deleting that check leaves every
-    //ordinary rejection still throwing, because a wrapped or scaled result usually lands outside the value
-    //range and the value validator catches it. This round is the case that does not: four times two to the
-    //thirtieth is zero modulo two to the thirty-second, so without the round check the call would silently
-    //return a legal step two.
+    /// <summary>
+    /// THE ROUND BOUND IS CHECKED ON THE ROUND AND BEFORE THE ARITHMETIC. Deleting that check leaves every
+    /// ordinary rejection still throwing, because a wrapped or scaled result usually lands outside the value
+    /// range and the value validator catches it.
+    /// </summary>
+    /// <remarks>
+    /// This round is the case that does not: four times two to the thirtieth is zero modulo two to the
+    /// thirty-second, so without the round check the call would silently return a legal step two.
+    /// </remarks>
     [TestMethod]
     public void AnOverflowingRoundIsRejectedOnTheRoundRatherThanWrappingToALegalStep()
     {

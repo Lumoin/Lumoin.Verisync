@@ -121,10 +121,14 @@ internal sealed class ReconciliationItemArenaInvariantTests
     }
 
 
-    //Builds a deterministic item of the given width without System.Random (CA5394). The little-endian index
-    //occupies the leading bytes so distinct indices yield distinct full-width items across the whole tested
-    //range, then a position-derived tail fills the remaining stride; this avoids the spurious Strict duplicate a
-    //single-byte index pattern would hit once the index wraps modulo 256.
+    /// <summary>
+    /// Builds a deterministic item of the given width without System.Random (CA5394).
+    /// </summary>
+    /// <remarks>
+    /// The little-endian index occupies the leading bytes so distinct indices yield distinct full-width items
+    /// across the whole tested range, then a position-derived tail fills the remaining stride; this avoids the
+    /// spurious Strict duplicate a single-byte index pattern would hit once the index wraps modulo 256.
+    /// </remarks>
     private static byte[] BuildItem(int stride, int index)
     {
         byte[] item = new byte[stride];

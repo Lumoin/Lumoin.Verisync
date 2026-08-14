@@ -28,8 +28,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     private static ReplicaId R2 { get; } = Replica(2);
     private static ReplicaId R3 { get; } = Replica(3);
 
-    //Reused so the byte arrays behind the DotState records keep reference identity (DotState compares by
-    //reference), and to satisfy CA1861 by hoisting the base array.
+    /// <summary>
+    /// Reused so the byte arrays behind the DotState records keep reference identity (DotState compares by
+    /// reference), and to satisfy CA1861 by hoisting the base array.
+    /// </summary>
     private static ImmutableArray<int> BaseValues { get; } = [10, 20, 30];
 
     private static ImmutableArray<byte> R1Bytes { get; } = ImmutableArray.Create(R1.AsSpan());
@@ -59,8 +61,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //An edited generation — head, base, and live-anchored inserts plus a dotted base removal and a dotted
-    //live removal — survives the round-trip exactly.
+    /// <summary>
+    /// An edited generation — head, base, and live-anchored inserts plus a dotted base removal and a dotted
+    /// live removal — survives the round-trip exactly.
+    /// </summary>
     [TestMethod]
     public void EditedGenerationRoundTripsThroughState()
     {
@@ -72,8 +76,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //A compacted generation carrying both translation maps (dropped-dot anchors and anchor-typed rebased
-    //base offsets) plus the stamped generation identity round-trips with its servability intact.
+    /// <summary>
+    /// A compacted generation carrying both translation maps (dropped-dot anchors and anchor-typed rebased base
+    /// offsets) plus the stamped generation identity round-trips with its servability intact.
+    /// </summary>
     [TestMethod]
     public void CompactedGenerationWithBothMapsRoundTripsThroughState()
     {
@@ -88,8 +94,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //A pending-removed conversion — an uncertified-removed vertex materialized into the base with its
-    //remove-dot keyed to the new offset — round-trips, stays hidden, and keeps its marking.
+    /// <summary>
+    /// A pending-removed conversion — an uncertified-removed vertex materialized into the base with its
+    /// remove-dot keyed to the new offset — round-trips, stays hidden, and keeps its marking.
+    /// </summary>
     [TestMethod]
     public void APendingRemovedGenerationRoundTripsThroughState()
     {
@@ -106,9 +114,11 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //Gate 9: legacy (v1-loaded, empty remove-dot set) removals on BOTH axes round-trip, stay hidden, and
-    //are retained forever — a compaction converts the legacy tombstone pending-removed with its EMPTY set
-    //and keeps the legacy base slot, because an empty set can never be certified.
+    /// <summary>
+    /// Gate 9: legacy (v1-loaded, empty remove-dot set) removals on BOTH axes round-trip, stay hidden, and are
+    /// retained forever — a compaction converts the legacy tombstone pending-removed with its EMPTY set and
+    /// keeps the legacy base slot, because an empty set can never be certified.
+    /// </summary>
     [TestMethod]
     public void ALegacyStateRoundTripsAndIsRetainedForever()
     {
@@ -140,8 +150,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //The legal half of the W-shape rule: a ghost re-entered by merge sits live WITH its tombstone while
-    //the witness entry remains — that state round-trips; only the untombstoned form is rejected.
+    /// <summary>
+    /// The legal half of the W-shape rule: a ghost re-entered by merge sits live WITH its tombstone while the
+    /// witness entry remains — that state round-trips; only the untombstoned form is rejected.
+    /// </summary>
     [TestMethod]
     public void AGhostWitnessShapeRoundTripsThroughState()
     {
@@ -153,7 +165,9 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //ToState twice on the same instance yields the same canonical encoding, so its ordering is deterministic.
+    /// <summary>
+    /// ToState twice on the same instance yields the same canonical encoding, so its ordering is deterministic.
+    /// </summary>
     [TestMethod]
     public void ToStateIsDeterministicForTheSameInstance()
     {
@@ -163,10 +177,15 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //Two sequences built by different merge orders carry equal state: each ToState reconstructs to the same
-    //sequence, so ToState does not depend on insertion history. The states are compared by reconstruction
-    //rather than by record equality because DotState compares its replica bytes by reference, and the
-    //ordered-section comparison is exercised by the same-instance determinism test above.
+    /// <summary>
+    /// Two sequences built by different merge orders carry equal state: each ToState reconstructs to the same
+    /// sequence, so ToState does not depend on insertion history.
+    /// </summary>
+    /// <remarks>
+    /// The states are compared by reconstruction rather than by record equality because DotState compares its
+    /// replica bytes by reference, and the ordered-section comparison is exercised by the same-instance
+    /// determinism test above.
+    /// </remarks>
     [TestMethod]
     public void MergeCommutativityPairYieldsEqualStates()
     {
@@ -358,11 +377,15 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //A base-offset translation whose target is a LIVE anchor is a forged state: honest base-offset
-    //translations point only at base positions or the head, and a live target would dangle uncomposed
-    //through a drop-only compaction (which keeps this map verbatim while the vertex may drop). (R2,3) is a
-    //retained live vertex of the compacted fixture, so the live-target guard fires before the target-anchor
-    //validation would otherwise accept it; the base- and head-targeting twins both load fine.
+    /// <summary>
+    /// A base-offset translation whose target is a LIVE anchor is a forged state: honest base-offset
+    /// translations point only at base positions or the head, and a live target would dangle uncomposed through
+    /// a drop-only compaction (which keeps this map verbatim while the vertex may drop).
+    /// </summary>
+    /// <remarks>
+    /// (R2,3) is a retained live vertex of the compacted fixture, so the live-target guard fires before the
+    /// target-anchor validation would otherwise accept it; the base- and head-targeting twins both load fine.
+    /// </remarks>
     [TestMethod]
     public void ABaseOffsetTranslationTargetingALiveAnchorFailsClosed()
     {
@@ -388,8 +411,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //The CompactedDotAnchors duplicate posture is unified to TryAdd-throw; the duplicated dropped dot is
-    //neither live nor tombstoned, so the W-shape guard cannot mask the duplicate.
+    /// <summary>
+    /// The CompactedDotAnchors duplicate posture is unified to TryAdd-throw; the duplicated dropped dot is
+    /// neither live nor tombstoned, so the W-shape guard cannot mask the duplicate.
+    /// </summary>
     [TestMethod]
     public void FromStateRejectsADuplicatedCompactedDotAnchor()
     {
@@ -401,8 +426,13 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //W-shape rejection: a translation entry whose dropped dot is simultaneously a LIVE untombstoned
-    //vertex is a forged state. The ghost-plus-witness shape stays legal (see the round-trip above).
+    /// <summary>
+    /// W-shape rejection: a translation entry whose dropped dot is simultaneously a LIVE untombstoned vertex is
+    /// a forged state.
+    /// </summary>
+    /// <remarks>
+    /// The ghost-plus-witness shape stays legal (see the round-trip above).
+    /// </remarks>
     [TestMethod]
     public void FromStateRejectsAWShapeTranslation()
     {
@@ -422,7 +452,9 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //Invariant CC over vertex dots — new for offset in v2.
+    /// <summary>
+    /// Invariant CC over vertex dots — new for offset in v2.
+    /// </summary>
     [TestMethod]
     public void FromStateRejectsAVertexDotNotCoveredByTheContext()
     {
@@ -436,8 +468,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //Invariant CC over live remove-dots: the target is a real vertex, the dot is positive and
-    //collision-free, so only the coverage guard can fire.
+    /// <summary>
+    /// Invariant CC over live remove-dots: the target is a real vertex, the dot is positive and collision-free,
+    /// so only the coverage guard can fire.
+    /// </summary>
     [TestMethod]
     public void FromStateRejectsALiveRemoveDotNotCoveredByTheContext()
     {
@@ -451,7 +485,9 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //Invariant CC over base remove-dots — base removals are never exempt.
+    /// <summary>
+    /// Invariant CC over base remove-dots — base removals are never exempt.
+    /// </summary>
     [TestMethod]
     public void FromStateRejectsABaseRemoveDotNotCoveredByTheContext()
     {
@@ -465,8 +501,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //The coverage exemption is exactly the orphan live TARGET — its insert may not have arrived — and
-    //never the orphan's remove-dots.
+    /// <summary>
+    /// The coverage exemption is exactly the orphan live TARGET — its insert may not have arrived — and never
+    /// the orphan's remove-dots.
+    /// </summary>
     [TestMethod]
     public void AnOrphanTombstoneTargetIsExemptFromCoverageButItsRemoveDotsAreNot()
     {
@@ -487,8 +525,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //Counter positivity on both remove axes and on an orphan target: a zero counter passes the coverage
-    //comparison, so positivity is the only guard that can fire.
+    /// <summary>
+    /// Counter positivity on both remove axes and on an orphan target: a zero counter passes the coverage
+    /// comparison, so positivity is the only guard that can fire.
+    /// </summary>
     [TestMethod]
     public void FromStateRejectsANonPositiveDotCounterOnEitherRemoveAxis()
     {
@@ -514,8 +554,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //THE cross-axis clause (§14.5): one dot pool spans both remove axes, so a remove-dot appearing as a
-    //live remove AND a base remove is rejected even though each entry is valid on its own.
+    /// <summary>
+    /// THE cross-axis clause (§14.5): one dot pool spans both remove axes, so a remove-dot appearing as a live
+    /// remove AND a base remove is rejected even though each entry is valid on its own.
+    /// </summary>
     [TestMethod]
     public void FromStateRejectsARemoveDotSharedAcrossTheAxes()
     {
@@ -574,7 +616,9 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //Remove-dot and vertex-id disjointness, live axis: (R2,2) is a vertex id of the fixture.
+    /// <summary>
+    /// Remove-dot and vertex-id disjointness, live axis: (R2,2) is a vertex id of the fixture.
+    /// </summary>
     [TestMethod]
     public void FromStateRejectsARemoveDotEqualToAVertexId()
     {
@@ -588,8 +632,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //Remove-dot and vertex-id disjointness crosses the axes too: a base remove-dot aliasing a vertex id
-    //would let an honest live certification reclaim an unremoved base slot.
+    /// <summary>
+    /// Remove-dot and vertex-id disjointness crosses the axes too: a base remove-dot aliasing a vertex id would
+    /// let an honest live certification reclaim an unremoved base slot.
+    /// </summary>
     [TestMethod]
     public void FromStateRejectsABaseRemoveDotEqualToAVertexId()
     {
@@ -603,8 +649,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //An absent array is not the same statement as an explicitly empty one: every default ImmutableArray,
-    //including a per-entry RemoveDots, fails closed.
+    /// <summary>
+    /// An absent array is not the same statement as an explicitly empty one: every default ImmutableArray,
+    /// including a per-entry RemoveDots, fails closed.
+    /// </summary>
     [TestMethod]
     public void FromStateFailsClosedOnDefaultArrays()
     {
@@ -621,8 +669,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //§12.2: the generation-fence field cannot arrive inconsistent with the context that certifies the
-    //generation — the context must dominate the base frontier element-wise.
+    /// <summary>
+    /// §12.2: the generation-fence field cannot arrive inconsistent with the context that certifies the
+    /// generation — the context must dominate the base frontier element-wise.
+    /// </summary>
     [TestMethod]
     public void FromStateRejectsABaseFrontierTheContextDoesNotDominate()
     {
@@ -644,9 +694,14 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //§5: the base generation ordinal is genesis EXACTLY when the base frontier is empty, and is never
-    //negative. A genesis frontier paired with a non-zero generation, a non-genesis frontier paired with
-    //the genesis generation, and a negative generation are each forged and fail closed.
+    /// <summary>
+    /// §5: the base generation ordinal is genesis EXACTLY when the base frontier is empty, and is never
+    /// negative.
+    /// </summary>
+    /// <remarks>
+    /// A genesis frontier paired with a non-zero generation, a non-genesis frontier paired with the genesis
+    /// generation, and a negative generation are each forged and fail closed.
+    /// </remarks>
     [TestMethod]
     public void FromStateRejectsABaseGenerationInconsistentWithItsFrontier()
     {
@@ -661,10 +716,14 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //An edited generation: a head insert, a base-anchored insert, a live-anchored insert chained off it, a
-    //dotted base removal by R1, and a dotted live removal by R2 — every anchor kind plus both removal
-    //kinds. Context {R1:4, R2:3}; vertices (R1,1), (R2,2), (R1,3); remove-dots (R1,4) and (R2,3), leaving
-    //(R1,2) and (R2,1) as covered, collision-free dots the fail-closed crafts can use.
+    /// <summary>
+    /// An edited generation: a head insert, a base-anchored insert, a live-anchored insert chained off it, a
+    /// dotted base removal by R1, and a dotted live removal by R2 — every anchor kind plus both removal kinds.
+    /// </summary>
+    /// <remarks>
+    /// Context {R1:4, R2:3}; vertices (R1,1), (R2,2), (R1,3); remove-dots (R1,4) and (R2,3), leaving (R1,2) and
+    /// (R2,1) as covered, collision-free dots the fail-closed crafts can use.
+    /// </remarks>
     private static OffsetAnchoredSequence<int> Edited()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
@@ -677,12 +736,17 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //A compacted generation that carries both translation maps and the stamped identity, then a post-seal
-    //live edit: the converted vertex 50 shifts the base so CompactedBaseOffsets is non-empty, the certified
-    //tombstone 60 drops so CompactedDotAnchors is non-empty, the frontier is insert-quiescent as §17
-    //requires, and a fresh insert 70=(R2,3) lands live in the new generation AFTER the compaction — the
-    //retained live vertex the W-shape fixture references. The compaction is base-changing, so the sealed
-    //generation is generation 1 and the post-seal base address of offset 3 carries that generation.
+    /// <summary>
+    /// A compacted generation that carries both translation maps and the stamped identity, then a post-seal
+    /// live edit: the converted vertex 50 shifts the base so CompactedBaseOffsets is non-empty, the certified
+    /// tombstone 60 drops so CompactedDotAnchors is non-empty, the frontier is insert-quiescent as §17
+    /// requires, and a fresh insert 70=(R2,3) lands live in the new generation AFTER the compaction — the
+    /// retained live vertex the W-shape fixture references.
+    /// </summary>
+    /// <remarks>
+    /// The compaction is base-changing, so the sealed generation is generation 1 and the post-seal base address
+    /// of offset 3 carries that generation.
+    /// </remarks>
     private static OffsetAnchoredSequence<int> CompactedWithBothMaps()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
@@ -701,8 +765,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //A pending-removed generation: an uncertified-removed stable vertex converted into the base, hidden,
-    //its remove-dot keyed to the new offset, and the generation identity stamped.
+    /// <summary>
+    /// A pending-removed generation: an uncertified-removed stable vertex converted into the base, hidden, its
+    /// remove-dot keyed to the new offset, and the generation identity stamped.
+    /// </summary>
     private static OffsetAnchoredSequence<int> PendingRemoved()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
@@ -716,8 +782,10 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //A ghost re-entered by merge after its certified drop: the vertex is live WITH its tombstone while
-    //the compacted operand's witness entry remains — the legal half of the W-shape rule.
+    /// <summary>
+    /// A ghost re-entered by merge after its certified drop: the vertex is live WITH its tombstone while the
+    /// compacted operand's witness entry remains — the legal half of the W-shape rule.
+    /// </summary>
     private static OffsetAnchoredSequence<int> GhostWitnessMerge()
     {
         OffsetAnchoredSequence<int> shared = OffsetAnchoredSequence<int>.WithBase(BaseValues);
@@ -731,7 +799,9 @@ internal sealed class OffsetAnchoredSequenceStateTests
     }
 
 
-    //Canonically encodes a state to bytes through the deterministic JSON codec, for ordering comparisons.
+    /// <summary>
+    /// Canonically encodes a state to bytes through the deterministic JSON codec, for ordering comparisons.
+    /// </summary>
     private static byte[] Encode(OffsetAnchoredSequenceState<int> state)
     {
         var buffer = new ArrayBufferWriter<byte>();

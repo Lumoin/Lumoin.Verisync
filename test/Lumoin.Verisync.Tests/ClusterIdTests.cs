@@ -14,8 +14,10 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class ClusterIdTests
 {
-    //The digest of the three-member genesis list below under the pinned canonical encoding: the domain
-    //separator, the member count as four big-endian bytes, then every member's bytes in array order.
+    /// <summary>
+    /// The digest of the three-member genesis list below under the pinned canonical encoding: the domain
+    /// separator, the member count as four big-endian bytes, then every member's bytes in array order.
+    /// </summary>
     private const string PinnedGenesisDigest = "a8403cc0ad331152143610bca35b37125c0ec07895b99a241104cf3672412d56";
 
 

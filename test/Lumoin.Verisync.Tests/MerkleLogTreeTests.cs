@@ -590,8 +590,6 @@ internal sealed class MerkleLogTreeTests
     }
 
 
-    //--- Test helpers -----------------------------------------------------------------------------
-
     private static MerkleLogTree Build(IEnumerable<byte[]> leaves)
     {
         MerkleLogTree tree = MerkleLogTree.Empty;

@@ -21,8 +21,13 @@ internal sealed class ItemStreamChannelTests
 
     public TestContext TestContext { get; set; } = null!;
 
-    //Writes a frame's worth of items: a four-byte big-endian count, then each item as a four-byte big-endian
-    //length prefix followed by its bytes. The reader's decoder mirrors this exactly.
+    /// <summary>
+    /// Writes a frame's worth of items: a four-byte big-endian count, then each item as a four-byte big-endian
+    /// length prefix followed by its bytes.
+    /// </summary>
+    /// <remarks>
+    /// The reader's decoder mirrors this exactly.
+    /// </remarks>
     private static SerializeMessageDelegate<IReadOnlyList<byte[]>> SerializeBlobs { get; } =
         (items, output) =>
         {
@@ -367,9 +372,14 @@ internal sealed class ItemStreamChannelTests
     }
 
 
-    //Decodes one length-prefixed blob, copying its bytes into a pooled rental returned as the lease so the item
-    //outlives the borrowed frame buffer. An empty blob owns nothing, so its lease is null. Every field is bounded
-    //against the cursor before a byte is copied, and nothing is rented on a path that then throws.
+    /// <summary>
+    /// Decodes one length-prefixed blob, copying its bytes into a pooled rental returned as the lease so the item
+    /// outlives the borrowed frame buffer.
+    /// </summary>
+    /// <remarks>
+    /// An empty blob owns nothing, so its lease is null. Every field is bounded against the cursor before a byte
+    /// is copied, and nothing is rented on a path that then throws.
+    /// </remarks>
     private static Blob DecodeBlob(ref SequenceReader<byte> reader, MemoryPool<byte> pool, out IDisposable? lease)
     {
         Span<byte> lengthBytes = stackalloc byte[4];
@@ -430,7 +440,9 @@ internal sealed class ItemStreamChannelTests
     }
 
 
-    //A decoded item viewing pooled bytes: valid only while its lease is undisposed, which is the duration of one
-    //handler call.
+    /// <summary>
+    /// A decoded item viewing pooled bytes: valid only while its lease is undisposed, which is the duration of one
+    /// handler call.
+    /// </summary>
     private readonly record struct Blob(ReadOnlyMemory<byte> Bytes);
 }

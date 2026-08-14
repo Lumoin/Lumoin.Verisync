@@ -465,10 +465,15 @@ internal sealed class RaftRunnerTests
     }
 
 
-    //A single real RaftRunner wired to capturing delegates. Work is enqueued through the runner's own producer
-    //API; DrainAsync completes the channel and awaits the consumer loop, so every queued item is processed in
-    //FIFO order before control returns — a deterministic completion signal, never a timed wait. The capturing
-    //delegates run on the loop and their queues are read only after the run task has completed.
+    /// <summary>
+    /// A single real RaftRunner wired to capturing delegates.
+    /// </summary>
+    /// <remarks>
+    /// Work is enqueued through the runner's own producer API; DrainAsync completes the channel and awaits the
+    /// consumer loop, so every queued item is processed in FIFO order before control returns — a deterministic
+    /// completion signal, never a timed wait. The capturing delegates run on the loop and their queues are read
+    /// only after the run task has completed.
+    /// </remarks>
     private sealed class Runner: IAsyncDisposable
     {
         private readonly RaftRunner<string> runner;
@@ -488,7 +493,9 @@ internal sealed class RaftRunnerTests
 
         public ConcurrentQueue<(LogIndex Index, string Command)> Applied { get; } = new();
 
-        //Records each persist and send firing in order; the persist-before-send invariant is read off this.
+        /// <summary>
+        /// Records each persist and send firing in order; the persist-before-send invariant is read off this.
+        /// </summary>
         public ConcurrentQueue<string> Events { get; } = new();
 
         public RaftNodeState<string>? LastPersisted { get; private set; }

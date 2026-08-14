@@ -113,8 +113,10 @@ internal sealed class CheckpointedSequenceTests
     }
 
 
-    //A sealed checkpoint's content stays in the compactable strategy's live sequence; edits after the seal
-    //accumulate live while the recorded checkpoint holds the sealed dotted content.
+    /// <summary>
+    /// A sealed checkpoint's content stays in the compactable strategy's live sequence; edits after the seal
+    /// accumulate live while the recorded checkpoint holds the sealed dotted content.
+    /// </summary>
     [TestMethod]
     public void EditsAfterCheckpointStayInLive()
     {
@@ -146,8 +148,10 @@ internal sealed class CheckpointedSequenceTests
     }
 
 
-    //Two seals on an ascending frontier chain leave the later checkpoint recorded at the higher ballot;
-    //merging the earlier container with the later one keeps that later checkpoint.
+    /// <summary>
+    /// Two seals on an ascending frontier chain leave the later checkpoint recorded at the higher ballot;
+    /// merging the earlier container with the later one keeps that later checkpoint.
+    /// </summary>
     [TestMethod]
     public void MergeKeepsLaterCheckpoint()
     {
@@ -202,11 +206,13 @@ internal sealed class CheckpointedSequenceTests
     }
 
 
-    //The container's probe checks exist independently of the strategy guard: RGA's Compact never
-    //imposes an insert-quiescence precondition, so with a hand-built context whose probe constantly
-    //reports one unstable insert, any quiescence throw below can only come from the container itself —
-    //both from Seal and from ApplyCommittedSeal with an honestly-built commitment whose dominance,
-    //chain, and digest checks all pass.
+    /// <summary>
+    /// The container's probe checks exist independently of the strategy guard: RGA's Compact never
+    /// imposes an insert-quiescence precondition, so with a hand-built context whose probe constantly
+    /// reports one unstable insert, any quiescence throw below can only come from the container itself —
+    /// both from Seal and from ApplyCommittedSeal with an honestly-built commitment whose dominance,
+    /// chain, and digest checks all pass.
+    /// </summary>
     [TestMethod]
     public void TheContainerRefusesToSealWhenTheProbeReportsInstability()
     {
@@ -261,10 +267,14 @@ internal sealed class CheckpointedSequenceTests
     }
 
 
-    //The digest check runs BEFORE the probe in ApplyCommittedSeal: with the probe wired to throw a
-    //marker exception and a MISMATCHED digest, the digest-first order surfaces the digest's
-    //InvalidOperationException; a probe-first implementation would surface NotSupportedException. The
-    //ordering is pinned by exception TYPE alone.
+    /// <summary>
+    /// The digest check runs BEFORE the probe in ApplyCommittedSeal: with the probe wired to throw a
+    /// marker exception and a MISMATCHED digest, the digest-first order surfaces the digest's
+    /// InvalidOperationException; a probe-first implementation would surface NotSupportedException.
+    /// </summary>
+    /// <remarks>
+    /// The ordering is pinned by exception TYPE alone.
+    /// </remarks>
     [TestMethod]
     public void TheDigestCheckPrecedesTheProbeInApplyCommittedSeal()
     {
@@ -319,8 +329,10 @@ internal sealed class CheckpointedSequenceTests
     }
 
 
-    //Encodes each dotted entry deterministically as dot replica hex, counter, and value, so equal checkpoints
-    //produce equal canonical bytes on every replica.
+    /// <summary>
+    /// Encodes each dotted entry deterministically as dot replica hex, counter, and value, so equal checkpoints
+    /// produce equal canonical bytes on every replica.
+    /// </summary>
     private static ReadOnlyMemory<byte> Canonicalize(ImmutableArray<SequenceCheckpointEntry<string>> entries)
     {
         var builder = new StringBuilder();

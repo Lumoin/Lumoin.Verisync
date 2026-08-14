@@ -88,7 +88,9 @@ internal sealed class RaftSocketClusterTests
 
     //--- Helpers --------------------------------------------------------------------------------------------
 
-    //Triggers an election on the first node and drives heartbeats until exactly one node is leader, returning it.
+    /// <summary>
+    /// Triggers an election on the first node and drives heartbeats until exactly one node is leader, returning it.
+    /// </summary>
     private static async Task<ReplicaId> ElectAnyLeaderAsync(SocketMesh mesh, CancellationToken cancellationToken)
     {
         await mesh.Runner(mesh.Members[0]).TriggerElectionAsync(cancellationToken).ConfigureAwait(false);
@@ -98,8 +100,12 @@ internal sealed class RaftSocketClusterTests
     }
 
 
-    //Drives heartbeats from the current leader and polls the predicate under the bounded timeout. The timeout —
-    //not a fixed sleep — is the synchronization boundary; the short delay is only loop back-off.
+    /// <summary>
+    /// Drives heartbeats from the current leader and polls the predicate under the bounded timeout.
+    /// </summary>
+    /// <remarks>
+    /// The timeout — not a fixed sleep — is the synchronization boundary; the short delay is only loop back-off.
+    /// </remarks>
     private static async Task DriveUntilAsync(SocketMesh mesh, Func<bool> satisfied, CancellationToken cancellationToken)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -125,8 +131,10 @@ internal sealed class RaftSocketClusterTests
     }
 
 
-    //Collapses the applied entries to one command per committed index, in index order: apply is at-least-once
-    //across a restart, so de-duplicating by index keeps the comparison about converged content, not counts.
+    /// <summary>
+    /// Collapses the applied entries to one command per committed index, in index order: apply is at-least-once
+    /// across a restart, so de-duplicating by index keeps the comparison about converged content, not counts.
+    /// </summary>
     private static string[] Commands(IReadOnlyCollection<(LogIndex Index, string Command)> applied)
     {
         return applied
@@ -137,9 +145,14 @@ internal sealed class RaftSocketClusterTests
     }
 
 
-    //A localhost socket mesh of runners. Each node has its own listener and a directed outbound link to every
-    //peer; a peer's inbound link is read by a loop that feeds the local runner's SubmitAsync. Everything is
-    //tracked so DisposeAsync can tear it all down even if a test fails mid-flight.
+    /// <summary>
+    /// A localhost socket mesh of runners.
+    /// </summary>
+    /// <remarks>
+    /// Each node has its own listener and a directed outbound link to every peer; a peer's inbound link is read
+    /// by a loop that feeds the local runner's SubmitAsync. Everything is tracked so DisposeAsync can tear it
+    /// all down even if a test fails mid-flight.
+    /// </remarks>
     private sealed class SocketMesh: IAsyncDisposable
     {
         private static readonly SerializeMessageDelegate<RaftEnvelope<string>> SerializeEnvelope =
@@ -183,8 +196,10 @@ internal sealed class RaftSocketClusterTests
         public int PersistCount(ReplicaId id) => persistCounts[id];
 
 
-        //Stands up the full mesh: a listener per node, a directed socket per ordered pair, the reader loops
-        //that feed each node, and a started runner per node wired to send through the outbound writers.
+        /// <summary>
+        /// Stands up the full mesh: a listener per node, a directed socket per ordered pair, the reader loops
+        /// that feed each node, and a started runner per node wired to send through the outbound writers.
+        /// </summary>
         public static async Task<SocketMesh> BuildAsync(int count, CancellationToken cancellationToken)
         {
             ImmutableArray<ReplicaId> members = [.. Enumerable.Range(1, count).Select(i => Replica((byte)i))];
@@ -205,8 +220,10 @@ internal sealed class RaftSocketClusterTests
         }
 
 
-        //Restarts a node from its last persisted state behind a fresh node, runner, and applied queue, leaving
-        //the existing socket links in place so heartbeats flow straight back to the rejoined runner.
+        /// <summary>
+        /// Restarts a node from its last persisted state behind a fresh node, runner, and applied queue, leaving
+        /// the existing socket links in place so heartbeats flow straight back to the rejoined runner.
+        /// </summary>
         public async Task RestartFromLastPersistedAsync(ReplicaId id, CancellationToken token)
         {
             runners[id].Complete();
@@ -351,8 +368,10 @@ internal sealed class RaftSocketClusterTests
         }
 
 
-        //Reads framed envelopes off one inbound socket and submits each to the owning node's current runner; a
-        //runner restart swaps runners[owner], so the lookup happens per message rather than being captured.
+        /// <summary>
+        /// Reads framed envelopes off one inbound socket and submits each to the owning node's current runner; a
+        /// runner restart swaps runners[owner], so the lookup happens per message rather than being captured.
+        /// </summary>
         private async Task ReadInboundAsync(ReplicaId owner, TcpClient server)
         {
             NetworkStream stream = server.GetStream();

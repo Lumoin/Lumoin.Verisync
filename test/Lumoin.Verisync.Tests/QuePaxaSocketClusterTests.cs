@@ -832,13 +832,18 @@ internal sealed class QuePaxaSocketClusterTests
     }
 
 
-    //A RE-DELIVERY AFTER A FAILED WRITE RETRIES THE WRITE, and this is the one place where "did the state
-    //change" and "is the state durable" come apart. A request advances the recorder, the write fails, and the
-    //reply is correctly withheld. The proposer then re-delivers the identical request, which the re-send rule
-    //makes ordinary rather than exceptional. That re-delivery changes nothing, so a gate that asked whether
-    //THIS request changed the state would skip the write and send a reply carrying a first proposal that never
-    //reached the disk. Here the re-delivery is a real retransmission: the connection the first attempt died on
-    //is gone, and the identical bytes cross a fresh one, which is the shape a proposer's retry actually takes.
+    /// <summary>
+    /// A RE-DELIVERY AFTER A FAILED WRITE RETRIES THE WRITE, and this is the one place where "did the state
+    /// change" and "is the state durable" come apart.
+    /// </summary>
+    /// <remarks>
+    /// A request advances the recorder, the write fails, and the reply is correctly withheld. The proposer
+    /// then re-delivers the identical request, which the re-send rule makes ordinary rather than exceptional.
+    /// That re-delivery changes nothing, so a gate that asked whether THIS request changed the state would
+    /// skip the write and send a reply carrying a first proposal that never reached the disk. Here the
+    /// re-delivery is a real retransmission: the connection the first attempt died on is gone, and the
+    /// identical bytes cross a fresh one, which is the shape a proposer's retry actually takes.
+    /// </remarks>
     [TestMethod]
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "All listeners, clients, servers, and enumerators are tracked in lists and disposed in the finally block.")]
     public async Task ARedeliveryAfterAFailedPersistWritesAgainBeforeItAnswersOverSockets()
@@ -1009,9 +1014,14 @@ internal sealed class QuePaxaSocketClusterTests
     }
 
 
-    //A proposer abandons an outstanding endpoint call by design, and an abandoned call sits in its reply
-    //enumerator's MoveNextAsync holding its connection's gate. Disposing an enumerator with a call in flight is
-    //illegal, so teardown first completes those calls and then proves none is left.
+    /// <summary>
+    /// A proposer abandons an outstanding endpoint call by design, and an abandoned call sits in its reply
+    /// enumerator's MoveNextAsync holding its connection's gate.
+    /// </summary>
+    /// <remarks>
+    /// Disposing an enumerator with a call in flight is illegal, so teardown first completes those calls and
+    /// then proves none is left.
+    /// </remarks>
     private static async Task DisposeTransport<TReply>(
         List<MessageChannelReader<TReply>> readers,
         List<IAsyncEnumerator<TReply>> enumerators,

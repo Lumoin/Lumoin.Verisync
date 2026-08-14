@@ -157,8 +157,13 @@ internal sealed class ProposalPriorityTests
     }
 
 
-    //Entropy scripted fill by fill, so the rejection path is walked rather than waited for. The last fill
-    //repeats once the script runs out, which keeps a defective implementation from spinning forever.
+    /// <summary>
+    /// Entropy scripted fill by fill, so the rejection path is walked rather than waited for.
+    /// </summary>
+    /// <remarks>
+    /// The last fill repeats once the script runs out, which keeps a defective implementation from spinning
+    /// forever.
+    /// </remarks>
     private sealed class ScriptedEntropySource
     {
         private int index;
@@ -182,8 +187,13 @@ internal sealed class ProposalPriorityTests
     }
 
 
-    //Xorshift64 rather than System.Random: the sequence is deterministic across runtimes and platforms, so a
-    //seed printed by a failing run replays the identical sample anywhere. State must be nonzero.
+    /// <summary>
+    /// Xorshift64 rather than System.Random: the sequence is deterministic across runtimes and platforms, so a
+    /// seed printed by a failing run replays the identical sample anywhere.
+    /// </summary>
+    /// <remarks>
+    /// State must be nonzero.
+    /// </remarks>
     private sealed class SeededEntropySource
     {
         private ulong state;

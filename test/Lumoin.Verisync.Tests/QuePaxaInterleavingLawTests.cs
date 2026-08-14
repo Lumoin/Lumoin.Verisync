@@ -25,14 +25,22 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class QuePaxaInterleavingLawTests
 {
-    //The per-step attempt budget every bench proposer runs with. It must be above one, because a budget of
-    //one makes the re-send path unreachable and therefore untested, and it is what bounds a run against a
-    //partitioned recorder.
+    /// <summary>
+    /// The per-step attempt budget every bench proposer runs with.
+    /// </summary>
+    /// <remarks>
+    /// It must be above one, because a budget of one makes the re-send path unreachable and therefore
+    /// untested, and it is what bounds a run against a partitioned recorder.
+    /// </remarks>
     private const int AttemptsPerRecorder = 2;
 
-    //Identities from fixed bytes so that A sorts below B by lexicographic byte order. That is load-bearing
-    //for the scripted negative and not tidiness: the divergence there holds only while the losing proposer's
-    //lane sorts ABOVE the winner's.
+    /// <summary>
+    /// Identities from fixed bytes so that A sorts below B by lexicographic byte order.
+    /// </summary>
+    /// <remarks>
+    /// That is load-bearing for the scripted negative and not tidiness: the divergence there holds only while
+    /// the losing proposer's lane sorts ABOVE the winner's.
+    /// </remarks>
     private static ProposerLane LaneA { get; } = ProposerLane.For(Replica(1));
     private static ProposerLane LaneB { get; } = ProposerLane.For(Replica(2));
     private static ProposerLane SecondLaneOfReplicaA { get; } = new(Replica(1), 1);
@@ -45,11 +53,15 @@ internal sealed class QuePaxaInterleavingLawTests
     public TestContext TestContext { get; set; } = null!;
 
 
-    //B1 AGREEMENT ACROSS SEEDED INTERLEAVINGS. Two proposers, three recorders, one configured leader: no two
-    //decided outcomes carry different values, whatever order the requests and replies are delivered in. The
-    //reach half is asserted in the same test over the same fixed seeds — at least one seed in which two
-    //proposers' requests met at one recorder AT THE SAME STEP, and at least one decision overall — because
-    //agreement over a sweep that never contended is indistinguishable from agreement over nothing.
+    /// <summary>
+    /// B1 AGREEMENT ACROSS SEEDED INTERLEAVINGS. Two proposers, three recorders, one configured leader: no two
+    /// decided outcomes carry different values, whatever order the requests and replies are delivered in.
+    /// </summary>
+    /// <remarks>
+    /// The reach half is asserted in the same test over the same fixed seeds — at least one seed in which two
+    /// proposers' requests met at one recorder AT THE SAME STEP, and at least one decision overall — because
+    /// agreement over a sweep that never contended is indistinguishable from agreement over nothing.
+    /// </remarks>
     [TestMethod]
     public async Task NoTwoDecisionsCarryDifferentValuesAcrossSeededInterleavings()
     {
@@ -76,11 +88,15 @@ internal sealed class QuePaxaInterleavingLawTests
     }
 
 
-    //B1 REACH, DETERMINISTIC AND SCRIPTED. The sweep above asserts its own reach statistically over fixed
-    //seeds; this pin constructs the region with no randomness at all, so the claim that the bench CAN put two
-    //proposers at one recorder in a chosen order does not rest on any seed. The rival's request is delivered
-    //to recorder zero first, so the configured leader's own claim arrives at a recorder that has already
-    //served someone else at that step.
+    /// <summary>
+    /// B1 REACH, DETERMINISTIC AND SCRIPTED. The sweep above asserts its own reach statistically over fixed
+    /// seeds; this pin constructs the region with no randomness at all, so the claim that the bench CAN put two
+    /// proposers at one recorder in a chosen order does not rest on any seed.
+    /// </summary>
+    /// <remarks>
+    /// The rival's request is delivered to recorder zero first, so the configured leader's own claim arrives
+    /// at a recorder that has already served someone else at that step.
+    /// </remarks>
     [TestMethod]
     public async Task TheBenchReachesTwoProposersAtOneRecorderInAChosenOrderByConstruction()
     {
@@ -114,11 +130,16 @@ internal sealed class QuePaxaInterleavingLawTests
     }
 
 
-    //B2 AGREEMENT WITH THREE LANES, two of them lanes of ONE replica. That is the contention width the lane
-    //exists to make reachable and that no checked configuration explored: the checked runs had two proposers,
-    //and lanes make three or more concurrent proposer identities reachable on a three-replica deployment. It
-    //is also why the reserved priority is granted to a lane rather than to a replica — two lanes of the
-    //leader's own replica each claiming it would reproduce the divergence hazard from inside the leader.
+    /// <summary>
+    /// B2 AGREEMENT WITH THREE LANES, two of them lanes of ONE replica.
+    /// </summary>
+    /// <remarks>
+    /// That is the contention width the lane exists to make reachable and that no checked configuration
+    /// explored: the checked runs had two proposers, and lanes make three or more concurrent proposer
+    /// identities reachable on a three-replica deployment. It is also why the reserved priority is granted to
+    /// a lane rather than to a replica — two lanes of the leader's own replica each claiming it would
+    /// reproduce the divergence hazard from inside the leader.
+    /// </remarks>
     [TestMethod]
     public async Task ThreeConcurrentLanesIncludingTwoOfOneReplicaAgree()
     {
@@ -158,11 +179,16 @@ internal sealed class QuePaxaInterleavingLawTests
     }
 
 
-    //B3 AGREEMENT UNDER DUPLICATION. A re-delivered request is permitted exactly because a second IDENTICAL
-    //record is the identity on the recorder: at the recorder's own step the aggregate already dominates the
-    //duplicate's key, so no field would change and the register returns itself. The counter is what makes
-    //this evidence for that rule rather than for the stale branch the core already covered — a duplicate
-    //landing BELOW the recorder's step exercises staleness, which is a different rule with its own tests.
+    /// <summary>
+    /// B3 AGREEMENT UNDER DUPLICATION. A re-delivered request is permitted exactly because a second IDENTICAL
+    /// record is the identity on the recorder: at the recorder's own step the aggregate already dominates the
+    /// duplicate's key, so no field would change and the register returns itself.
+    /// </summary>
+    /// <remarks>
+    /// The counter is what makes this evidence for that rule rather than for the stale branch the core already
+    /// covered — a duplicate landing BELOW the recorder's step exercises staleness, which is a different rule
+    /// with its own tests.
+    /// </remarks>
     [TestMethod]
     public async Task AgreementHoldsWhenRequestsAreDuplicated()
     {
@@ -200,9 +226,11 @@ internal sealed class QuePaxaInterleavingLawTests
     }
 
 
-    //B3 REACH, DETERMINISTIC AND SCRIPTED. The sweep's counters depend on where the pump happened to place a
-    //duplicate; this pin places one by hand, immediately after its original, so the same-step region is
-    //reached by construction and the recorder instance is compared directly rather than through a counter.
+    /// <summary>
+    /// B3 REACH, DETERMINISTIC AND SCRIPTED. The sweep's counters depend on where the pump happened to place a
+    /// duplicate; this pin places one by hand, immediately after its original, so the same-step region is
+    /// reached by construction and the recorder instance is compared directly rather than through a counter.
+    /// </summary>
     [TestMethod]
     public async Task TheDuplicationBenchReachesTheSameStepIdempotentDuplicateByConstruction()
     {
@@ -238,12 +266,16 @@ internal sealed class QuePaxaInterleavingLawTests
     }
 
 
-    //B4 AGREEMENT AND PROGRESS UNDER A PARTITIONED MINORITY. A quorum of two out of three still decides while
-    //the third recorder loses every message in both directions. THE PROGRESS HALF IS THE REACH PIN and is
-    //asserted per seed rather than in aggregate: without it, the agreement half passes vacuously exactly when
-    //the partition stopped everyone, which is the failure this law is meant to detect. Termination rests on
-    //the bounded attempt budget — the partitioned recorder's endpoint faults, the proposer re-sends, and the
-    //budget is what stops that being an infinite regress.
+    /// <summary>
+    /// B4 AGREEMENT AND PROGRESS UNDER A PARTITIONED MINORITY. A quorum of two out of three still decides while
+    /// the third recorder loses every message in both directions.
+    /// </summary>
+    /// <remarks>
+    /// THE PROGRESS HALF IS THE REACH PIN and is asserted per seed rather than in aggregate: without it, the
+    /// agreement half passes vacuously exactly when the partition stopped everyone, which is the failure this
+    /// law is meant to detect. Termination rests on the bounded attempt budget — the partitioned recorder's
+    /// endpoint faults, the proposer re-sends, and the budget is what stops that being an infinite regress.
+    /// </remarks>
     [TestMethod]
     public async Task AQuorumDecidesWhileAMinorityIsPartitionedThroughout()
     {
@@ -269,17 +301,24 @@ internal sealed class QuePaxaInterleavingLawTests
     }
 
 
-    //B5 THE MISCONFIGURED CLUSTER IS THE NEGATIVE, AND IT ASSERTS THAT A DIVERGENCE IS REACHABLE. A reader
-    //finding a test that asserts two decisions carrying different values will otherwise assume it is broken:
-    //it pins the HAZARD rather than the fix, in the idiom of the synchronous suite's own disagreeing-recorders
-    //negative, and what it costs a deployment is exactly what the downgrade rule buys — the recorders must
-    //agree on the configured leader.
-    //
-    //IT IS SCRIPTED AND USES NO SEED, so it cannot be flaky. A < B is load-bearing: when the fast path is
-    //refused, the fall-through takes the GREATEST first proposal, two reserved-priority proposals tie on
-    //priority, and the proposer identifier settles it. With A below B the fall-through hands B its OWN
-    //proposal and B decides its own value against the value A already decided; with the order reversed the
-    //same schedule converges.
+    /// <summary>
+    /// B5 THE MISCONFIGURED CLUSTER IS THE NEGATIVE, AND IT ASSERTS THAT A DIVERGENCE IS REACHABLE.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A reader finding a test that asserts two decisions carrying different values will otherwise assume it
+    /// is broken: it pins the HAZARD rather than the fix, in the idiom of the synchronous suite's own
+    /// disagreeing-recorders negative, and what it costs a deployment is exactly what the downgrade rule buys
+    /// — the recorders must agree on the configured leader.
+    /// </para>
+    /// <para>
+    /// IT IS SCRIPTED AND USES NO SEED, so it cannot be flaky. A &lt; B is load-bearing: when the fast path is
+    /// refused, the fall-through takes the GREATEST first proposal, two reserved-priority proposals tie on
+    /// priority, and the proposer identifier settles it. With A below B the fall-through hands B its OWN
+    /// proposal and B decides its own value against the value A already decided; with the order reversed the
+    /// same schedule converges.
+    /// </para>
+    /// </remarks>
     [TestMethod]
     public async Task RecordersConfiguredWithDifferentLeadersDivergeUnderAScriptedDelivery()
     {
@@ -350,9 +389,14 @@ internal sealed class QuePaxaInterleavingLawTests
     }
 
 
-    //B6 REPLAY DETERMINISM. One seed run twice produces identical delivery traces, which is what makes a
-    //printed seed worth printing: a failing interleaving replays anywhere rather than being reported as
-    //flaky. The generator is xorshift rather than the platform's, for the same reason.
+    /// <summary>
+    /// B6 REPLAY DETERMINISM. One seed run twice produces identical delivery traces, which is what makes a
+    /// printed seed worth printing: a failing interleaving replays anywhere rather than being reported as
+    /// flaky.
+    /// </summary>
+    /// <remarks>
+    /// The generator is xorshift rather than the platform's, for the same reason.
+    /// </remarks>
     [TestMethod]
     public async Task OneSeedRunTwiceProducesTheIdenticalDeliveryTrace()
     {
@@ -378,10 +422,14 @@ internal sealed class QuePaxaInterleavingLawTests
     }
 
 
-    //Delivers one proposer's exchange with the named recorders: every request first, then every reply. The
-    //filter names the PROPOSER as well as the recorder, because a script that asked only for "the next
-    //message at recorder one" would pick up whatever another proposer left in flight there and would quietly
-    //stop being the scenario it is named for.
+    /// <summary>
+    /// Delivers one proposer's exchange with the named recorders: every request first, then every reply.
+    /// </summary>
+    /// <remarks>
+    /// The filter names the PROPOSER as well as the recorder, because a script that asked only for "the next
+    /// message at recorder one" would pick up whatever another proposer left in flight there and would quietly
+    /// stop being the scenario it is named for.
+    /// </remarks>
     private static void DeliverExchange(InterleavedQuePaxaCluster<string> cluster, ProposerLane proposer, params int[] recorders)
     {
         foreach(int recorder in recorders)
@@ -400,9 +448,13 @@ internal sealed class QuePaxaInterleavingLawTests
     }
 
 
-    //Two proposers that each believe they lead, against recorders that agree only one of them does. That is
-    //the model's two-believed-leaders-against-one-configured-leader shape and the state the green
-    //configurations reach constantly.
+    /// <summary>
+    /// Two proposers that each believe they lead, against recorders that agree only one of them does.
+    /// </summary>
+    /// <remarks>
+    /// That is the model's two-believed-leaders-against-one-configured-leader shape and the state the green
+    /// configurations reach constantly.
+    /// </remarks>
     private async Task<QuePaxaOutcome<string>[]> RunTwoProposersAsync(InterleavedQuePaxaCluster<string> cluster)
     {
         QuePaxaProposer<string> first = cluster.CreateProposer(LaneA, Source(cluster.Seed, 1), AttemptsPerRecorder);
@@ -464,9 +516,13 @@ internal sealed class QuePaxaInterleavingLawTests
     }
 
 
-    //Two proposers' requests met at one recorder AT ONE STEP when that recorder served them back to back. A
-    //recorder that served every request of one proposer and only then the other's is a sequential run, not a
-    //contended one, and a law swept over sequential runs says nothing about interleaving.
+    /// <summary>
+    /// Two proposers' requests met at one recorder AT ONE STEP when that recorder served them back to back.
+    /// </summary>
+    /// <remarks>
+    /// A recorder that served every request of one proposer and only then the other's is a sequential run, not
+    /// a contended one, and a law swept over sequential runs says nothing about interleaving.
+    /// </remarks>
     private static bool RequestsMetAtOneRecorderAtOneStep(InterleavedQuePaxaCluster<string> cluster)
     {
         Dictionary<int, InterleavedQuePaxaCluster<string>.DeliveredRequest> previousAtRecorder = new();
@@ -486,8 +542,10 @@ internal sealed class QuePaxaInterleavingLawTests
     }
 
 
-    //A distinct priority stream per proposer per seed, so a run is reproducible and two proposers never draw
-    //the identical sequence.
+    /// <summary>
+    /// A distinct priority stream per proposer per seed, so a run is reproducible and two proposers never draw
+    /// the identical sequence.
+    /// </summary>
     private static ProposalPrioritySourceDelegate Source(int seed, int proposer)
     {
         SeededPrioritySource source = new(((ulong)(uint)seed * 1_000UL) + (ulong)proposer);
@@ -529,8 +587,10 @@ internal sealed class QuePaxaInterleavingLawTests
     }
 
 
-    //Xorshift64 rather than the cryptographic source: every priority in a run is reproducible from its seed,
-    //so a failing interleaving replays the identical draws on any runtime.
+    /// <summary>
+    /// Xorshift64 rather than the cryptographic source: every priority in a run is reproducible from its seed,
+    /// so a failing interleaving replays the identical draws on any runtime.
+    /// </summary>
     private sealed class SeededPrioritySource
     {
         private ulong state;

@@ -1051,9 +1051,13 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
-    //Runs one remove-aware session between two hosts and returns them with their converged states. The hosts
-    //wire the initiator's classifier and both sides' apply, drop, and merge hooks over their own mutable
-    //DVVSet, and pass projection.Context as the session's local context.
+    /// <summary>
+    /// Runs one remove-aware session between two hosts and returns them with their converged states.
+    /// </summary>
+    /// <remarks>
+    /// The hosts wire the initiator's classifier and both sides' apply, drop, and merge hooks over their own
+    /// mutable DVVSet, and pass projection.Context as the session's local context.
+    /// </remarks>
     private static async Task<(RemoveAwareReconciliationHost Initiator, RemoveAwareReconciliationHost Responder)> ReconcileOnceAsync(
         DottedVersionVectorSet<string> initiatorStart,
         DottedVersionVectorSet<string> responderStart,
@@ -1092,9 +1096,11 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
-    //Runs one remove-aware session like ReconcileOnceAsync but wraps each side's send in a FrameCensus, so a
-    //caller can assert which payloads crossed — used where the proof is quiescence (no fetch/elements/drop) rather
-    //than only the converged values.
+    /// <summary>
+    /// Runs one remove-aware session like ReconcileOnceAsync but wraps each side's send in a FrameCensus, so a
+    /// caller can assert which payloads crossed — used where the proof is quiescence (no fetch/elements/drop)
+    /// rather than only the converged values.
+    /// </summary>
     private static async Task<(RemoveAwareReconciliationHost Initiator, RemoveAwareReconciliationHost Responder, FrameCensus ToResponder, FrameCensus ToInitiator)> ReconcileOnceWithCensusAsync(
         DottedVersionVectorSet<string> initiatorStart,
         DottedVersionVectorSet<string> responderStart,
@@ -1136,9 +1142,14 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
-    //Builds a known divergence with the merge known by construction. A shared ancestor seeds both sides; the
-    //shapes layer per-side adds and an observed remove on top, including the resurrection probe — a dot the
-    //initiator observed and removed while the responder still holds it.
+    /// <summary>
+    /// Builds a known divergence with the merge known by construction.
+    /// </summary>
+    /// <remarks>
+    /// A shared ancestor seeds both sides; the shapes layer per-side adds and an observed remove on top,
+    /// including the resurrection probe — a dot the initiator observed and removed while the responder still
+    /// holds it.
+    /// </remarks>
     private static (DottedVersionVectorSet<string> Initiator, DottedVersionVectorSet<string> Responder) BuildDivergence(DivergenceShape shape)
     {
         DottedVersionVectorSet<string> ancestor = DvvSet().Add(R1, "alpha").Add(R1, "beta").Add(R1, "gamma");
@@ -1271,8 +1282,10 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
-    //The three divergence shapes the master law sweeps: pure adds, pure observed removes, and a mix that
-    //includes the resurrection probe.
+    /// <summary>
+    /// The three divergence shapes the master law sweeps: pure adds, pure observed removes, and a mix that
+    /// includes the resurrection probe.
+    /// </summary>
     internal enum DivergenceShape
     {
         AddOnly,
@@ -1281,9 +1294,14 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
-    //Counts the entry-bearing and remove-aware frames a send delegate carries, so a test can assert which
-    //payloads crossed the wire. The session serializes its sends through the single consumer loop, so the
-    //plain increments need no synchronization.
+    /// <summary>
+    /// Counts the entry-bearing and remove-aware frames a send delegate carries, so a test can assert which
+    /// payloads crossed the wire.
+    /// </summary>
+    /// <remarks>
+    /// The session serializes its sends through the single consumer loop, so the plain increments need no
+    /// synchronization.
+    /// </remarks>
     private sealed class FrameCensus
     {
         public int FetchOrElementsOrDrop { get; private set; }

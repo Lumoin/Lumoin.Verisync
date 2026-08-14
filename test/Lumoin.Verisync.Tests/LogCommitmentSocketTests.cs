@@ -60,9 +60,11 @@ internal sealed class LogCommitmentSocketTests
     }
 
 
-    //Publishes a sequence of seals one way over a fresh duplex loopback connection and returns what the monitor
-    //reads back, following the ChannelSerializationTests socket plumbing: the log writes each framed seal then
-    //half-closes its send side so the monitor's reader observes end-of-stream and completes.
+    /// <summary>
+    /// Publishes a sequence of seals one way over a fresh duplex loopback connection and returns what the monitor
+    /// reads back, following the ChannelSerializationTests socket plumbing: the log writes each framed seal then
+    /// half-closes its send side so the monitor's reader observes end-of-stream and completes.
+    /// </summary>
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The listener, client, and server are all disposed by their using declarations at the end of the scope.")]
     private async Task<List<SegmentSeal<string>>> PublishOverSocketAsync(
         IReadOnlyList<SegmentSeal<string>> seals,

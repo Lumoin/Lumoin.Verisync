@@ -42,8 +42,10 @@ internal sealed class RemoveAwareReconciliationSocketTests
 
     private static ReconciliationContract Contract { get; } = ReconciliationContract.ContentHashDefault;
 
-    //The element is a dotted entry, so the wire codec ships its replica, counter, and value; the remove-aware
-    //session carries dotted entries (not bare values) precisely because the dot is what the merge classifies.
+    /// <summary>
+    /// The element is a dotted entry, so the wire codec ships its replica, counter, and value; the remove-aware
+    /// session carries dotted entries (not bare values) precisely because the dot is what the merge classifies.
+    /// </summary>
     private static SerializeMessageDelegate<ReconciliationEnvelope<DottedEntry<string>>> Serialize { get; } =
         ReconciliationJson.CreateEnvelopeSerializer<DottedEntry<string>>(WriteEntry);
 
@@ -96,10 +98,15 @@ internal sealed class RemoveAwareReconciliationSocketTests
     }
 
 
-    //Stands up one fresh duplex loopback connection, runs one full remove-aware initiator/responder session to
-    //convergence with every frame serialized through the codec, and returns both converged sets plus the
-    //context and drop frame counts the send delegates observed. The listener, client, and server are disposed in
-    //the finally even when the proof fails mid-flight; the wind-down mirrors AntiEntropySocketTests exactly.
+    /// <summary>
+    /// Stands up one fresh duplex loopback connection, runs one full remove-aware initiator/responder session
+    /// to convergence with every frame serialized through the codec, and returns both converged sets plus the
+    /// context and drop frame counts the send delegates observed.
+    /// </summary>
+    /// <remarks>
+    /// The listener, client, and server are disposed in the finally even when the proof fails mid-flight; the
+    /// wind-down mirrors AntiEntropySocketTests exactly.
+    /// </remarks>
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The listener, client, and server are all disposed in the finally block.")]
     [SuppressMessage("Usage", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "The initiator run task is awaited before the finally, and the responder run, both reader, and pacing tasks are observed through SwallowAsync in the finally; every session-touching task has completed before the sessions and the linked token source are disposed.")]
     private async Task<RoundOutcome> RunRoundAsync(DottedVersionVectorSet<string> initiatorStart, DottedVersionVectorSet<string> responderStart)
@@ -205,8 +212,10 @@ internal sealed class RemoveAwareReconciliationSocketTests
     }
 
 
-    //Awaits a wind-down task, swallowing the failure shapes that socket disposal and cancellation induce so the
-    //original round failure stays the surfaced cause.
+    /// <summary>
+    /// Awaits a wind-down task, swallowing the failure shapes that socket disposal and cancellation induce so
+    /// the original round failure stays the surfaced cause.
+    /// </summary>
     private static async Task SwallowAsync(Task? task)
     {
         if(task is null)
@@ -224,8 +233,10 @@ internal sealed class RemoveAwareReconciliationSocketTests
     }
 
 
-    //Reads framed envelopes off one inbound channel and forwards each to the owning session's producer queue;
-    //the loop ends when the peer completes its writer.
+    /// <summary>
+    /// Reads framed envelopes off one inbound channel and forwards each to the owning session's producer queue;
+    /// the loop ends when the peer completes its writer.
+    /// </summary>
     private static async Task ForwardInboundAsync(MessageChannelReader<ReconciliationEnvelope<DottedEntry<string>>> inbound, AntiEntropySession<DottedEntry<string>> session, CancellationToken cancellationToken)
     {
         await foreach(ReconciliationEnvelope<DottedEntry<string>> envelope in inbound.ReadAllAsync(cancellationToken).ConfigureAwait(false))
@@ -235,8 +246,10 @@ internal sealed class RemoveAwareReconciliationSocketTests
     }
 
 
-    //Triggers responder batches under a short delay until its state leaves Reconciling, capping the loop so a
-    //never-advancing peer fails the test instead of spinning forever.
+    /// <summary>
+    /// Triggers responder batches under a short delay until its state leaves Reconciling, capping the loop so a
+    /// never-advancing peer fails the test instead of spinning forever.
+    /// </summary>
     private static async Task PaceResponderAsync(AntiEntropySession<DottedEntry<string>> responder, CancellationToken cancellationToken)
     {
         int triggers = 0;
@@ -252,8 +265,11 @@ internal sealed class RemoveAwareReconciliationSocketTests
     }
 
 
-    //Writes a dotted entry as its replica hex, counter, and value; the deserializer reads it back and rebuilds
-    //the entry, so the per-entry payload round-trips through the codec exactly as the fetch/elements frames need.
+    /// <summary>
+    /// Writes a dotted entry as its replica hex, counter, and value; the deserializer reads it back and
+    /// rebuilds the entry, so the per-entry payload round-trips through the codec exactly as the fetch/elements
+    /// frames need.
+    /// </summary>
     private static void WriteEntry(Utf8JsonWriter writer, DottedEntry<string> entry)
     {
         writer.WriteStartObject();
@@ -286,10 +302,14 @@ internal sealed class RemoveAwareReconciliationSocketTests
     private readonly record struct RoundOutcome(DottedVersionVectorSet<string> Initiator, DottedVersionVectorSet<string> Responder, int ContextFramesCrossed, int DropFramesCrossed, int CompletionFramesCrossed);
 
 
-    //Counts the causal-context and drop frames a wrapped send delegate carries before forwarding to the
-    //channel writer, so the test can prove the remove-aware payloads actually crossed the serialized socket. The
-    //session serializes its sends through the single consumer loop, but both sides share one census, so the
-    //counters move under Interlocked.
+    /// <summary>
+    /// Counts the causal-context and drop frames a wrapped send delegate carries before forwarding to the
+    /// channel writer, so the test can prove the remove-aware payloads actually crossed the serialized socket.
+    /// </summary>
+    /// <remarks>
+    /// The session serializes its sends through the single consumer loop, but both sides share one census, so
+    /// the counters move under Interlocked.
+    /// </remarks>
     private sealed class FrameCensus
     {
         private int contextFrames;

@@ -9,8 +9,12 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class RegisterVersionTests
 {
-    //A version crosses JSON as a bare number, so the bound is the largest integer a double holds exactly. The
-    //literal is asserted rather than computed, so a mutation of that expression cannot move it.
+    /// <summary>
+    /// A version crosses JSON as a bare number, so the bound is the largest integer a double holds exactly.
+    /// </summary>
+    /// <remarks>
+    /// The literal is asserted rather than computed, so a mutation of that expression cannot move it.
+    /// </remarks>
     [TestMethod]
     public void TheHighestVersionIsTheLargestIntegerADoubleRepresentsExactly()
     {

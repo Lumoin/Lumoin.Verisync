@@ -17,12 +17,17 @@ internal sealed class IntervalSummaryRegisterTests
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
 
 
-    //THE FOLD COMPARES WHOLE KEYS AND NOT PRIORITIES ALONE. A tie on priority is settled by the owner, which
-    //is Appendix A's tiebreaking approach and the only thing that keeps the fold total when two proposals
-    //carry the same priority. Every other deterministic fold in this suite uses distinct priorities, so a
-    //comparison narrowed to the priority would fold the same way there and only diverge where two owners
-    //meet at one priority - which is exactly what a leaderless round produces, since every declined reserved
-    //claim lands on the same lowest ordinary priority.
+    /// <summary>
+    /// THE FOLD COMPARES WHOLE KEYS AND NOT PRIORITIES ALONE. A tie on priority is settled by the owner, which
+    /// is Appendix A's tiebreaking approach and the only thing that keeps the fold total when two proposals
+    /// carry the same priority.
+    /// </summary>
+    /// <remarks>
+    /// Every other deterministic fold in this suite uses distinct priorities, so a comparison narrowed to the
+    /// priority would fold the same way there and only diverge where two owners meet at one priority - which
+    /// is exactly what a leaderless round produces, since every declined reserved claim lands on the same
+    /// lowest ordinary priority.
+    /// </remarks>
     [TestMethod]
     public void ThePriorityTieIsSettledByTheOwnerInBothArrivalOrders()
     {
@@ -103,11 +108,16 @@ internal sealed class IntervalSummaryRegisterTests
     }
 
 
-    //IDEMPOTENCE, WHICH IS THE UNIT FORM OF THE RE-SEND RULE. A second IDENTICAL record at the register's own
-    //step folds into an aggregate that already dominates it, so no field would change and the register
-    //returns ITSELF. The layers above read exactly that: the recorder decides whether it changed by
-    //reference, and the node decides whether to persist by the same test, so a retransmission on a lossy link
-    //costs no durable write that makes nothing durable.
+    /// <summary>
+    /// IDEMPOTENCE, WHICH IS THE UNIT FORM OF THE RE-SEND RULE. A second IDENTICAL record at the register's own
+    /// step folds into an aggregate that already dominates it, so no field would change and the register
+    /// returns ITSELF.
+    /// </summary>
+    /// <remarks>
+    /// The layers above read exactly that: the recorder decides whether it changed by reference, and the node
+    /// decides whether to persist by the same test, so a retransmission on a lossy link costs no durable write
+    /// that makes nothing durable.
+    /// </remarks>
     [TestMethod]
     public void ARepeatedSameStepRecordReturnsTheSameInstance()
     {
@@ -123,13 +133,17 @@ internal sealed class IntervalSummaryRegisterTests
     }
 
 
-    //THE FOLD KEEPS THE INCUMBENT ON AN EXACT KEY TIE, and an EQUAL KEY WITH A DIFFERENT VALUE is the only
-    //shape that observes the tie direction at all. A strictly lower-keyed record returns the incumbent under
-    //both directions and discriminates nothing; here the incumbent survives and the register is unchanged
-    //under the tie-keeping direction, while a fold preferring the challenger takes the new value and
-    //allocates. The two proposals violate the proposal key's uniqueness contract deliberately, which is what
-    //a host looks like once it has lost single-flight, and that contract is a surface obligation a
-    //constant-space register cannot police.
+    /// <summary>
+    /// THE FOLD KEEPS THE INCUMBENT ON AN EXACT KEY TIE, and an EQUAL KEY WITH A DIFFERENT VALUE is the only
+    /// shape that observes the tie direction at all.
+    /// </summary>
+    /// <remarks>
+    /// A strictly lower-keyed record returns the incumbent under both directions and discriminates nothing;
+    /// here the incumbent survives and the register is unchanged under the tie-keeping direction, while a fold
+    /// preferring the challenger takes the new value and allocates. The two proposals violate the proposal
+    /// key's uniqueness contract deliberately, which is what a host looks like once it has lost single-flight,
+    /// and that contract is a surface obligation a constant-space register cannot police.
+    /// </remarks>
     [TestMethod]
     public void ASameStepRecordAtAnEqualKeyWithADifferentValueReturnsTheSameInstance()
     {
@@ -147,9 +161,13 @@ internal sealed class IntervalSummaryRegisterTests
     }
 
 
-    //THE OTHER DIRECTION, so the same-instance rule reads as a predicate rather than as a constant. A
-    //higher-keyed record at the same step changes the aggregate, so a new register is allocated and the
-    //reference test above reports a real change.
+    /// <summary>
+    /// THE OTHER DIRECTION, so the same-instance rule reads as a predicate rather than as a constant.
+    /// </summary>
+    /// <remarks>
+    /// A higher-keyed record at the same step changes the aggregate, so a new register is allocated and the
+    /// reference test above reports a real change.
+    /// </remarks>
     [TestMethod]
     public void AHigherKeyedSameStepRecordReturnsADifferentInstance()
     {

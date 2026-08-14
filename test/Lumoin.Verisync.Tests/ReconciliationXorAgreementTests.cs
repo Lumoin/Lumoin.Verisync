@@ -13,18 +13,26 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class ReconciliationXorAgreementTests
 {
-    //The sibling batch lengths extended around the vector-width boundaries (128/256/512 bits map to 16/32/64
-    //byte chunks), so every tier exercises full chunks, partial chunks, and a scalar-only tail.
+    /// <summary>
+    /// The sibling batch lengths extended around the vector-width boundaries (128/256/512 bits map to 16/32/64
+    /// byte chunks), so every tier exercises full chunks, partial chunks, and a scalar-only tail.
+    /// </summary>
     private static readonly int[] Lengths = [0, 1, 2, 3, 7, 8, 31, 32, 33, 64, 257];
 
-    //Two pinned LCG seeds for the deterministic fill; small constants, never System.Random.
+    /// <summary>
+    /// Two pinned LCG seeds for the deterministic fill; small constants, never System.Random.
+    /// </summary>
     private static readonly ulong[] FillSeeds = [0x1111111111111111UL, 0x2468ACE013579BDFUL];
 
-    //The stream vector contract: structural, item width 8, checksum width 8, well-known key.
+    /// <summary>
+    /// The stream vector contract: structural, item width 8, checksum width 8, well-known key.
+    /// </summary>
     private static ReconciliationContract StructuralContract { get; } =
         new(ReconciliationItemDomain.Structural, 8, 8, ReconciliationContract.WellKnownChecksumKeyLow, ReconciliationContract.WellKnownChecksumKeyHigh);
 
-    //The phase 1 stream items a1 = W3, a2, a3 used to pin the encoder's emitted symbols.
+    /// <summary>
+    /// The phase 1 stream items a1 = W3, a2, a3 used to pin the encoder's emitted symbols.
+    /// </summary>
     private static byte[] A1 { get; } = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
 
     private static byte[] A2 { get; } = [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18];
@@ -32,8 +40,10 @@ internal sealed class ReconciliationXorAgreementTests
     private static byte[] A3 { get; } = [0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28];
 
 
-    //Backend-shaped delegates so the per-tier agreement assertion runs once against each vector backend's
-    //method group; the span parameters rule out Func/Action, which cannot bind ref-struct type arguments.
+    /// <summary>
+    /// Backend-shaped delegates so the per-tier agreement assertion runs once against each vector backend's
+    /// method group; the span parameters rule out Func/Action, which cannot bind ref-struct type arguments.
+    /// </summary>
     private delegate void FoldDelegate(Span<byte> destination, ReadOnlySpan<byte> source);
 
     private delegate void CombineDelegate(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right, Span<byte> destination);

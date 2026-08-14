@@ -32,9 +32,13 @@ internal sealed class TermTests
     }
 
 
-    //A WITH EXPRESSION IS A SECOND CONSTRUCTION PATH AND NOT A COPY. The initializer writes the backing field
-    //directly, so a validator placed only there would leave the record mutable into an illegal state through
-    //one line of caller code.
+    /// <summary>
+    /// A WITH EXPRESSION IS A SECOND CONSTRUCTION PATH AND NOT A COPY.
+    /// </summary>
+    /// <remarks>
+    /// The initializer writes the backing field directly, so a validator placed only there would leave the
+    /// record mutable into an illegal state through one line of caller code.
+    /// </remarks>
     [TestMethod]
     public void ANegativeTermIsRefusedOnAWithExpression()
     {
@@ -55,9 +59,14 @@ internal sealed class TermTests
     }
 
 
-    //THE BOUND IS THE WIRE'S AND NOT THE ARITHMETIC'S. A term crosses JSON as a bare number, and two terms
-    //above two to the fifty-third reach a double-parsing consumer as one value; every term rule in Figure 2
-    //is a comparison, so two terms that arrive equal let a stale request pass the staleness test.
+    /// <summary>
+    /// THE BOUND IS THE WIRE'S AND NOT THE ARITHMETIC'S.
+    /// </summary>
+    /// <remarks>
+    /// A term crosses JSON as a bare number, and two terms above two to the fifty-third reach a double-parsing
+    /// consumer as one value; every term rule in Figure 2 is a comparison, so two terms that arrive equal let a
+    /// stale request pass the staleness test.
+    /// </remarks>
     [TestMethod]
     public void TheTermRangeStopsAtTheLargestValueAJsonReaderReadsExactly()
     {
@@ -73,9 +82,14 @@ internal sealed class TermTests
     }
 
 
-    //THE SUCCESSOR FAILS CLOSED RATHER THAN WRAPPING. Incrementing past the top of the range would otherwise
-    //be caught by the range validator, whose message names the value rather than the exhaustion that actually
-    //happened, and a wrapped term would name an epoch that has already elected a leader.
+    /// <summary>
+    /// THE SUCCESSOR FAILS CLOSED RATHER THAN WRAPPING.
+    /// </summary>
+    /// <remarks>
+    /// Incrementing past the top of the range would otherwise be caught by the range validator, whose message
+    /// names the value rather than the exhaustion that actually happened, and a wrapped term would name an
+    /// epoch that has already elected a leader.
+    /// </remarks>
     [TestMethod]
     public void TheSuccessorOfTheLastRepresentableTermFailsClosed()
     {

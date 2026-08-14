@@ -61,9 +61,14 @@ internal sealed class ReconciliationDecodeBoundTests
     }
 
 
-    //Encodes a one-sided difference of itemCount distinct eight-byte items against an empty peer and absorbs the
-    //difference stream into a fresh decoder, either to completion or for a fixed prefix. The encoders are
-    //disposed here because the decoder has already copied every absorbed symbol into its own cells and arena.
+    /// <summary>
+    /// Encodes a one-sided difference of itemCount distinct eight-byte items against an empty peer and absorbs
+    /// the difference stream into a fresh decoder, either to completion or for a fixed prefix.
+    /// </summary>
+    /// <remarks>
+    /// The encoders are disposed here because the decoder has already copied every absorbed symbol into its own
+    /// cells and arena.
+    /// </remarks>
     private static ReconciliationDecoder DecodeOverOneSidedDifference(ReconciliationContract contract, int itemCount, int absorbCount, bool stopAtCompletion)
     {
         using ReconciliationEncoder left = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);

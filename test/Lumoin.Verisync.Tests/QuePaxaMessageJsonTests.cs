@@ -95,10 +95,14 @@ internal sealed class QuePaxaMessageJsonTests
     }
 
 
-    //THE OBLIGATION ProposalPriority LEVIES ON ANY CODEC, and the pair is what makes it work. A pin at
-    //Reserved alone is vacuous: a decoder reading the field as a double round-trips ulong.MaxValue intact,
-    //because the double saturates back to it. Only the value one below, which collapses onto Reserved through
-    //the same double, tells the two decoders apart.
+    /// <summary>
+    /// THE OBLIGATION ProposalPriority LEVIES ON ANY CODEC, and the pair is what makes it work.
+    /// </summary>
+    /// <remarks>
+    /// A pin at Reserved alone is vacuous: a decoder reading the field as a double round-trips ulong.MaxValue
+    /// intact, because the double saturates back to it. Only the value one below, which collapses onto
+    /// Reserved through the same double, tells the two decoders apart.
+    /// </remarks>
     [TestMethod]
     public void ReservedPriorityRoundTripsExactly()
     {
@@ -137,8 +141,10 @@ internal sealed class QuePaxaMessageJsonTests
     }
 
 
-    //A PROHIBITION PIN. The zero value of a proposer lane is degenerate rather than illegal, so a decoder must
-    //not refuse the all-zero identity or lane zero.
+    /// <summary>
+    /// A PROHIBITION PIN. The zero value of a proposer lane is degenerate rather than illegal, so a decoder must
+    /// not refuse the all-zero identity or lane zero.
+    /// </summary>
     [TestMethod]
     public void TheAllZeroIdentityAtLaneZeroRoundTrips()
     {
@@ -151,10 +157,12 @@ internal sealed class QuePaxaMessageJsonTests
     }
 
 
-    //A PROHIBITION PIN. The top of the step range is a legal wire value the protocol must accept, and it is
-    //the only step at which a decoder doing step arithmetic misbehaves: RecorderStep.Next throws once the
-    //budget is spent, and that exception is in the guard's caught set, so a genuine exhaustion would be
-    //silently reported as a deserialization failure.
+    /// <summary>
+    /// A PROHIBITION PIN. The top of the step range is a legal wire value the protocol must accept, and it is
+    /// the only step at which a decoder doing step arithmetic misbehaves: RecorderStep.Next throws once the
+    /// budget is spent, and that exception is in the guard's caught set, so a genuine exhaustion would be
+    /// silently reported as a deserialization failure.
+    /// </summary>
     [TestMethod]
     public void TheLastRepresentableStepRoundTrips()
     {
@@ -187,11 +195,16 @@ internal sealed class QuePaxaMessageJsonTests
     }
 
 
-    //A MISSING FIELD MUST BE REFUSED BY NAME, AND ONLY THE INNER CAUSE SAYS WHETHER IT WAS. The uniform
-    //MessageDeserializationException is raised either way: a decoder that let an absent property through would
-    //carry an undefined element to the next accessor, which throws on the wrong kind and is caught by the same
-    //guard. The two are indistinguishable from outside, so the outer type proves nothing about which field was
-    //missing, and a channel operator reading the log gets a value-kind complaint instead of the field name.
+    /// <summary>
+    /// A MISSING FIELD MUST BE REFUSED BY NAME, AND ONLY THE INNER CAUSE SAYS WHETHER IT WAS.
+    /// </summary>
+    /// <remarks>
+    /// The uniform MessageDeserializationException is raised either way: a decoder that let an absent property
+    /// through would carry an undefined element to the next accessor, which throws on the wrong kind and is
+    /// caught by the same guard. The two are indistinguishable from outside, so the outer type proves nothing
+    /// about which field was missing, and a channel operator reading the log gets a value-kind complaint
+    /// instead of the field name.
+    /// </remarks>
     [TestMethod]
     public void AMissingFieldIsRefusedByNameRatherThanByTheNextAccessor()
     {
@@ -214,10 +227,14 @@ internal sealed class QuePaxaMessageJsonTests
     }
 
 
-    //THE VECTOR THAT PROVES THE DECODER IS NOT ON A DOUBLE PATH. GetUInt64 refuses a token carrying a fraction
-    //or an exponent, so both payloads fail closed; a decoder reaching for GetDouble would accept them and
-    //quietly demote the reserved priority. Every other field is well formed, so the priority read is the only
-    //thing that can fail.
+    /// <summary>
+    /// THE VECTOR THAT PROVES THE DECODER IS NOT ON A DOUBLE PATH. GetUInt64 refuses a token carrying a fraction
+    /// or an exponent, so both payloads fail closed; a decoder reaching for GetDouble would accept them and
+    /// quietly demote the reserved priority.
+    /// </summary>
+    /// <remarks>
+    /// Every other field is well formed, so the priority read is the only thing that can fail.
+    /// </remarks>
     [TestMethod]
     public void ADoubleFormPriorityIsRejected()
     {
@@ -229,9 +246,14 @@ internal sealed class QuePaxaMessageJsonTests
     }
 
 
-    //THE MESSAGE-LEVEL STEP FLOOR, which nothing else reaches. A negative step and one past the top of the
-    //range are refused by RecorderStep itself before either message constructor runs, so only a step that is a
-    //legal RecorderStep and an illegal message step can prove the decoder re-runs the message's own rule.
+    /// <summary>
+    /// THE MESSAGE-LEVEL STEP FLOOR, which nothing else reaches.
+    /// </summary>
+    /// <remarks>
+    /// A negative step and one past the top of the range are refused by RecorderStep itself before either
+    /// message constructor runs, so only a step that is a legal RecorderStep and an illegal message step can
+    /// prove the decoder re-runs the message's own rule.
+    /// </remarks>
     [TestMethod]
     public void AStepBelowRoundOnePhaseZeroIsRejected()
     {
@@ -261,10 +283,14 @@ internal sealed class QuePaxaMessageJsonTests
     }
 
 
-    //THE IDENTITY WIDTH, and the hex counts are EVEN deliberately. Convert.FromHexString refuses an odd length
-    //before ReplicaId.FromSpan ever runs, so an odd-length vector would test hex formatting while appearing to
-    //test the width. Sixty-two and sixty-six characters are thirty-one and thirty-three bytes, which decode
-    //cleanly and then reach the width guard.
+    /// <summary>
+    /// THE IDENTITY WIDTH, and the hex counts are EVEN deliberately.
+    /// </summary>
+    /// <remarks>
+    /// Convert.FromHexString refuses an odd length before ReplicaId.FromSpan ever runs, so an odd-length
+    /// vector would test hex formatting while appearing to test the width. Sixty-two and sixty-six characters
+    /// are thirty-one and thirty-three bytes, which decode cleanly and then reach the width guard.
+    /// </remarks>
     [TestMethod]
     public void AWrongWidthIdentityIsRejected()
     {
@@ -310,9 +336,11 @@ internal sealed class QuePaxaMessageJsonTests
     }
 
 
-    //THE ENCODING IS A SPECIFICATION RATHER THAN AN ARTIFACT ONLY IF SOMETHING PINS THE BYTES. Nothing else in
-    //the suite would notice a renamed field or a reordered object, because a round trip re-reads whatever it
-    //wrote.
+    /// <summary>
+    /// THE ENCODING IS A SPECIFICATION RATHER THAN AN ARTIFACT ONLY IF SOMETHING PINS THE BYTES. Nothing else in
+    /// the suite would notice a renamed field or a reordered object, because a round trip re-reads whatever it
+    /// wrote.
+    /// </summary>
     [TestMethod]
     public void TheRequestEncodingIsPinned()
     {
@@ -335,10 +363,15 @@ internal sealed class QuePaxaMessageJsonTests
     }
 
 
-    //THE PRESENT PRIOR AGGREGATE IS THE OTHER HALF OF THE NULLABLE SLOT, and it needs bytes of its own: the
-    //null case pins one branch of the slot writer and the round trips cover the other only by re-reading
-    //whatever they wrote, which a drift both sides of the codec agree on survives. The two proposals differ in
-    //priority and in owning replica, so a reply whose slots were written in the wrong order fails the pin.
+    /// <summary>
+    /// THE PRESENT PRIOR AGGREGATE IS THE OTHER HALF OF THE NULLABLE SLOT, and it needs bytes of its own: the
+    /// null case pins one branch of the slot writer and the round trips cover the other only by re-reading
+    /// whatever they wrote, which a drift both sides of the codec agree on survives.
+    /// </summary>
+    /// <remarks>
+    /// The two proposals differ in priority and in owning replica, so a reply whose slots were written in the
+    /// wrong order fails the pin.
+    /// </remarks>
     [TestMethod]
     public void TheReplyEncodingWithAPriorAggregateIsPinned()
     {

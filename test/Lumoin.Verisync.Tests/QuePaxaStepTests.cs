@@ -36,10 +36,15 @@ internal sealed class QuePaxaStepTests
     public TestContext TestContext { get; set; } = null!;
 
 
-    //SUB-QUORUM RECORDS PERSIST. Every reached recorder has recorded whatever happens next, which is what
-    //Lemma C.5's Case 2 turns on: a message that arrives is recorded even when the proposer never assembles
-    //a quorum. An implementation that discarded the mutated recorders on a sub-quorum return would otherwise
-    //pass the entire suite.
+    /// <summary>
+    /// SUB-QUORUM RECORDS PERSIST. Every reached recorder has recorded whatever happens next, which is what
+    /// Lemma C.5's Case 2 turns on: a message that arrives is recorded even when the proposer never assembles
+    /// a quorum.
+    /// </summary>
+    /// <remarks>
+    /// An implementation that discarded the mutated recorders on a sub-quorum return would otherwise pass the
+    /// entire suite.
+    /// </remarks>
     [TestMethod]
     public void ASubQuorumStepStillRecordsAndALaterGatherObservesIt()
     {
@@ -79,10 +84,12 @@ internal sealed class QuePaxaStepTests
     }
 
 
-    //CATCH-UP. Lemma C.2 makes every summary's step at least the requested one, so "not all equal" implies
-    //"some greater"; the landing state is one some proposer reached without catching up, and taking the
-    //greatest reply with the lowest recorder index breaking a tie is one of the choices the model's
-    //adversary already admits, so the determinism is a refinement rather than a deviation.
+    /// <summary>
+    /// CATCH-UP. Lemma C.2 makes every summary's step at least the requested one, so "not all equal" implies
+    /// "some greater"; the landing state is one some proposer reached without catching up, and taking the
+    /// greatest reply with the lowest recorder index breaking a tie is one of the choices the model's
+    /// adversary already admits, so the determinism is a refinement rather than a deviation.
+    /// </summary>
     [TestMethod]
     public void AStepBehindTheRecordersCatchesUpToTheGreatestSummaryStep()
     {
@@ -119,9 +126,11 @@ internal sealed class QuePaxaStepTests
     }
 
 
-    //EXHAUSTION. A spent step budget is terminal for the instance while a quorum miss is retryable, and the
-    //two call for opposite responses at the same call site, so they are separate kinds and are distinguished
-    //here by kind alone rather than by the breadth measurement.
+    /// <summary>
+    /// EXHAUSTION. A spent step budget is terminal for the instance while a quorum miss is retryable, and the
+    /// two call for opposite responses at the same call site, so they are separate kinds and are distinguished
+    /// here by kind alone rather than by the breadth measurement.
+    /// </summary>
     [TestMethod]
     public void AStepAtTheTopOfTheBudgetIsExhaustedRatherThanAdvanced()
     {
@@ -152,10 +161,14 @@ internal sealed class QuePaxaStepTests
     }
 
 
-    //THE DECIDED OWNER. The outcome names the OWNER of the decided proposal, not the proposer that observed
-    //the decision, and nothing else in the suite distinguishes the two. A caller reads it to learn that
-    //someone else's value was chosen and that it must re-read and re-propose, which is the reason this
-    //outcome type exists rather than the CASPaxos one being reused.
+    /// <summary>
+    /// THE DECIDED OWNER. The outcome names the OWNER of the decided proposal, not the proposer that observed
+    /// the decision, and nothing else in the suite distinguishes the two.
+    /// </summary>
+    /// <remarks>
+    /// A caller reads it to learn that someone else's value was chosen and that it must re-read and
+    /// re-propose, which is the reason this outcome type exists rather than the CASPaxos one being reused.
+    /// </remarks>
     [TestMethod]
     public void DecidedByIsTheProposalsOwnerRatherThanTheProposerThatObservedTheDecision()
     {
@@ -183,10 +196,14 @@ internal sealed class QuePaxaStepTests
     }
 
 
-    //THE ROUND BOUNDARY, three rules the one-round model cannot see. The carry sets the template to the
-    //greatest prior aggregate, the carried proposal keeps ITS OWNER across the boundary, and every
-    //phase-zero send above the first step is redrawn - including the configured leader's, because the
-    //redraw condition's step disjunct fires for everyone after step four.
+    /// <summary>
+    /// THE ROUND BOUNDARY, three rules the one-round model cannot see.
+    /// </summary>
+    /// <remarks>
+    /// The carry sets the template to the greatest prior aggregate, the carried proposal keeps ITS OWNER
+    /// across the boundary, and every phase-zero send above the first step is redrawn - including the
+    /// configured leader's, because the redraw condition's step disjunct fires for everyone after step four.
+    /// </remarks>
     [TestMethod]
     public void TheRoundBoundaryCarriesTheGreatestPriorAggregateKeepsItsOwnerAndRedrawsForEveryone()
     {
@@ -244,9 +261,11 @@ internal sealed class QuePaxaStepTests
     }
 
 
-    //THE PER-RECORDER DRAW. Phase zero redraws the priority PER RECORDER; a single draw shared across
-    //recorders is a plausible implementation, would consume one draw instead of k, and would collapse the
-    //independence the liveness argument rests on.
+    /// <summary>
+    /// THE PER-RECORDER DRAW. Phase zero redraws the priority PER RECORDER; a single draw shared across
+    /// recorders is a plausible implementation, would consume one draw instead of k, and would collapse the
+    /// independence the liveness argument rests on.
+    /// </summary>
     [TestMethod]
     public void PhaseZeroConsumesOneDrawPerRecorderAndRecordsDistinctPriorities()
     {
@@ -278,11 +297,16 @@ internal sealed class QuePaxaStepTests
     }
 
 
-    //A MISTAKEN PROPOSER STILL FAST-DECIDES, which is the executable form of the proposer-side owner check
-    //that was removed. B believes it leads and is configured nowhere, so its own claim is declined at every
-    //recorder; it then gathers a uniform set of the real leader's reserved firsts and MUST decide that
-    //value. A proposer-side check of the winner's owner against the proposer's own belief would refuse this
-    //decision and continue into a global state the checker never visited.
+    /// <summary>
+    /// A MISTAKEN PROPOSER STILL FAST-DECIDES, which is the executable form of the proposer-side owner check
+    /// that was removed.
+    /// </summary>
+    /// <remarks>
+    /// B believes it leads and is configured nowhere, so its own claim is declined at every recorder; it then
+    /// gathers a uniform set of the real leader's reserved firsts and MUST decide that value. A proposer-side
+    /// check of the winner's owner against the proposer's own belief would refuse this decision and continue
+    /// into a global state the checker never visited.
+    /// </remarks>
     [TestMethod]
     public void AProposerWithAMistakenBeliefStillFastDecidesTheConfiguredLeadersValue()
     {
@@ -310,9 +334,11 @@ internal sealed class QuePaxaStepTests
     }
 
 
-    //WHAT THE RULE COSTS THE DEPLOYMENT, as an executable negative. Recorders that disagree about the
-    //configured leader honour two different reserved claims, so two reserved-priority proposals coexist -
-    //the state the downgrade exists to make unreachable, and the state the agreement hazard is built from.
+    /// <summary>
+    /// WHAT THE RULE COSTS THE DEPLOYMENT, as an executable negative. Recorders that disagree about the
+    /// configured leader honour two different reserved claims, so two reserved-priority proposals coexist -
+    /// the state the downgrade exists to make unreachable, and the state the agreement hazard is built from.
+    /// </summary>
     [TestMethod]
     public void RecordersConfiguredWithDifferentLeadersHonourTwoReservedClaimsAtOnce()
     {
@@ -344,12 +370,17 @@ internal sealed class QuePaxaStepTests
     }
 
 
-    //The contended run that carries B to a phase-three boundary holding A's proposal. Both proposers are
-    //leaderless believers, so every phase-zero send is redrawn and the whole ordering is decided by the
-    //scripted priorities: B draws 10 at each of recorders zero and one, A draws 90 at each of recorders one
-    //and two. A's higher key wins every fold it takes part in, B's step at six sees a prior aggregate that
-    //is not its own template and so does not decide, and A's step at six decides its own value. B is then at
-    //step seven with recorder one carrying A's aggregate, which is the carry the boundary tests read.
+    /// <summary>
+    /// The contended run that carries B to a phase-three boundary holding A's proposal.
+    /// </summary>
+    /// <remarks>
+    /// Both proposers are leaderless believers, so every phase-zero send is redrawn and the whole ordering is
+    /// decided by the scripted priorities: B draws 10 at each of recorders zero and one, A draws 90 at each of
+    /// recorders one and two. A's higher key wins every fold it takes part in, B's step at six sees a prior
+    /// aggregate that is not its own template and so does not decide, and A's step at six decides its own
+    /// value. B is then at step seven with recorder one carrying A's aggregate, which is the carry the
+    /// boundary tests read.
+    /// </remarks>
     private static CarrySetup BuildPhaseThreeCarry()
     {
         QuePaxaRegister<string> register = QuePaxaRegister<string>.WithRecorders(3);
@@ -375,12 +406,16 @@ internal sealed class QuePaxaStepTests
     }
 
 
-    //PHASE TWO DECIDES ONLY ON A PRESENT PRIOR AGGREGATE. The non-null guard looks like defensive noise
-    //because no protocol-driven round reaches phase two against recorders that all skipped the previous
-    //step, but weakening it to treat an absent aggregate as a match lets a proposer decide with no evidence
-    //at all, and two proposers holding different templates would then decide differently. Recorders stepped
-    //straight from nothing to phase two skip the intervening step, so the skipped-step rule leaves every
-    //prior aggregate absent, which is the state that discriminates the guard.
+    /// <summary>
+    /// PHASE TWO DECIDES ONLY ON A PRESENT PRIOR AGGREGATE. The non-null guard looks like defensive noise
+    /// because no protocol-driven round reaches phase two against recorders that all skipped the previous
+    /// step, but weakening it to treat an absent aggregate as a match lets a proposer decide with no evidence
+    /// at all, and two proposers holding different templates would then decide differently.
+    /// </summary>
+    /// <remarks>
+    /// Recorders stepped straight from nothing to phase two skip the intervening step, so the skipped-step
+    /// rule leaves every prior aggregate absent, which is the state that discriminates the guard.
+    /// </remarks>
     [TestMethod]
     public void PhaseTwoDoesNotDecideWhenEveryPriorAggregateIsAbsent()
     {
@@ -397,12 +432,17 @@ internal sealed class QuePaxaStepTests
     }
 
 
-    //THE FAST-PATH TEST IS WHOLE-PROPOSAL AND NOT WHOLE-KEY. Two proposals that share a key and differ in
-    //value are what a host looks like when it has lost single-flight, and the proposal key's uniqueness
-    //contract is a surface obligation that nothing in this slice enforces. Under a key-only test the gather
-    //below is uniform and the fast path fires, returning whichever value the implementation happened to read
-    //first; under whole-proposal equality it refuses. Without this case the comparison could be weakened to
-    //keys with no test noticing, because every other scenario in the suite honours the contract.
+    /// <summary>
+    /// THE FAST-PATH TEST IS WHOLE-PROPOSAL AND NOT WHOLE-KEY. Two proposals that share a key and differ in
+    /// value are what a host looks like when it has lost single-flight, and the proposal key's uniqueness
+    /// contract is a surface obligation that nothing in this slice enforces.
+    /// </summary>
+    /// <remarks>
+    /// Under a key-only test the gather below is uniform and the fast path fires, returning whichever value
+    /// the implementation happened to read first; under whole-proposal equality it refuses. Without this case
+    /// the comparison could be weakened to keys with no test noticing, because every other scenario in the
+    /// suite honours the contract.
+    /// </remarks>
     [TestMethod]
     public void TheFastPathRefusesTwoFirstsThatShareAKeyAndDifferInValue()
     {
@@ -426,10 +466,14 @@ internal sealed class QuePaxaStepTests
     }
 
 
-    //THE PHASE-TWO TEST IS WHOLE-PROPOSAL AND NOT WHOLE-KEY, and here it is safety rather than tidiness.
-    //The greatest prior aggregate below shares the template's key and carries a different value, which is the
-    //same lost-single-flight shape. A key-only test decides, and two proposers holding the two colliding
-    //values could then decide differently; whole-proposal equality lets at most one of them through.
+    /// <summary>
+    /// THE PHASE-TWO TEST IS WHOLE-PROPOSAL AND NOT WHOLE-KEY, and here it is safety rather than tidiness.
+    /// </summary>
+    /// <remarks>
+    /// The greatest prior aggregate below shares the template's key and carries a different value, which is
+    /// the same lost-single-flight shape. A key-only test decides, and two proposers holding the two colliding
+    /// values could then decide differently; whole-proposal equality lets at most one of them through.
+    /// </remarks>
     [TestMethod]
     public void PhaseTwoRefusesAPriorAggregateThatSharesTheTemplateKeyAndDiffersInValue()
     {
@@ -475,9 +519,11 @@ internal sealed class QuePaxaStepTests
         ScriptedPrioritySource Source);
 
 
-    //A fixed sequence rather than a seeded stream: every comparison these scenarios turn on is constructed,
-    //so running past the end of the script means the scenario consumed entropy it was not designed to and
-    //fails loudly rather than drifting into a different behaviour.
+    /// <summary>
+    /// A fixed sequence rather than a seeded stream: every comparison these scenarios turn on is constructed,
+    /// so running past the end of the script means the scenario consumed entropy it was not designed to and
+    /// fails loudly rather than drifting into a different behaviour.
+    /// </summary>
     private sealed class ScriptedPrioritySource
     {
         private int index;

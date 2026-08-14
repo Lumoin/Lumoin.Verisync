@@ -54,9 +54,13 @@ internal sealed class WanFastRoundContentionProbe
 {
     public TestContext TestContext { get; set; } = null!;
 
-    //One-way delays in milliseconds between five sites, symmetric with a zero diagonal, at the scale of
-    //inter-region wide-area links: Ireland, N. Virginia, Sao Paulo, Mumbai, Tokyo. Illustrative figures at
-    //realistic magnitudes, not measurements of any particular deployment.
+    /// <summary>
+    /// One-way delays in milliseconds between five sites, symmetric with a zero diagonal, at the scale of
+    /// inter-region wide-area links: Ireland, N. Virginia, Sao Paulo, Mumbai, Tokyo.
+    /// </summary>
+    /// <remarks>
+    /// Illustrative figures at realistic magnitudes, not measurements of any particular deployment.
+    /// </remarks>
     private static int[][] SpreadDelays { get; } =
     [
         [0, 38, 90, 60, 110],
@@ -66,10 +70,14 @@ internal sealed class WanFastRoundContentionProbe
         [110, 75, 130, 65, 0]
     ];
 
-    //The same five acceptors placed as a co-located majority plus two remote sites: three European sites a
-    //few milliseconds apart, Tokyo and Sao Paulo far from everything. This is how a deployment that wants a
-    //cheap majority actually looks, and it is the placement where the fast path's supermajority has to leave
-    //the region while the classic quorum does not.
+    /// <summary>
+    /// The same five acceptors placed as a co-located majority plus two remote sites: three European sites a
+    /// few milliseconds apart, Tokyo and Sao Paulo far from everything.
+    /// </summary>
+    /// <remarks>
+    /// This is how a deployment that wants a cheap majority actually looks, and it is the placement where the
+    /// fast path's supermajority has to leave the region while the classic quorum does not.
+    /// </remarks>
     private static int[][] ClusteredDelays { get; } =
     [
         [0, 15, 5, 110, 90],
@@ -79,7 +87,9 @@ internal sealed class WanFastRoundContentionProbe
         [90, 100, 92, 130, 0]
     ];
 
-    //The three sites forming the co-located majority in the clustered placement.
+    /// <summary>
+    /// The three sites forming the co-located majority in the clustered placement.
+    /// </summary>
     private static ImmutableHashSet<int> ClusteredMajority { get; } = [0, 1, 2];
 
     private const int SiteCount = 5;
@@ -87,8 +97,10 @@ internal sealed class WanFastRoundContentionProbe
     private const int TrialsPerConfiguration = 400;
     private const int DefaultJitter = 30;
 
-    //The cost model, in round trips: a fast commit is one, a writer that must recover pays its wasted fast
-    //round plus the classic prepare and accept.
+    /// <summary>
+    /// The cost model, in round trips: a fast commit is one, a writer that must recover pays its wasted fast
+    /// round plus the classic prepare and accept.
+    /// </summary>
     private const double FastCommitRoundTrips = 1.0;
     private const double FallbackRoundTrips = 3.0;
 
@@ -494,8 +506,13 @@ internal sealed class WanFastRoundContentionProbe
     }
 
 
-    //Runs one configuration over independent seeded trials and reports the aggregate. The delay matrix is a
-    //parameter so a clustered row measures clustered contention rather than inheriting the spread matrix.
+    /// <summary>
+    /// Runs one configuration over independent seeded trials and reports the aggregate.
+    /// </summary>
+    /// <remarks>
+    /// The delay matrix is a parameter so a clustered row measures clustered contention rather than
+    /// inheriting the spread matrix.
+    /// </remarks>
     private static Measurement Measure(int[][] delays, int writerCount, int arrivalSpread, int hedgeDelay, int jitter, int seed)
     {
         uint randomState = seed == 0 ? 2463534242u : (uint)seed;
@@ -579,14 +596,18 @@ internal sealed class WanFastRoundContentionProbe
     }
 
 
-    //Both quorum sizes are read from the production register so the probe cannot drift from the shipped rules.
+    /// <summary>
+    /// Both quorum sizes are read from the production register so the probe cannot drift from the shipped rules.
+    /// </summary>
     private static int FastQuorum { get; } = FastCasPaxosRegister<string>.WithAcceptors(SiteCount).FastQuorum;
 
     private static int ClassicQuorum { get; } = FastCasPaxosRegister<string>.WithAcceptors(SiteCount).ClassicQuorum;
 
 
-    //The round trip a writer at this site needs for a fast commit: twice the delay to the nearest acceptor
-    //that completes its fast quorum.
+    /// <summary>
+    /// The round trip a writer at this site needs for a fast commit: twice the delay to the nearest acceptor
+    /// that completes its fast quorum.
+    /// </summary>
     private static int FastQuorumRoundTrip(int[][] delays, int site)
     {
         int[] sorted = [.. delays[site].Order()];
@@ -595,7 +616,9 @@ internal sealed class WanFastRoundContentionProbe
     }
 
 
-    //The same measure for the classic quorum, which is a simple majority and therefore a nearer acceptor.
+    /// <summary>
+    /// The same measure for the classic quorum, which is a simple majority and therefore a nearer acceptor.
+    /// </summary>
     private static int ClassicQuorumRoundTrip(int[][] delays, int site)
     {
         int[] sorted = [.. delays[site].Order()];
@@ -604,13 +627,17 @@ internal sealed class WanFastRoundContentionProbe
     }
 
 
-    //The QuePaxa quorum is read from the production register so the columns cannot drift from the shipped
-    //rules.
+    /// <summary>
+    /// The QuePaxa quorum is read from the production register so the columns cannot drift from the shipped
+    /// rules.
+    /// </summary>
     private static int QuePaxaQuorum { get; } = QuePaxaRegister<string>.WithRecorders(SiteCount).Quorum;
 
 
-    //The round trip the believed leader needs for its one-step commit: twice the delay to the nearest
-    //recorder that completes its majority quorum.
+    /// <summary>
+    /// The round trip the believed leader needs for its one-step commit: twice the delay to the nearest
+    /// recorder that completes its majority quorum.
+    /// </summary>
     private static int QuePaxaLeaderRoundTrip(int[][] delays, int site)
     {
         int[] sorted = [.. delays[site].Order()];
@@ -636,8 +663,12 @@ internal sealed class WanFastRoundContentionProbe
 
     private static RecorderStep RoundOnePhaseTwo { get; } = RecorderStep.FromRoundAndPhase(1, 2);
 
-    //Identities from fixed bytes: no assertion above may depend on which way generated identities sort. The
-    //lane beyond the site count leads the absent-leader configurations and never writes.
+    /// <summary>
+    /// Identities from fixed bytes: no assertion above may depend on which way generated identities sort.
+    /// </summary>
+    /// <remarks>
+    /// The lane beyond the site count leads the absent-leader configurations and never writes.
+    /// </remarks>
     private static ImmutableArray<ProposerLane> WanLanes { get; } = [.. Enumerable.Range(1, SiteCount + 1).Select(index => ProposerLane.For(WanReplica((byte)index)))];
 
 
@@ -650,8 +681,10 @@ internal sealed class WanFastRoundContentionProbe
     }
 
 
-    //A splitmix-style finalizer: it statelessly maps distinct inputs to well-spread values, so a derived
-    //seed or a jitter draw depends on what it is for and never on the order the harness happened to ask in.
+    /// <summary>
+    /// A splitmix-style finalizer: it statelessly maps distinct inputs to well-spread values, so a derived
+    /// seed or a jitter draw depends on what it is for and never on the order the harness happened to ask in.
+    /// </summary>
     private static ulong WanMix(ulong value)
     {
         ulong mixed = value + 0x9E3779B97F4A7C15UL;
@@ -682,19 +715,27 @@ internal sealed class WanFastRoundContentionProbe
 
     private enum WanLeadership
     {
-        //Writer zero's lane is the configured leader of every recorder and believes it leads.
+        /// <summary>
+        /// Writer zero's lane is the configured leader of every recorder and believes it leads.
+        /// </summary>
         WriterZeroLeads,
 
-        //Every recorder is led by a lane that never writes, so every writer runs the ordinary path.
+        /// <summary>
+        /// Every recorder is led by a lane that never writes, so every writer runs the ordinary path.
+        /// </summary>
         AbsentLeader,
 
-        //The recorders are leaderless and no writer claims leadership.
+        /// <summary>
+        /// The recorders are leaderless and no writer claims leadership.
+        /// </summary>
         Leaderless
     }
 
 
-    //One writer's result from a WAN trial: the shipped outcome, the virtual milliseconds from the writer's
-    //activation to its decision, and how many phase-zero priorities its source supplied.
+    /// <summary>
+    /// One writer's result from a WAN trial: the shipped outcome, the virtual milliseconds from the writer's
+    /// activation to its decision, and how many phase-zero priorities its source supplied.
+    /// </summary>
     private sealed record WanWriterResult(QuePaxaOutcome<string> Outcome, long DecisionTime, int PriorityDraws);
 
 
@@ -709,24 +750,35 @@ internal sealed class WanFastRoundContentionProbe
 
     private enum WanEventKind
     {
-        //Calls the writer's one-shot proposal at its activation instant, so a stagger is a property of the
-        //schedule rather than of the endpoints.
+        /// <summary>
+        /// Calls the writer's one-shot proposal at its activation instant, so a stagger is a property of the
+        /// schedule rather than of the endpoints.
+        /// </summary>
         WriterStart,
 
-        //A request reaches its site's node and folds there, in true per-recorder arrival order.
+        /// <summary>
+        /// A request reaches its site's node and folds there, in true per-recorder arrival order.
+        /// </summary>
         RequestArrival,
 
-        //A reply reaches its caller and completes that call's own task, which resumes the proposer inline.
+        /// <summary>
+        /// A reply reaches its caller and completes that call's own task, which resumes the proposer inline.
+        /// </summary>
         ReplyArrival
     }
 
 
-    //A single-threaded discrete-event transport for the QuePaxa half. Every endpoint call enqueues an
-    //arrival, every arrival folds at its site's node and enqueues the reply, and every reply completes its
-    //own call's task, which resumes the proposer inline on the pump thread; the owner-thread check turns
-    //any escape to the pool into a red rather than into nondeterminism. Correlation is per call and never
-    //per recorder, which is what the endpoint delegate's contract demands. The transport is lossless, so
-    //the proposer's attempt budget and quorum-unreachable exit are deliberately never load-bearing here.
+    /// <summary>
+    /// A single-threaded discrete-event transport for the QuePaxa half.
+    /// </summary>
+    /// <remarks>
+    /// Every endpoint call enqueues an arrival, every arrival folds at its site's node and enqueues the reply,
+    /// and every reply completes its own call's task, which resumes the proposer inline on the pump thread;
+    /// the owner-thread check turns any escape to the pool into a red rather than into nondeterminism.
+    /// Correlation is per call and never per recorder, which is what the endpoint delegate's contract demands.
+    /// The transport is lossless, so the proposer's attempt budget and quorum-unreachable exit are
+    /// deliberately never load-bearing here.
+    /// </remarks>
     private sealed class WanQuePaxaPump
     {
         public WanQuePaxaPump(
@@ -893,9 +945,11 @@ internal sealed class WanFastRoundContentionProbe
         }
 
 
-        //Jitter is stateless per message leg: a draw depends on the trial seed and on which leg it jitters,
-        //never on the order the pump happened to ask in, so a harness edit cannot silently re-roll every
-        //measured number and the stagger ladder's rows share their jitter patterns exactly.
+        /// <summary>
+        /// Jitter is stateless per message leg: a draw depends on the trial seed and on which leg it jitters,
+        /// never on the order the pump happened to ask in, so a harness edit cannot silently re-roll every
+        /// measured number and the stagger ladder's rows share their jitter patterns exactly.
+        /// </summary>
         private int Jitter(int writer, int recorder, int step, int leg)
         {
             ulong key = TrialSeed
@@ -918,10 +972,14 @@ internal sealed class WanFastRoundContentionProbe
     }
 
 
-    //Xorshift64 rather than the cryptographic source: every priority is reproducible from its seed, so a
-    //failing configuration replays the identical draws. Each writer owns a stream, because the believed
-    //leader draws nothing at its first step and a shared stream would couple the writers through dispatch
-    //order.
+    /// <summary>
+    /// Xorshift64 rather than the cryptographic source: every priority is reproducible from its seed, so a
+    /// failing configuration replays the identical draws.
+    /// </summary>
+    /// <remarks>
+    /// Each writer owns a stream, because the believed leader draws nothing at its first step and a shared
+    /// stream would couple the writers through dispatch order.
+    /// </remarks>
     private sealed class WanPrioritySource
     {
         private ulong state;
@@ -948,9 +1006,14 @@ internal sealed class WanFastRoundContentionProbe
     }
 
 
-    //The trial rate counts trials in which ANY writer reached its fast quorum, which is the round-survival
-    //reading; the writer rate counts the writes that committed fast, which is what an individual writer
-    //experiences. The two must never share a name, because they diverge by a factor of the writer count
-    //exactly where hedging works best.
+    /// <summary>
+    /// The trial rate counts trials in which ANY writer reached its fast quorum, which is the round-survival
+    /// reading; the writer rate counts the writes that committed fast, which is what an individual writer
+    /// experiences.
+    /// </summary>
+    /// <remarks>
+    /// The two must never share a name, because they diverge by a factor of the writer count exactly where
+    /// hedging works best.
+    /// </remarks>
     private sealed record Measurement(double TrialFastCommitRate, double WriterFastCommitRate, double MeanRoundTripsPerWrite, double MeanAddedWaitMs);
 }

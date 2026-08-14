@@ -23,8 +23,10 @@ internal sealed class RgaCompactionTests
     private static ReplicaId R3 { get; } = Replica(3);
 
 
-    //A stable, childless, non-head-anchored tombstone whose remove is certified drops; values stay; its dot
-    //serves the nearest retained ancestor and an insert after the translated dot lands right after it.
+    /// <summary>
+    /// A stable, childless, non-head-anchored tombstone whose remove is certified drops; values stay; its dot
+    /// serves the nearest retained ancestor and an insert after the translated dot lands right after it.
+    /// </summary>
     [TestMethod]
     public void StableChildlessTombstoneDropsAndTranslatesToItsRetainedAncestor()
     {
@@ -47,9 +49,13 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //A stable tombstone with an unstable child is kept as a ghost regardless of certification; the child's
-    //recorded predecessor is unchanged. The certified projection includes the ghost, whose remove is not yet
-    //certified at the partial frontier.
+    /// <summary>
+    /// A stable tombstone with an unstable child is kept as a ghost regardless of certification; the child's
+    /// recorded predecessor is unchanged.
+    /// </summary>
+    /// <remarks>
+    /// The certified projection includes the ghost, whose remove is not yet certified at the partial frontier.
+    /// </remarks>
     [TestMethod]
     public void StableTombstoneWithUnstableChildIsKept()
     {
@@ -73,8 +79,10 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //A head-anchored stable childless tombstone is retained even when its remove is certified — Dot cannot
-    //express the head, so there is no translation target — and it still anchors inserts directly.
+    /// <summary>
+    /// A head-anchored stable childless tombstone is retained even when its remove is certified — Dot cannot
+    /// express the head, so there is no translation target — and it still anchors inserts directly.
+    /// </summary>
     [TestMethod]
     public void HeadAnchoredStableChildlessTombstoneIsRetained()
     {
@@ -95,8 +103,10 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //A chain of two stable tombstones (t2 inserted after t1), both removes certified, drops together; t2
-    //resolves through to t1's retained predecessor in the same pass.
+    /// <summary>
+    /// A chain of two stable tombstones (t2 inserted after t1), both removes certified, drops together; t2
+    /// resolves through to t1's retained predecessor in the same pass.
+    /// </summary>
     [TestMethod]
     public void ChainOfTwoStableTombstonesDropsAndComposesInOnePass()
     {
@@ -116,7 +126,9 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //A (frontier, checkpoint) pair that disagrees with the certified projection fails closed.
+    /// <summary>
+    /// A (frontier, checkpoint) pair that disagrees with the certified projection fails closed.
+    /// </summary>
     [TestMethod]
     public void CheckpointMismatchThrows()
     {
@@ -132,7 +144,9 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //Re-compacting at the same (frontier, checkpoint) yields a sequence equal to the first compaction.
+    /// <summary>
+    /// Re-compacting at the same (frontier, checkpoint) yields a sequence equal to the first compaction.
+    /// </summary>
     [TestMethod]
     public void RecompactingAtTheSameWaterlineIsANoOp()
     {
@@ -150,9 +164,14 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //Two successive compactions at increasing frontiers: a dot dropped in the first still translates after
-    //the second, by map composition. The first remove is minted before the surviving sibling is inserted, so
-    //a frontier can certify that remove while the sibling stays above the line.
+    /// <summary>
+    /// Two successive compactions at increasing frontiers: a dot dropped in the first still translates after
+    /// the second, by map composition.
+    /// </summary>
+    /// <remarks>
+    /// The first remove is minted before the surviving sibling is inserted, so a frontier can certify that
+    /// remove while the sibling stays above the line.
+    /// </remarks>
     [TestMethod]
     public void TwoSuccessiveCompactionsStillTranslateAFirstGenerationDot()
     {
@@ -178,8 +197,10 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //Merging a compacted state with an uncompacted laggard that HOLDS the dotted tombstone resurrects the
-    //ghost with its tombstone (the detector stays quiet), values converge, and a repeat compaction drops it.
+    /// <summary>
+    /// Merging a compacted state with an uncompacted laggard that HOLDS the dotted tombstone resurrects the
+    /// ghost with its tombstone (the detector stays quiet), values converge, and a repeat compaction drops it.
+    /// </summary>
     [TestMethod]
     public void MergingACompactedStateWithAnUncompactedLaggardResurrectsThenDropsAgain()
     {
@@ -206,8 +227,10 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //A typed chained run coalesces into a single RgaRunEntry, and a one-replica contiguous deletion pass
-    //(R2 removing the middle two elements) coalesces into a single two-range RgaTombstoneSpan.
+    /// <summary>
+    /// A typed chained run coalesces into a single RgaRunEntry, and a one-replica contiguous deletion pass (R2
+    /// removing the middle two elements) coalesces into a single two-range RgaTombstoneSpan.
+    /// </summary>
     [TestMethod]
     public void RunStateCoalescesRunsAndSpans()
     {
@@ -234,9 +257,14 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //(a) A dotted-remove state round-trips through the run shape, with a contiguous single-replica deletion
-    //pass asserted as one two-range span. T6: R1 inserts 1..5 chained; R2 removes 2,3,4 minting
-    //(R2,1),(R2,2),(R2,3), so ToRunState emits ONE span (TargetReplica R1, 2, 4, RemoveReplica R2, 1).
+    /// <summary>
+    /// (a) A dotted-remove state round-trips through the run shape, with a contiguous single-replica deletion
+    /// pass asserted as one two-range span.
+    /// </summary>
+    /// <remarks>
+    /// T6: R1 inserts 1..5 chained; R2 removes 2,3,4 minting (R2,1),(R2,2),(R2,3), so ToRunState emits ONE span
+    /// (TargetReplica R1, 2, 4, RemoveReplica R2, 1).
+    /// </remarks>
     [TestMethod]
     public void ADottedRemoveStateRoundTripsWithATwoRangeSpan()
     {
@@ -262,9 +290,13 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //(b) A compacted state carrying a translation AND a retained dotted tombstone round-trips through the run
-    //shape with its servability intact — the slice-1-deferred serialization half of the C-killer. R2 removes
-    //the head a (retained head ghost) and the childless b (dropped, translated onto a).
+    /// <summary>
+    /// (b) A compacted state carrying a translation AND a retained dotted tombstone round-trips through the run
+    /// shape with its servability intact — the slice-1-deferred serialization half of the C-killer.
+    /// </summary>
+    /// <remarks>
+    /// R2 removes the head a (retained head ghost) and the childless b (dropped, translated onto a).
+    /// </remarks>
     [TestMethod]
     public void ACompactedStateRoundTripsThroughTheRunShape()
     {
@@ -287,8 +319,10 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //(c) A legacy tombstone (empty remove-dots) cannot become a span, so it serializes as an irregular entry
-    //and round-trips, carrying the retain-forever v1 load.
+    /// <summary>
+    /// (c) A legacy tombstone (empty remove-dots) cannot become a span, so it serializes as an irregular entry
+    /// and round-trips, carrying the retain-forever v1 load.
+    /// </summary>
     [TestMethod]
     public void ALegacyTombstoneRoundTripsThroughAnIrregularEntry()
     {
@@ -306,8 +340,10 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //(d) Two concurrent removes of one target union into a two-dot tombstone that no span can express, so it
-    //serializes irregularly and round-trips.
+    /// <summary>
+    /// (d) Two concurrent removes of one target union into a two-dot tombstone that no span can express, so it
+    /// serializes irregularly and round-trips.
+    /// </summary>
     [TestMethod]
     public void AConcurrentRemoveRoundTripsThroughAnIrregularEntry()
     {
@@ -324,9 +360,11 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //(e) A laggard merge resurrects a dropped tombstone while its translation entry remains: the dropped dot
-    //is a current (tombstoned) vertex, so its witness serializes as a SINGLETON translation entry, never
-    //inside a span, and the ghost-plus-witness shape round-trips.
+    /// <summary>
+    /// (e) A laggard merge resurrects a dropped tombstone while its translation entry remains: the dropped dot
+    /// is a current (tombstoned) vertex, so its witness serializes as a SINGLETON translation entry, never
+    /// inside a span, and the ghost-plus-witness shape round-trips.
+    /// </summary>
     [TestMethod]
     public void AResurrectedGhostWithWitnessRoundTripsWithASingletonTranslation()
     {
@@ -346,9 +384,11 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //(f) FromRunState fails closed on the v2-shape violations: overlapping span targets, a span/irregular
-    //duplicate target, a translation span landing on a vertex, translation-span bounds, and remove-dot
-    //arithmetic overflow.
+    /// <summary>
+    /// (f) FromRunState fails closed on the v2-shape violations: overlapping span targets, a span/irregular
+    /// duplicate target, a translation span landing on a vertex, translation-span bounds, and remove-dot
+    /// arithmetic overflow.
+    /// </summary>
     [TestMethod]
     public void FromRunStateFailsClosedOnV2ShapeViolations()
     {
@@ -402,10 +442,15 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //The gate-1 shared-counter-plane cost, pinned empirically: a type-delete-type workload fragments the
-    //insert runs exactly as the plane-sharing arithmetic predicts. Each round types PerRound chained inserts
-    //then removes the last; the remove tick opens a one-counter gap on the shared axis, so the next round's
-    //inserts start past it and cannot extend the previous run — one run and one length-one span per round.
+    /// <summary>
+    /// The gate-1 shared-counter-plane cost, pinned empirically: a type-delete-type workload fragments the
+    /// insert runs exactly as the plane-sharing arithmetic predicts.
+    /// </summary>
+    /// <remarks>
+    /// Each round types PerRound chained inserts then removes the last; the remove tick opens a one-counter gap
+    /// on the shared axis, so the next round's inserts start past it and cannot extend the previous run — one
+    /// run and one length-one span per round.
+    /// </remarks>
     [TestMethod]
     public void ATypeDeleteTypeWorkloadFragmentsInsertRunsAsThePlaneSharingPredicts()
     {
@@ -446,7 +491,9 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //ToState fails closed on an instance carrying translations, but still serializes a never-compacted one.
+    /// <summary>
+    /// ToState fails closed on an instance carrying translations, but still serializes a never-compacted one.
+    /// </summary>
     [TestMethod]
     public void ToStateThrowsOnTranslationsButWorksOnANeverCompactedInstance()
     {
@@ -465,7 +512,9 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //TranslateAnchor: identity for a live dot, the map for a dropped dot, null for an unknown dot.
+    /// <summary>
+    /// TranslateAnchor: identity for a live dot, the map for a dropped dot, null for an unknown dot.
+    /// </summary>
     [TestMethod]
     public void TranslateAnchorServesLiveDroppedAndUnknownDots()
     {
@@ -484,9 +533,14 @@ internal sealed class RgaCompactionTests
     }
 
 
-    //FromRunState validation of the shared model postures: a dangling translation target, an empty run, a
-    //duplicate dot across runs, and a W-shape translation (a dropped dot that is a live untombstoned vertex)
-    //each fail closed. The v2-shape span/translation-span violations live in the (f) case above.
+    /// <summary>
+    /// FromRunState validation of the shared model postures: a dangling translation target, an empty run, a
+    /// duplicate dot across runs, and a W-shape translation (a dropped dot that is a live untombstoned vertex)
+    /// each fail closed.
+    /// </summary>
+    /// <remarks>
+    /// The v2-shape span/translation-span violations live in the (f) case above.
+    /// </remarks>
     [TestMethod]
     public void FromRunStateValidatesItsInput()
     {

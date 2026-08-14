@@ -18,19 +18,26 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class QuePaxaRoundTests
 {
-    //Identities from fixed bytes so that A sorts below B, because the catch-up tie-break below must be
-    //settled by the recorder index and by nothing that a generated pair could reorder.
+    /// <summary>
+    /// Identities from fixed bytes so that A sorts below B, because the catch-up tie-break below must be
+    /// settled by the recorder index and by nothing that a generated pair could reorder.
+    /// </summary>
     private static ProposerLane LaneA { get; } = ProposerLane.For(Replica(1));
     private static ProposerLane LaneB { get; } = ProposerLane.For(Replica(2));
 
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
 
 
-    //A DUPLICATE RECORDER INDEX WOULD DOUBLE-COUNT TOWARD THE QUORUM, and the quorum test is the model's sole
-    //guard on acting at all: two proposers whose answer sets do not intersect can decide different values,
-    //and the whole agreement argument is that two majorities intersect. The request-side check the register
-    //already carries refuses a duplicate before anything is recorded; this one is what the quorum arithmetic
-    //actually needs, because the conclusion accepts an answer array a host assembled.
+    /// <summary>
+    /// A DUPLICATE RECORDER INDEX WOULD DOUBLE-COUNT TOWARD THE QUORUM, and the quorum test is the model's sole
+    /// guard on acting at all: two proposers whose answer sets do not intersect can decide different values,
+    /// and the whole agreement argument is that two majorities intersect.
+    /// </summary>
+    /// <remarks>
+    /// The request-side check the register already carries refuses a duplicate before anything is recorded;
+    /// this one is what the quorum arithmetic actually needs, because the conclusion accepts an answer array a
+    /// host assembled.
+    /// </remarks>
     [TestMethod]
     public void ConcludeRefusesADuplicateRecorderIndex()
     {
@@ -69,9 +76,14 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //AN ANSWER DEFENDS ITSELF, because a positional record synthesizes no validation at all and the type is
-    //constructed by hosts that are neither driver. A negative recorder index cannot address a recorder and a
-    //null summary reaches the phase dispatch as a null dereference rather than as an argument complaint.
+    /// <summary>
+    /// AN ANSWER DEFENDS ITSELF, because a positional record synthesizes no validation at all and the type is
+    /// constructed by hosts that are neither driver.
+    /// </summary>
+    /// <remarks>
+    /// A negative recorder index cannot address a recorder and a null summary reaches the phase dispatch as a
+    /// null dereference rather than as an argument complaint.
+    /// </remarks>
     [TestMethod]
     public void AnAnswerRefusesANegativeRecorderIndexAndANullSummaryUnderConstructionAndUnderWith()
     {
@@ -91,11 +103,15 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //A SUB-MAJORITY ANSWER SET IS A MISSED QUORUM AND NOT A DECISION, at every recorder count. This is the
-    //pin on the quorum being DERIVED from the recorder count rather than supplied: a caller passing a
-    //sub-majority quorum would otherwise reach the phase-two decision on a reply set that need not intersect
-    //another proposer's, and two proposers would then decide different values with no intersecting majority
-    //between them.
+    /// <summary>
+    /// A SUB-MAJORITY ANSWER SET IS A MISSED QUORUM AND NOT A DECISION, at every recorder count.
+    /// </summary>
+    /// <remarks>
+    /// This is the pin on the quorum being DERIVED from the recorder count rather than supplied: a caller
+    /// passing a sub-majority quorum would otherwise reach the phase-two decision on a reply set that need not
+    /// intersect another proposer's, and two proposers would then decide different values with no intersecting
+    /// majority between them.
+    /// </remarks>
     [TestMethod]
     public void ASubMajorityAnswerSetMissesTheQuorumAtEveryRecorderCount()
     {
@@ -115,10 +131,12 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //THE QUORUM IS A FLOOR AND A LARGER RECORDER SET RAISES IT. The same three answers conclude against three
-    //recorders and miss against seven, which is what makes the second parameter the RECORDER COUNT rather
-    //than a caller-supplied quorum: a caller cannot weaken the guard by naming a smaller number, because the
-    //number it names is what the guard is computed from.
+    /// <summary>
+    /// THE QUORUM IS A FLOOR AND A LARGER RECORDER SET RAISES IT. The same three answers conclude against three
+    /// recorders and miss against seven, which is what makes the second parameter the RECORDER COUNT rather
+    /// than a caller-supplied quorum: a caller cannot weaken the guard by naming a smaller number, because the
+    /// number it names is what the guard is computed from.
+    /// </summary>
     [TestMethod]
     public void TheDerivedQuorumRisesWithTheRecorderCountRatherThanBeingSupplied()
     {
@@ -135,11 +153,15 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //THE CATCH-UP TIE AMONG EQUAL STEPS IS BROKEN BY THE LOWEST RECORDER INDEX, so that a run is reproducible.
-    //Two recorders sit at the same greatest step holding DIFFERENT first proposals, and recorder one's key is
-    //the greater of the two, so an implementation breaking the tie by the greatest key, by the highest index,
-    //or by array position takes the other value. The array is concluded in both orders, because a rule that
-    //held only for one ordering would be array position wearing the index rule's name.
+    /// <summary>
+    /// THE CATCH-UP TIE AMONG EQUAL STEPS IS BROKEN BY THE LOWEST RECORDER INDEX, so that a run is reproducible.
+    /// </summary>
+    /// <remarks>
+    /// Two recorders sit at the same greatest step holding DIFFERENT first proposals, and recorder one's key
+    /// is the greater of the two, so an implementation breaking the tie by the greatest key, by the highest
+    /// index, or by array position takes the other value. The array is concluded in both orders, because a
+    /// rule that held only for one ordering would be array position wearing the index rule's name.
+    /// </remarks>
     [TestMethod]
     public void TheCatchUpTieAmongEqualStepsTakesTheLowestRecorderIndex()
     {
@@ -166,10 +188,15 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //A STEP STRICTLY ABOVE THE ROUND'S IS WHAT CATCHING UP MEANS, and an answer at the round's own step is
-    //not one. Lemma C.2 makes every summary's step at least the requested one, so an answer that is not at
-    //the requested step is above it, which is why the comparison is against the round's step rather than
-    //against the other answers.
+    /// <summary>
+    /// A STEP STRICTLY ABOVE THE ROUND'S IS WHAT CATCHING UP MEANS, and an answer at the round's own step is
+    /// not one.
+    /// </summary>
+    /// <remarks>
+    /// Lemma C.2 makes every summary's step at least the requested one, so an answer that is not at the
+    /// requested step is above it, which is why the comparison is against the round's step rather than against
+    /// the other answers.
+    /// </remarks>
     [TestMethod]
     public void AnAnswerAtTheRoundsOwnStepIsNotACatchUp()
     {
@@ -183,13 +210,18 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //LEMMA C.2 IS A PRECONDITION AND NOT AN ASSUMPTION. The catch-up rule reads "no summary above my step" as
-    //"every summary at my step", which holds only because a recorder advances to the requested step before it
-    //answers. A host driving its own transport can supply an answer from below the round's step — a reply
-    //correlated to the wrong call, or a cached one — and without this check the answer would be counted toward
-    //this step's quorum with a stale aggregate. At phase two that is a decision taken on a majority that never
-    //gathered at the deciding step, which is silently wrong rather than loudly wrong: no exception, and two
-    //proposers free to decide different values.
+    /// <summary>
+    /// LEMMA C.2 IS A PRECONDITION AND NOT AN ASSUMPTION. The catch-up rule reads "no summary above my step" as
+    /// "every summary at my step", which holds only because a recorder advances to the requested step before it
+    /// answers.
+    /// </summary>
+    /// <remarks>
+    /// A host driving its own transport can supply an answer from below the round's step — a reply correlated
+    /// to the wrong call, or a cached one — and without this check the answer would be counted toward this
+    /// step's quorum with a stale aggregate. At phase two that is a decision taken on a majority that never
+    /// gathered at the deciding step, which is silently wrong rather than loudly wrong: no exception, and two
+    /// proposers free to decide different values.
+    /// </remarks>
     [TestMethod]
     public void ConcludeRefusesAnAnswerFromBelowTheRoundsStep()
     {
@@ -220,12 +252,17 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //THE FAST PATH IS RESTRICTED TO THE FIRST STEP, which is stricter than the model's guard on any
-    //phase-zero step. The restriction costs nothing through either driver, because every phase-zero send
-    //above the first step is redrawn to an ordinary priority and so no recorder's first proposal at such a
-    //step can carry the reserved one; and it is safe in any case, because a restriction can only refuse a
-    //decision rather than add one. The conclusion is public, so a host assembling answers itself is the
-    //caller that reaches the difference, and this is where the argument stops being an argument.
+    /// <summary>
+    /// THE FAST PATH IS RESTRICTED TO THE FIRST STEP, which is stricter than the model's guard on any
+    /// phase-zero step.
+    /// </summary>
+    /// <remarks>
+    /// The restriction costs nothing through either driver, because every phase-zero send above the first step
+    /// is redrawn to an ordinary priority and so no recorder's first proposal at such a step can carry the
+    /// reserved one; and it is safe in any case, because a restriction can only refuse a decision rather than
+    /// add one. The conclusion is public, so a host assembling answers itself is the caller that reaches the
+    /// difference, and this is where the argument stops being an argument.
+    /// </remarks>
     [TestMethod]
     public void TheFastPathDoesNotFireAtAPhaseZeroStepAboveTheFirstOne()
     {
@@ -265,10 +302,15 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //A RECORDER ABOVE STEP ZERO ALWAYS HOLDS A FIRST PROPOSAL, so a null one means the register state is
-    //corrupt and reporting it is the fail-closed reading. The message boundary refuses a null first before it
-    //reaches here, which is what keeps this a genuine backstop rather than a live path; a host assembling
-    //answers itself is the one caller that can still reach it.
+    /// <summary>
+    /// A RECORDER ABOVE STEP ZERO ALWAYS HOLDS A FIRST PROPOSAL, so a null one means the register state is
+    /// corrupt and reporting it is the fail-closed reading.
+    /// </summary>
+    /// <remarks>
+    /// The message boundary refuses a null first before it reaches here, which is what keeps this a genuine
+    /// backstop rather than a live path; a host assembling answers itself is the one caller that can still
+    /// reach it.
+    /// </remarks>
     [TestMethod]
     public void ConcludeReportsAnAnswerAboveStepZeroThatCarriesNoFirstProposal()
     {
@@ -283,12 +325,16 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //WHETHER A SEND REDRAWS IS A FACT ABOUT THE PROTOCOL POSITION AND NOT ABOUT THE DRIVER, which is why it
-    //lives on the round: two drivers computing it independently is how the two would drift. The reserved
-    //priority is claimed at the first step alone and only by a proposer that believes it leads; every other
-    //phase-zero send carries a fresh draw, INCLUDING the leader's own sends in every later round. That last
-    //arm is exercised by no checked configuration, because every concrete configuration bounds the step
-    //budget below round two, so it rests on a directed test rather than on the model.
+    /// <summary>
+    /// WHETHER A SEND REDRAWS IS A FACT ABOUT THE PROTOCOL POSITION AND NOT ABOUT THE DRIVER, which is why it
+    /// lives on the round: two drivers computing it independently is how the two would drift.
+    /// </summary>
+    /// <remarks>
+    /// The reserved priority is claimed at the first step alone and only by a proposer that believes it leads;
+    /// every other phase-zero send carries a fresh draw, INCLUDING the leader's own sends in every later
+    /// round. That last arm is exercised by no checked configuration, because every concrete configuration
+    /// bounds the step budget below round two, so it rests on a directed test rather than on the model.
+    /// </remarks>
     [TestMethod]
     public void RedrawsPriorityIsPhaseZeroExceptTheBelievingLeadersOwnFirstStep()
     {
@@ -313,11 +359,15 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //ONE CALL IS ONE RECORDER'S SEND. Phase zero redraws the priority PER RECORDER, so calling this once per
-    //step and broadcasting the result is a protocol defect rather than an optimization: a single draw shared
-    //across recorders collapses the independence the liveness argument rests on. The owner and the value ride
-    //through the redraw untouched, because a proposal carried forward from another proposer keeps that
-    //proposer's identity.
+    /// <summary>
+    /// ONE CALL IS ONE RECORDER'S SEND. Phase zero redraws the priority PER RECORDER, so calling this once per
+    /// step and broadcasting the result is a protocol defect rather than an optimization: a single draw shared
+    /// across recorders collapses the independence the liveness argument rests on.
+    /// </summary>
+    /// <remarks>
+    /// The owner and the value ride through the redraw untouched, because a proposal carried forward from
+    /// another proposer keeps that proposer's identity.
+    /// </remarks>
     [TestMethod]
     public void NextSendDrawsOncePerCallAndKeepsTheOwnerAndValue()
     {
@@ -340,9 +390,13 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //A SEND THAT DOES NOT REDRAW CARRIES THE TEMPLATE ITSELF, which is what makes the fast path free of
-    //entropy and what makes a phase-one spread identical at every recorder. A source that throws proves the
-    //claim rather than merely permitting it.
+    /// <summary>
+    /// A SEND THAT DOES NOT REDRAW CARRIES THE TEMPLATE ITSELF, which is what makes the fast path free of
+    /// entropy and what makes a phase-one spread identical at every recorder.
+    /// </summary>
+    /// <remarks>
+    /// A source that throws proves the claim rather than merely permitting it.
+    /// </remarks>
     [TestMethod]
     public void NextSendReturnsTheTemplateUntouchedWhenTheRoundDoesNotRedraw()
     {
@@ -355,9 +409,11 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //A PRIORITY SOURCE MUST RETURN AN ORDINARY PRIORITY. The absent priority is the aggregate fold's identity
-    //and the reserved priority forges a leader claim, so neither may be drawn; refusing them here is what
-    //keeps the contract stated on the source delegate enforceable at the one place the source is consulted.
+    /// <summary>
+    /// A PRIORITY SOURCE MUST RETURN AN ORDINARY PRIORITY. The absent priority is the aggregate fold's identity
+    /// and the reserved priority forges a leader claim, so neither may be drawn; refusing them here is what
+    /// keeps the contract stated on the source delegate enforceable at the one place the source is consulted.
+    /// </summary>
     [TestMethod]
     public void NextSendRefusesANonOrdinaryDrawAndANullSource()
     {
@@ -381,8 +437,10 @@ internal sealed class QuePaxaRoundTests
     }
 
 
-    //Distinct keys and distinct values per recorder, so a phase-zero gather over them is never uniform and no
-    //assertion above can be satisfied by a fast path firing for the wrong reason.
+    /// <summary>
+    /// Distinct keys and distinct values per recorder, so a phase-zero gather over them is never uniform and no
+    /// assertion above can be satisfied by a fast path firing for the wrong reason.
+    /// </summary>
     private static ImmutableArray<RecorderAnswer<string>> AnswersFor(int answerCount)
     {
         var builder = ImmutableArray.CreateBuilder<RecorderAnswer<string>>(answerCount);

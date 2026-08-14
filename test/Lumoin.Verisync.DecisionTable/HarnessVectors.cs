@@ -219,9 +219,6 @@ internal static class HarnessVectors
     }
 
 
-    //The placement the settled rules turn on: inside the co-located majority a simple majority stays in the
-    //region while the supermajority cannot, so the leaderless fast path is the SLOWER mode there.
-    //
     /// <summary>
     /// OUTSIDE THE MAJORITY THE DIRECTION IS NOT A RULE, and the seven-replica arm is why. The settled reading
     /// was written at five replicas, where a remote writer's majority already leaves the region and the fast
@@ -232,6 +229,10 @@ internal static class HarnessVectors
     /// five-replica reading would misdecide it.
     /// </summary>
     /// <param name="failures">The vector's failure collector.</param>
+    /// <remarks>
+    /// The placement the settled rules turn on: inside the co-located majority a simple majority stays in the
+    /// region while the supermajority cannot, so the leaderless fast path is the SLOWER mode there.
+    /// </remarks>
     private static void ClusteredMajorityInverts(VectorFailures failures)
     {
         foreach(int replicaCount in Topologies.ReplicaCounts)
@@ -421,10 +422,6 @@ internal static class HarnessVectors
     }
 
 
-    //The stagger under measurement is the shipped policy's, awaited against this pump's clock. A harness that
-    //failed to serve the TimeProvider would show a writer sending at once and the delay would be a restated
-    //number again.
-    //
     /// <summary>
     /// BOTH SIDES OF THE DELAY ARE PINNED HERE. The delay reached the clock, which is a statement about the
     /// INSTANT the write returned at, and the delay is outside the measurement, which is a statement about the
@@ -432,6 +429,11 @@ internal static class HarnessVectors
     /// not disagree on; pinning only the second would pass a harness that never waited at all.
     /// </summary>
     /// <param name="failures">The vector's failure collector.</param>
+    /// <remarks>
+    /// The stagger under measurement is the shipped policy's, awaited against this pump's clock. A harness that
+    /// failed to serve the TimeProvider would show a writer sending at once and the delay would be a restated
+    /// number again.
+    /// </remarks>
     private static void HedgedWriterRunsOnThePumpClock(VectorFailures failures)
     {
         Topology placement = Topologies.ProbeSpread();

@@ -10,15 +10,21 @@ internal sealed class MvRegisterPropertyTests
 {
     private static ReplicaId[] Replicas { get; } = [Replica(0), Replica(1), Replica(2)];
 
-    //The value written is a function of (writer, per-writer write ordinal). In a linear history the
-    //ordinal equals the writer's dot counter, so a given dot maps to one value globally even across
-    //independently generated registers — two samples can both contain dot (r, k), but always carrying
-    //the same value, which is the invariant every real history maintains.
+    /// <summary>
+    /// The value written is a function of (writer, per-writer write ordinal).
+    /// </summary>
+    /// <remarks>
+    /// In a linear history the ordinal equals the writer's dot counter, so a given dot maps to one value
+    /// globally even across independently generated registers — two samples can both contain dot (r, k), but
+    /// always carrying the same value, which is the invariant every real history maintains.
+    /// </remarks>
     private static Gen<MvRegister<int>> GenRegister { get; } =
         Gen.Int[0, 2].Array[0, 6].Select(writers => Build(writers));
 
-    //Two replicas diverge from a generated shared ancestor and write independently — the core MV
-    //register scenario the single-register generator cannot produce.
+    /// <summary>
+    /// Two replicas diverge from a generated shared ancestor and write independently — the core MV register
+    /// scenario the single-register generator cannot produce.
+    /// </summary>
     private static Gen<(MvRegister<int> B, MvRegister<int> C, MvRegister<int> Ancestor, int LastB, int LastC)> GenDivergent { get; } =
         Gen.Select(Gen.Int[0, 4], Gen.Int[1, 3], Gen.Int[1, 3], (ancestorWrites, bWrites, cWrites) =>
         {

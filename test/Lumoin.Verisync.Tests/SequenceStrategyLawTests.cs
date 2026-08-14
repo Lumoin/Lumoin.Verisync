@@ -324,8 +324,13 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
     }
 
 
-    //LAW-NFD: merging an empty or a strictly-behind operand never drops a live element — the merge equals
-    //the full history's visible values in every order. Runs for every strategy, no capability gate.
+    /// <summary>
+    /// LAW-NFD: merging an empty or a strictly-behind operand never drops a live element — the merge equals the
+    /// full history's visible values in every order.
+    /// </summary>
+    /// <remarks>
+    /// Runs for every strategy, no capability gate.
+    /// </remarks>
     [TestMethod]
     public void MergeWithEmptyOrABehindOperandNeverDropsALiveElement()
     {
@@ -340,11 +345,15 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
     }
 
 
-    //LAW-RG: a remove only gates a drop once it is certified group-wide. A head-insert survivor and a
-    //childless element after it, the element removed; at the uncertified frontier the projection still
-    //carries the hidden value and the drop does not fire, at the certified frontier it does. The
-    //strategy-shaped conversion outcome — ghost-in-place versus pending-removed base conversion — is
-    //asserted through the hook, which carries both frontiers.
+    /// <summary>
+    /// LAW-RG: a remove only gates a drop once it is certified group-wide.
+    /// </summary>
+    /// <remarks>
+    /// A head-insert survivor and a childless element after it, the element removed; at the uncertified
+    /// frontier the projection still carries the hidden value and the drop does not fire, at the certified
+    /// frontier it does. The strategy-shaped conversion outcome — ghost-in-place versus pending-removed base
+    /// conversion — is asserted through the hook, which carries both frontiers.
+    /// </remarks>
     [TestMethod]
     public void RemoveObservationGatesTheDrop()
     {
@@ -390,9 +399,11 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
     }
 
 
-    //LAW-NR: merging a former laggard that holds the removed vertex and its dotted tombstone re-enters the
-    //ghost hidden, never resurrecting the committed remove; recompacting either merge order returns the
-    //compacted state.
+    /// <summary>
+    /// LAW-NR: merging a former laggard that holds the removed vertex and its dotted tombstone re-enters the
+    /// ghost hidden, never resurrecting the committed remove; recompacting either merge order returns the
+    /// compacted state.
+    /// </summary>
     [TestMethod]
     public void MergeDoesNotResurrectACommittedRemove()
     {
@@ -415,8 +426,10 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
     }
 
 
-    //LAW-SR: a stale pre-remove state (the removed element live, no tombstone) fails the stale-replay
-    //detector closed in both merge orders, while the honest ghost-holder throws in neither.
+    /// <summary>
+    /// LAW-SR: a stale pre-remove state (the removed element live, no tombstone) fails the stale-replay
+    /// detector closed in both merge orders, while the honest ghost-holder throws in neither.
+    /// </summary>
     [TestMethod]
     public void AStalePreRemoveStateFailsClosedInBothMergeOrders()
     {
@@ -453,8 +466,10 @@ internal abstract class SequenceStrategyLawTests<TSequence, TValue, TAnchor>
     }
 
 
-    //Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect
-    //the element-wise minimum but keep the digests honest.
+    /// <summary>
+    /// Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect the
+    /// element-wise minimum but keep the digests honest.
+    /// </summary>
     private static VectorClock Frontier(params VectorClock[] memberContexts)
     {
         var digests = new List<GossipDigest>(memberContexts.Length);

@@ -21,8 +21,10 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnchoredSequence<int>, int, OffsetAddress>
 {
-    //Base values sit in their own range so anchors are recoverable by value in the focused tests; live
-    //values use the per-replica ranges of the other generators.
+    /// <summary>
+    /// Base values sit in their own range so anchors are recoverable by value in the focused tests; live values
+    /// use the per-replica ranges of the other generators.
+    /// </summary>
     private static ImmutableArray<int> SharedBase { get; } = [9000, 9001, 9002];
 
     private static ReplicaId[] Replicas { get; } = [MakeReplica(0), MakeReplica(1), MakeReplica(2), MakeReplica(3)];
@@ -63,8 +65,10 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     protected override Gen<(OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)>? GenCommutationCase => GenCase;
 
 
-    //LAW-NFD: an op history of inserts and dotted removes over the EMPTY base, so an empty operand shares
-    //the genesis generation with the Full and Behind states and no generation fence throws.
+    /// <summary>
+    /// LAW-NFD: an op history of inserts and dotted removes over the EMPTY base, so an empty operand shares the
+    /// genesis generation with the Full and Behind states and no generation fence throws.
+    /// </summary>
     protected override Gen<(OffsetAnchoredSequence<int> Full, OffsetAnchoredSequence<int> Behind)> GenFullAndBehindHistory { get; } =
         Gen.Select(
             Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 8],
@@ -77,11 +81,15 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
             }).Where(static pair => !pair.Full.Equals(pair.Behind));
 
 
-    //The drop-only remove scenario for LAW-NR/LAW-SR: the survivor is a BASE slot and the removed element
-    //is a childless live vertex after it. Compacting at the certified frontier DROPS the vertex without
-    //touching the base, so the generation stays genesis and the compacted state merges legally with the
-    //uncompacted ghost-holder and stale operands. A live-survivor construction would advance the generation
-    //and throw the fence.
+    /// <summary>
+    /// The drop-only remove scenario for LAW-NR/LAW-SR: the survivor is a BASE slot and the removed element is
+    /// a childless live vertex after it.
+    /// </summary>
+    /// <remarks>
+    /// Compacting at the certified frontier DROPS the vertex without touching the base, so the generation stays
+    /// genesis and the compacted state merges legally with the uncompacted ghost-holder and stale operands. A
+    /// live-survivor construction would advance the generation and throw the fence.
+    /// </remarks>
     protected override RemoveScenario? BuildRemoveScenario()
     {
         ImmutableArray<int> singleBase = [9000];
@@ -99,11 +107,16 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     }
 
 
-    //The offset-shaped half of LAW-RG under the generic live-survivor construction (empty base, both values
-    //the sentinel): the survivor converts to base offset 0 in BOTH halves, so BOTH stamp the frontier and
-    //advance to generation 1. At the uncertified frontier the removed element converts pending-removed to
-    //offset 1, hidden; at the certified frontier it drops and the removed anchor translates to the gap at
-    //offset 0. Each translated result is a base address of the current generation.
+    /// <summary>
+    /// The offset-shaped half of LAW-RG under the generic live-survivor construction (empty base, both values
+    /// the sentinel): the survivor converts to base offset 0 in BOTH halves, so BOTH stamp the frontier and
+    /// advance to generation 1.
+    /// </summary>
+    /// <remarks>
+    /// At the uncertified frontier the removed element converts pending-removed to offset 1, hidden; at the
+    /// certified frontier it drops and the removed anchor translates to the gap at offset 0. Each translated
+    /// result is a base address of the current generation.
+    /// </remarks>
     protected override void AssertRemoveConversionOutcome(
         OffsetAnchoredSequence<int> uncertifiedCompacted,
         OffsetAnchoredSequence<int> certifiedCompacted,
@@ -127,10 +140,14 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     }
 
 
-    //The shared-prefix ops and the two divergent remove-only suffixes all come from CsCheck seeds, so
-    //the whole case is deterministic and reproduces on shrink. Filtered so EVERY sampled case enters the
-    //compaction region — something converts or drops at the frontier — the slice-1 lesson that unfiltered
-    //histories rarely reach the region the laws exist to test.
+    /// <summary>
+    /// The shared-prefix ops and the two divergent remove-only suffixes all come from CsCheck seeds, so the
+    /// whole case is deterministic and reproduces on shrink.
+    /// </summary>
+    /// <remarks>
+    /// Filtered so EVERY sampled case enters the compaction region — something converts or drops at the
+    /// frontier — the slice-1 lesson that unfiltered histories rarely reach the region the laws exist to test.
+    /// </remarks>
     private static Gen<(OffsetAnchoredSequence<int> A, OffsetAnchoredSequence<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)> GenCase { get; } =
         Gen.Select(
             Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 6],
@@ -197,9 +214,13 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     }
 
 
-    //Removes-only, so the operand stays insert-quiescent: each seed hides one still-visible element,
-    //minting an above-frontier remove-dot but never a vertex. A suffix insert would raise an unstable
-    //vertex and Compact would fail closed under the §17 guard.
+    /// <summary>
+    /// Removes-only, so the operand stays insert-quiescent: each seed hides one still-visible element, minting
+    /// an above-frontier remove-dot but never a vertex.
+    /// </summary>
+    /// <remarks>
+    /// A suffix insert would raise an unstable vertex and Compact would fail closed under the §17 guard.
+    /// </remarks>
     private static OffsetAnchoredSequence<int> ApplyRemoveSuffix(OffsetAnchoredSequence<int> start, ReplicaId replica, int[] seeds)
     {
         OffsetAnchoredSequence<int> sequence = start;
@@ -250,8 +271,10 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     }
 
 
-    //Live-axis op histories over the EMPTY base, so an empty operand shares the generation: head and
-    //live-anchored inserts plus dotted removes of still-visible elements.
+    /// <summary>
+    /// Live-axis op histories over the EMPTY base, so an empty operand shares the generation: head and
+    /// live-anchored inserts plus dotted removes of still-visible elements.
+    /// </summary>
     private static (OffsetAnchoredSequence<int> Full, IReadOnlyList<OffsetAnchoredSequence<int>> Snapshots) BuildSnapshots((int Replica, int Seed)[] ops)
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.Empty;
@@ -292,8 +315,10 @@ internal sealed class OffsetStrategyLawTests: SequenceStrategyLawTests<OffsetAnc
     }
 
 
-    //Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect
-    //the element-wise minimum but keep the digests honest.
+    /// <summary>
+    /// Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect the
+    /// element-wise minimum but keep the digests honest.
+    /// </summary>
     private static VectorClock FrontierOf(params VectorClock[] memberContexts)
     {
         var digests = new List<GossipDigest>(memberContexts.Length);

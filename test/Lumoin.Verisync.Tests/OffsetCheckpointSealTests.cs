@@ -28,8 +28,10 @@ internal sealed class OffsetCheckpointSealTests
     private static ReplicaId RB { get; } = Replica(20);
 
 
-    //A won seal commits its commitment, compacts the live sequence at the frontier, and records the
-    //dotted certified projection computed from the PRE-seal live.
+    /// <summary>
+    /// A won seal commits its commitment, compacts the live sequence at the frontier, and records the dotted
+    /// certified projection computed from the PRE-seal live.
+    /// </summary>
     [TestMethod]
     public void ASealCommitsCompactsAndRecordsTheDottedCheckpoint()
     {
@@ -65,8 +67,10 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //A non-sealer over the byte-identical full state applies the committed seal and converges
-    //component-wise — the determinism theorem end to end over the base-materializing conversion.
+    /// <summary>
+    /// A non-sealer over the byte-identical full state applies the committed seal and converges component-wise
+    /// — the determinism theorem end to end over the base-materializing conversion.
+    /// </summary>
     [TestMethod]
     public void ANonSealerAppliesTheCommittedSealAndConverges()
     {
@@ -92,10 +96,15 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //A competing seal that is behind aborts unchanged, re-proposing the winner's commitment; a later
-    //seal that strictly dominates the winner succeeds. Every offset seal frontier must be the sealer's
-    //own full context, so the behind sealer holds ONLY the first edit at its F0 attempt and applies
-    //the remaining edits AFTER the abort, sealing at F2 from its own grown full context.
+    /// <summary>
+    /// A competing seal that is behind aborts unchanged, re-proposing the winner's commitment; a later seal
+    /// that strictly dominates the winner succeeds.
+    /// </summary>
+    /// <remarks>
+    /// Every offset seal frontier must be the sealer's own full context, so the behind sealer holds ONLY the
+    /// first edit at its F0 attempt and applies the remaining edits AFTER the abort, sealing at F2 from its own
+    /// grown full context.
+    /// </remarks>
     [TestMethod]
     public void ACompetingSealAbortsUnchangedAndSucceedsAboveTheWinner()
     {
@@ -138,11 +147,16 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //Two honest sealers at one frontier propose byte-identical digests, so the equal-frontier re-seal
-    //must come from a second member that has NOT yet applied or compacted: it hits the equal arm under
-    //a higher ballot and only the ballot advances. The discontinuity pin: the FIRST sealer re-sealing
-    //from its own now-COMPACTED container reaches the equal-frontier-divergent-digest refusal — the
-    //conversion re-keyed its projection onto base sentinels — and aborts unchanged.
+    /// <summary>
+    /// Two honest sealers at one frontier propose byte-identical digests, so the equal-frontier re-seal must
+    /// come from a second member that has NOT yet applied or compacted: it hits the equal arm under a higher
+    /// ballot and only the ballot advances.
+    /// </summary>
+    /// <remarks>
+    /// The discontinuity pin: the FIRST sealer re-sealing from its own now-COMPACTED container reaches the
+    /// equal-frontier-divergent-digest refusal — the conversion re-keyed its projection onto base sentinels —
+    /// and aborts unchanged.
+    /// </remarks>
     [TestMethod]
     public void AnEqualFrontierResealIsIdempotentFromAnUncompactedPeer()
     {
@@ -176,9 +190,13 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //Committed seals apply in chain order: a stale earlier commitment is rejected by frontier order
-    //even when its digest coincides with the applier's projection at that earlier frontier. Both
-    //commitments sit at full-context frontiers of their stages.
+    /// <summary>
+    /// Committed seals apply in chain order: a stale earlier commitment is rejected by frontier order even when
+    /// its digest coincides with the applier's projection at that earlier frontier.
+    /// </summary>
+    /// <remarks>
+    /// Both commitments sit at full-context frontiers of their stages.
+    /// </remarks>
     [TestMethod]
     public void ApplyingAStaleEarlierSealFailsClosedByChainOrder()
     {
@@ -200,8 +218,10 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //Applying a committed seal whose digest disagrees with the applier's own certified projection at
-    //the committed frontier fails closed — the "y" container applying the "x" commitment.
+    /// <summary>
+    /// Applying a committed seal whose digest disagrees with the applier's own certified projection at the
+    /// committed frontier fails closed — the "y" container applying the "x" commitment.
+    /// </summary>
     [TestMethod]
     public void ApplyCommittedSealFailsClosedOnADivergentDigest()
     {
@@ -217,10 +237,12 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //The adoption recipe with the donor pinned PRE-APPLY: the digest-verification adoption check is
-    //valid exactly for donors still on the commitment's SOURCE generation, so the rejoiner adopts the
-    //non-applied member's live state and applies the committed seal; everything converges once the
-    //donor itself applies too.
+    /// <summary>
+    /// The adoption recipe with the donor pinned PRE-APPLY: the digest-verification adoption check is valid
+    /// exactly for donors still on the commitment's SOURCE generation, so the rejoiner adopts the non-applied
+    /// member's live state and applies the committed seal; everything converges once the donor itself applies
+    /// too.
+    /// </summary>
     [TestMethod]
     public void ARejoinerAdoptsADonorStateAndAppliesTheCommittedSeal()
     {
@@ -257,11 +279,16 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //The inverted arm: on the base-materializing strategy a seal with unstable edits present THROWS —
-    //the RGA excludes-and-seals shape does not exist here. The refusal is pre-consensus: a subsequent
-    //quiescent seal at the grown full context on the SAME register instance is chosen as the
-    //register's FIRST commitment, so nothing was promised or accepted by the failed attempt. The
-    //immutable register exposes no equality, so the observable is the first commitment's frontier.
+    /// <summary>
+    /// The inverted arm: on the base-materializing strategy a seal with unstable edits present THROWS — the RGA
+    /// excludes-and-seals shape does not exist here.
+    /// </summary>
+    /// <remarks>
+    /// The refusal is pre-consensus: a subsequent quiescent seal at the grown full context on the SAME register
+    /// instance is chosen as the register's FIRST commitment, so nothing was promised or accepted by the failed
+    /// attempt. The immutable register exposes no equality, so the observable is the first commitment's
+    /// frontier.
+    /// </remarks>
     [TestMethod]
     public void ASealWithUnstableEditsPresentFailsClosedBeforeAnyConsensusRound()
     {
@@ -283,11 +310,15 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //The straggler wedge end to end: a writer holding an insert above the committed frontier passes
-    //the dominance and digest checks yet fails the committed seal on the probe layer, and its honest
-    //recovery is wholesale adoption plus container merge, with verification arriving at the NEXT seal.
-    //The regression pin holds the unrealizable-recipe shape forever: adopting a POST-seal donor and
-    //re-applying the CURRENT commitment fails the digest check by sentinel re-keying.
+    /// <summary>
+    /// The straggler wedge end to end: a writer holding an insert above the committed frontier passes the
+    /// dominance and digest checks yet fails the committed seal on the probe layer, and its honest recovery is
+    /// wholesale adoption plus container merge, with verification arriving at the NEXT seal.
+    /// </summary>
+    /// <remarks>
+    /// The regression pin holds the unrealizable-recipe shape forever: adopting a POST-seal donor and
+    /// re-applying the CURRENT commitment fails the digest check by sentinel re-keying.
+    /// </remarks>
     [TestMethod]
     public void AStragglingWriterFailsTheCommittedSealAndRecoversByAdoptionAndMerge()
     {
@@ -377,12 +408,17 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //TWO independent recovery executions from the SAME donor re-mint the straggler's uncovered vertex
-    //divergently. The dot rebirth is deterministic — c re-mints as (R3,3) from context {R1:2} no matter where
-    //it is placed — so one recovery placing c after b and another placing it after a carry the SAME dot with
-    //DIFFERENT vertices. Merging the two recovered containers fails closed on the equivocation detector in
-    //both orders rather than letting merge order silently pick a predecessor, while a single recovery
-    //gossiped onward merges cleanly, since every holder then carries the byte-identical vertex.
+    /// <summary>
+    /// TWO independent recovery executions from the SAME donor re-mint the straggler's uncovered vertex
+    /// divergently.
+    /// </summary>
+    /// <remarks>
+    /// The dot rebirth is deterministic — c re-mints as (R3,3) from context {R1:2} no matter where it is placed
+    /// — so one recovery placing c after b and another placing it after a carry the SAME dot with DIFFERENT
+    /// vertices. Merging the two recovered containers fails closed on the equivocation detector in both orders
+    /// rather than letting merge order silently pick a predecessor, while a single recovery gossiped onward
+    /// merges cleanly, since every holder then carries the byte-identical vertex.
+    /// </remarks>
     [TestMethod]
     public void ATwiceRunRecoveryReMintingTheDotDivergentlyFailsClosedOnMerge()
     {
@@ -435,10 +471,14 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //The container probe: the seal-readiness and apply-vs-adopt diagnostic. It reports the uncovered
-    //insert-dots in (Replica, Counter) order for the offset strategy, and NULL for a strategy that
-    //leaves the seam unwired — hosts branch on the slot's presence to learn whether sealing is
-    //group-quiescent at all.
+    /// <summary>
+    /// The container probe: the seal-readiness and apply-vs-adopt diagnostic.
+    /// </summary>
+    /// <remarks>
+    /// It reports the uncovered insert-dots in (Replica, Counter) order for the offset strategy, and NULL for a
+    /// strategy that leaves the seam unwired — hosts branch on the slot's presence to learn whether sealing is
+    /// group-quiescent at all.
+    /// </remarks>
     [TestMethod]
     public void TheContainerProbeReportsTheGapAndIsNullWithoutTheSeam()
     {
@@ -474,10 +514,14 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //The apply-once pin behind the scoped idempotence doc: re-applying an already-applied seal passes
-    //chain order on the Equal frontier and throws on the digest, because the applied compaction
-    //re-keyed the projection onto base sentinels. Offset appliers apply each committed seal exactly
-    //once, and the failure is fail-closed, not corruption.
+    /// <summary>
+    /// The apply-once pin behind the scoped idempotence doc: re-applying an already-applied seal passes chain
+    /// order on the Equal frontier and throws on the digest, because the applied compaction re-keyed the
+    /// projection onto base sentinels.
+    /// </summary>
+    /// <remarks>
+    /// Offset appliers apply each committed seal exactly once, and the failure is fail-closed, not corruption.
+    /// </remarks>
     [TestMethod]
     public void ReapplyingAnAppliedSealFailsClosedForABaseMaterializingStrategy()
     {
@@ -497,13 +541,17 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //The apply-once pin is scoped to BASE-CHANGING seals: a DROP-ONLY offset seal does not re-key the
-    //projection onto base sentinels, so re-applying its commitment SUCCEEDS idempotently. A first seal
-    //converts a into the base (base-changing); on that generation both members insert a childless x and
-    //remove it, and the second seal drops x without touching the base, so the applier's projection at the
-    //drop-only frontier — a's slot was already a sentinel — still matches the committed digest and the
-    //re-apply is idempotent, unlike the base-changing arm above. On the base generation the inserts name
-    //current-generation offset 0, so their addresses carry generation 1.
+    /// <summary>
+    /// The apply-once pin is scoped to BASE-CHANGING seals: a DROP-ONLY offset seal does not re-key the
+    /// projection onto base sentinels, so re-applying its commitment SUCCEEDS idempotently.
+    /// </summary>
+    /// <remarks>
+    /// A first seal converts a into the base (base-changing); on that generation both members insert a
+    /// childless x and remove it, and the second seal drops x without touching the base, so the applier's
+    /// projection at the drop-only frontier — a's slot was already a sentinel — still matches the committed
+    /// digest and the re-apply is idempotent, unlike the base-changing arm above. On the base generation the
+    /// inserts name current-generation offset 0, so their addresses carry generation 1.
+    /// </remarks>
     [TestMethod]
     public void ReapplyingADropOnlySealIsIdempotentForTheOffsetStrategy()
     {
@@ -552,7 +600,9 @@ internal sealed class OffsetCheckpointSealTests
     }
 
 
-    //The canonical bytes cover the dot AND the value deterministically: replica hex, counter, then value.
+    /// <summary>
+    /// The canonical bytes cover the dot AND the value deterministically: replica hex, counter, then value.
+    /// </summary>
     private static ReadOnlyMemory<byte> Canonicalize(ImmutableArray<SequenceCheckpointEntry<string>> entries)
     {
         var builder = new StringBuilder();

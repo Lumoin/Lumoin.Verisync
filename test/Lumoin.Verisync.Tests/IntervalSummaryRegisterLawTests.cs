@@ -17,8 +17,10 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class IntervalSummaryRegisterLawTests
 {
-    //Identities from fixed bytes rather than from a generator, so the owner half of every key tie-break is a
-    //property of the test rather than of the run.
+    /// <summary>
+    /// Identities from fixed bytes rather than from a generator, so the owner half of every key tie-break is a
+    /// property of the test rather than of the run.
+    /// </summary>
     private static ProposerLane LaneA { get; } = ProposerLane.For(Replica(1));
     private static ProposerLane LaneB { get; } = ProposerLane.For(Replica(2));
 
@@ -27,8 +29,10 @@ internal sealed class IntervalSummaryRegisterLawTests
     private static Gen<ImmutableArray<WalkOp>> GenWalk { get; } =
         Gen.Int[0, 100_000].Array[0, 12].Select(static seeds => BuildWalk(seeds));
 
-    //The order-independence law's quantifier is over permutations of one key-distinct set, which the walk
-    //generator does not supply, so it gets its own generator.
+    /// <summary>
+    /// The order-independence law's quantifier is over permutations of one key-distinct set, which the walk
+    /// generator does not supply, so it gets its own generator.
+    /// </summary>
     private static Gen<PrioritizedProposal<string>[]> GenSameStepSet { get; } =
         Gen.Int[0, 500].Array[2, 4].Select(static seeds => BuildDistinctSet(seeds));
 
@@ -36,9 +40,11 @@ internal sealed class IntervalSummaryRegisterLawTests
     public TestContext TestContext { get; set; } = null!;
 
 
-    //L1 MONOTONE STEP. Over any walk the register's step never decreases, and the step after a record is at
-    //least the requested one, which is Lemma C.2 and is what makes catch-up the only alternative to
-    //advancing.
+    /// <summary>
+    /// L1 MONOTONE STEP. Over any walk the register's step never decreases, and the step after a record is at
+    /// least the requested one, which is Lemma C.2 and is what makes catch-up the only alternative to
+    /// advancing.
+    /// </summary>
     [TestMethod]
     public void TheRegisterStepNeverDecreasesOverAWalk()
     {
@@ -53,8 +59,10 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L1 REACH, DETERMINISTIC. A record below the current step is the only shape that could make the step
-    //decrease, so the law says nothing unless the walk reaches one.
+    /// <summary>
+    /// L1 REACH, DETERMINISTIC. A record below the current step is the only shape that could make the step
+    /// decrease, so the law says nothing unless the walk reaches one.
+    /// </summary>
     [TestMethod]
     public void TheMonotoneStepLawReachesTheBelowStepRegionByConstruction()
     {
@@ -74,9 +82,13 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L2 FIRST IS THE FIRST. Within a step the first proposal recorded there stays first until the step
-    //advances; the advancing proposal becomes the new first. This is Algorithm 3 literally, where F_c is
-    //assigned only on the advancing branch.
+    /// <summary>
+    /// L2 FIRST IS THE FIRST. Within a step the first proposal recorded there stays first until the step
+    /// advances; the advancing proposal becomes the new first.
+    /// </summary>
+    /// <remarks>
+    /// This is Algorithm 3 literally, where F_c is assigned only on the advancing branch.
+    /// </remarks>
     [TestMethod]
     public void FirstIsTheProposalThatAdvancedTheStepAndHoldsUntilTheStepAdvancesAgain()
     {
@@ -97,9 +109,11 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L2 REACH, DETERMINISTIC AND DISCRIMINATING. The second record at the step must carry a GREATER key
-    //than the first: that is the only shape that kills an implementation writing First = Best(First, p),
-    //because a lower second key leaves such an implementation looking correct.
+    /// <summary>
+    /// L2 REACH, DETERMINISTIC AND DISCRIMINATING. The second record at the step must carry a GREATER key
+    /// than the first: that is the only shape that kills an implementation writing First = Best(First, p),
+    /// because a lower second key leaves such an implementation looking correct.
+    /// </summary>
     [TestMethod]
     public void TheFirstIsTheFirstLawReachesTheGreaterSecondKeyRegionByConstruction()
     {
@@ -115,9 +129,14 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L3 AGGREGATE IS THE MAXIMUM. After any walk the current aggregate is the greatest key recorded at the
-    //current step. The batch segment is what makes this say anything: one record per step would make the
-    //aggregate trivially equal to the first.
+    /// <summary>
+    /// L3 AGGREGATE IS THE MAXIMUM. After any walk the current aggregate is the greatest key recorded at the
+    /// current step.
+    /// </summary>
+    /// <remarks>
+    /// The batch segment is what makes this say anything: one record per step would make the aggregate
+    /// trivially equal to the first.
+    /// </remarks>
     [TestMethod]
     public void TheCurrentAggregateIsTheGreatestKeyRecordedAtTheCurrentStep()
     {
@@ -141,8 +160,10 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L3 REACH, DETERMINISTIC. Three records at one step in a non-monotone key order, so neither the first
-    //nor the last arrival is the maximum and only a real fold answers correctly.
+    /// <summary>
+    /// L3 REACH, DETERMINISTIC. Three records at one step in a non-monotone key order, so neither the first
+    /// nor the last arrival is the maximum and only a real fold answers correctly.
+    /// </summary>
     [TestMethod]
     public void TheAggregateMaximumLawReachesTheSameStepBatchByConstruction()
     {
@@ -155,9 +176,11 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L4 PRIOR-AGGREGATE EXACTNESS. Advancing from s to s + 1 carries the aggregate at s; advancing by more
-    //clears it, because the proposer never gathered the skipped step and a carried value from it would come
-    //from a step no quorum served.
+    /// <summary>
+    /// L4 PRIOR-AGGREGATE EXACTNESS. Advancing from s to s + 1 carries the aggregate at s; advancing by more
+    /// clears it, because the proposer never gathered the skipped step and a carried value from it would come
+    /// from a step no quorum served.
+    /// </summary>
     [TestMethod]
     public void AdvancingByOneCarriesTheAggregateAndAdvancingByMoreClearsIt()
     {
@@ -185,10 +208,14 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L4 REACH, DETERMINISTIC AND DISCRIMINATING, and it must satisfy three conditions at once or it proves
-    //nothing: key 5 then key 9 at step s, then an advance to s + 1 carrying a key that differs from both.
-    //An implementation carrying First yields 5 and one carrying the advancing proposal yields 7, so only the
-    //aggregate yields 9.
+    /// <summary>
+    /// L4 REACH, DETERMINISTIC AND DISCRIMINATING, and it must satisfy three conditions at once or it proves
+    /// nothing: key 5 then key 9 at step s, then an advance to s + 1 carrying a key that differs from both.
+    /// </summary>
+    /// <remarks>
+    /// An implementation carrying First yields 5 and one carrying the advancing proposal yields 7, so only the
+    /// aggregate yields 9.
+    /// </remarks>
     [TestMethod]
     public void ThePriorAggregateLawReachesTheExactCarryRegionByConstruction()
     {
@@ -210,9 +237,14 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L5 ORDER INDEPENDENCE. For a set of key-distinct proposals at one step, every permutation yields the
-    //same aggregate. Keeping the incumbent on an exact key tie is what makes the fold order-independent
-    //under the uniqueness contract, and order-dependent without it.
+    /// <summary>
+    /// L5 ORDER INDEPENDENCE. For a set of key-distinct proposals at one step, every permutation yields the
+    /// same aggregate.
+    /// </summary>
+    /// <remarks>
+    /// Keeping the incumbent on an exact key tie is what makes the fold order-independent under the
+    /// uniqueness contract, and order-dependent without it.
+    /// </remarks>
     [TestMethod]
     public void EveryPermutationOfAKeyDistinctSetFoldsToTheSameAggregate()
     {
@@ -235,8 +267,10 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L5 REACH, DETERMINISTIC. The law is vacuous over a one-element set and over a single ordering, so the
-    //builder's minimum input must already produce a key-distinct pair and both of its orderings.
+    /// <summary>
+    /// L5 REACH, DETERMINISTIC. The law is vacuous over a one-element set and over a single ordering, so the
+    /// builder's minimum input must already produce a key-distinct pair and both of its orderings.
+    /// </summary>
     [TestMethod]
     public void TheOrderIndependenceLawReachesTheMultiPermutationRegionByConstruction()
     {
@@ -251,12 +285,16 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L5N NON-VACUITY FOR L5, DIRECTED RATHER THAN GENERATED. Random 64-bit priorities never collide, so a
-    //generated shared-key region would be reached only by a rejection filter, and a filter that reaches its
-    //region a tenth of a percent of the time turns a green run into seed luck. An existential law gets a
-    //CONSTRUCTED witness. What this does NOT pin is whether Best keeps the incumbent or the newcomer on an
-    //exact key tie: both directions produce differing permutations, the difference is unobservable under the
-    //uniqueness contract, and no test here decides it.
+    /// <summary>
+    /// L5N NON-VACUITY FOR L5, DIRECTED RATHER THAN GENERATED. Random 64-bit priorities never collide, so a
+    /// generated shared-key region would be reached only by a rejection filter, and a filter that reaches its
+    /// region a tenth of a percent of the time turns a green run into seed luck.
+    /// </summary>
+    /// <remarks>
+    /// An existential law gets a CONSTRUCTED witness. What this does NOT pin is whether Best keeps the
+    /// incumbent or the newcomer on an exact key tie: both directions produce differing permutations, the
+    /// difference is unobservable under the uniqueness contract, and no test here decides it.
+    /// </remarks>
     [TestMethod]
     public void TwoValuesSharingOneKeyMakeTheFoldOrderDependent()
     {
@@ -273,9 +311,11 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L6 STALE IS INERT. A record below the current step returns the same instance and a summary equal to the
-    //one the previous record returned: a value tagged below the current step is obsolete, and the register
-    //still answers with its summary rather than refusing.
+    /// <summary>
+    /// L6 STALE IS INERT. A record below the current step returns the same instance and a summary equal to the
+    /// one the previous record returned: a value tagged below the current step is obsolete, and the register
+    /// still answers with its summary rather than refusing.
+    /// </summary>
     [TestMethod]
     public void ARecordBelowTheCurrentStepIsInertAndStillAnswers()
     {
@@ -304,8 +344,10 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L6 REACH, DETERMINISTIC. The stale replay has to land at a step the walk has genuinely left, and it has
-    //to carry a key high enough that an implementation folding it anyway would be caught.
+    /// <summary>
+    /// L6 REACH, DETERMINISTIC. The stale replay has to land at a step the walk has genuinely left, and it has
+    /// to carry a key high enough that an implementation folding it anyway would be caught.
+    /// </summary>
     [TestMethod]
     public void TheStaleLawReachesTheInertRegionByConstruction()
     {
@@ -320,12 +362,17 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L7 IDENTITY IS EXACT. At the register's own step the register returns ITSELF exactly when the fold would
-    //have kept the incumbent, and a new instance exactly when it would not. That is not tidiness: the
-    //recorder decides whether it changed by reference and the node above it decides whether to persist by the
-    //same test, so an implementation allocating unconditionally would make every retransmission on a lossy
-    //link cost a durable write that makes nothing durable. The summary is asserted alongside, because a
-    //register that returned itself and answered with a stale summary would satisfy the identity half alone.
+    /// <summary>
+    /// L7 IDENTITY IS EXACT. At the register's own step the register returns ITSELF exactly when the fold would
+    /// have kept the incumbent, and a new instance exactly when it would not.
+    /// </summary>
+    /// <remarks>
+    /// That is not tidiness: the recorder decides whether it changed by reference and the node above it
+    /// decides whether to persist by the same test, so an implementation allocating unconditionally would make
+    /// every retransmission on a lossy link cost a durable write that makes nothing durable. The summary is
+    /// asserted alongside, because a register that returned itself and answered with a stale summary would
+    /// satisfy the identity half alone.
+    /// </remarks>
     [TestMethod]
     public void AtItsOwnStepTheRegisterReturnsItselfExactlyWhenTheFoldKeepsTheIncumbent()
     {
@@ -350,12 +397,16 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //L7 REACH, DETERMINISTIC AND DISCRIMINATING. A two-sided implication says nothing unless both sides are
-    //reached: a same-step record whose key LOSES the fold must return the same instance, and one whose key
-    //WINS it must not. The exact-key tie is pinned here rather than in the walk, because the walk's keys are
-    //distinct by construction — and an exact key with a DIFFERENT VALUE is the only case that observes the
-    //fold's tie direction at all, since a strictly lower key returns the incumbent whichever way the tie is
-    //broken.
+    /// <summary>
+    /// L7 REACH, DETERMINISTIC AND DISCRIMINATING. A two-sided implication says nothing unless both sides are
+    /// reached: a same-step record whose key LOSES the fold must return the same instance, and one whose key
+    /// WINS it must not.
+    /// </summary>
+    /// <remarks>
+    /// The exact-key tie is pinned here rather than in the walk, because the walk's keys are distinct by
+    /// construction — and an exact key with a DIFFERENT VALUE is the only case that observes the fold's tie
+    /// direction at all, since a strictly lower key returns the incumbent whichever way the tie is broken.
+    /// </remarks>
     [TestMethod]
     public void TheSameInstanceLawReachesBothFoldDirectionsByConstruction()
     {
@@ -376,10 +427,14 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //The seeded prefix carries the whole construction: every generated walk begins with it, so every sample
-    //reaches the same-step batch, the exact-carry advance, the skipping advance, and the stale replay
-    //whatever the sampled segments turn out to be. Without this the laws above would be sweeping regions
-    //they reach only by luck.
+    /// <summary>
+    /// The seeded prefix carries the whole construction: every generated walk begins with it, so every sample
+    /// reaches the same-step batch, the exact-carry advance, the skipping advance, and the stale replay
+    /// whatever the sampled segments turn out to be.
+    /// </summary>
+    /// <remarks>
+    /// Without this the laws above would be sweeping regions they reach only by luck.
+    /// </remarks>
     [TestMethod]
     public void TheSeededPrefixReachesEveryRegionByConstruction()
     {
@@ -423,8 +478,10 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //The walk is replayed once and every law reads the same observation list, so no law can silently drive a
-    //different sequence from the one its neighbours checked.
+    /// <summary>
+    /// The walk is replayed once and every law reads the same observation list, so no law can silently drive a
+    /// different sequence from the one its neighbours checked.
+    /// </summary>
     private static ImmutableArray<Observation> Replay(ImmutableArray<WalkOp> ops)
     {
         var observations = ImmutableArray.CreateBuilder<Observation>(ops.Length);
@@ -509,8 +566,10 @@ internal sealed class IntervalSummaryRegisterLawTests
     }
 
 
-    //Keys are distinct across a whole walk by construction: the sequence number is unique per record and
-    //occupies the low three digits, so the seed decides the ordering while the sequence decides identity.
+    /// <summary>
+    /// Keys are distinct across a whole walk by construction: the sequence number is unique per record and
+    /// occupies the low three digits, so the seed decides the ordering while the sequence decides identity.
+    /// </summary>
     private static PrioritizedProposal<string> GeneratedProposal(int seed, ref int sequence)
     {
         sequence++;

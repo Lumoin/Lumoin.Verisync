@@ -32,7 +32,9 @@ internal sealed class LogIndexTests
     }
 
 
-    //A WITH EXPRESSION IS A SECOND CONSTRUCTION PATH AND NOT A COPY, exactly as it is for a term.
+    /// <summary>
+    /// A WITH EXPRESSION IS A SECOND CONSTRUCTION PATH AND NOT A COPY, exactly as it is for a term.
+    /// </summary>
     [TestMethod]
     public void ANegativeIndexIsRefusedOnAWithExpression()
     {
@@ -50,8 +52,10 @@ internal sealed class LogIndexTests
     }
 
 
-    //THE EMPTY PREFIX NAMES NO ENTRY, so both ways of reaching one through it are refused rather than
-    //returning the position below the store or the index below the base.
+    /// <summary>
+    /// THE EMPTY PREFIX NAMES NO ENTRY, so both ways of reaching one through it are refused rather than
+    /// returning the position below the store or the index below the base.
+    /// </summary>
     [TestMethod]
     public void TheEmptyPrefixHasNeitherAPositionNorAPredecessor()
     {
@@ -60,8 +64,13 @@ internal sealed class LogIndexTests
     }
 
 
-    //A POSITION THAT DOES NOT FIT AN INT FAILS CLOSED. An unchecked narrowing would hand a negative or wrapped
-    //offset to the backing list, which either throws somewhere unrelated or reads the wrong entry.
+    /// <summary>
+    /// A POSITION THAT DOES NOT FIT AN INT FAILS CLOSED.
+    /// </summary>
+    /// <remarks>
+    /// An unchecked narrowing would hand a negative or wrapped offset to the backing list, which either throws
+    /// somewhere unrelated or reads the wrong entry.
+    /// </remarks>
     [TestMethod]
     public void APositionBeyondWhatAnInMemoryLogCanAddressOverflowsRatherThanWrapping()
     {
@@ -100,9 +109,13 @@ internal sealed class LogIndexTests
     }
 
 
-    //THE BOUND IS THE ONE A TERM TAKES AND FOR THE SAME REASON, an index being a bare JSON number too. Here
-    //the consequence is the consistency check's: a previous log index that arrives as its neighbour matches
-    //the wrong entry.
+    /// <summary>
+    /// THE BOUND IS THE ONE A TERM TAKES AND FOR THE SAME REASON, an index being a bare JSON number too.
+    /// </summary>
+    /// <remarks>
+    /// Here the consequence is the consistency check's: a previous log index that arrives as its neighbour
+    /// matches the wrong entry.
+    /// </remarks>
     [TestMethod]
     public void TheIndexRangeStopsAtTheLargestValueAJsonReaderReadsExactly()
     {

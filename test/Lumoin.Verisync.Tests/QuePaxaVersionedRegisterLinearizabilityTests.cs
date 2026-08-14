@@ -406,8 +406,10 @@ internal sealed class QuePaxaVersionedRegisterLinearizabilityTests
     }
 
 
-    //Whether one host saw a writer's request after another writer's had come between two of them, which is
-    //interleaving rather than two runs placed end to end.
+    /// <summary>
+    /// Whether one host saw a writer's request after another writer's had come between two of them, which is
+    /// interleaving rather than two runs placed end to end.
+    /// </summary>
     private static bool ReturnsToAnEarlierSender(ReplicaId[] senders)
     {
         for(int index = 2; index < senders.Length; index++)

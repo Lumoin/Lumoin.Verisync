@@ -13,14 +13,20 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class ReconciliationDecoderScaleTests
 {
-    //The structural difference sizes the large-d exactness sweep covers.
+    /// <summary>
+    /// The structural difference sizes the large-d exactness sweep covers.
+    /// </summary>
     private static int[] DifferenceSizes { get; } = [64, 257, 1000];
 
-    //Pinned seeds selecting deterministic disjoint counter ranges per sweep; no System.Random anywhere.
+    /// <summary>
+    /// Pinned seeds selecting deterministic disjoint counter ranges per sweep; no System.Random anywhere.
+    /// </summary>
     private static long[] Seeds { get; } = [1L, 7L, 23L, 101L];
 
-    //Pinned phase-1 difference vector items: a1 lies only in the left set, the other three are the true
-    //difference {a2, a3, b1}.
+    /// <summary>
+    /// Pinned phase-1 difference vector items: a1 lies only in the left set, the other three are the true
+    /// difference {a2, a3, b1}.
+    /// </summary>
     private static byte[] A1 { get; } = Convert.FromHexString("0102030405060708");
 
     private static byte[] A2 { get; } = Convert.FromHexString("1112131415161718");
@@ -152,9 +158,14 @@ internal sealed class ReconciliationDecoderScaleTests
     }
 
 
-    //Builds a (shared, leftOnly, rightOnly) triple from disjoint counter ranges so the three lists are
-    //pairwise disjoint by construction: the shared corpus is a fixed 1000 items, and the d difference items
-    //split evenly between the two sides. Each item is the eight little-endian bytes of a distinct counter.
+    /// <summary>
+    /// Builds a (shared, leftOnly, rightOnly) triple from disjoint counter ranges so the three lists are
+    /// pairwise disjoint by construction: the shared corpus is a fixed 1000 items, and the d difference items
+    /// split evenly between the two sides.
+    /// </summary>
+    /// <remarks>
+    /// Each item is the eight little-endian bytes of a distinct counter.
+    /// </remarks>
     private static (byte[][] Shared, byte[][] LeftOnly, byte[][] RightOnly) BuildDifference(long seed, int d)
     {
         long sharedBase = 1L + ((seed % 7) * 10_000_000L);

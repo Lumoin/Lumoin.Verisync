@@ -38,8 +38,10 @@ namespace Lumoin.Verisync.Tests;
 /// </remarks>
 internal sealed class InterleavedQuePaxaCluster<TValue>
 {
-    //A livelock is the one failure mode a synchronous pump turns into a hung suite rather than a red test, so
-    //the pump is bounded well above any behaviour the step budget admits and reports rather than spins.
+    /// <summary>
+    /// A livelock is the one failure mode a synchronous pump turns into a hung suite rather than a red test, so
+    /// the pump is bounded well above any behaviour the step budget admits and reports rather than spins.
+    /// </summary>
     private const int MaxDeliveries = 200_000;
 
     private readonly List<string> deliveryTrace = [];

@@ -31,7 +31,9 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class QuePaxaCodecDecisionTests
 {
-    //Steps 4 through the last representable step, which is what an undecided run exhausts.
+    /// <summary>
+    /// Steps 4 through the last representable step, which is what an undecided run exhausts.
+    /// </summary>
     private const int StepsToExhaustion = 1024;
 
     private static TimeSpan ProposalTimeout { get; } = TimeSpan.FromSeconds(30);
@@ -140,13 +142,20 @@ internal sealed class QuePaxaCodecDecisionTests
     }
 
 
-    //A record, so the synthesized value equality is what the phase-two comparison sees.
+    /// <summary>
+    /// A record, so the synthesized value equality is what the phase-two comparison sees.
+    /// </summary>
     private sealed record CodecValue(string Text);
 
 
-    //A plain sealed class with no equality of its own, so EqualityComparer<T>.Default falls back to reference
-    //equality. This is the shape a caller can supply today without any compiler complaint, and the shape the
-    //whole slice exists to make detectable.
+    /// <summary>
+    /// A plain sealed class with no equality of its own, so <c>EqualityComparer&lt;T&gt;.Default</c> falls back
+    /// to reference equality.
+    /// </summary>
+    /// <remarks>
+    /// This is the shape a caller can supply today without any compiler complaint, and the shape the whole
+    /// slice exists to make detectable.
+    /// </remarks>
     private sealed class ReferenceOnlyValue(string text)
     {
         public string Text { get; } = text;

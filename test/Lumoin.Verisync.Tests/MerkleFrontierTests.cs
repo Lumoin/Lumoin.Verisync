@@ -139,8 +139,6 @@ internal sealed class MerkleFrontierTests
     }
 
 
-    //--- Test helpers -----------------------------------------------------------------------------
-
     private static byte[] LeafBytes(int index)
     {
         //Distinct leaves so position is meaningful; two bytes keeps them distinct well past 255 entries.

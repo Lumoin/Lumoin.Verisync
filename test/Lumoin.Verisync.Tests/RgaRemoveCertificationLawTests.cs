@@ -26,13 +26,17 @@ internal sealed class RgaRemoveCertificationLawTests
     private static ReplicaId R5 { get; } = MakeReplica(5);
     private static ReplicaId R10 { get; } = MakeReplica(10);
 
-    //The replica axes the CsCheck op histories mint on; one replica per operand index.
+    /// <summary>
+    /// The replica axes the CsCheck op histories mint on; one replica per operand index.
+    /// </summary>
     private static ReplicaId[] Replicas { get; } = [MakeReplica(0), MakeReplica(1), MakeReplica(2)];
 
 
-    //LAW-TMC: two operands compacted at different honest frontiers carry different translation maps and drop
-    //sets, yet their merge is order-independent on full state, resolves each dropped dot to its nearest
-    //retained ancestor by the max-counter rule, and neither order throws.
+    /// <summary>
+    /// LAW-TMC: two operands compacted at different honest frontiers carry different translation maps and drop
+    /// sets, yet their merge is order-independent on full state, resolves each dropped dot to its nearest
+    /// retained ancestor by the max-counter rule, and neither order throws.
+    /// </summary>
     [TestMethod]
     public void TranslationMapsMergeCommutatively()
     {
@@ -73,9 +77,14 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //Two operands carry the SAME insert dot with DIFFERENT vertex content — a forged double-mint. A dot mints
-    //exactly one immutable vertex, so Merge fails closed in both orders on the equivocation detector rather
-    //than letting merge order silently pick a value; an identical-vertex pair carries no conflict and merges.
+    /// <summary>
+    /// Two operands carry the SAME insert dot with DIFFERENT vertex content — a forged double-mint.
+    /// </summary>
+    /// <remarks>
+    /// A dot mints exactly one immutable vertex, so Merge fails closed in both orders on the equivocation
+    /// detector rather than letting merge order silently pick a value; an identical-vertex pair carries no
+    /// conflict and merges.
+    /// </remarks>
     [TestMethod]
     public void ConflictingVerticesUnderOneInsertIdentityFailClosedOnMerge()
     {
@@ -97,9 +106,14 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //G2: the property-based companion of LAW-TMC. Two operands are the full shared state compacted at two
-    //honest historical frontiers, so they carry genuinely different maps and drop sets; the merge commutes on
-    //full state, neither order throws (both hold every tombstone), and TranslateAnchor agrees across orders.
+    /// <summary>
+    /// G2: the property-based companion of LAW-TMC.
+    /// </summary>
+    /// <remarks>
+    /// Two operands are the full shared state compacted at two honest historical frontiers, so they carry
+    /// genuinely different maps and drop sets; the merge commutes on full state, neither order throws (both
+    /// hold every tombstone), and TranslateAnchor agrees across orders.
+    /// </remarks>
     [TestMethod]
     public void TranslationMapsMergeCommutativelyAcrossGeneratedFrontiers()
     {
@@ -116,10 +130,15 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //MANDATED REGRESSION (A-killer): a concurrent insert after a tombstoned element must not be re-parented by
-    //a covered-absent merge-drop. The sibling d sits strictly between x and c in counter order, so keeping the
-    //ghost yields a,d,c while re-parenting c onto a would yield a,c,d — the assertion discriminates the two
-    //designs on the visible ORDER, exactly the region where a merge-drop "optimization" regresses ordering.
+    /// <summary>
+    /// MANDATED REGRESSION (A-killer): a concurrent insert after a tombstoned element must not be re-parented
+    /// by a covered-absent merge-drop.
+    /// </summary>
+    /// <remarks>
+    /// The sibling d sits strictly between x and c in counter order, so keeping the ghost yields a,d,c while
+    /// re-parenting c onto a would yield a,c,d — the assertion discriminates the two designs on the visible
+    /// ORDER, exactly the region where a merge-drop "optimization" regresses ordering.
+    /// </remarks>
     [TestMethod]
     public void AConcurrentInsertAfterATombstonedElementSurvivesCompactMergeCommutation()
     {
@@ -146,9 +165,11 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //MANDATED REGRESSION (C-killer), impossibility half: for honest multi-member histories, after compacting
-    //at a frontier folded from ALL members' digests, every member either lacks each dropped vertex or holds
-    //its dotted tombstone — a compacted element is never held live by an honest peer.
+    /// <summary>
+    /// MANDATED REGRESSION (C-killer), impossibility half: for honest multi-member histories, after compacting
+    /// at a frontier folded from ALL members' digests, every member either lacks each dropped vertex or holds
+    /// its dotted tombstone — a compacted element is never held live by an honest peer.
+    /// </summary>
     [TestMethod]
     public void ACompactedElementIsNeverHeldLiveByAnHonestPeer()
     {
@@ -181,10 +202,14 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //MANDATED REGRESSION (C-killer), honest deterministic half: a laggard that observed the remove holds x
-    //tombstoned and inserts c after it; merging the peer that compacted childless-x re-enters x as a ghost
-    //WITH its tombstone, so c stays ordered UNDER the ghost — after the sibling d — in both merge orders. A
-    //re-parenting merge-drop would move c ahead of d, which the explicit order assertion rejects.
+    /// <summary>
+    /// MANDATED REGRESSION (C-killer), honest deterministic half: a laggard that observed the remove holds x
+    /// tombstoned and inserts c after it; merging the peer that compacted childless-x re-enters x as a ghost
+    /// WITH its tombstone, so c stays ordered UNDER the ghost — after the sibling d — in both merge orders.
+    /// </summary>
+    /// <remarks>
+    /// A re-parenting merge-drop would move c ahead of d, which the explicit order assertion rejects.
+    /// </remarks>
     [TestMethod]
     public void AnHonestLaggardMergeReEntersTheGhostWithItsTombstone()
     {
@@ -210,9 +235,13 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //G4: a 10,000-deep tombstoned run must classify iteratively without stack growth. The whole run sits after
-    //a retained head element, so it is non-head; every element's remove is certified at the state's own
-    //context, and every dropped dot translates to the head.
+    /// <summary>
+    /// G4: a 10,000-deep tombstoned run must classify iteratively without stack growth.
+    /// </summary>
+    /// <remarks>
+    /// The whole run sits after a retained head element, so it is non-head; every element's remove is certified
+    /// at the state's own context, and every dropped dot translates to the head.
+    /// </remarks>
     [TestMethod]
     public void ADeepTombstoneRunCompactsWithoutRecursion()
     {
@@ -255,9 +284,14 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //G3/§2.6: a UI-stale remove on a compacted state mints an orphan tombstone (its target is only a
-    //translation key). The orphan is outside retention, so it survives a further compaction and permanently
-    //masks an honest ghost re-add in both merge orders.
+    /// <summary>
+    /// G3/§2.6: a UI-stale remove on a compacted state mints an orphan tombstone (its target is only a
+    /// translation key).
+    /// </summary>
+    /// <remarks>
+    /// The orphan is outside retention, so it survives a further compaction and permanently masks an honest
+    /// ghost re-add in both merge orders.
+    /// </remarks>
     [TestMethod]
     public void ARemoveAfterCompactionLeavesAPermanentMaskingOrphanTombstone()
     {
@@ -285,9 +319,13 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //The gate-1 pinned trace (T1): a remove on the shared element's own axis raises the counter max, which
-    //flips the descending (counter, replica) tie-break between concurrent sibling inserts. Convergence holds
-    //in both scenarios; only the concurrent tie-break moves.
+    /// <summary>
+    /// The gate-1 pinned trace (T1): a remove on the shared element's own axis raises the counter max, which
+    /// flips the descending (counter, replica) tie-break between concurrent sibling inserts.
+    /// </summary>
+    /// <remarks>
+    /// Convergence holds in both scenarios; only the concurrent tie-break moves.
+    /// </remarks>
     [TestMethod]
     public void RemoveNudgesTheConcurrentSiblingTieBreak()
     {
@@ -312,10 +350,15 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //LAW-OT: an orphan tombstone — a remove of a dot the remover never held — hides its target the instant
-    //the insert arrives. R2 removes the winner-inserted head dot it learned out of band; merging the
-    //insert-holder in either order hides the element immediately and the orders converge, and because the
-    //target is head-anchored the ghost is retained through a certifying compaction — the orphan survives.
+    /// <summary>
+    /// LAW-OT: an orphan tombstone — a remove of a dot the remover never held — hides its target the instant
+    /// the insert arrives.
+    /// </summary>
+    /// <remarks>
+    /// R2 removes the winner-inserted head dot it learned out of band; merging the insert-holder in either
+    /// order hides the element immediately and the orders converge, and because the target is head-anchored the
+    /// ghost is retained through a certifying compaction — the orphan survives.
+    /// </remarks>
     [TestMethod]
     public void AnOrphanTombstoneHidesItsTargetTheMomentTheInsertArrives()
     {
@@ -343,9 +386,14 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //G5: a silent member (an empty summary) folds the frontier to empty, so a compaction there drops nothing
-    //and returns this; a partially-silent member pins exactly one axis, and a remove certified on another axis
-    //still cannot drop an element whose insert sits on the pinned axis. Deterministic, real StabilityFrontier.
+    /// <summary>
+    /// G5: a silent member (an empty summary) folds the frontier to empty, so a compaction there drops nothing
+    /// and returns this; a partially-silent member pins exactly one axis, and a remove certified on another
+    /// axis still cannot drop an element whose insert sits on the pinned axis.
+    /// </summary>
+    /// <remarks>
+    /// Deterministic, real StabilityFrontier.
+    /// </remarks>
     [TestMethod]
     public void ASilentMemberPinsTheFrontierAndForbidsEveryDrop()
     {
@@ -376,13 +424,17 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //Declared before the generators that consume it: static initializers run in textual order.
+    /// <summary>
+    /// Declared before the generators that consume it: static initializers run in textual order.
+    /// </summary>
     private static Gen<(int Replica, int Seed)> OpGen { get; } =
         Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed));
 
 
-    //Filtered so every sampled case actually drops a vertex at the folded frontier — without the filter the
-    //assertion loop is empty in the overwhelming majority of random histories and the law tests nothing.
+    /// <summary>
+    /// Filtered so every sampled case actually drops a vertex at the folded frontier — without the filter the
+    /// assertion loop is empty in the overwhelming majority of random histories and the law tests nothing.
+    /// </summary>
     private static Gen<(Rga<int> Full, Rga<int> PrefixAtCut, IReadOnlyList<Rga<int>> Members)> GenHonestHistory { get; } =
         Gen.Select(OpGen.Array[0, 8], Gen.Int[0, 8], static (ops, cut) =>
         {
@@ -492,8 +544,10 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //The frontier the honest-history law folds is the cut member's context (it is dominated element-wise by
-    //every other member), so the predicate compacts at exactly the frontier the law will use.
+    /// <summary>
+    /// The frontier the honest-history law folds is the cut member's context (it is dominated element-wise by
+    /// every other member), so the predicate compacts at exactly the frontier the law will use.
+    /// </summary>
     private static bool AnyVertexDrops(Rga<int> full, Rga<int> prefixAtCut)
     {
         Rga<int> compacted = full.Compact(prefixAtCut.CausalContext, full.CertifiedProjection(prefixAtCut.CausalContext));
@@ -559,8 +613,10 @@ internal sealed class RgaRemoveCertificationLawTests
     }
 
 
-    //Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect the
-    //element-wise minimum but keep the digests honest.
+    /// <summary>
+    /// Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect the
+    /// element-wise minimum but keep the digests honest.
+    /// </summary>
     private static VectorClock FrontierOf(params VectorClock[] memberContexts) => FrontierFromContexts(memberContexts);
 
 

@@ -55,10 +55,15 @@ internal sealed class RaftNodeTests
     }
 
 
-    //The quorum is a majority of the configured membership, so only a member can contribute to it. The
-    //identity arrives as wire data that no codec checks, and the same membership filter is already applied
-    //when a vote is restored and when a commit quorum is counted, so the election tally was the one count
-    //that omitted it. A candidate one short of a majority must not be carried over the line by a stranger.
+    /// <summary>
+    /// The quorum is a majority of the configured membership, so only a member can contribute to it.
+    /// </summary>
+    /// <remarks>
+    /// The identity arrives as wire data that no codec checks, and the same membership filter is already
+    /// applied when a vote is restored and when a commit quorum is counted, so the election tally was the one
+    /// count that omitted it. A candidate one short of a majority must not be carried over the line by a
+    /// stranger.
+    /// </remarks>
     [TestMethod]
     public void AVoteFromOutsideTheMembershipDoesNotCountTowardsTheElectionQuorum()
     {
@@ -84,10 +89,15 @@ internal sealed class RaftNodeTests
     }
 
 
-    //Membership is fixed, so every identity that arrives from the wire is filtered against it. A vote for a
-    //non-member is the sharpest case: FromState refuses to restore one, so granting it would put the node in
-    //a state its own restore path rejects. Entries from a non-member leader would replicate a log no quorum
-    //agreed on, and a non-member reply would seed per-follower bookkeeping the leader never sends to.
+    /// <summary>
+    /// Membership is fixed, so every identity that arrives from the wire is filtered against it.
+    /// </summary>
+    /// <remarks>
+    /// A vote for a non-member is the sharpest case: FromState refuses to restore one, so granting it would
+    /// put the node in a state its own restore path rejects. Entries from a non-member leader would replicate
+    /// a log no quorum agreed on, and a non-member reply would seed per-follower bookkeeping the leader never
+    /// sends to.
+    /// </remarks>
     [TestMethod]
     public void EveryWireIdentityIsFilteredAgainstTheMembership()
     {
@@ -113,9 +123,13 @@ internal sealed class RaftNodeTests
     }
 
 
-    //The filter runs before the term rule, so a non-member cannot raise this node's term either. It is the
-    //weaker lever and the one a tally-only filter leaves open: a stranger that can never complete a quorum
-    //could still unseat a leader the cluster agreed on by making every member adopt a higher term.
+    /// <summary>
+    /// The filter runs before the term rule, so a non-member cannot raise this node's term either.
+    /// </summary>
+    /// <remarks>
+    /// It is the weaker lever and the one a tally-only filter leaves open: a stranger that can never complete
+    /// a quorum could still unseat a leader the cluster agreed on by making every member adopt a higher term.
+    /// </remarks>
     [TestMethod]
     public void ANonMemberCannotRaiseTheTerm()
     {
@@ -530,8 +544,10 @@ internal sealed class RaftNodeTests
 
     //--- Helpers --------------------------------------------------------------------------------------------
 
-    //Runs one full election: the leader campaigns and every listed peer that grants its vote is counted,
-    //which (for a clean cluster) carries the candidate to a majority and the leader role.
+    /// <summary>
+    /// Runs one full election: the leader campaigns and every listed peer that grants its vote is counted,
+    /// which (for a clean cluster) carries the candidate to a majority and the leader role.
+    /// </summary>
     private static void ElectLeader(RaftNode<string> leader, params RaftNode<string>[] peers)
     {
         RequestVoteRequest request = leader.StartElection();
@@ -543,8 +559,10 @@ internal sealed class RaftNodeTests
     }
 
 
-    //One replication round: the leader sends each follower its tailored AppendEntries and folds the reply
-    //back so nextIndex/matchIndex and the leader's CommitIndex advance.
+    /// <summary>
+    /// One replication round: the leader sends each follower its tailored AppendEntries and folds the reply
+    /// back so nextIndex/matchIndex and the leader's CommitIndex advance.
+    /// </summary>
     private static void ReplicateRound(RaftNode<string> leader, params RaftNode<string>[] followers)
     {
         foreach(RaftNode<string> follower in followers)
@@ -556,8 +574,13 @@ internal sealed class RaftNodeTests
     }
 
 
-    //Repeatedly sends AppendEntries to one follower until it accepts, draining any nextIndex back-off the
-    //leader needs to find the follower's matching prefix. Bounded to keep a buggy node from looping forever.
+    /// <summary>
+    /// Repeatedly sends AppendEntries to one follower until it accepts, draining any nextIndex back-off the
+    /// leader needs to find the follower's matching prefix.
+    /// </summary>
+    /// <remarks>
+    /// Bounded to keep a buggy node from looping forever.
+    /// </remarks>
     private static void DeliverUntilCaughtUp(RaftNode<string> leader, RaftNode<string> follower, ReplicaId followerId)
     {
         for(int attempt = 0; attempt < 64; attempt++)

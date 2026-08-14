@@ -24,7 +24,12 @@ internal sealed class PeerGenerationBindingProbeTests
     private const ulong GenerationKeyGLow = ReconciliationContract.WellKnownChecksumKeyLow;
     private const ulong GenerationKeyGHigh = ReconciliationContract.WellKnownChecksumKeyHigh;
 
-    //A distinct 128-bit key modelling a different local generation/epoch g'. Any value != (g-low, g-high).
+    /// <summary>
+    /// A distinct 128-bit key modelling a different local generation/epoch g'.
+    /// </summary>
+    /// <remarks>
+    /// Any value != (g-low, g-high).
+    /// </remarks>
     private const ulong GenerationKeyGPrimeLow = 0x1122334455667788UL;
     private const ulong GenerationKeyGPrimeHigh = 0x99AABBCCDDEEFF00UL;
 

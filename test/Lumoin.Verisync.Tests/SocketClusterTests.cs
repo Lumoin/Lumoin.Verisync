@@ -411,9 +411,11 @@ internal sealed class SocketClusterTests
     }
 
 
-    //A versioned recorder host's decline is a host act with no protocol field, so a wire host reduces it to
-    //an opaque fault frame carrying the call's correlation and nothing else, and the next request on the
-    //same connection is answered normally — which a transport that dropped the decline could not do.
+    /// <summary>
+    /// A versioned recorder host's decline is a host act with no protocol field, so a wire host reduces it to
+    /// an opaque fault frame carrying the call's correlation and nothing else, and the next request on the
+    /// same connection is answered normally — which a transport that dropped the decline could not do.
+    /// </summary>
     [TestMethod]
     public async Task ADeclineOverASocketReachesTheProposerAsAFaultAndTheConnectionKeepsServing()
     {

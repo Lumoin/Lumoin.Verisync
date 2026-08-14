@@ -34,9 +34,13 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class QuePaxaAgreementLawTests
 {
-    //Identities are built from fixed bytes so that A sorts below B by lexicographic byte order. This is not
-    //tidiness: the hazard below diverges ONLY when the losing proposer's lane sorts ABOVE the winner's, so
-    //with generated identities it would fail on a correct implementation about half the time.
+    /// <summary>
+    /// Identities are built from fixed bytes so that A sorts below B by lexicographic byte order.
+    /// </summary>
+    /// <remarks>
+    /// This is not tidiness: the hazard below diverges ONLY when the losing proposer's lane sorts ABOVE the
+    /// winner's, so with generated identities it would fail on a correct implementation about half the time.
+    /// </remarks>
     private static ProposerLane LaneA { get; } = ProposerLane.For(Replica(1));
     private static ProposerLane LaneB { get; } = ProposerLane.For(Replica(2));
     private static ProposerLane LaneC { get; } = ProposerLane.For(Replica(3));
@@ -56,8 +60,10 @@ internal sealed class QuePaxaAgreementLawTests
     public TestContext TestContext { get; set; } = null!;
 
 
-    //A1 AGREEMENT. No two decided outcomes carry different values, with every recorder configured with the
-    //same leader, over every generated schedule.
+    /// <summary>
+    /// A1 AGREEMENT. No two decided outcomes carry different values, with every recorder configured with the
+    /// same leader, over every generated schedule.
+    /// </summary>
     [TestMethod]
     public void NoTwoDecisionsCarryDifferentValuesWhenTheRecordersAgreeOnTheLeader()
     {
@@ -70,9 +76,14 @@ internal sealed class QuePaxaAgreementLawTests
     }
 
 
-    //A1R REACH, DETERMINISTIC. Without it a green A1 is indistinguishable from a harness that never split a
-    //quorum. The prefix alone leaves the recorders holding divergent first proposals, and the next fast-path
-    //evaluation across the split is refused while the same evaluation inside one side still fires.
+    /// <summary>
+    /// A1R REACH, DETERMINISTIC. Without it a green A1 is indistinguishable from a harness that never split a
+    /// quorum.
+    /// </summary>
+    /// <remarks>
+    /// The prefix alone leaves the recorders holding divergent first proposals, and the next fast-path
+    /// evaluation across the split is refused while the same evaluation inside one side still fires.
+    /// </remarks>
     [TestMethod]
     public void TheContentionPrefixReachesTheSplitQuorumRegionByConstruction()
     {
@@ -107,8 +118,10 @@ internal sealed class QuePaxaAgreementLawTests
     }
 
 
-    //A2 VALIDITY. Every decided value is one some proposer began with, so nothing is invented by the fold,
-    //by the carry, or by a restamped priority.
+    /// <summary>
+    /// A2 VALIDITY. Every decided value is one some proposer began with, so nothing is invented by the fold,
+    /// by the carry, or by a restamped priority.
+    /// </summary>
     [TestMethod]
     public void EveryDecidedValueIsOneSomeProposerBeganWith()
     {
@@ -124,9 +137,14 @@ internal sealed class QuePaxaAgreementLawTests
     }
 
 
-    //A3 THE CARRY. A proposer that does not decide carries the greatest key it observed: at a phase-zero
-    //step the greatest first proposal across the recorders it reached, and at a phase-three step the
-    //greatest prior aggregate. A later round therefore cannot regress to a lower key.
+    /// <summary>
+    /// A3 THE CARRY. A proposer that does not decide carries the greatest key it observed: at a phase-zero
+    /// step the greatest first proposal across the recorders it reached, and at a phase-three step the
+    /// greatest prior aggregate.
+    /// </summary>
+    /// <remarks>
+    /// A later round therefore cannot regress to a lower key.
+    /// </remarks>
     [TestMethod]
     public void ANonDecidingStepCarriesTheGreatestKeyItObserved()
     {
@@ -142,9 +160,13 @@ internal sealed class QuePaxaAgreementLawTests
     }
 
 
-    //A4 LEADERLESS AGREEMENT. Every reserved claim is declined at every recorder, so no first proposal ever
-    //carries the reserved priority and the fast path can never fire. The step-four decision is ASSERTED
-    //absent rather than assumed absent.
+    /// <summary>
+    /// A4 LEADERLESS AGREEMENT. Every reserved claim is declined at every recorder, so no first proposal ever
+    /// carries the reserved priority and the fast path can never fire.
+    /// </summary>
+    /// <remarks>
+    /// The step-four decision is ASSERTED absent rather than assumed absent.
+    /// </remarks>
     [TestMethod]
     public void LeaderlessRecordersAgreeAndNeverDecideAtStepFour()
     {
@@ -161,8 +183,10 @@ internal sealed class QuePaxaAgreementLawTests
     }
 
 
-    //A4 REACH, DETERMINISTIC. The leaderless law would be vacuous over a run that decided nothing at all, so
-    //one fixed schedule is pinned to reach a decision, and to reach it in the ordinary phases.
+    /// <summary>
+    /// A4 REACH, DETERMINISTIC. The leaderless law would be vacuous over a run that decided nothing at all, so
+    /// one fixed schedule is pinned to reach a decision, and to reach it in the ordinary phases.
+    /// </summary>
     [TestMethod]
     public void TheLeaderlessScheduleReachesADecisionByConstruction()
     {
@@ -182,17 +206,20 @@ internal sealed class QuePaxaAgreementLawTests
     }
 
 
-    //A5 THE HAZARD, PINNED AS A FULLY DETERMINISTIC NEGATIVE rather than generated, because the divergence
-    //holds only on a narrow family of schedules and most schedules converge, so a generated version would be
-    //seed luck at a few percent.
-    //
-    //A < B IS LOAD-BEARING AND THE TEST IS BUILT ON IT. When the fast path is refused, the fall-through takes
-    //the GREATEST first proposal, and two reserved-priority proposals tie on priority, so the proposer
-    //identifier settles it. With A < B the fall-through hands B its OWN proposal and B goes on to decide its
-    //own value against the value A already decided. With the order reversed the same schedule CONVERGES,
-    //because the fall-through would hand B the value A had decided. That is not a weakness of the pin: it is
-    //the mechanism itself, where the outcome is settled by the proposer identifier rather than by which
-    //proposal a majority actually recorded first.
+    /// <summary>
+    /// A5 THE HAZARD, PINNED AS A FULLY DETERMINISTIC NEGATIVE rather than generated, because the divergence
+    /// holds only on a narrow family of schedules and most schedules converge, so a generated version would be
+    /// seed luck at a few percent.
+    /// </summary>
+    /// <remarks>
+    /// A &lt; B IS LOAD-BEARING AND THE TEST IS BUILT ON IT. When the fast path is refused, the fall-through
+    /// takes the GREATEST first proposal, and two reserved-priority proposals tie on priority, so the proposer
+    /// identifier settles it. With A &lt; B the fall-through hands B its OWN proposal and B goes on to decide
+    /// its own value against the value A already decided. With the order reversed the same schedule CONVERGES,
+    /// because the fall-through would hand B the value A had decided. That is not a weakness of the pin: it is
+    /// the mechanism itself, where the outcome is settled by the proposer identifier rather than by which
+    /// proposal a majority actually recorded first.
+    /// </remarks>
     [TestMethod]
     public void DisagreeingRecordersDivergeWhenTheLosingProposersLaneSortsAboveTheWinners()
     {
@@ -273,9 +300,14 @@ internal sealed class QuePaxaAgreementLawTests
     }
 
 
-    //One run of one schedule. Proposers zero and one each believe they lead while only proposer zero is ever
-    //configured, which is the model's two-believed-leaders-against-one-configured-leader shape and the state
-    //the green configurations reach constantly; any further proposer believes proposer zero leads.
+    /// <summary>
+    /// One run of one schedule.
+    /// </summary>
+    /// <remarks>
+    /// Proposers zero and one each believe they lead while only proposer zero is ever configured, which is the
+    /// model's two-believed-leaders-against-one-configured-leader shape and the state the green configurations
+    /// reach constantly; any further proposer believes proposer zero leads.
+    /// </remarks>
     private static RunResult RunSchedule(int recorderCount, int proposerCount, bool leadered, int[] seeds, ulong prioritySeed)
     {
         QuePaxaRegister<string> register = leadered
@@ -383,10 +415,14 @@ internal sealed class QuePaxaAgreementLawTests
     }
 
 
-    //The two carrying phases, read from the recorders the step reached AFTER it recorded: phase zero takes
-    //the greatest first proposal and phase three the greatest prior aggregate. Phases one and two carry
-    //nothing, and a phase-three step whose recorders hold no prior aggregate leaves the template unchanged,
-    //so both yield no observation.
+    /// <summary>
+    /// The two carrying phases, read from the recorders the step reached AFTER it recorded: phase zero takes
+    /// the greatest first proposal and phase three the greatest prior aggregate.
+    /// </summary>
+    /// <remarks>
+    /// Phases one and two carry nothing, and a phase-three step whose recorders hold no prior aggregate leaves
+    /// the template unchanged, so both yield no observation.
+    /// </remarks>
     private static CarryObservation? ObserveCarry(QuePaxaRegister<string> after, QuePaxaRound<string> round, QuePaxaStepOutcome<string> outcome, ImmutableArray<int> indices)
     {
         if(round.Step.Phase != 0 && round.Step.Phase != 3)
@@ -426,8 +462,13 @@ internal sealed class QuePaxaAgreementLawTests
     }
 
 
-    //A partial Fisher-Yates draw of exactly quorum many distinct indices. Xorshift32 rather than
-    //System.Random so that a seed printed by a failing run replays the identical subset anywhere.
+    /// <summary>
+    /// A partial Fisher-Yates draw of exactly quorum many distinct indices.
+    /// </summary>
+    /// <remarks>
+    /// Xorshift32 rather than System.Random so that a seed printed by a failing run replays the identical
+    /// subset anywhere.
+    /// </remarks>
     private static ImmutableArray<int> Subset(int recorderCount, int quorum, int seed)
     {
         int[] pool = new int[recorderCount];
@@ -497,8 +538,10 @@ internal sealed class QuePaxaAgreementLawTests
     }
 
 
-    //Xorshift64 rather than the cryptographic source: every priority in a run is reproducible from its seed,
-    //so a failing schedule replays the identical draws.
+    /// <summary>
+    /// Xorshift64 rather than the cryptographic source: every priority in a run is reproducible from its seed,
+    /// so a failing schedule replays the identical draws.
+    /// </summary>
     private sealed class SeededPrioritySource
     {
         private ulong state;

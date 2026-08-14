@@ -24,8 +24,10 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class QuePaxaProposerTests
 {
-    //Identities from fixed bytes so that A sorts below B, and no assertion below depends on which way a
-    //generated pair happened to sort.
+    /// <summary>
+    /// Identities from fixed bytes so that A sorts below B, and no assertion below depends on which way a
+    /// generated pair happened to sort.
+    /// </summary>
     private static ProposerLane LaneA { get; } = ProposerLane.For(Replica(1));
     private static ProposerLane LaneB { get; } = ProposerLane.For(Replica(2));
 
@@ -39,17 +41,25 @@ internal sealed class QuePaxaProposerTests
     public TestContext TestContext { get; set; } = null!;
 
 
-    //THE MEMOIZATION LAW, and the slice cannot ship without it. A proposer may deliver a request to a recorder
-    //any number of times PROVIDED EVERY DELIVERY IS IDENTICAL — same step, same proposal, same priority —
-    //because the model admits at most one DISTINCT proposal per (proposer, recorder, step) and its send flag
-    //is what enforces that. The mechanism is that the per-recorder phase-zero draw is made once per
-    //(step, recorder) and the resulting request is retained for the lifetime of the step, so the re-send path
-    //cannot reach the priority source at all. That is a discipline held by one method's structure rather than
-    //a type-level guarantee, which is exactly why it needs a test: recorder two faults on its first attempt
-    //and answers on its second, and the two requests it received must be equal AS RECORDS.
-    //
-    //The scripted source carries exactly one draw per recorder, so an implementation that redrew on the
-    //re-send would run the source dry and fail loudly even if the equality assertion were deleted.
+    /// <summary>
+    /// THE MEMOIZATION LAW, and the slice cannot ship without it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A proposer may deliver a request to a recorder any number of times PROVIDED EVERY DELIVERY IS IDENTICAL
+    /// — same step, same proposal, same priority — because the model admits at most one DISTINCT proposal per
+    /// (proposer, recorder, step) and its send flag is what enforces that. The mechanism is that the
+    /// per-recorder phase-zero draw is made once per (step, recorder) and the resulting request is retained
+    /// for the lifetime of the step, so the re-send path cannot reach the priority source at all. That is a
+    /// discipline held by one method's structure rather than a type-level guarantee, which is exactly why it
+    /// needs a test: recorder two faults on its first attempt and answers on its second, and the two requests
+    /// it received must be equal AS RECORDS.
+    /// </para>
+    /// <para>
+    /// The scripted source carries exactly one draw per recorder, so an implementation that redrew on the
+    /// re-send would run the source dry and fail loudly even if the equality assertion were deleted.
+    /// </para>
+    /// </remarks>
     [TestMethod]
     public async Task TheReSendCarriesTheIdenticalRequestAndDrawsNoFreshPriority()
     {
@@ -94,12 +104,16 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //QUORUM LATENCY, NOT TOTAL LATENCY, and this is the arc's whole quantitative claim: a majority-sized fast
-    //quorum against Fast CASPaxos's supermajority. The proposer acts on the FIRST quorum and does not wait for
-    //the remaining endpoints, which is model-legal because a proposer there acts on any majority subset of the
-    //replies it holds. The two never-completing endpoints are asserted STILL INCOMPLETE after the proposal
-    //returned, because an implementation that awaited every endpoint would otherwise only be caught by the
-    //timeout.
+    /// <summary>
+    /// QUORUM LATENCY, NOT TOTAL LATENCY, and this is the arc's whole quantitative claim: a majority-sized fast
+    /// quorum against Fast CASPaxos's supermajority.
+    /// </summary>
+    /// <remarks>
+    /// The proposer acts on the FIRST quorum and does not wait for the remaining endpoints, which is
+    /// model-legal because a proposer there acts on any majority subset of the replies it holds. The two
+    /// never-completing endpoints are asserted STILL INCOMPLETE after the proposal returned, because an
+    /// implementation that awaited every endpoint would otherwise only be caught by the timeout.
+    /// </remarks>
     [TestMethod]
     public async Task TheProposalCompletesOnTheFirstQuorumWithoutWaitingForEveryRecorder()
     {
@@ -140,12 +154,16 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //THE RE-SEND IS PER RECORDER AND NOT GLOBAL, which is the direct pin on a deadlock. Gating re-send
-    //eligibility on "no task is in flight" means a single faulting endpoint among three is never retried while
-    //the other two are outstanding, and one never-completing endpoint then hangs the proposal forever with a
-    //live majority available. Eligibility is therefore per recorder and the re-send happens from INSIDE the
-    //drain, which is what this test observes: at the moment recorder zero is asked a second time, neither of
-    //the other two has completed.
+    /// <summary>
+    /// THE RE-SEND IS PER RECORDER AND NOT GLOBAL, which is the direct pin on a deadlock.
+    /// </summary>
+    /// <remarks>
+    /// Gating re-send eligibility on "no task is in flight" means a single faulting endpoint among three is
+    /// never retried while the other two are outstanding, and one never-completing endpoint then hangs the
+    /// proposal forever with a live majority available. Eligibility is therefore per recorder and the re-send
+    /// happens from INSIDE the drain, which is what this test observes: at the moment recorder zero is asked a
+    /// second time, neither of the other two has completed.
+    /// </remarks>
     [TestMethod]
     public async Task AFaultingRecorderIsReSentWhileTheOtherRecordersAreStillOutstanding()
     {
@@ -194,10 +212,15 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //ATTEMPTS ARE PER STEP AND NOT PER ROUND. A recorder abandoned at the first step is asked again at the
-    //next one with a FULL budget, because a transport fault is a property of one exchange and not a verdict on
-    //the recorder. An implementation that reset the budget once per round would leave a recorder that faulted
-    //early silently unreachable for three further steps, which no other test in this suite would notice.
+    /// <summary>
+    /// ATTEMPTS ARE PER STEP AND NOT PER ROUND. A recorder abandoned at the first step is asked again at the
+    /// next one with a FULL budget, because a transport fault is a property of one exchange and not a verdict on
+    /// the recorder.
+    /// </summary>
+    /// <remarks>
+    /// An implementation that reset the budget once per round would leave a recorder that faulted early
+    /// silently unreachable for three further steps, which no other test in this suite would notice.
+    /// </remarks>
     [TestMethod]
     public async Task TheAttemptBudgetIsRefreshedAtEveryStepRatherThanOncePerRound()
     {
@@ -225,11 +248,15 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //ATTEMPT EXHAUSTION IS A TERMINAL CONDITION STATED INDEPENDENTLY OF THE IN-FLIGHT SET: no answer is
-    //pending and no recorder has attempts left. With every endpoint faulting permanently the step reaches no
-    //recorder at all, the conclusion is a missed quorum, and the missed quorum carries no successor round so
-    //the loop ends. The exact send count is asserted because an off-by-one in the budget is invisible in an
-    //outcome.
+    /// <summary>
+    /// ATTEMPT EXHAUSTION IS A TERMINAL CONDITION STATED INDEPENDENTLY OF THE IN-FLIGHT SET: no answer is
+    /// pending and no recorder has attempts left.
+    /// </summary>
+    /// <remarks>
+    /// With every endpoint faulting permanently the step reaches no recorder at all, the conclusion is a
+    /// missed quorum, and the missed quorum carries no successor round so the loop ends. The exact send count
+    /// is asserted because an off-by-one in the budget is invisible in an outcome.
+    /// </remarks>
     [TestMethod]
     public async Task EveryEndpointFaultingEndsTheProposalAfterExactlyTheAttemptBudget()
     {
@@ -261,11 +288,16 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //THE CALLER'S CANCELLATION PROPAGATES. The proposer cannot interrupt its own wait, because the wait is on
-    //a completion race that takes no token, so responsiveness is the endpoint delegate's contract: an
-    //implementation MUST complete — with a result, a fault, or a cancellation — when the supplied token is
-    //signalled. Given an endpoint that honours it, a cancelled proposal reports cancellation rather than a
-    //quorum miss, because a quorum miss is a protocol outcome a caller may act on and a cancellation is not.
+    /// <summary>
+    /// THE CALLER'S CANCELLATION PROPAGATES.
+    /// </summary>
+    /// <remarks>
+    /// The proposer cannot interrupt its own wait, because the wait is on a completion race that takes no
+    /// token, so responsiveness is the endpoint delegate's contract: an implementation MUST complete — with a
+    /// result, a fault, or a cancellation — when the supplied token is signalled. Given an endpoint that
+    /// honours it, a cancelled proposal reports cancellation rather than a quorum miss, because a quorum miss
+    /// is a protocol outcome a caller may act on and a cancellation is not.
+    /// </remarks>
     [TestMethod]
     public async Task ACancelledTokenPropagatesOutOfTheProposal()
     {
@@ -288,12 +320,17 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //AN ENDPOINT'S OWN DEADLINE IS A TRANSPORT FAULT AND NOT THE CALLER'S CANCELLATION. An endpoint that
-    //imposes a deadline through a linked token reports cancellation on ITS token, and killing the proposal
-    //there would let one slow link cancel a proposal the caller never cancelled. The classification is
-    //therefore on the caller's token: cancellation is rethrown only when the caller asked for it, and is
-    //otherwise a fault that spends an attempt and is re-sent. The other two recorders cannot form a quorum
-    //between them, so the retry is REQUIRED for the proposal to finish and the test cannot pass by accident.
+    /// <summary>
+    /// AN ENDPOINT'S OWN DEADLINE IS A TRANSPORT FAULT AND NOT THE CALLER'S CANCELLATION. An endpoint that
+    /// imposes a deadline through a linked token reports cancellation on ITS token, and killing the proposal
+    /// there would let one slow link cancel a proposal the caller never cancelled.
+    /// </summary>
+    /// <remarks>
+    /// The classification is therefore on the caller's token: cancellation is rethrown only when the caller
+    /// asked for it, and is otherwise a fault that spends an attempt and is re-sent. The other two recorders
+    /// cannot form a quorum between them, so the retry is REQUIRED for the proposal to finish and the test
+    /// cannot pass by accident.
+    /// </remarks>
     [TestMethod]
     public async Task AnEndpointCancellingOnItsOwnTokenIsRetriedRatherThanPropagated()
     {
@@ -321,10 +358,15 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //A TASK THAT ENDED CANCELLED IS A FAULT AND IS NEVER READ FOR A RESULT. A cancelled task has no fault and
-    //no exception of its own, so a two-way faulted-or-result split reads its result and surfaces an
-    //aggregate exception out of a proposal that should simply have retried. The cancelled task here comes from
-    //a token that is not the caller's, so the only correct classification is a transport fault.
+    /// <summary>
+    /// A TASK THAT ENDED CANCELLED IS A FAULT AND IS NEVER READ FOR A RESULT. A cancelled task has no fault and
+    /// no exception of its own, so a two-way faulted-or-result split reads its result and surfaces an
+    /// aggregate exception out of a proposal that should simply have retried.
+    /// </summary>
+    /// <remarks>
+    /// The cancelled task here comes from a token that is not the caller's, so the only correct classification
+    /// is a transport fault.
+    /// </remarks>
     [TestMethod]
     public async Task ATaskThatEndsCancelledIsClassifiedAsAFaultRatherThanReadForAResult()
     {
@@ -351,10 +393,14 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //A NULL REPLY IS A FAULT AND NOT AN ANSWER. The endpoint delegate is typed non-nullable, but a
-    //nullable-oblivious host can return null across the seam, and a null summary reaching the conclusion is
-    //a state the conclusion refuses with an argument exception rather than a protocol outcome. Treating it as
-    //a fault keeps the failure inside the transport, where a retry is the correct answer.
+    /// <summary>
+    /// A NULL REPLY IS A FAULT AND NOT AN ANSWER. The endpoint delegate is typed non-nullable, but a
+    /// nullable-oblivious host can return null across the seam, and a null summary reaching the conclusion is
+    /// a state the conclusion refuses with an argument exception rather than a protocol outcome.
+    /// </summary>
+    /// <remarks>
+    /// Treating it as a fault keeps the failure inside the transport, where a retry is the correct answer.
+    /// </remarks>
     [TestMethod]
     public async Task ANullReplyIsTreatedAsAFaultRatherThanAsAnAnswer()
     {
@@ -377,12 +423,17 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //THE PROPOSER IS ONE-SHOT, and the latch is where the proposal key's uniqueness contract is enforced
-    //rather than merely documented. A second proposal on the same lane reopens the round at the first step,
-    //where the phase-zero draw is fresh, so one proposer would hold two distinct keys at one
-    //(recorder, step four) pair — precisely the state the model's send flag forbids. The documented recovery
-    //is a FRESH LANE on a fresh proposer, which is the correct protocol reading rather than a workaround,
-    //because a retry under a new lane is a different proposer identity the model already handles.
+    /// <summary>
+    /// THE PROPOSER IS ONE-SHOT, and the latch is where the proposal key's uniqueness contract is enforced
+    /// rather than merely documented.
+    /// </summary>
+    /// <remarks>
+    /// A second proposal on the same lane reopens the round at the first step, where the phase-zero draw is
+    /// fresh, so one proposer would hold two distinct keys at one (recorder, step four) pair — precisely the
+    /// state the model's send flag forbids. The documented recovery is a FRESH LANE on a fresh proposer, which
+    /// is the correct protocol reading rather than a workaround, because a retry under a new lane is a
+    /// different proposer identity the model already handles.
+    /// </remarks>
     [TestMethod]
     public async Task ASecondProposalAfterADecisionThrows()
     {
@@ -399,9 +450,13 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //THE MISSED-QUORUM CASE IS THE ONE A HOST WILL ACTUALLY REACH FOR, so it is a separate test. A missed
-    //quorum is not terminal for the instance and a host reading the outcome will want to try again; retrying
-    //on this proposer is exactly the violation above, and the latch is what stops it.
+    /// <summary>
+    /// THE MISSED-QUORUM CASE IS THE ONE A HOST WILL ACTUALLY REACH FOR, so it is a separate test.
+    /// </summary>
+    /// <remarks>
+    /// A missed quorum is not terminal for the instance and a host reading the outcome will want to try again;
+    /// retrying on this proposer is exactly the violation above, and the latch is what stops it.
+    /// </remarks>
     [TestMethod]
     public async Task ASecondProposalAfterAMissedQuorumThrows()
     {
@@ -424,10 +479,15 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //THE FAST PATH COSTS ONE STEP, which is the reason the reserved priority exists. The configured leader
-    //that believes it leads claims the reserved priority, every recorder honours it, the gather is uniform,
-    //and the decision is taken at round one phase zero. A source that throws on any draw proves the step
-    //consumed no entropy at all, because the reserved claim is not a draw.
+    /// <summary>
+    /// THE FAST PATH COSTS ONE STEP, which is the reason the reserved priority exists. The configured leader
+    /// that believes it leads claims the reserved priority, every recorder honours it, the gather is uniform,
+    /// and the decision is taken at round one phase zero.
+    /// </summary>
+    /// <remarks>
+    /// A source that throws on any draw proves the step consumed no entropy at all, because the reserved claim
+    /// is not a draw.
+    /// </remarks>
     [TestMethod]
     public async Task TheConfiguredAndBelievingLeaderDecidesInOneStepAtTheFirstStep()
     {
@@ -451,8 +511,13 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //A PROPOSER THAT DOES NOT CLAIM LEADERSHIP TAKES THREE STEPS, deciding at round one phase two. That is the
-    //ordinary path and the contrast that makes the fast path measurable: one round trip against one round.
+    /// <summary>
+    /// A PROPOSER THAT DOES NOT CLAIM LEADERSHIP TAKES THREE STEPS, deciding at round one phase two.
+    /// </summary>
+    /// <remarks>
+    /// That is the ordinary path and the contrast that makes the fast path measurable: one round trip against
+    /// one round.
+    /// </remarks>
     [TestMethod]
     public async Task AProposerWithoutALeadershipClaimDecidesAtRoundOnePhaseTwo()
     {
@@ -473,13 +538,17 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //THE OUTCOME NAMES THE OWNER OF THE DECIDED PROPOSAL AND NOT THE PROPOSER THAT OBSERVED THE DECISION. A
-    //caller reads it to learn that someone else's value was chosen and that it must re-read and re-propose;
-    //nothing else in this suite distinguishes the two, because an uncontended proposal carries its own value
-    //through. The second proposer here believes nothing, gathers the leader's uniform reserved firsts, and
-    //MUST decide the leader's value: a proposer-side check of the winner's owner against the proposer's own
-    //belief would refuse this decision and continue into a global state the checked configurations never
-    //visited.
+    /// <summary>
+    /// THE OUTCOME NAMES THE OWNER OF THE DECIDED PROPOSAL AND NOT THE PROPOSER THAT OBSERVED THE DECISION.
+    /// </summary>
+    /// <remarks>
+    /// A caller reads it to learn that someone else's value was chosen and that it must re-read and
+    /// re-propose; nothing else in this suite distinguishes the two, because an uncontended proposal carries
+    /// its own value through. The second proposer here believes nothing, gathers the leader's uniform reserved
+    /// firsts, and MUST decide the leader's value: a proposer-side check of the winner's owner against the
+    /// proposer's own belief would refuse this decision and continue into a global state the checked
+    /// configurations never visited.
+    /// </remarks>
     [TestMethod]
     public async Task DecidedByReportsTheOwnerWhenTheProposerCarriesAnotherLanesValue()
     {
@@ -503,11 +572,15 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //MORE ANSWERS THAN THE MAJORITY IS NORMAL, and the derived quorum is a FLOOR rather than an equality. A
-    //deployment sized above the minimum may hear from every recorder, and the conclusion must be the one it
-    //would have reached on a bare majority. The quorum is derived from the recorder count rather than supplied
-    //by the caller precisely so that no caller can weaken it; nothing about that makes a wider answer set
-    //illegal.
+    /// <summary>
+    /// MORE ANSWERS THAN THE MAJORITY IS NORMAL, and the derived quorum is a FLOOR rather than an equality. A
+    /// deployment sized above the minimum may hear from every recorder, and the conclusion must be the one it
+    /// would have reached on a bare majority.
+    /// </summary>
+    /// <remarks>
+    /// The quorum is derived from the recorder count rather than supplied by the caller precisely so that no
+    /// caller can weaken it; nothing about that makes a wider answer set illegal.
+    /// </remarks>
     [TestMethod]
     public async Task AllFiveOfFiveAnswersReachTheSameConclusionAsThree()
     {
@@ -537,9 +610,13 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //THE QUORUM IS A STRICT MAJORITY DERIVED FROM THE RECORDER COUNT. A strict majority is what the proofs
-    //need: two majorities intersect, and that intersection is what the agreement lemmas rest on. A deployment
-    //sized above the minimum may use larger quorums and stays safe; it is never required to.
+    /// <summary>
+    /// THE QUORUM IS A STRICT MAJORITY DERIVED FROM THE RECORDER COUNT. A strict majority is what the proofs
+    /// need: two majorities intersect, and that intersection is what the agreement lemmas rest on.
+    /// </summary>
+    /// <remarks>
+    /// A deployment sized above the minimum may use larger quorums and stays safe; it is never required to.
+    /// </remarks>
     [TestMethod]
     public void TheQuorumIsAStrictMajorityAndTheConstructorRefusesDegenerateArguments()
     {
@@ -567,15 +644,19 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //Every await of a proposal is bounded and its completion is asserted, because a wrong implementation of
-    //the first-quorum rule or of the terminal condition hangs rather than fails, and a hung suite reports
-    //nothing at all.
-    //A STEP STOPS WAITING ONCE THE QUORUM IS ARITHMETICALLY OUT OF REACH, not merely once nothing is pending.
-    //Five recorders need three answers; three refuse at once and the remaining two never complete, so the two
-    //that are still outstanding cannot carry the count to three however long they take. Waiting for them is
-    //waiting for an answer the step already has, and against an endpoint that never completes it is waiting
-    //for ever, so the terminal condition must count what is still reachable rather than test whether anything
-    //is still pending.
+    /// <summary>
+    /// Every await of a proposal is bounded and its completion is asserted, because a wrong implementation of
+    /// the first-quorum rule or of the terminal condition hangs rather than fails, and a hung suite reports
+    /// nothing at all.
+    /// </summary>
+    /// <remarks>
+    /// A STEP STOPS WAITING ONCE THE QUORUM IS ARITHMETICALLY OUT OF REACH, not merely once nothing is
+    /// pending. Five recorders need three answers; three refuse at once and the remaining two never complete,
+    /// so the two that are still outstanding cannot carry the count to three however long they take. Waiting
+    /// for them is waiting for an answer the step already has, and against an endpoint that never completes it
+    /// is waiting for ever, so the terminal condition must count what is still reachable rather than test
+    /// whether anything is still pending.
+    /// </remarks>
     [TestMethod]
     public async Task AStepStopsWaitingOnceTheQuorumIsOutOfReachEvenWhileEndpointsAreOutstanding()
     {
@@ -607,16 +688,23 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //A RECORDER IS NOT WORTH ASKING AGAIN ONCE THE STEP HAS ITS QUORUM. The drain visits every recorder, so a
-    //later index whose attempt faulted is reached after an earlier index has already completed the quorum;
-    //re-sending it puts a record request on the wire for a step that has concluded, and the step then
-    //abandons the answer unread. It costs up to one wasted round trip per unanswered recorder per step, which
-    //a real recorder serves in full, and it is the quorum-latency claim this type is built around being paid
-    //for with traffic the step cannot use.
-    //
-    //Every endpoint answers or faults SYNCHRONOUSLY, so all three tasks are complete before the first wait
-    //returns and the drain visits them in index order within one pass. That is what makes the ordering a
-    //construction rather than a race.
+    /// <summary>
+    /// A RECORDER IS NOT WORTH ASKING AGAIN ONCE THE STEP HAS ITS QUORUM.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The drain visits every recorder, so a later index whose attempt faulted is reached after an earlier
+    /// index has already completed the quorum; re-sending it puts a record request on the wire for a step that
+    /// has concluded, and the step then abandons the answer unread. It costs up to one wasted round trip per
+    /// unanswered recorder per step, which a real recorder serves in full, and it is the quorum-latency claim
+    /// this type is built around being paid for with traffic the step cannot use.
+    /// </para>
+    /// <para>
+    /// Every endpoint answers or faults SYNCHRONOUSLY, so all three tasks are complete before the first wait
+    /// returns and the drain visits them in index order within one pass. That is what makes the ordering a
+    /// construction rather than a race.
+    /// </para>
+    /// </remarks>
     [TestMethod]
     public async Task ARecorderIsNotAskedAgainOnceAnEarlierAnswerCompletedTheQuorum()
     {
@@ -641,11 +729,16 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //CANCELLATION IS DECIDED BY THE TOKEN AND NOT BY WHAT A TRANSPORT THREW. An endpoint is entitled to answer
-    //a signalled token by aborting its connection, which surfaces as an ordinary transport fault and not as an
-    //OperationCanceledException. Classifying only the exception shape would report a MISSED QUORUM for a
-    //cancelled proposal, and the two are not interchangeable to a caller: a missed quorum invites a fresh
-    //attempt on a fresh lane, where a cancellation must unwind.
+    /// <summary>
+    /// CANCELLATION IS DECIDED BY THE TOKEN AND NOT BY WHAT A TRANSPORT THREW. An endpoint is entitled to answer
+    /// a signalled token by aborting its connection, which surfaces as an ordinary transport fault and not as an
+    /// OperationCanceledException.
+    /// </summary>
+    /// <remarks>
+    /// Classifying only the exception shape would report a MISSED QUORUM for a cancelled proposal, and the two
+    /// are not interchangeable to a caller: a missed quorum invites a fresh attempt on a fresh lane, where a
+    /// cancellation must unwind.
+    /// </remarks>
     [TestMethod]
     public async Task ACancellationThatSurfacesAsAnOrdinaryTransportFaultStillPropagates()
     {
@@ -672,10 +765,14 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //AN ENDPOINT THAT THROWS BEFORE IT RETURNS A TASK IS THE SAME TRANSPORT FAULT AS ONE WHOSE TASK FAULTS.
-    //A host writing an endpoint by hand throws synchronously as readily as it returns a faulted task, and the
-    //two must not classify differently: an unconverted synchronous throw would escape the step and abort the
-    //proposal on a fault the attempt budget exists to absorb.
+    /// <summary>
+    /// AN ENDPOINT THAT THROWS BEFORE IT RETURNS A TASK IS THE SAME TRANSPORT FAULT AS ONE WHOSE TASK FAULTS.
+    /// </summary>
+    /// <remarks>
+    /// A host writing an endpoint by hand throws synchronously as readily as it returns a faulted task, and
+    /// the two must not classify differently: an unconverted synchronous throw would escape the step and abort
+    /// the proposal on a fault the attempt budget exists to absorb.
+    /// </remarks>
     [TestMethod]
     public async Task AnEndpointThrowingSynchronouslyIsClassifiedAsATransportFaultAndRetried()
     {
@@ -697,12 +794,17 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //A REPLY FROM BELOW THE STEP BEING GATHERED IS DISCARDED RATHER THAN COUNTED. Calls for consecutive steps
-    //overlap, because the endpoints outstanding when a quorum lands are abandoned rather than cancelled and
-    //the next step calls every recorder again; a reply carries the recorder's own step and not the step of the
-    //request it answers, so a transport that correlated by a single per-recorder slot hands the older call's
-    //reply to the newer call. Counting it would put a stale aggregate into the conclusion, and at phase two
-    //that is a decision taken on a majority that never gathered at the deciding step.
+    /// <summary>
+    /// A REPLY FROM BELOW THE STEP BEING GATHERED IS DISCARDED RATHER THAN COUNTED. Calls for consecutive steps
+    /// overlap, because the endpoints outstanding when a quorum lands are abandoned rather than cancelled and
+    /// the next step calls every recorder again; a reply carries the recorder's own step and not the step of the
+    /// request it answers, so a transport that correlated by a single per-recorder slot hands the older call's
+    /// reply to the newer call.
+    /// </summary>
+    /// <remarks>
+    /// Counting it would put a stale aggregate into the conclusion, and at phase two that is a decision taken
+    /// on a majority that never gathered at the deciding step.
+    /// </remarks>
     [TestMethod]
     public async Task AReplyFromBelowTheGatheredStepIsDiscardedRatherThanCounted()
     {
@@ -726,10 +828,14 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //An endpoint that answers a signalled token by aborting its connection, which is what a real transport
-    //does and which carries no cancellation in its exception type. The first call signals the token, so the
-    //cancellation lands MID-STEP rather than before it: an entry check cannot be what ends the proposal, and
-    //only the test after the gather can.
+    /// <summary>
+    /// An endpoint that answers a signalled token by aborting its connection, which is what a real transport
+    /// does and which carries no cancellation in its exception type.
+    /// </summary>
+    /// <remarks>
+    /// The first call signals the token, so the cancellation lands MID-STEP rather than before it: an entry
+    /// check cannot be what ends the proposal, and only the test after the gather can.
+    /// </remarks>
     private static async ValueTask<RecordReply<string>> Abort(CancellationTokenSource cancellation, CancellationToken token)
     {
         if(!token.IsCancellationRequested)
@@ -803,17 +909,24 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //A transport failure, delivered as a FAULTED TASK rather than as a synchronous throw, because the faulted
-    //task is the shape the proposer's classification names.
+    /// <summary>
+    /// A transport failure, delivered as a FAULTED TASK rather than as a synchronous throw, because the faulted
+    /// task is the shape the proposer's classification names.
+    /// </summary>
     private static ValueTask<RecordReply<string>> Faulting()
     {
         return ValueTask.FromException<RecordReply<string>>(new IOException("The recorder is unreachable."));
     }
 
 
-    //A cancellation reported against a chosen token. Which token it names is the whole subject of two tests:
-    //the caller's token means the proposal is cancelled, and any other token means one endpoint imposed its
-    //own deadline and the attempt should be re-sent.
+    /// <summary>
+    /// A cancellation reported against a chosen token.
+    /// </summary>
+    /// <remarks>
+    /// Which token it names is the whole subject of two tests: the caller's token means the proposal is
+    /// cancelled, and any other token means one endpoint imposed its own deadline and the attempt should be
+    /// re-sent.
+    /// </remarks>
     private static ValueTask<RecordReply<string>> Cancelling(CancellationToken token)
     {
         return ValueTask.FromException<RecordReply<string>>(new OperationCanceledException(token));
@@ -829,8 +942,13 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //How a scripted endpoint answers one attempt. The attempt index counts every request this endpoint has
-    //ever been asked to serve, so a script can distinguish the first delivery of a step from its re-send.
+    /// <summary>
+    /// How a scripted endpoint answers one attempt.
+    /// </summary>
+    /// <remarks>
+    /// The attempt index counts every request this endpoint has ever been asked to serve, so a script can
+    /// distinguish the first delivery of a step from its re-send.
+    /// </remarks>
     private delegate ValueTask<RecordReply<string>> ScriptedAnswerDelegate(
         ScriptedRecorder recorder,
         int attempt,
@@ -838,9 +956,14 @@ internal sealed class QuePaxaProposerTests
         CancellationToken cancellationToken);
 
 
-    //One scripted recorder endpoint over a real node: it logs every request it is asked to serve and then
-    //answers, faults, or hangs on the script's instruction. Logging the request rather than the intent is the
-    //point, because the re-send rule is a statement about what reached the wire.
+    /// <summary>
+    /// One scripted recorder endpoint over a real node: it logs every request it is asked to serve and then
+    /// answers, faults, or hangs on the script's instruction.
+    /// </summary>
+    /// <remarks>
+    /// Logging the request rather than the intent is the point, because the re-send rule is a statement about
+    /// what reached the wire.
+    /// </remarks>
     private sealed class ScriptedRecorder
     {
         public ScriptedRecorder(QuePaxaRecorder<string> recorder, ScriptedAnswerDelegate answer)
@@ -874,8 +997,13 @@ internal sealed class QuePaxaProposerTests
         }
 
 
-        //An endpoint that neither answers nor faults. The completion is retained so a test can assert it is
-        //still incomplete, which is how the first-quorum rule is observed rather than merely timed.
+        /// <summary>
+        /// An endpoint that neither answers nor faults.
+        /// </summary>
+        /// <remarks>
+        /// The completion is retained so a test can assert it is still incomplete, which is how the
+        /// first-quorum rule is observed rather than merely timed.
+        /// </remarks>
         public ValueTask<RecordReply<string>> Hanging()
         {
             TaskCompletionSource<RecordReply<string>> completion = new();
@@ -892,9 +1020,14 @@ internal sealed class QuePaxaProposerTests
     }
 
 
-    //A fixed sequence rather than a seeded stream: a scenario that runs past the end of its script consumed
-    //entropy it was not designed to, so the source fails loudly rather than letting the run drift into a
-    //different behaviour. That is what makes "one draw per recorder per step" checkable twice over.
+    /// <summary>
+    /// A fixed sequence rather than a seeded stream: a scenario that runs past the end of its script consumed
+    /// entropy it was not designed to, so the source fails loudly rather than letting the run drift into a
+    /// different behaviour.
+    /// </summary>
+    /// <remarks>
+    /// That is what makes "one draw per recorder per step" checkable twice over.
+    /// </remarks>
     private sealed class ScriptedPrioritySource
     {
         private int index;

@@ -100,9 +100,13 @@ internal sealed class ReconciliationSocketTests
     }
 
 
-    //Stands up one fresh duplex socket connection, runs the initiator and responder choreography to
-    //completion, and returns the round's observed metrics and both sides' converged sets. The listener,
-    //client, and server are all disposed in the finally even when the proof fails mid-flight.
+    /// <summary>
+    /// Stands up one fresh duplex socket connection, runs the initiator and responder choreography to
+    /// completion, and returns the round's observed metrics and both sides' converged sets.
+    /// </summary>
+    /// <remarks>
+    /// The listener, client, and server are all disposed in the finally even when the proof fails mid-flight.
+    /// </remarks>
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The listener, client, server, and linked token source are all disposed in the finally block.")]
     private async Task<RoundOutcome> RunRoundAsync(OrSet<string> sideA, OrSet<string> sideB, FramePadding? padding)
     {
@@ -153,9 +157,11 @@ internal sealed class ReconciliationSocketTests
     }
 
 
-    //The initiator pins its offer, absorbs the responder's streamed symbols against its own fresh encoder
-    //until the decoder completes, then resolves the difference: it requests the digests it lacks and offers
-    //the elements it holds in surplus, applies the responder's answer, and ends its single reader loop.
+    /// <summary>
+    /// The initiator pins its offer, absorbs the responder's streamed symbols against its own fresh encoder
+    /// until the decoder completes, then resolves the difference: it requests the digests it lacks and offers
+    /// the elements it holds in surplus, applies the responder's answer, and ends its single reader loop.
+    /// </summary>
     private static async Task<InitiatorResult> RunInitiatorAsync(
         OrSet<string> set,
         MessageChannelWriter<ReconciliationEnvelope<string>> outbound,
@@ -238,10 +244,15 @@ internal sealed class ReconciliationSocketTests
     }
 
 
-    //The responder pins its offer, streams symbol batches from a fresh encoder over its own projection until
-    //the initiator signals done, answers any fetch from its directory, and applies any surplus elements the
-    //initiator offered. Streaming runs alongside the single reader loop; the loop ends when the peer's writer
-    //completes, after which the responder completes its own writer.
+    /// <summary>
+    /// The responder pins its offer, streams symbol batches from a fresh encoder over its own projection until
+    /// the initiator signals done, answers any fetch from its directory, and applies any surplus elements the
+    /// initiator offered.
+    /// </summary>
+    /// <remarks>
+    /// Streaming runs alongside the single reader loop; the loop ends when the peer's writer completes, after
+    /// which the responder completes its own writer.
+    /// </remarks>
     private static async Task<OrSet<string>> RunResponderAsync(
         OrSet<string> set,
         MessageChannelWriter<ReconciliationEnvelope<string>> outbound,
@@ -299,8 +310,11 @@ internal sealed class ReconciliationSocketTests
     }
 
 
-    //Streams consecutive symbol batches of a fixed size from a fresh encoder over the projected items, checking
-    //the done signal between batches and capping the stream so a never-completing peer fails the test.
+    /// <summary>
+    /// Streams consecutive symbol batches of a fixed size from a fresh encoder over the projected items,
+    /// checking the done signal between batches and capping the stream so a never-completing peer fails the
+    /// test.
+    /// </summary>
     private static async Task StreamSymbolsAsync(
         ReadOnlyMemory<byte>[] items,
         MessageChannelWriter<ReconciliationEnvelope<string>> outbound,
@@ -350,8 +364,10 @@ internal sealed class ReconciliationSocketTests
     }
 
 
-    //Splits the decoded difference into the digests this side does not hold locally (to be fetched) and the
-    //digests it does hold (a surplus the peer lacks), both as sorted uppercase hex sets.
+    /// <summary>
+    /// Splits the decoded difference into the digests this side does not hold locally (to be fetched) and the
+    /// digests it does hold (a surplus the peer lacks), both as sorted uppercase hex sets.
+    /// </summary>
     private static (string[] Lacks, string[] Surplus) Partition(IReadOnlyList<ReadOnlyMemory<byte>> decoded, HashSet<string> localHexes)
     {
         var lacks = new List<string>();

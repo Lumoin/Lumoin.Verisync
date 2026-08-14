@@ -33,7 +33,9 @@ internal sealed class QuePaxaLeaderScheduleTests
     }
 
 
-    //A writer at position zero would also pass an implementation that never rotates.
+    /// <summary>
+    /// A writer at position zero would also pass an implementation that never rotates.
+    /// </summary>
     [TestMethod]
     public void ThePreviousWriterLeadsTheNextVersionAndTheOrderRotatesToIt()
     {
@@ -47,8 +49,10 @@ internal sealed class QuePaxaLeaderScheduleTests
     }
 
 
-    //The underlying rotation throws for this replica, so a host calling it directly would fault on
-    //reconfiguration.
+    /// <summary>
+    /// The underlying rotation throws for this replica, so a host calling it directly would fault on
+    /// reconfiguration.
+    /// </summary>
     [TestMethod]
     public void AWriterOutsideTheOrderYieldsALeaderlessInstanceRatherThanThrowing()
     {
@@ -61,8 +65,10 @@ internal sealed class QuePaxaLeaderScheduleTests
     }
 
 
-    //The reserved priority is granted to a lane, not a replica, so two lanes of one replica cannot both
-    //claim it.
+    /// <summary>
+    /// The reserved priority is granted to a lane, not a replica, so two lanes of one replica cannot both
+    /// claim it.
+    /// </summary>
     [TestMethod]
     public void TheDerivedLeaderIsAlwaysLaneZeroOfTheLeadingReplica()
     {
@@ -75,8 +81,10 @@ internal sealed class QuePaxaLeaderScheduleTests
     }
 
 
-    //The derivation is a function of committed state, so every replica reaches the same answer without a
-    //message.
+    /// <summary>
+    /// The derivation is a function of committed state, so every replica reaches the same answer without a
+    /// message.
+    /// </summary>
     [TestMethod]
     public void TheRecorderAndTheProposerReadTheSameDerivation()
     {
@@ -95,9 +103,11 @@ internal sealed class QuePaxaLeaderScheduleTests
     }
 
 
-    //A restore that took its leader from anywhere but the derivation would let two hosts serve one instance
-    //under different leaders, so the overload is compared with the derivation it must read on everything a
-    //proposer can observe.
+    /// <summary>
+    /// A restore that took its leader from anywhere but the derivation would let two hosts serve one instance
+    /// under different leaders, so the overload is compared with the derivation it must read on everything a
+    /// proposer can observe.
+    /// </summary>
     [TestMethod]
     public void TheRestoreOverloadDerivesTheSameLeaderAsADirectFromState()
     {
@@ -139,8 +149,10 @@ internal sealed class QuePaxaLeaderScheduleTests
     }
 
 
-    //The leaderless answer is a derived fact and not a missing one, so the restore carries it through instead
-    //of falling back on the configured order's bootstrap leader.
+    /// <summary>
+    /// The leaderless answer is a derived fact and not a missing one, so the restore carries it through instead
+    /// of falling back on the configured order's bootstrap leader.
+    /// </summary>
     [TestMethod]
     public void TheRestoreOverloadPreservesALeaderlessDerivation()
     {
@@ -177,8 +189,12 @@ internal sealed class QuePaxaLeaderScheduleTests
     }
 
 
-    //The delay is read from the rotated order, not the configured one. Hedging on the configured order would
-    //wait behind a replica that no longer leads.
+    /// <summary>
+    /// The delay is read from the rotated order, not the configured one.
+    /// </summary>
+    /// <remarks>
+    /// Hedging on the configured order would wait behind a replica that no longer leads.
+    /// </remarks>
     [TestMethod]
     public void TheRotatedScheduleCarriesBothTheLeaderAndTheHedgingDelays()
     {

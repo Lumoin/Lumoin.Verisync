@@ -26,8 +26,10 @@ internal sealed class CompactionStateJsonTests
     private static ImmutableArray<int> BaseValues { get; } = [10, 20, 30];
 
 
-    //An uncompacted offset sequence with every anchor kind and dotted removes on both axes round-trips
-    //through the JSON codec and FromState.
+    /// <summary>
+    /// An uncompacted offset sequence with every anchor kind and dotted removes on both axes round-trips
+    /// through the JSON codec and FromState.
+    /// </summary>
     [TestMethod]
     public void UncompactedOffsetSequenceRoundTripsThroughTheJsonCodec()
     {
@@ -43,9 +45,11 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //A compacted offset sequence carrying both translation maps and the stamped generation identity
-    //round-trips through the JSON codec with its servability intact, and the base generation survives the
-    //round-trip.
+    /// <summary>
+    /// A compacted offset sequence carrying both translation maps and the stamped generation identity
+    /// round-trips through the JSON codec with its servability intact, and the base generation survives the
+    /// round-trip.
+    /// </summary>
     [TestMethod]
     public void CompactedOffsetSequenceRoundTripsThroughTheJsonCodec()
     {
@@ -63,8 +67,10 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //A pending-removed generation — a base-removal entry carrying remove-dots plus a non-empty
-    //baseFrontier — round-trips and stays hidden.
+    /// <summary>
+    /// A pending-removed generation — a base-removal entry carrying remove-dots plus a non-empty
+    /// baseFrontier — round-trips and stays hidden.
+    /// </summary>
     [TestMethod]
     public void APendingRemovedOffsetSequenceRoundTripsThroughTheJsonCodec()
     {
@@ -81,11 +87,15 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //A reclaimed generation — a dropped base offset served by the Head gap anchor through the
-    //anchor-typed base-offset translation map — is a future consensus-carried follow-on's output, not
-    //Compact's, which defers reclamation; the shape stays legal on the wire, so it is hand-built through
-    //FromState and must round-trip with its servability intact. Its prior-generation offset-0 address maps
-    //to the head.
+    /// <summary>
+    /// A reclaimed generation — a dropped base offset served by the Head gap anchor through the
+    /// anchor-typed base-offset translation map — is a future consensus-carried follow-on's output, not
+    /// Compact's, which defers reclamation; the shape stays legal on the wire, so it is hand-built through
+    /// FromState and must round-trip with its servability intact.
+    /// </summary>
+    /// <remarks>
+    /// Its prior-generation offset-0 address maps to the head.
+    /// </remarks>
     [TestMethod]
     public void AReclaimedOffsetSequenceRoundTripsThroughTheJsonCodec()
     {
@@ -103,8 +113,10 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //A dotted-remove RGA round-trips through the run-state JSON codec and FromRunState, exercising a two-range
-    //tombstone span (R2 removing a contiguous R1 range in one pass).
+    /// <summary>
+    /// A dotted-remove RGA round-trips through the run-state JSON codec and FromRunState, exercising a two-range
+    /// tombstone span (R2 removing a contiguous R1 range in one pass).
+    /// </summary>
     [TestMethod]
     public void DottedRgaRunStateRoundTripsThroughTheJsonCodec()
     {
@@ -124,8 +136,10 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //A two-dot concurrent-remove tombstone serializes as an irregular entry and round-trips through the JSON
-    //codec.
+    /// <summary>
+    /// A two-dot concurrent-remove tombstone serializes as an irregular entry and round-trips through the JSON
+    /// codec.
+    /// </summary>
     [TestMethod]
     public void IrregularRgaRunStateRoundTripsThroughTheJsonCodec()
     {
@@ -142,9 +156,11 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //A compacted RGA carrying a translation SPAN (two contiguous dropped dots served by one retained ancestor)
-    //round-trips through the run-state JSON codec with its servability intact — the certified compaction is
-    //now built through Compact rather than a hand-authored record.
+    /// <summary>
+    /// A compacted RGA carrying a translation SPAN (two contiguous dropped dots served by one retained ancestor)
+    /// round-trips through the run-state JSON codec with its servability intact — the certified compaction is
+    /// now built through Compact rather than a hand-authored record.
+    /// </summary>
     [TestMethod]
     public void CompactedRgaRunStateRoundTripsThroughTheJsonCodec()
     {
@@ -246,8 +262,10 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //The generation ordinal is a required field beside the frontier: a payload omitting it fails closed on
-    //the wire, distinct from an explicitly genesis zero.
+    /// <summary>
+    /// The generation ordinal is a required field beside the frontier: a payload omitting it fails closed on
+    /// the wire, distinct from an explicitly genesis zero.
+    /// </summary>
     [TestMethod]
     public void OffsetDeserializerRejectsAMissingBaseGeneration()
     {
@@ -454,8 +472,10 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //Wraps a single vertex object into an otherwise-minimal valid offset-state document over a
-    //one-element base.
+    /// <summary>
+    /// Wraps a single vertex object into an otherwise-minimal valid offset-state document over a
+    /// one-element base.
+    /// </summary>
     private static string OffsetStateJson(string vertex)
     {
         return $$"""
@@ -486,7 +506,9 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //An edited generation: every anchor kind plus a dotted base removal and a dotted live removal.
+    /// <summary>
+    /// An edited generation: every anchor kind plus a dotted base removal and a dotted live removal.
+    /// </summary>
     private static OffsetAnchoredSequence<int> Edited()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
@@ -499,11 +521,16 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //A compacted offset generation carrying both translation maps and the stamped identity: a converted
-    //vertex that shifts the base (populating the base-offset map) and a dropped certified tombstone
-    //(populating the dot map). The frontier is insert-quiescent — it certifies both inserts and the
-    //remove-dot — as §17 requires of any compaction. The compaction is base-changing, so the generation
-    //is generation 1.
+    /// <summary>
+    /// A compacted offset generation carrying both translation maps and the stamped identity: a converted
+    /// vertex that shifts the base (populating the base-offset map) and a dropped certified tombstone
+    /// (populating the dot map).
+    /// </summary>
+    /// <remarks>
+    /// The frontier is insert-quiescent — it certifies both inserts and the
+    /// remove-dot — as §17 requires of any compaction. The compaction is base-changing, so the generation
+    /// is generation 1.
+    /// </remarks>
     private static OffsetAnchoredSequence<int> CompactedWithBothMaps()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
@@ -517,8 +544,10 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //A pending-removed generation: an uncertified-removed stable vertex converted into the base, hidden,
-    //its remove-dot keyed to the new offset.
+    /// <summary>
+    /// A pending-removed generation: an uncertified-removed stable vertex converted into the base, hidden,
+    /// its remove-dot keyed to the new offset.
+    /// </summary>
     private static OffsetAnchoredSequence<int> PendingRemoved()
     {
         OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
@@ -531,9 +560,11 @@ internal sealed class CompactionStateJsonTests
     }
 
 
-    //The reclaimed wire shape, hand-built: an empty base whose previous generation's only slot was
-    //dropped, its offset served by the Head gap anchor, the generation identity stamped by the frontier
-    //that certified the removal — a single base change, so generation 1.
+    /// <summary>
+    /// The reclaimed wire shape, hand-built: an empty base whose previous generation's only slot was
+    /// dropped, its offset served by the Head gap anchor, the generation identity stamped by the frontier
+    /// that certified the removal — a single base change, so generation 1.
+    /// </summary>
     private static OffsetAnchoredSequenceState<int> ReclaimedShape()
     {
         VectorClockState identity = VectorClock.Empty.Increment(R1).ToState();

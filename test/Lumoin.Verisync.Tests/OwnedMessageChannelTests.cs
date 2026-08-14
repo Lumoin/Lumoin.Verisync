@@ -22,8 +22,10 @@ internal sealed class OwnedMessageChannelTests
     private static SerializeMessageDelegate<byte[]> SerializeBytes { get; } =
         (message, output) => output.Write(message);
 
-    //The pool-aware deserializer: an empty frame is the allocation-free empty owner, anything else is copied
-    //into an exact-size rental from the supplied pool whose ownership the consumer takes.
+    /// <summary>
+    /// The pool-aware deserializer: an empty frame is the allocation-free empty owner, anything else is copied
+    /// into an exact-size rental from the supplied pool whose ownership the consumer takes.
+    /// </summary>
     private static DeserializeOwnedMessageDelegate<IMemoryOwner<byte>> DeserializeOwned { get; } =
         (payload, pool) =>
         {
@@ -300,8 +302,13 @@ internal sealed class OwnedMessageChannelTests
     }
 
 
-    //Drains the reader, copying each owned payload's bytes out and disposing the owner inside the loop — the
-    //per-message release the class documents. The copy is what a consumer that does not retain the payload does.
+    /// <summary>
+    /// Drains the reader, copying each owned payload's bytes out and disposing the owner inside the loop — the
+    /// per-message release the class documents.
+    /// </summary>
+    /// <remarks>
+    /// The copy is what a consumer that does not retain the payload does.
+    /// </remarks>
     private async Task<List<byte[]>> ReadAllOwned(OwnedMessageChannelReader<IMemoryOwner<byte>> reader)
     {
         var received = new List<byte[]>();

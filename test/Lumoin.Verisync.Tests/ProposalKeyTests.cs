@@ -12,9 +12,11 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class ProposalKeyTests
 {
-    //Identities are built from fixed bytes rather than generated, so A sorts below B by ReplicaId's
-    //lexicographic byte order and the direction of every tie-break is a property of the test rather than of
-    //the run.
+    /// <summary>
+    /// Identities are built from fixed bytes rather than generated, so A sorts below B by ReplicaId's
+    /// lexicographic byte order and the direction of every tie-break is a property of the test rather than of
+    /// the run.
+    /// </summary>
     private static ReplicaId ReplicaA { get; } = Replica(1);
     private static ReplicaId ReplicaB { get; } = Replica(2);
 

@@ -82,9 +82,11 @@ internal sealed class QuePaxaEnvelopeJsonTests
     }
 
 
-    //The identity a writer counts its quorum over distinct members with cannot be optional: an omitted slot
-    //would decode into the all-zero replica, which is an identity a deployment may legitimately hold, so the
-    //check would pass for whichever member happened to carry it and silently fail for the rest.
+    /// <summary>
+    /// The identity a writer counts its quorum over distinct members with cannot be optional: an omitted slot
+    /// would decode into the all-zero replica, which is an identity a deployment may legitimately hold, so the
+    /// check would pass for whichever member happened to carry it and silently fail for the rest.
+    /// </summary>
     [TestMethod]
     public void AReplyMissingItsRecorderIsRefusedByName()
     {
@@ -104,7 +106,9 @@ internal sealed class QuePaxaEnvelopeJsonTests
     }
 
 
-    //A narrowed accessor overflows on the top of the range, and no other vector uses a version that large.
+    /// <summary>
+    /// A narrowed accessor overflows on the top of the range, and no other vector uses a version that large.
+    /// </summary>
     [TestMethod]
     public void TheTopOfTheVersionRangeAndTheValueBelowItBothRoundTrip()
     {
@@ -162,7 +166,9 @@ internal sealed class QuePaxaEnvelopeJsonTests
     }
 
 
-    //Nothing else in the suite would notice the enveloped and standalone encodings drifting apart.
+    /// <summary>
+    /// Nothing else in the suite would notice the enveloped and standalone encodings drifting apart.
+    /// </summary>
     [TestMethod]
     public void TheEnvelopeCarriesTheStandaloneEncodingUnchanged()
     {
@@ -176,7 +182,9 @@ internal sealed class QuePaxaEnvelopeJsonTests
     }
 
 
-    //The two versions differ so that readers crossed between the depths cannot pass.
+    /// <summary>
+    /// The two versions differ so that readers crossed between the depths cannot pass.
+    /// </summary>
     [TestMethod]
     public void TheComposedEncodingIsPinned()
     {
@@ -197,7 +205,9 @@ internal sealed class QuePaxaEnvelopeJsonTests
     }
 
 
-    //A register's leader claims the reserved priority, and comparing the whole proposal catches a dropped writer.
+    /// <summary>
+    /// A register's leader claims the reserved priority, and comparing the whole proposal catches a dropped writer.
+    /// </summary>
     [TestMethod]
     public void TheDecidedRecordRoundTripsInsideAProposal()
     {

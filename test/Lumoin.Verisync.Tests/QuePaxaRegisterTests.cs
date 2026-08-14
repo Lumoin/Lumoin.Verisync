@@ -12,7 +12,9 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class QuePaxaRegisterTests
 {
-    //Identities from fixed bytes: no test below may depend on which way a generated pair happened to sort.
+    /// <summary>
+    /// Identities from fixed bytes: no test below may depend on which way a generated pair happened to sort.
+    /// </summary>
     private static ProposerLane LaneA { get; } = ProposerLane.For(Replica(1));
     private static ProposerLane LaneB { get; } = ProposerLane.For(Replica(2));
 
@@ -312,8 +314,10 @@ internal sealed class QuePaxaRegisterTests
     }
 
 
-    //Xorshift64 rather than the cryptographic source: every priority in these tests is reproducible from its
-    //seed, so a failing run replays the identical draws.
+    /// <summary>
+    /// Xorshift64 rather than the cryptographic source: every priority in these tests is reproducible from its
+    /// seed, so a failing run replays the identical draws.
+    /// </summary>
     private sealed class SeededPrioritySource
     {
         private ulong state;

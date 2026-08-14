@@ -12,19 +12,26 @@ namespace Lumoin.Verisync.Tests;
 [TestClass]
 internal sealed class RecordMessageTests
 {
-    //Identities from fixed bytes, so no assertion below depends on which way a generated pair happened to
-    //sort.
+    /// <summary>
+    /// Identities from fixed bytes, so no assertion below depends on which way a generated pair happened to
+    /// sort.
+    /// </summary>
     private static ProposerLane LaneA { get; } = ProposerLane.For(Replica(1));
     private static ProposerLane LaneB { get; } = ProposerLane.For(Replica(2));
 
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
 
 
-    //THE REQUEST IS THE WIRE BOUNDARY, so it refuses the three shapes a decoder can produce and the core
-    //cannot represent. A null proposal has no protocol meaning at all; a step below round one phase zero is
-    //the only illegal step the step type itself cannot refuse, and refusing it here is what lets the node
-    //trust its input; and the absent priority is the aggregate fold's identity, which is never drawn and
-    //never sent, so a request carrying it would put the identity element on the wire.
+    /// <summary>
+    /// THE REQUEST IS THE WIRE BOUNDARY, so it refuses the three shapes a decoder can produce and the core
+    /// cannot represent.
+    /// </summary>
+    /// <remarks>
+    /// A null proposal has no protocol meaning at all; a step below round one phase zero is the only illegal
+    /// step the step type itself cannot refuse, and refusing it here is what lets the node trust its input;
+    /// and the absent priority is the aggregate fold's identity, which is never drawn and never sent, so a
+    /// request carrying it would put the identity element on the wire.
+    /// </remarks>
     [TestMethod]
     public void ARequestRefusesANullProposalAStepBelowTheFirstStepAndTheAbsentPriority()
     {
@@ -40,8 +47,10 @@ internal sealed class RecordMessageTests
     }
 
 
-    //THE BOUNDARY IS INCLUSIVE. Round one phase zero is the protocol's first step and the one at which the
-    //reserved priority means anything, so a floor that refused it would refuse the fast path itself.
+    /// <summary>
+    /// THE BOUNDARY IS INCLUSIVE. Round one phase zero is the protocol's first step and the one at which the
+    /// reserved priority means anything, so a floor that refused it would refuse the fast path itself.
+    /// </summary>
     [TestMethod]
     public void ARequestAcceptsTheFirstStepExactly()
     {
@@ -52,12 +61,17 @@ internal sealed class RecordMessageTests
     }
 
 
-    //A RESERVED PRIORITY ABOVE THE FIRST STEP IS LEGAL AND MUST NOT BE VALIDATED AWAY. It looks wrong and is
-    //not: when the fast path fails, the phase-zero template becomes the best of the first proposals, which
-    //may be the leader's own reserved-priority proposal, and phases one to three then send that template
-    //untouched. The model does exactly this, assigning the proposal for a recorder from the template
-    //whenever the send does not randomize. A validator refusing it would deadlock the protocol on its own
-    //most common contended path, which is why this test exists rather than the check.
+    /// <summary>
+    /// A RESERVED PRIORITY ABOVE THE FIRST STEP IS LEGAL AND MUST NOT BE VALIDATED AWAY. It looks wrong and is
+    /// not: when the fast path fails, the phase-zero template becomes the best of the first proposals, which
+    /// may be the leader's own reserved-priority proposal, and phases one to three then send that template
+    /// untouched.
+    /// </summary>
+    /// <remarks>
+    /// The model does exactly this, assigning the proposal for a recorder from the template whenever the send
+    /// does not randomize. A validator refusing it would deadlock the protocol on its own most common
+    /// contended path, which is why this test exists rather than the check.
+    /// </remarks>
     [TestMethod]
     public void ARequestAcceptsAReservedPriorityAboveTheFirstStep()
     {
@@ -69,10 +83,12 @@ internal sealed class RecordMessageTests
     }
 
 
-    //A WITH EXPRESSION REVALIDATES. A positional record's primary-constructor assignment writes the backing
-    //field directly and no accessor runs for it, so validation stated only in the constructor would be
-    //bypassed by every copy; the validating init accessor is what makes the refusal a property of the type
-    //rather than of one construction site.
+    /// <summary>
+    /// A WITH EXPRESSION REVALIDATES. A positional record's primary-constructor assignment writes the backing
+    /// field directly and no accessor runs for it, so validation stated only in the constructor would be
+    /// bypassed by every copy; the validating init accessor is what makes the refusal a property of the type
+    /// rather than of one construction site.
+    /// </summary>
     [TestMethod]
     public void ARequestRevalidatesUnderAWithExpression()
     {
@@ -90,12 +106,17 @@ internal sealed class RecordMessageTests
     }
 
 
-    //THE REPLY'S FIRST PROPOSAL IS NON-NULLABLE AND ITS STEP HAS THE SAME FLOOR AS THE REQUEST'S. The state a
-    //nullable first would represent is unreachable through a node: the recorder refuses any step below round
-    //one phase zero, an initial register sits at step zero, so the first request a recorder ever takes lands
-    //on the advancing branch and sets the first proposal. Validating it at the message boundary is what keeps
-    //the conclusion's own null check a backstop rather than a live path, because a malformed reply would
-    //otherwise abort a proposal with an exception documented as meaning the register state is corrupt.
+    /// <summary>
+    /// THE REPLY'S FIRST PROPOSAL IS NON-NULLABLE AND ITS STEP HAS THE SAME FLOOR AS THE REQUEST'S. The state a
+    /// nullable first would represent is unreachable through a node: the recorder refuses any step below round
+    /// one phase zero, an initial register sits at step zero, so the first request a recorder ever takes lands
+    /// on the advancing branch and sets the first proposal.
+    /// </summary>
+    /// <remarks>
+    /// Validating it at the message boundary is what keeps the conclusion's own null check a backstop rather
+    /// than a live path, because a malformed reply would otherwise abort a proposal with an exception
+    /// documented as meaning the register state is corrupt.
+    /// </remarks>
     [TestMethod]
     public void AReplyRefusesANullFirstProposalAndAStepBelowTheFirstStep()
     {
@@ -125,9 +146,11 @@ internal sealed class RecordMessageTests
     }
 
 
-    //THE ABSENT PRIOR AGGREGATE IS THE SKIPPED-STEP CASE and is a legal reply rather than a degenerate one: a
-    //recorder that advanced by more than one never gathered the intervening aggregate, so carrying a value
-    //from it would hand a proposer something no quorum served.
+    /// <summary>
+    /// THE ABSENT PRIOR AGGREGATE IS THE SKIPPED-STEP CASE and is a legal reply rather than a degenerate one: a
+    /// recorder that advanced by more than one never gathered the intervening aggregate, so carrying a value
+    /// from it would hand a proposer something no quorum served.
+    /// </summary>
     [TestMethod]
     public void AReplyRoundTripsItsThreeFieldsWithAnAbsentPriorAggregate()
     {
@@ -142,9 +165,11 @@ internal sealed class RecordMessageTests
     }
 
 
-    //EQUALITY IS BY VALUE ON BOTH MESSAGES, which the codec slice relies on for its round-trip tests and
-    //which the re-send rule relies on for its own: a re-delivery is permitted exactly when it is identical,
-    //and identical is decided by record equality including the proposal's priority.
+    /// <summary>
+    /// EQUALITY IS BY VALUE ON BOTH MESSAGES, which the codec slice relies on for its round-trip tests and
+    /// which the re-send rule relies on for its own: a re-delivery is permitted exactly when it is identical,
+    /// and identical is decided by record equality including the proposal's priority.
+    /// </summary>
     [TestMethod]
     public void EqualityOnBothMessagesIsByValueAndSeparatesTheDrawnPriority()
     {

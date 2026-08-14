@@ -28,12 +28,16 @@ internal sealed class AntiEntropySessionTests
 
     private const int BatchSize = 4;
 
-    //A remove-aware session needs a non-null local context; the empty clock is the simplest one that turns the
-    //completion-frame dispatch arms on for the guard tests below.
+    /// <summary>
+    /// A remove-aware session needs a non-null local context; the empty clock is the simplest one that turns the
+    /// completion-frame dispatch arms on for the guard tests below.
+    /// </summary>
     private static VectorClockState EmptyContext { get; } = VectorClock.Empty.ToState();
 
-    //A representative peer context the guard tests feed a responder before its done signal, so the fold seam has
-    //a held context to draw on when a verified completion lands.
+    /// <summary>
+    /// A representative peer context the guard tests feed a responder before its done signal, so the fold seam has
+    /// a held context to draw on when a verified completion lands.
+    /// </summary>
     private static VectorClockState SamplePeerContext { get; } = VectorClock.Empty.Increment(Replica(1)).ToState();
 
     private static ServeReconciliationFetchDelegate<string> ServeNothing { get; } = _ => [];
@@ -929,8 +933,10 @@ internal sealed class AntiEntropySessionTests
     }
 
 
-    //Paces the responder while awaiting a run task expected to fault; the trigger loop keeps the symbol stream
-    //flowing so the choreography reaches the faulting message, and stops the moment that run completes.
+    /// <summary>
+    /// Paces the responder while awaiting a run task expected to fault; the trigger loop keeps the symbol stream
+    /// flowing so the choreography reaches the faulting message, and stops the moment that run completes.
+    /// </summary>
     private static async Task PaceFaultAsync(Task faultingRun, AntiEntropySession<string> initiator, AntiEntropySession<string> responder, CancellationToken cancellationToken)
     {
         int triggers = 0;

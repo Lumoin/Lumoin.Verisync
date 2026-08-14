@@ -67,8 +67,13 @@ internal sealed class FastCasPaxosRegisterTests
     }
 
 
-    //The count a caller compares against the fast quorum must be a count of distinct acceptors. Four of five
-    //is a fast quorum here, so a repeat that was folded in rather than refused would manufacture one.
+    /// <summary>
+    /// The count a caller compares against the fast quorum must be a count of distinct acceptors.
+    /// </summary>
+    /// <remarks>
+    /// Four of five is a fast quorum here, so a repeat that was folded in rather than refused would
+    /// manufacture one.
+    /// </remarks>
     [TestMethod]
     public void ThreeDistinctAcceptorsCannotReportAFastQuorum()
     {

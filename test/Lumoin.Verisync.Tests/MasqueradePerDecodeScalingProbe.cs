@@ -31,17 +31,23 @@ internal sealed class MasqueradePerDecodeScalingProbe
     public TestContext TestContext { get; set; } = null!;
 
 
-    //Structural items, 8 bytes wide, a width-1 checksum: the sanctioned adversarial-test width where a
-    //degree-two cell masquerades with per-candidate probability 2^-8, under the well-known (unkeyed) key
-    //so random collisions occur naturally rather than being brute-forced.
+    /// <summary>
+    /// Structural items, 8 bytes wide, a width-1 checksum: the sanctioned adversarial-test width where a
+    /// degree-two cell masquerades with per-candidate probability 2^-8, under the well-known (unkeyed) key
+    /// so random collisions occur naturally rather than being brute-forced.
+    /// </summary>
     private static ReconciliationContract WeakContract { get; } =
         ReconciliationContract.ForAdversarialTesting(ReconciliationItemDomain.Structural, 8, 1, ReconciliationContract.WellKnownChecksumKeyLow, ReconciliationContract.WellKnownChecksumKeyHigh);
 
-    //The difference sizes swept; d = 1 is the control (no degree-two cell can arise, so no masquerade).
+    /// <summary>
+    /// The difference sizes swept; d = 1 is the control (no degree-two cell can arise, so no masquerade).
+    /// </summary>
     private static int[] DifferenceSizes { get; } = [1, 2, 4, 8, 16, 32];
 
-    //Independent decodes per size, each over a distinct disjoint item range so the sweep is a Monte-Carlo
-    //over which sets happen to carry a masquerade; fully deterministic (no System.Random).
+    /// <summary>
+    /// Independent decodes per size, each over a distinct disjoint item range so the sweep is a Monte-Carlo
+    /// over which sets happen to carry a masquerade; fully deterministic (no System.Random).
+    /// </summary>
     private const int TrialsPerSize = 250;
 
     private const double PerCandidateBound = 1.0 / 256.0;
@@ -109,9 +115,11 @@ internal sealed class MasqueradePerDecodeScalingProbe
     }
 
 
-    //Encodes a size-d difference (d distinct items present on one side, none on the other), decodes it
-    //to the completion cap, and reports whether any decoded item is NOT a true difference item (a
-    //per-decode false-accept) and whether the decode reported completion.
+    /// <summary>
+    /// Encodes a size-d difference (d distinct items present on one side, none on the other), decodes it
+    /// to the completion cap, and reports whether any decoded item is NOT a true difference item (a
+    /// per-decode false-accept) and whether the decode reported completion.
+    /// </summary>
     private static (bool SawPhantom, bool Completed) DecodeOnce(int d, long trialBase)
     {
         var truth = new HashSet<string>(d);

@@ -74,11 +74,15 @@ internal sealed class LogCommitmentJsonTests
     }
 
 
-    //THE ENTRY INDICES ARE UNSIGNED SIXTY-FOUR AND THE TOP OF THAT RANGE IS ABOVE TWO TO THE FIFTY-THIRD, so a
-    //reader that parsed JSON numbers as doubles would lose them. The pin needs BOTH the maximum and the value
-    //one below it: a double round-trips the maximum intact, because the double saturates back to it, and only
-    //the value one below collapses onto it. A single-value pin would therefore be green against the very
-    //defect it exists to rule out.
+    /// <summary>
+    /// THE ENTRY INDICES ARE UNSIGNED SIXTY-FOUR AND THE TOP OF THAT RANGE IS ABOVE TWO TO THE FIFTY-THIRD, so a
+    /// reader that parsed JSON numbers as doubles would lose them.
+    /// </summary>
+    /// <remarks>
+    /// The pin needs BOTH the maximum and the value one below it: a double round-trips the maximum intact,
+    /// because the double saturates back to it, and only the value one below collapses onto it. A single-value
+    /// pin would therefore be green against the very defect it exists to rule out.
+    /// </remarks>
     [TestMethod]
     public void EntryIndicesAtTheTopOfTheRangeRoundTripExactly()
     {

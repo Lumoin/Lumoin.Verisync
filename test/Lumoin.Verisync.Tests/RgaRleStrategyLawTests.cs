@@ -26,7 +26,10 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     protected override SequenceCrdtContext<Rga<int>, int, Dot> Context { get; } = WellKnownSequenceStrategies.CreateRgaRle<int>();
 
 
-    //The sentinel sits outside every generator's value range (per-replica prefix and suffix ranges, all non-negative).
+    /// <summary>
+    /// The sentinel sits outside every generator's value range (per-replica prefix and suffix ranges, all
+    /// non-negative).
+    /// </summary>
     protected override int FreshValue => -1;
 
 
@@ -68,7 +71,9 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     protected override Gen<(Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)>? GenCommutationCase => GenCase;
 
 
-    //LAW-NFD: an op history of inserts and dotted removes over an empty Rga with a strict prefix cut.
+    /// <summary>
+    /// LAW-NFD: an op history of inserts and dotted removes over an empty Rga with a strict prefix cut.
+    /// </summary>
     protected override Gen<(Rga<int> Full, Rga<int> Behind)> GenFullAndBehindHistory { get; } =
         Gen.Select(
             Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 8],
@@ -81,9 +86,11 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
             }).Where(static pair => !pair.Full.Equals(pair.Behind));
 
 
-    //The drop-only remove scenario for LAW-NR/LAW-SR: R1 inserts a survivor then a childless element and
-    //removes the element; compacting at the certified frontier drops it, leaving the survivor live, so the
-    //compacted state legally merges with the uncompacted ghost-holder and stale operands.
+    /// <summary>
+    /// The drop-only remove scenario for LAW-NR/LAW-SR: R1 inserts a survivor then a childless element and
+    /// removes the element; compacting at the certified frontier drops it, leaving the survivor live, so the
+    /// compacted state legally merges with the uncompacted ghost-holder and stale operands.
+    /// </summary>
     protected override RemoveScenario? BuildRemoveScenario()
     {
         (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
@@ -100,8 +107,10 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     }
 
 
-    //The RGA-shaped half of LAW-RG: at the uncertified frontier the ghost is kept in place, so the removed
-    //dot translates to itself; at the certified frontier it re-anchors to the survivor.
+    /// <summary>
+    /// The RGA-shaped half of LAW-RG: at the uncertified frontier the ghost is kept in place, so the removed
+    /// dot translates to itself; at the certified frontier it re-anchors to the survivor.
+    /// </summary>
     protected override void AssertRemoveConversionOutcome(
         Rga<int> uncertifiedCompacted,
         Rga<int> certifiedCompacted,
@@ -115,12 +124,17 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     }
 
 
-    //The shared-prefix ops, the frontier cut, and the two divergent insert-and-remove suffixes all come from
-    //CsCheck seeds, so the whole case is deterministic and reproduces on shrink. Every case drops a vertex
-    //when the merged operands compact at the shared frontier: the builder seeds a survivor and a certified
-    //childless tombstone (pinned by TheSeededCaseReachesTheDropRegionByConstruction), since unfiltered
-    //random histories reach the drop region only a few percent of the time — too sparse for a rejection
-    //filter. The Where is a backstop on the construction, never a working filter.
+    /// <summary>
+    /// The shared-prefix ops, the frontier cut, and the two divergent insert-and-remove suffixes all come from
+    /// CsCheck seeds, so the whole case is deterministic and reproduces on shrink.
+    /// </summary>
+    /// <remarks>
+    /// Every case drops a vertex when the merged operands compact at the shared frontier: the builder seeds a
+    /// survivor and a certified childless tombstone (pinned by
+    /// TheSeededCaseReachesTheDropRegionByConstruction), since unfiltered random histories reach the drop
+    /// region only a few percent of the time — too sparse for a rejection filter. The Where is a backstop on
+    /// the construction, never a working filter.
+    /// </remarks>
     private static Gen<(Rga<int> A, Rga<int> B, VectorClock Frontier, ImmutableArray<SequenceCheckpointEntry<int>> Checkpoint)> GenCase { get; } =
         Gen.Select(
             Gen.Select(Gen.Int[0, 2], Gen.Int[0, 100], static (replica, seed) => (Replica: replica, Seed: seed)).Array[0, 6],
@@ -370,8 +384,10 @@ internal sealed class RgaRleStrategyLawTests: SequenceStrategyLawTests<Rga<int>,
     }
 
 
-    //Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect
-    //the element-wise minimum but keep the digests honest.
+    /// <summary>
+    /// Folds the shipped min-fold over one gossip digest per member context; distinct origins do not affect the
+    /// element-wise minimum but keep the digests honest.
+    /// </summary>
     private static VectorClock FrontierOf(params VectorClock[] memberContexts)
     {
         var digests = new List<GossipDigest>(memberContexts.Length);
