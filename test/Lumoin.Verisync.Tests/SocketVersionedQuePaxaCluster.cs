@@ -1,6 +1,7 @@
 using Lumoin.Verisync.Core;
 using Lumoin.Verisync.Json;
 using System.Buffers;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.IO.Pipelines;
 using System.Net;
@@ -31,8 +32,9 @@ namespace Lumoin.Verisync.Tests;
 /// </para>
 /// <para>
 /// Dissemination is explicit here because it is explicit in a deployment. A host learns a committed record
-/// only when a test calls <see cref="LearnAtAsync"/> or <see cref="LearnAllAsync"/>, which is what lets a
-/// test hold hosts back and watch a write fail to gather a quorum.
+/// only when a test calls <see cref="LearnAtAsync"/> or <see cref="LearnAllAsync"/>, or wires
+/// <see cref="PublishAsync"/> as a register's publish so the record crosses the wire into the host's own
+/// receive leg, which is what lets a test hold hosts back and watch a write fail to gather a quorum.
 /// </para>
 /// <para>
 /// An observation a serve loop writes is complete only after <see cref="DrainAsync"/>, unless the test can
@@ -53,16 +55,19 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 {
     private const byte RecordKind = 0;
     private const byte ReadKind = 1;
+    private const byte LearnKind = 2;
 
     private static byte[] JsonNull { get; } = "null"u8.ToArray();
+    private static byte[] JsonTrue { get; } = "true"u8.ToArray();
+    private static byte[] JsonFalse { get; } = "false"u8.ToArray();
 
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The channels, gates and enumerators built here are held in this instance's arrays and disposed by DisposeAsync.")]
     private SocketVersionedQuePaxaCluster(
         QuePaxaLeaderSchedule schedule,
         QuePaxaConfiguration? genesis,
-        Action<Utf8JsonWriter, TValue> writeValue,
-        Func<JsonElement, TValue> readValue,
+        WriteValueDelegate<Utf8JsonWriter, TValue> writeValue,
+        ReadValueDelegate<JsonElement, TValue> readValue,
         VersionedValue<TValue>? committed,
         TamperReplyPayloadDelegate? tamperReplyPayload,
         PersistVersionedNodeDelegate<TValue>[]? persistNodes,
@@ -88,6 +93,7 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         ReplyDeserialize = QuePaxaMessageJson.CreateVersionedReplyDeserializer(ReadRecordValue);
 
         Runners = new QuePaxaVersionedRunner<TValue>[hostCount];
+        Receives = new ReceiveCommittedRecordDelegate<TValue>[hostCount];
         RunTasks = new Task[hostCount];
         ServingTasks = new Task[hostCount];
         RequestWriters = new MessageChannelWriter<CorrelatedFrame>[hostCount];
@@ -98,11 +104,16 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         NextIds = new int[hostCount];
         Partitioned = new bool[hostCount];
         ServedCounts = new int[hostCount];
+        DisseminatedCounts = new int[hostCount];
         SentCounts = new int[hostCount];
 
         for(int index = 0; index < hostCount; index++)
         {
             Runners[index] = new QuePaxaVersionedRunner<TValue>(new QuePaxaVersionedNode<TValue>(Genesis, schedule.Schedule.Order[index], committed));
+
+            //The assignment is the conversion the runner's contract names: LearnAsync is this host's
+            //ReceiveCommittedRecordDelegate, and the serve loop offers every wire-borne record through it.
+            Receives[index] = Runners[index].LearnAsync;
             RunTasks[index] = Runners[index].RunAsync(persistNodes is null ? null : persistNodes[index], cancellationToken);
         }
 
@@ -152,6 +163,22 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
             lock(Observations)
             {
                 return (int[])ServedCounts.Clone();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The number of learn offers each host answered over the wire. The count is settled without a drain for
+    /// any offer whose publish was awaited, because each increment happens before that offer's answer leaves
+    /// the host.
+    /// </summary>
+    public IReadOnlyList<int> Disseminated
+    {
+        get
+        {
+            lock(Observations)
+            {
+                return (int[])DisseminatedCounts.Clone();
             }
         }
     }
@@ -239,6 +266,8 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
     private QuePaxaVersionedRunner<TValue>[] Runners { get; }
 
+    private ReceiveCommittedRecordDelegate<TValue>[] Receives { get; }
+
     private Task[] RunTasks { get; }
 
     private Task[] ServingTasks { get; }
@@ -267,6 +296,8 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
     private int[] ServedCounts { get; }
 
+    private int[] DisseminatedCounts { get; }
+
     private int[] SentCounts { get; }
 
     private int DecodedReplyCount { get; set; }
@@ -279,9 +310,9 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
     private TamperReplyPayloadDelegate? TamperReplyPayload { get; }
 
-    private Action<Utf8JsonWriter, VersionedValue<TValue>> WriteRecordValue { get; }
+    private WriteValueDelegate<Utf8JsonWriter, VersionedValue<TValue>> WriteRecordValue { get; }
 
-    private Func<JsonElement, VersionedValue<TValue>> ReadRecordValue { get; }
+    private ReadValueDelegate<JsonElement, VersionedValue<TValue>> ReadRecordValue { get; }
 
     private SerializeMessageDelegate<VersionedRecordRequest<VersionedValue<TValue>>> RequestSerialize { get; }
 
@@ -322,8 +353,8 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     public static async Task<SocketVersionedQuePaxaCluster<TValue>> ConnectAsync(
         QuePaxaLeaderSchedule schedule,
         int hostCount,
-        Action<Utf8JsonWriter, TValue> writeValue,
-        Func<JsonElement, TValue> readValue,
+        WriteValueDelegate<Utf8JsonWriter, TValue> writeValue,
+        ReadValueDelegate<JsonElement, TValue> readValue,
         CancellationToken cancellationToken,
         VersionedValue<TValue>? committed = null,
         TamperReplyPayloadDelegate? tamperReplyPayload = null,
@@ -451,6 +482,46 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         for(int index = 0; index < Runners.Length; index++)
         {
             _ = await LearnAtAsync(index, committed, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+
+    /// <summary>
+    /// Offers a committed record to its audience over each member's own connection, which is this cluster's
+    /// wire-crossing <see cref="PublishCommittedRecordDelegate{TValue}"/> by method-group conversion.
+    /// </summary>
+    /// <param name="committed">The decided record.</param>
+    /// <param name="audience">The hosts to offer it to.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A task that completes once every member of the audience has answered or failed.</returns>
+    /// <remarks>
+    /// The receiving end is a <see cref="ReceiveCommittedRecordDelegate{TValue}"/> served behind the same
+    /// connection the record exchanges use, and this sender names <see cref="LearnDurability.Durable"/> for
+    /// every offer, as <see cref="LearnAtAsync"/> does. A member the offer cannot reach is skipped rather
+    /// than failing the rest, because an unreachable host is that host's unavailability and the publish
+    /// contract owes the caller nothing for it. <see cref="LearnAllAsync"/> stays the in-process push a
+    /// scenario uses when the wire is not its subject.
+    /// </remarks>
+    public async ValueTask PublishAsync(VersionedValue<TValue> committed, ImmutableArray<ReplicaId> audience, CancellationToken cancellationToken)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using(var writer = new Utf8JsonWriter(buffer))
+        {
+            WriteRecordValue(writer, committed);
+        }
+
+        byte[] payload = buffer.WrittenSpan.ToArray();
+        foreach(ReplicaId member in audience)
+        {
+            try
+            {
+                _ = await ExchangeAsync(IndexOf(member), LearnKind, payload, cancellationToken).ConfigureAwait(false);
+            }
+            catch(IOException)
+            {
+                //A member the offer cannot reach is that host's unavailability, and the next member is still
+                //owed its offer.
+            }
         }
     }
 
@@ -796,9 +867,12 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
             CorrelatedFrame response;
             try
             {
-                response = frame.Kind == ReadKind
-                    ? await ServeReadAsync(host, frame, cancellationToken).ConfigureAwait(false)
-                    : await ServeRecordAsync(host, frame, cancellationToken).ConfigureAwait(false);
+                response = frame.Kind switch
+                {
+                    ReadKind => await ServeReadAsync(host, frame, cancellationToken).ConfigureAwait(false),
+                    LearnKind => await ServeLearnAsync(host, frame, cancellationToken).ConfigureAwait(false),
+                    _ => await ServeRecordAsync(host, frame, cancellationToken).ConfigureAwait(false),
+                };
             }
             catch(Exception)
             {
@@ -875,6 +949,24 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     }
 
 
+    private async Task<CorrelatedFrame> ServeLearnAsync(int host, CorrelatedFrame frame, CancellationToken cancellationToken)
+    {
+        using JsonDocument document = JsonDocument.Parse(frame.Payload!);
+        VersionedValue<TValue> committed = ReadRecordValue(document.RootElement);
+
+        //The arrival is counted before the host is offered the record and the count leaves with the answer,
+        //so a publisher that awaited its offers reads a settled count without a drain.
+        lock(Observations)
+        {
+            DisseminatedCounts[host]++;
+        }
+
+        bool adopted = await Receives[host](committed, LearnDurability.Durable, cancellationToken).ConfigureAwait(false);
+
+        return new CorrelatedFrame(frame.Id, LearnKind, adopted ? JsonTrue : JsonFalse);
+    }
+
+
     private static void WriteFrame(CorrelatedFrame frame, IBufferWriter<byte> destination)
     {
         using var writer = new Utf8JsonWriter(destination);
@@ -910,7 +1002,8 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
 
     /// <summary>
-    /// One framed call or answer. The kind tells a record exchange from a catch-up read, and an absent
+    /// One framed call or answer. The kind tells a record exchange from a catch-up read and from a learn
+    /// offer, and an absent
     /// payload is the opaque fault an answer carries when the host could not serve the call.
     /// </summary>
     private sealed record CorrelatedFrame(int Id, byte Kind, byte[]? Payload);

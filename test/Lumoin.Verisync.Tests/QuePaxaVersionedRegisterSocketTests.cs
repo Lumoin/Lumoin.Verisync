@@ -26,7 +26,9 @@ namespace Lumoin.Verisync.Tests;
 /// nothing and the member whose endpoints fault are one report apart and cannot be told apart by any reading
 /// of the protocol. The in-memory bench separates behind from reachable by holding a host's dissemination
 /// while it answers everything; this one cuts the route to a host that answers everything, which is the same
-/// separation from the other side.
+/// separation from the other side. The wire-crossing dissemination scenario is native for the same shape of
+/// reason: its subject is the receive leg itself — a committed record crossing the wire into a host's own
+/// learn — which every in-process push deliberately shortcuts.
 /// </para>
 /// <para>
 /// Staying in process by design are the law suites, <see cref="QuePaxaAgreementLawTests"/>,
@@ -105,6 +107,41 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
             {
                 Assert.IsGreaterThan(0, cluster.Served[host], $"Host {host} served nothing across three committed versions.");
             }
+        }
+        finally
+        {
+            await cluster.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+
+    //The publish delegate here is the cluster's wire push, so the record crosses the wire into each host's
+    //own receive leg rather than being handed to the runners in process: the leg every socketed deployment
+    //wires is the subject, not a shortcut past it.
+    [TestMethod]
+    public async Task ADisseminatedRecordCrossesTheWireAndOpensTheNextVersion()
+    {
+        SocketVersionedQuePaxaCluster<string> cluster = await ConnectAsync(Schedule()).ConfigureAwait(false);
+        try
+        {
+            QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: cluster.PublishAsync);
+
+            QuePaxaWriteOutcome<string> first = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(QuePaxaWriteStatus.Committed, first.Status);
+
+            //The offers were awaited before the write returned, so the count is settled without a drain: each
+            //increment happens before its answer leaves the host, and every answer was received before the
+            //publish completed. An ordinary decide's audience is the deciding membership, so all three were
+            //owed an offer.
+            Assert.AreEqual(HostCount, cluster.Disseminated.Sum(), "The first decide was not offered to every member over the wire.");
+
+            //A quorum can serve the next version only where the previous record arrived, so this commit is
+            //the proof the wire-borne offers were adopted and not merely answered.
+            QuePaxaWriteOutcome<string> second = await register.TryWriteAsync("b", TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(QuePaxaWriteStatus.Committed, second.Status);
+            Assert.AreEqual(new RegisterVersion(2UL), second.Version);
         }
         finally
         {

@@ -144,6 +144,11 @@ public sealed class QuePaxaVersionedRunner<TValue>
     /// <exception cref="ChannelClosedException">Thrown through the returned task when no further work is accepted after <see cref="Complete"/> or after the loop has ended.</exception>
     /// <remarks>
     /// <para>
+    /// This method is a <see cref="ReceiveCommittedRecordDelegate{TValue}"/> by method-group conversion:
+    /// assign it where that delegate is expected, which is the receiving end a
+    /// <see cref="PublishCommittedRecordDelegate{TValue}"/> implementation delivers into.
+    /// </para>
+    /// <para>
     /// Under <see cref="LearnDurability.InMemory"/> what the learn changes becomes durable with the first
     /// reply that depends on it or with <see cref="MakeDurableAsync"/>, which stays the caller-driven
     /// checkpoint. Under <see cref="LearnDurability.Durable"/> the host's state is made durable through

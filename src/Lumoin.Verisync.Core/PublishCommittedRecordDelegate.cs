@@ -42,6 +42,15 @@ namespace Lumoin.Verisync.Core;
 /// where only winners disseminate stalls when a winner fails between deciding and telling anyone.
 /// </para>
 /// <para>
+/// What one offer owes each audience host is that host's own learn, and the shape it invokes is
+/// <see cref="ReceiveCommittedRecordDelegate{TValue}"/>:
+/// <see cref="QuePaxaVersionedRunner{TValue}.LearnAsync"/> where a runner owns the host — a receive
+/// delegate by method-group conversion — and <see cref="QuePaxaVersionedNode{TValue}.Learn"/> wrapped where
+/// none does. A co-located <see cref="QuePaxaVersionedRegister{TValue}"/> may take the same record through
+/// its own <see cref="QuePaxaVersionedRegister{TValue}.Learn"/> to move its local belief sooner, and owes
+/// nothing: a register that was not told catches up through its own read and its own superseded attempts.
+/// </para>
+/// <para>
 /// A record is not verified by whoever receives it. The protocol assumes crash faults, and a deployment
 /// needing more owes its transport authentication.
 /// </para>
