@@ -439,6 +439,105 @@ internal sealed class QuePaxaVersionedNodeTests
 
 
     /// <summary>
+    /// The chain check at construction, which is the path a committed record enters a host by before that host
+    /// has adopted anything. The record is well formed in every other respect — a version with a successor, a
+    /// writer its member list carries, a member list this host appears in — so the chain arm is the only rule
+    /// that can refuse it, and the same record on this host's own chain constructs.
+    /// </summary>
+    /// <remarks>
+    /// The comparison is against the genesis and never against the membership the record names. A host being
+    /// constructed derives its active membership from that same record, so a rule reading the membership would
+    /// compare the record with itself and admit every foreign record there is. The restore makes the identical
+    /// comparison over a snapshot of the same record, and both are asserted here, because the two entry points
+    /// that take a record from outside the protocol owe one rule.
+    /// </remarks>
+    [TestMethod]
+    public void AHostConstructedWithAnotherChainsRecordIsRefusedExactlyAsARestoreIs()
+    {
+        //Same replicas in the same order, minted at a different genesis, so nothing about the member list can
+        //be what refuses this.
+        Assert.IsTrue(Configuration.Members.SequenceEqual(ForeignChain.Members));
+        Assert.AreNotEqual(Configuration.Cluster, ForeignChain.Cluster);
+
+        VersionedValue<string> foreign = Installing(4UL, Second, ForeignChain);
+
+        ArgumentException refused = Assert.ThrowsExactly<ArgumentException>(() => _ = new QuePaxaVersionedNode<string>(Configuration, First, foreign));
+
+        Assert.AreEqual("committed", refused.ParamName);
+        Assert.Contains("must name the chain this host was given", refused.Message);
+
+        //The chain identity is the only difference the refusal can have read: the same record under this host's
+        //own chain constructs, and the host it builds serves the version after it under its writer's lane.
+        QuePaxaVersionedNode<string> own = new(Configuration, First, Installing(4UL, Second, Configuration));
+
+        Assert.AreEqual(new RegisterVersion(5UL), own.LiveVersion);
+        Assert.AreEqual(ProposerLane.For(Second), own.Recorder.ConfiguredLeader);
+
+        //A host handed no record at all compares its genesis with itself, which is the derivation's base case
+        //rather than a second rule, so bootstrapping is untouched.
+        QuePaxaVersionedNode<string> bootstrap = new(Configuration, First);
+
+        Assert.AreEqual(Configuration, bootstrap.ActiveConfiguration);
+        Assert.AreEqual(RegisterVersion.First, bootstrap.LiveVersion);
+
+        //The restore refuses the same divergence over a snapshot of that same record, taken from the host whose
+        //own genesis is the foreign chain, so what separates the two calls is the genesis each was handed.
+        QuePaxaVersionedNodeState<string> state = new QuePaxaVersionedNode<string>(ForeignChain, First, foreign).ToState();
+
+        ArgumentException restored = Assert.ThrowsExactly<ArgumentException>(() => _ = QuePaxaVersionedNode<string>.FromState(Configuration, First, state));
+
+        Assert.AreEqual("state", restored.ParamName);
+        Assert.Contains("must name the chain this host was given", restored.Message);
+
+        //Each entry point accepts under the chain it was handed, so neither refusal is the record's own shape.
+        Assert.AreEqual(new RegisterVersion(5UL), QuePaxaVersionedNode<string>.FromState(ForeignChain, First, state).LiveVersion);
+    }
+
+
+    /// <summary>
+    /// Construction is membership-blind and the chain arm does not narrow that. A replica a change removed and
+    /// a joiner the genesis never listed are both constructed from a record whose membership differs from the
+    /// genesis membership, so the rule reads the chain identity and nothing else the configuration carries.
+    /// </summary>
+    /// <remarks>
+    /// Every record here reaches the comparison the chain arm makes — each names this host's own chain and none
+    /// is null — so a rule widened to the member list, or to whether this host appears in it, fails here rather
+    /// than passing unpinned. What being outside the membership costs a host is stated beside it: requests are
+    /// declined and construction is not, which is how a removed replica keeps running until its deployment
+    /// retires it and how a joiner starts before anything lists it.
+    /// </remarks>
+    [TestMethod]
+    public void AHostIsConstructedWithARecordWhoseMembershipDoesNotListIt()
+    {
+        //A replica the record removed: the membership moved off the genesis and no longer lists this host.
+        QuePaxaConfiguration without = Configuration.Without(First);
+        QuePaxaVersionedNode<string> removed = new(Configuration, First, Installing(4UL, Second, without));
+
+        Assert.AreEqual(Configuration.Cluster, removed.ActiveConfiguration.Cluster);
+        Assert.AreEqual(without, removed.ActiveConfiguration);
+        Assert.IsFalse(removed.ActiveConfiguration.Contains(First));
+        Assert.IsFalse(Configuration.Members.SequenceEqual(without.Members));
+        Assert.IsTrue(removed.Declines(Carrying(5UL, 5UL, without, ProposalPriority.Lowest, Second, "a")));
+
+        //A joiner: outside the genesis this deployment handed it, inside the membership its record installs,
+        //and serving from the first version that membership runs.
+        QuePaxaConfiguration grown = Configuration.With(Fourth);
+        QuePaxaVersionedNode<string> joiner = new(Configuration, Fourth, Installing(4UL, Second, grown));
+
+        Assert.IsFalse(Configuration.Contains(Fourth));
+        Assert.AreEqual(grown, joiner.ActiveConfiguration);
+        Assert.AreEqual(new RegisterVersion(5UL), joiner.Handle(Carrying(5UL, 5UL, grown, ProposalPriority.Lowest, Second, "a")).Version);
+
+        //A host no membership on this chain lists at any version, which the request filter refuses and
+        //construction does not.
+        QuePaxaVersionedNode<string> stranger = new(Configuration, Stranger, Record(4UL, Second));
+
+        Assert.IsFalse(stranger.ActiveConfiguration.Contains(Stranger));
+        Assert.IsTrue(stranger.Declines(Request(5UL, ProposalPriority.Lowest, Second, "a")));
+    }
+
+
+    /// <summary>
     /// The membership filter. A host a configuration change removed is outside the set a quorum for the live
     /// instance is counted over, so it refuses rather than answering as a recorder no arithmetic accounts for.
     /// Nothing else about the request differs from one this host serves.

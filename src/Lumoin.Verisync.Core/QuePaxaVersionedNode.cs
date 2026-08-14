@@ -49,11 +49,15 @@ namespace Lumoin.Verisync.Core;
 /// assumption that lets a recorder's own reply be believed.
 /// </para>
 /// <para>
-/// The chain is checked on every path a record arrives by, so <see cref="Learn"/> refuses another chain's
-/// record exactly as <see cref="Handle"/> and <see cref="FromState"/> do, and a publisher wired across two
-/// chains cannot install here what this chain never decided. Nothing else about the membership is read there:
-/// dissemination stays membership-blind, because a host that a change removed learns it is out from the
-/// record that removed it, and a joiner catches up from whoever holds the record.
+/// The chain is checked on every path a committed record enters a host by — construction,
+/// <see cref="FromState"/>, <see cref="Handle"/> and <see cref="Learn"/> — so a deployment wired across two
+/// chains cannot install here what this chain never decided, and <see cref="ActiveConfiguration"/> names
+/// <see cref="Genesis"/>'s chain in every state this host can reach. The two entry points that take a record
+/// from outside the protocol compare it against the genesis they were handed, because a host adopting its
+/// first record has no other statement of which chain it runs; the request and the learn compare against the
+/// active membership, whose chain identity is that same one. Nothing else about the membership is read at a
+/// learn: dissemination stays membership-blind, because a host that a change removed learns it is out from
+/// the record that removed it, and a joiner catches up from whoever holds the record.
 /// </para>
 /// <para>
 /// Restarting is this host's own operation and not the recorder's alone. <see cref="ToState"/> snapshots the
@@ -91,6 +95,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <param name="self">This host's own identity, which the membership filter reads against the active configuration.</param>
     /// <param name="committed">The committed record this host starts from, or <see langword="null"/> when it has learned none.</param>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="genesis"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">Thrown if <paramref name="committed"/>'s membership names a chain other than <paramref name="genesis"/>'s.</exception>
     /// <remarks>
     /// <para>
     /// The committed record is taken at construction rather than defaulted, as <see cref="QuePaxaNode{TValue}"/>
@@ -103,21 +108,38 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// supplies, and it is what <see cref="ActiveConfiguration"/> stands at until a record moves it.
     /// </para>
     /// <para>
-    /// This host's identity is not derived from the membership it was handed, because a host outside its own
-    /// active configuration is a state the protocol reaches: a replica removed by a configuration change keeps
-    /// running until its deployment retires it, and it must be able to say which replica it is in order to
-    /// notice.
+    /// The record's chain is compared against the genesis and never against the membership the record itself
+    /// names, which is the comparison <see cref="FromState"/> makes at a restore. Genesis is the only chain
+    /// identity a host being constructed holds: the membership it would otherwise be compared with is derived
+    /// from the very record under test, so the rule would compare that record with itself and refuse nothing.
+    /// A host handed a foreign record runs the foreign chain and then declines its own chain's records at
+    /// every path that does check, which is a deployment fault reported at the entry point rather than at the
+    /// first request. A host handed no record compares the genesis with itself and constructs, which is that
+    /// derivation's base case rather than a second rule.
+    /// </para>
+    /// <para>
+    /// Nothing else about the membership is read. A host constructed with a record whose membership does not
+    /// list it is exactly how a joiner and a removed replica start, and both are states the protocol reaches.
+    /// This host's identity is likewise not derived from the membership it was handed: a replica removed by a
+    /// configuration change keeps running until its deployment retires it, and it must be able to say which
+    /// replica it is in order to notice.
     /// </para>
     /// </remarks>
     public QuePaxaVersionedNode(QuePaxaConfiguration genesis, ReplicaId self, VersionedValue<TValue>? committed = null)
     {
         ArgumentNullException.ThrowIfNull(genesis);
 
+        QuePaxaConfiguration active = ConfigurationFor(committed, genesis);
+        if(!active.Cluster.Equals(genesis.Cluster))
+        {
+            throw new ArgumentException($"A committed record must name the chain this host was given, which is {genesis.Cluster}, and it names {active.Cluster}. A host started on another chain's record runs that chain and declines its own at every later path, so two independently bootstrapped chains lose progress rather than merging.", nameof(committed));
+        }
+
         Genesis = genesis;
         Self = self;
         Committed = committed;
-        ActiveConfiguration = ConfigurationFor(committed, genesis);
-        LeaderSchedule = ScheduleFor(ActiveConfiguration);
+        ActiveConfiguration = active;
+        LeaderSchedule = ScheduleFor(active);
         Instance = new QuePaxaNode<VersionedValue<TValue>>(LeaderSchedule.RecorderFor<VersionedValue<TValue>>(committed?.Writer));
         PersistedCommitted = committed;
         PersistedRecorder = Instance.Recorder;
@@ -509,10 +531,13 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <param name="carried">The record whose membership names the chain.</param>
     /// <returns><see langword="true"/> when the record's chain identity differs from this host's own.</returns>
     /// <remarks>
-    /// The one comparison every path a record arrives by reads, so the rule cannot hold at a request and not
-    /// at a learn. It compares the chain identity by value and nothing else about the membership, so two
-    /// configurations of one chain that list different members agree here and a configuration minted at
-    /// another genesis does not.
+    /// The one comparison the request path and the learn read, so the rule cannot hold at a request and not
+    /// at a learn. It reads <see cref="ActiveConfiguration"/>, which is what a host that has already adopted
+    /// this chain states its chain identity by; construction and <see cref="FromState"/> make the same
+    /// comparison against <see cref="Genesis"/>, because the record they are handed is the one the active
+    /// membership would be derived from. It compares the chain identity by value and nothing else about the
+    /// membership, so two configurations of one chain that list different members agree here and a
+    /// configuration minted at another genesis does not.
     /// </remarks>
     private bool NamesAnotherChain(VersionedValue<TValue> carried) => !carried.NextConfiguration.Cluster.Equals(ActiveConfiguration.Cluster);
 
