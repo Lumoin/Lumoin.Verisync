@@ -23,7 +23,7 @@ public static class CborChannelSerialization
     /// <param name="encode">Writes the message's fields to a <see cref="CborWriter"/>.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="encode"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<TMessage> CreateSerializer<TMessage>(Action<CborWriter, TMessage> encode)
+    public static SerializeMessageDelegate<TMessage> CreateSerializer<TMessage>(WriteValueDelegate<CborWriter, TMessage> encode)
     {
         ArgumentNullException.ThrowIfNull(encode);
 
@@ -44,7 +44,7 @@ public static class CborChannelSerialization
     /// <param name="decode">Reads the message's fields from a <see cref="CborReader"/>.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="decode"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<TMessage> CreateDeserializer<TMessage>(Func<CborReader, TMessage> decode)
+    public static DeserializeMessageDelegate<TMessage> CreateDeserializer<TMessage>(ReadValueDelegate<CborReader, TMessage> decode)
     {
         ArgumentNullException.ThrowIfNull(decode);
 

@@ -90,7 +90,7 @@ internal sealed class QuePaxaCodecDecisionTests
     }
 
 
-    private static RecorderEndpointDelegate<TValue>[] EndpointsOver<TValue>(Action<Utf8JsonWriter, TValue> writeValue, Func<JsonElement, TValue> readValue, int recorderCount)
+    private static RecorderEndpointDelegate<TValue>[] EndpointsOver<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue, ReadValueDelegate<JsonElement, TValue> readValue, int recorderCount)
     {
         SerializeMessageDelegate<RecordRequest<TValue>> writeRequest = QuePaxaMessageJson.CreateRequestSerializer(writeValue);
         DeserializeMessageDelegate<RecordRequest<TValue>> readRequest = QuePaxaMessageJson.CreateRequestDeserializer(readValue);

@@ -20,7 +20,7 @@ namespace Lumoin.Verisync.Core;
 /// that any later classic recovery quorum still observes the fast-round winner as dominant.
 /// </para>
 /// <para>
-/// When the fast round splits, <see cref="Recover(FastBallot, Func{TValue, TValue})"/> runs a classic
+/// When the fast round splits, <see cref="Recover(FastBallot, ChangeRegisterValueDelegate{TValue})"/> runs a classic
 /// ballot: it prepares a majority, recovers the value by tallying the distinct values reported for the
 /// highest fast ballot and adopting the most frequent, then commits the change at the classic ballot. This
 /// is an in-memory model of the protocol's safety core; the networked proposer, retries, and mode-switching
@@ -146,7 +146,7 @@ public sealed class FastCasPaxosRegister<TValue>
     /// <returns>The register after recovery and the outcome.</returns>
     /// <exception cref="ArgumentException">Thrown if <paramref name="classicBallot"/> is a fast ballot.</exception>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="update"/> is <see langword="null"/>.</exception>
-    public (FastCasPaxosRegister<TValue> Register, ChangeOutcome<TValue> Outcome) Recover(FastBallot classicBallot, Func<TValue?, TValue> update)
+    public (FastCasPaxosRegister<TValue> Register, ChangeOutcome<TValue> Outcome) Recover(FastBallot classicBallot, ChangeRegisterValueDelegate<TValue> update)
     {
         if(classicBallot.IsFast)
         {

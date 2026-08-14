@@ -24,7 +24,7 @@ public static class ConsensusMessageJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<ConsensusRequest<TValue>> CreateRequestSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<ConsensusRequest<TValue>> CreateRequestSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -67,7 +67,7 @@ public static class ConsensusMessageJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<ConsensusRequest<TValue>> CreateRequestDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<ConsensusRequest<TValue>> CreateRequestDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -98,7 +98,7 @@ public static class ConsensusMessageJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<ConsensusReply<TValue>> CreateReplySerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<ConsensusReply<TValue>> CreateReplySerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -145,7 +145,7 @@ public static class ConsensusMessageJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<ConsensusReply<TValue>> CreateReplyDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<ConsensusReply<TValue>> CreateReplyDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -191,7 +191,7 @@ public static class ConsensusMessageJson
     /// <c>promised</c> is a boolean, which is why the state has its own factory pair rather than reusing the
     /// reply's.
     /// </remarks>
-    public static SerializeMessageDelegate<FastAcceptorState<TValue>> CreateAcceptorStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<FastAcceptorState<TValue>> CreateAcceptorStateSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -231,7 +231,7 @@ public static class ConsensusMessageJson
     /// can hold. A missing <c>acceptedValue</c> field is
     /// malformed and fails closed; only a present JSON null decodes as the absent value.
     /// </remarks>
-    public static DeserializeMessageDelegate<FastAcceptorState<TValue>> CreateAcceptorStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<FastAcceptorState<TValue>> CreateAcceptorStateDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 

@@ -118,7 +118,7 @@ public sealed class FastProposer<TValue>
     /// the register in classic mode and is the conservative default.
     /// </para>
     /// </remarks>
-    public async Task<ChangeOutcome<TValue>> RecoverAsync(FastBallot classicBallot, Func<TValue?, TValue> update, CancellationToken cancellationToken, FastBallot? next = null)
+    public async Task<ChangeOutcome<TValue>> RecoverAsync(FastBallot classicBallot, ChangeRegisterValueDelegate<TValue> update, CancellationToken cancellationToken, FastBallot? next = null)
     {
         if(classicBallot.IsFast)
         {

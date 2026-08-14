@@ -116,7 +116,7 @@ public static class QuePaxaMessageJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<RecordRequest<TValue>> CreateRequestSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<RecordRequest<TValue>> CreateRequestSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -133,7 +133,7 @@ public static class QuePaxaMessageJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<RecordRequest<TValue>> CreateRequestDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<RecordRequest<TValue>> CreateRequestDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -151,7 +151,7 @@ public static class QuePaxaMessageJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<RecordReply<TValue>> CreateReplySerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<RecordReply<TValue>> CreateReplySerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -168,7 +168,7 @@ public static class QuePaxaMessageJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<RecordReply<TValue>> CreateReplyDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<RecordReply<TValue>> CreateReplyDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -186,7 +186,7 @@ public static class QuePaxaMessageJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<VersionedRecordRequest<TValue>> CreateVersionedRequestSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<VersionedRecordRequest<TValue>> CreateVersionedRequestSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -207,7 +207,7 @@ public static class QuePaxaMessageJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<VersionedRecordRequest<TValue>> CreateVersionedRequestDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<VersionedRecordRequest<TValue>> CreateVersionedRequestDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -228,7 +228,7 @@ public static class QuePaxaMessageJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<VersionedRecordReply<TValue>> CreateVersionedReplySerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<VersionedRecordReply<TValue>> CreateVersionedReplySerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -250,7 +250,7 @@ public static class QuePaxaMessageJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<VersionedRecordReply<TValue>> CreateVersionedReplyDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<VersionedRecordReply<TValue>> CreateVersionedReplyDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -276,7 +276,7 @@ public static class QuePaxaMessageJson
     /// The state is what a host makes stable before a dependent reply leaves the process, so a payload this
     /// writes is the payload <see cref="CreateRecorderStateDeserializer{TValue}"/> reads back on a restart.
     /// </remarks>
-    public static SerializeMessageDelegate<QuePaxaRecorderState<TValue>> CreateRecorderStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<QuePaxaRecorderState<TValue>> CreateRecorderStateSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -298,7 +298,7 @@ public static class QuePaxaMessageJson
     /// <see cref="QuePaxaRecorder{TValue}.FromState"/>, so a host restores by passing the decoded state there
     /// and lets that factory refuse a snapshot no recorder-driven register can hold.
     /// </remarks>
-    public static DeserializeMessageDelegate<QuePaxaRecorderState<TValue>> CreateRecorderStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<QuePaxaRecorderState<TValue>> CreateRecorderStateDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -321,13 +321,13 @@ public static class QuePaxaMessageJson
     /// <see cref="CreateRecorderStateSerializer{TValue}"/> encodes a standalone one, over the decided record as
     /// its value type, so the two payloads agree field for field where they overlap.
     /// </remarks>
-    public static SerializeMessageDelegate<QuePaxaVersionedNodeState<TValue>> CreateVersionedNodeStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<QuePaxaVersionedNodeState<TValue>> CreateVersionedNodeStateSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
         //The record writer is built once here rather than per call, exactly as the value writer the other
         //factories close over is.
-        Action<Utf8JsonWriter, VersionedValue<TValue>> writeRecord = (writer, record) => WriteRecord(writer, record, writeValue);
+        WriteValueDelegate<Utf8JsonWriter, VersionedValue<TValue>> writeRecord = (writer, record) => WriteRecord(writer, record, writeValue);
 
         return (state, output) =>
         {
@@ -355,11 +355,11 @@ public static class QuePaxaMessageJson
     /// <see cref="QuePaxaVersionedNode{TValue}.FromState"/>, so a host restores by passing the decoded state
     /// there and lets that factory refuse a snapshot whose parts disagree.
     /// </remarks>
-    public static DeserializeMessageDelegate<QuePaxaVersionedNodeState<TValue>> CreateVersionedNodeStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<QuePaxaVersionedNodeState<TValue>> CreateVersionedNodeStateDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
-        Func<JsonElement, VersionedValue<TValue>> readRecord = element => ReadRecord(element, readValue);
+        ReadValueDelegate<JsonElement, VersionedValue<TValue>> readRecord = element => ReadRecord(element, readValue);
 
         return JsonMessageGuard.FailClosed<QuePaxaVersionedNodeState<TValue>>(payload =>
         {
@@ -388,7 +388,7 @@ public static class QuePaxaMessageJson
     /// The record is a Verisync type and its writer field is what the next instance's leader is derived from,
     /// so its encoding lives here. Only the application value inside it stays caller-supplied.
     /// </remarks>
-    public static Action<Utf8JsonWriter, VersionedValue<TValue>> CreateVersionedValueWriter<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static WriteValueDelegate<Utf8JsonWriter, VersionedValue<TValue>> CreateVersionedValueWriter<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -403,7 +403,7 @@ public static class QuePaxaMessageJson
     /// <param name="readValue">Reads an application value from a JSON element.</param>
     /// <returns>A reader for the record wrapping that value.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static Func<JsonElement, VersionedValue<TValue>> CreateVersionedValueReader<TValue>(Func<JsonElement, TValue> readValue)
+    public static ReadValueDelegate<JsonElement, VersionedValue<TValue>> CreateVersionedValueReader<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -411,7 +411,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static void WriteRecord<TValue>(Utf8JsonWriter writer, VersionedValue<TValue> record, Action<Utf8JsonWriter, TValue> writeValue)
+    private static void WriteRecord<TValue>(Utf8JsonWriter writer, VersionedValue<TValue> record, WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         writer.WriteStartObject();
         writer.WriteNumber("version", record.Version.Value);
@@ -423,7 +423,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static VersionedValue<TValue> ReadRecord<TValue>(JsonElement element, Func<JsonElement, TValue> readValue)
+    private static VersionedValue<TValue> ReadRecord<TValue>(JsonElement element, ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ulong version = RequireProperty(element, "version", RecordLabel).GetUInt64();
         string writer = RequireProperty(element, "writer", RecordLabel).GetString()!;
@@ -470,7 +470,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static void WriteRecordOrNull<TValue>(Utf8JsonWriter writer, string name, VersionedValue<TValue>? record, Action<Utf8JsonWriter, TValue> writeValue)
+    private static void WriteRecordOrNull<TValue>(Utf8JsonWriter writer, string name, VersionedValue<TValue>? record, WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         //An absent record is written as an explicit null rather than omitted, on the same rule the proposal
         //slots follow: a host that has learned nothing is a state the protocol reaches, and a required field
@@ -487,7 +487,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static VersionedValue<TValue>? ReadRecordOrNull<TValue>(JsonElement element, string name, string label, Func<JsonElement, TValue> readValue)
+    private static VersionedValue<TValue>? ReadRecordOrNull<TValue>(JsonElement element, string name, string label, ReadValueDelegate<JsonElement, TValue> readValue)
     {
         JsonElement slot = RequireProperty(element, name, label);
 
@@ -495,7 +495,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static void WriteRecorderState<TValue>(Utf8JsonWriter writer, QuePaxaRecorderState<TValue> state, Action<Utf8JsonWriter, TValue> writeValue)
+    private static void WriteRecorderState<TValue>(Utf8JsonWriter writer, QuePaxaRecorderState<TValue> state, WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         writer.WriteStartObject();
         writer.WriteNumber("step", state.Step.Value);
@@ -506,7 +506,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static QuePaxaRecorderState<TValue> ReadRecorderState<TValue>(JsonElement element, Func<JsonElement, TValue> readValue)
+    private static QuePaxaRecorderState<TValue> ReadRecorderState<TValue>(JsonElement element, ReadValueDelegate<JsonElement, TValue> readValue)
     {
         int step = RequireProperty(element, "step", RecorderStateLabel).GetInt32();
         PrioritizedProposal<TValue>? first = ReadProposalOrNull(element, "first", RecorderStateLabel, readValue);
@@ -517,7 +517,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static void WriteRequest<TValue>(Utf8JsonWriter writer, RecordRequest<TValue> request, Action<Utf8JsonWriter, TValue> writeValue)
+    private static void WriteRequest<TValue>(Utf8JsonWriter writer, RecordRequest<TValue> request, WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         writer.WriteStartObject();
         writer.WriteNumber("step", request.Step.Value);
@@ -526,7 +526,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static RecordRequest<TValue> ReadRequest<TValue>(JsonElement element, Func<JsonElement, TValue> readValue)
+    private static RecordRequest<TValue> ReadRequest<TValue>(JsonElement element, ReadValueDelegate<JsonElement, TValue> readValue)
     {
         int step = RequireProperty(element, "step", RequestLabel).GetInt32();
         PrioritizedProposal<TValue> proposal = ReadProposal(RequireProperty(element, "proposal", RequestLabel), readValue);
@@ -535,7 +535,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static void WriteReply<TValue>(Utf8JsonWriter writer, RecordReply<TValue> reply, Action<Utf8JsonWriter, TValue> writeValue)
+    private static void WriteReply<TValue>(Utf8JsonWriter writer, RecordReply<TValue> reply, WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         writer.WriteStartObject();
         writer.WriteNumber("step", reply.Step.Value);
@@ -545,7 +545,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static RecordReply<TValue> ReadReply<TValue>(JsonElement element, Func<JsonElement, TValue> readValue)
+    private static RecordReply<TValue> ReadReply<TValue>(JsonElement element, ReadValueDelegate<JsonElement, TValue> readValue)
     {
         int step = RequireProperty(element, "step", ReplyLabel).GetInt32();
         PrioritizedProposal<TValue> first = ReadProposal(RequireProperty(element, "first", ReplyLabel), readValue);
@@ -586,7 +586,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static void WriteProposal<TValue>(Utf8JsonWriter writer, string name, PrioritizedProposal<TValue> proposal, Action<Utf8JsonWriter, TValue> writeValue)
+    private static void WriteProposal<TValue>(Utf8JsonWriter writer, string name, PrioritizedProposal<TValue> proposal, WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         writer.WritePropertyName(name);
         writer.WriteStartObject();
@@ -602,7 +602,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static PrioritizedProposal<TValue> ReadProposal<TValue>(JsonElement element, Func<JsonElement, TValue> readValue)
+    private static PrioritizedProposal<TValue> ReadProposal<TValue>(JsonElement element, ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ulong priority = RequireProperty(element, "priority", ProposalLabel).GetUInt64();
         ProposerLane owner = ReadLane(RequireProperty(element, "owner", ProposalLabel));
@@ -612,7 +612,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static void WriteProposalOrNull<TValue>(Utf8JsonWriter writer, string name, PrioritizedProposal<TValue>? proposal, Action<Utf8JsonWriter, TValue> writeValue)
+    private static void WriteProposalOrNull<TValue>(Utf8JsonWriter writer, string name, PrioritizedProposal<TValue>? proposal, WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         //An absent slot is written as an explicit null rather than omitted, because the protocol reaches an
         //absent slot legitimately, a skipped step clearing the prior aggregate among the ways, and a required
@@ -628,7 +628,7 @@ public static class QuePaxaMessageJson
     }
 
 
-    private static PrioritizedProposal<TValue>? ReadProposalOrNull<TValue>(JsonElement element, string name, string label, Func<JsonElement, TValue> readValue)
+    private static PrioritizedProposal<TValue>? ReadProposalOrNull<TValue>(JsonElement element, string name, string label, ReadValueDelegate<JsonElement, TValue> readValue)
     {
         JsonElement slot = RequireProperty(element, name, label);
 

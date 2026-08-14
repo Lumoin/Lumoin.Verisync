@@ -31,7 +31,7 @@ public static class RaftJson
     /// <param name="writeCommand">Writes a command to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeCommand"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<RaftEnvelope<TCommand>> CreateEnvelopeSerializer<TCommand>(Action<Utf8JsonWriter, TCommand> writeCommand)
+    public static SerializeMessageDelegate<RaftEnvelope<TCommand>> CreateEnvelopeSerializer<TCommand>(WriteValueDelegate<Utf8JsonWriter, TCommand> writeCommand)
     {
         ArgumentNullException.ThrowIfNull(writeCommand);
 
@@ -91,7 +91,7 @@ public static class RaftJson
     /// <param name="readCommand">Reads a command from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readCommand"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<RaftEnvelope<TCommand>> CreateEnvelopeDeserializer<TCommand>(Func<JsonElement, TCommand> readCommand)
+    public static DeserializeMessageDelegate<RaftEnvelope<TCommand>> CreateEnvelopeDeserializer<TCommand>(ReadValueDelegate<JsonElement, TCommand> readCommand)
     {
         ArgumentNullException.ThrowIfNull(readCommand);
 
@@ -120,7 +120,7 @@ public static class RaftJson
     /// <param name="writeCommand">Writes a command to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeCommand"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<RaftNodeState<TCommand>> CreateNodeStateSerializer<TCommand>(Action<Utf8JsonWriter, TCommand> writeCommand)
+    public static SerializeMessageDelegate<RaftNodeState<TCommand>> CreateNodeStateSerializer<TCommand>(WriteValueDelegate<Utf8JsonWriter, TCommand> writeCommand)
     {
         ArgumentNullException.ThrowIfNull(writeCommand);
 
@@ -150,7 +150,7 @@ public static class RaftJson
     /// <param name="readCommand">Reads a command from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readCommand"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<RaftNodeState<TCommand>> CreateNodeStateDeserializer<TCommand>(Func<JsonElement, TCommand> readCommand)
+    public static DeserializeMessageDelegate<RaftNodeState<TCommand>> CreateNodeStateDeserializer<TCommand>(ReadValueDelegate<JsonElement, TCommand> readCommand)
     {
         ArgumentNullException.ThrowIfNull(readCommand);
 
@@ -208,7 +208,7 @@ public static class RaftJson
     }
 
 
-    private static void WriteAppendRequest<TCommand>(Utf8JsonWriter writer, AppendEntriesRequest<TCommand> request, Action<Utf8JsonWriter, TCommand> writeCommand)
+    private static void WriteAppendRequest<TCommand>(Utf8JsonWriter writer, AppendEntriesRequest<TCommand> request, WriteValueDelegate<Utf8JsonWriter, TCommand> writeCommand)
     {
         writer.WriteStartObject();
         writer.WriteNumber("term", request.Term.Value);
@@ -229,7 +229,7 @@ public static class RaftJson
     }
 
 
-    private static AppendEntriesRequest<TCommand> ReadAppendRequest<TCommand>(JsonElement element, Func<JsonElement, TCommand> readCommand)
+    private static AppendEntriesRequest<TCommand> ReadAppendRequest<TCommand>(JsonElement element, ReadValueDelegate<JsonElement, TCommand> readCommand)
     {
         return new AppendEntriesRequest<TCommand>(
             ReadTerm(RequireProperty(element, "term", "An append request")),
@@ -260,7 +260,7 @@ public static class RaftJson
     }
 
 
-    private static void WriteLog<TCommand>(Utf8JsonWriter writer, ImmutableArray<RaftLogEntry<TCommand>> log, Action<Utf8JsonWriter, TCommand> writeCommand)
+    private static void WriteLog<TCommand>(Utf8JsonWriter writer, ImmutableArray<RaftLogEntry<TCommand>> log, WriteValueDelegate<Utf8JsonWriter, TCommand> writeCommand)
     {
         writer.WriteStartArray("log");
         if(!log.IsDefault)
@@ -275,7 +275,7 @@ public static class RaftJson
     }
 
 
-    private static void WriteLogEntry<TCommand>(Utf8JsonWriter writer, RaftLogEntry<TCommand> entry, Action<Utf8JsonWriter, TCommand> writeCommand)
+    private static void WriteLogEntry<TCommand>(Utf8JsonWriter writer, RaftLogEntry<TCommand> entry, WriteValueDelegate<Utf8JsonWriter, TCommand> writeCommand)
     {
         writer.WriteStartObject();
         writer.WriteNumber("term", entry.Term.Value);
@@ -285,7 +285,7 @@ public static class RaftJson
     }
 
 
-    private static ImmutableArray<RaftLogEntry<TCommand>> ReadEntries<TCommand>(JsonElement element, Func<JsonElement, TCommand> readCommand)
+    private static ImmutableArray<RaftLogEntry<TCommand>> ReadEntries<TCommand>(JsonElement element, ReadValueDelegate<JsonElement, TCommand> readCommand)
     {
         ImmutableArray<RaftLogEntry<TCommand>>.Builder entries = ImmutableArray.CreateBuilder<RaftLogEntry<TCommand>>(element.GetArrayLength());
         foreach(JsonElement entry in element.EnumerateArray())

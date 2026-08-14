@@ -113,7 +113,7 @@ public static class CrdtStateJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<LwwRegisterState<TValue>> CreateLwwRegisterStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<LwwRegisterState<TValue>> CreateLwwRegisterStateSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -152,7 +152,7 @@ public static class CrdtStateJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<LwwRegisterState<TValue>> CreateLwwRegisterStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<LwwRegisterState<TValue>> CreateLwwRegisterStateDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -179,7 +179,7 @@ public static class CrdtStateJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<DottedVersionVectorSetState<TValue>> CreateDottedVersionVectorSetStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<DottedVersionVectorSetState<TValue>> CreateDottedVersionVectorSetStateSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -196,7 +196,7 @@ public static class CrdtStateJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<DottedVersionVectorSetState<TValue>> CreateDottedVersionVectorSetStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<DottedVersionVectorSetState<TValue>> CreateDottedVersionVectorSetStateDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -214,7 +214,7 @@ public static class CrdtStateJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<OrSetState<TValue>> CreateOrSetStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<OrSetState<TValue>> CreateOrSetStateSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -234,7 +234,7 @@ public static class CrdtStateJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<OrSetState<TValue>> CreateOrSetStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<OrSetState<TValue>> CreateOrSetStateDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -252,7 +252,7 @@ public static class CrdtStateJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<MvRegisterState<TValue>> CreateMvRegisterStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<MvRegisterState<TValue>> CreateMvRegisterStateSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -272,7 +272,7 @@ public static class CrdtStateJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<MvRegisterState<TValue>> CreateMvRegisterStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<MvRegisterState<TValue>> CreateMvRegisterStateDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -290,7 +290,7 @@ public static class CrdtStateJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<RgaState<TValue>> CreateRgaStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<RgaState<TValue>> CreateRgaStateSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -351,7 +351,7 @@ public static class CrdtStateJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<RgaState<TValue>> CreateRgaStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<RgaState<TValue>> CreateRgaStateDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -400,7 +400,7 @@ public static class CrdtStateJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<OffsetAnchoredSequenceState<TValue>> CreateOffsetAnchoredSequenceStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<OffsetAnchoredSequenceState<TValue>> CreateOffsetAnchoredSequenceStateSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -509,7 +509,7 @@ public static class CrdtStateJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<OffsetAnchoredSequenceState<TValue>> CreateOffsetAnchoredSequenceStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<OffsetAnchoredSequenceState<TValue>> CreateOffsetAnchoredSequenceStateDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -604,7 +604,7 @@ public static class CrdtStateJson
     /// <param name="writeValue">Writes a value to the JSON writer.</param>
     /// <returns>A serialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="writeValue"/> is <see langword="null"/>.</exception>
-    public static SerializeMessageDelegate<RgaRunState<TValue>> CreateRgaRunStateSerializer<TValue>(Action<Utf8JsonWriter, TValue> writeValue)
+    public static SerializeMessageDelegate<RgaRunState<TValue>> CreateRgaRunStateSerializer<TValue>(WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         ArgumentNullException.ThrowIfNull(writeValue);
 
@@ -711,7 +711,7 @@ public static class CrdtStateJson
     /// <param name="readValue">Reads a value from a JSON element.</param>
     /// <returns>A deserialize delegate.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="readValue"/> is <see langword="null"/>.</exception>
-    public static DeserializeMessageDelegate<RgaRunState<TValue>> CreateRgaRunStateDeserializer<TValue>(Func<JsonElement, TValue> readValue)
+    public static DeserializeMessageDelegate<RgaRunState<TValue>> CreateRgaRunStateDeserializer<TValue>(ReadValueDelegate<JsonElement, TValue> readValue)
     {
         ArgumentNullException.ThrowIfNull(readValue);
 
@@ -932,7 +932,7 @@ public static class CrdtStateJson
     }
 
 
-    private static void WriteDottedVersionVectorSetState<TValue>(Utf8JsonWriter writer, DottedVersionVectorSetState<TValue> state, Action<Utf8JsonWriter, TValue> writeValue)
+    private static void WriteDottedVersionVectorSetState<TValue>(Utf8JsonWriter writer, DottedVersionVectorSetState<TValue> state, WriteValueDelegate<Utf8JsonWriter, TValue> writeValue)
     {
         writer.WriteStartObject();
         writer.WritePropertyName("context");
@@ -954,7 +954,7 @@ public static class CrdtStateJson
     }
 
 
-    private static DottedVersionVectorSetState<TValue> ReadDottedVersionVectorSetState<TValue>(JsonElement element, Func<JsonElement, TValue> readValue)
+    private static DottedVersionVectorSetState<TValue> ReadDottedVersionVectorSetState<TValue>(JsonElement element, ReadValueDelegate<JsonElement, TValue> readValue)
     {
         JsonElement entriesElement = RequireProperty(element, "entries", "A dotted version-vector set");
         ImmutableArray<DottedEntry<TValue>>.Builder entries = ImmutableArray.CreateBuilder<DottedEntry<TValue>>(entriesElement.GetArrayLength());
