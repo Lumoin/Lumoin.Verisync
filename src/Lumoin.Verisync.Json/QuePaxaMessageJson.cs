@@ -93,7 +93,7 @@ namespace Lumoin.Verisync.Json;
 /// <see cref="QuePaxaVersionedNode{TValue}.FromState"/>.
 /// </para>
 /// <para>
-/// The caller supplies how to read and write <typeparamref name="TValue"/>, since the value is
+/// The caller supplies how to read and write <c>TValue</c>, since the value is
 /// application-defined.
 /// </para>
 /// </remarks>

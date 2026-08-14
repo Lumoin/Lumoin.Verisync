@@ -7,9 +7,8 @@ namespace Lumoin.Verisync.Core;
 /// rejected field, or a failed verification. It is the single failure a
 /// <see cref="DeserializeMessageDelegate{TMessage}"/> raises regardless of the wire encoding (JSON, CBOR, or
 /// another), so a channel consumer catches one type rather than an encoding-specific exception. The
-/// encoding-specific cause — a <see cref="System.Text.Json.JsonException"/>, a
-/// <see cref="System.Formats.Cbor.CborContentException"/>, a wrapped argument exception, and so on — is
-/// preserved as <see cref="Exception.InnerException"/> for diagnostics.
+/// encoding-specific cause — a <c>JsonException</c>, a <c>CborContentException</c>, a wrapped argument
+/// exception, and so on — is preserved as <see cref="Exception.InnerException"/> for diagnostics.
 /// </summary>
 public sealed class MessageDeserializationException: Exception
 {

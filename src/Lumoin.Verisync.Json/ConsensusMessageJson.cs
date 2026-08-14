@@ -14,7 +14,7 @@ namespace Lumoin.Verisync.Json;
 /// <remarks>
 /// The polymorphic request/reply envelopes are written with a <c>kind</c> discriminator rather than relying on
 /// source-generated polymorphism, and replica ids are hex-encoded — keeping the encoding explicit, AOT-safe,
-/// and free of reflection. The caller supplies how to read and write <typeparamref name="TValue"/>, since the
+/// and free of reflection. The caller supplies how to read and write <c>TValue</c>, since the
 /// value is application-defined.
 /// </remarks>
 public static class ConsensusMessageJson

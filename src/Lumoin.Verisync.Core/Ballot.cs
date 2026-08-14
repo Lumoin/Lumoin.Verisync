@@ -7,8 +7,6 @@ namespace Lumoin.Verisync.Core;
 /// A CASPaxos ballot number: a monotonically increasing round paired with the proposing
 /// <see cref="ReplicaId"/>, giving every ballot a unique position in a total order.
 /// </summary>
-/// <param name="Round">The proposer's monotonically increasing round number. Must be positive.</param>
-/// <param name="Proposer">The replica that issued the ballot.</param>
 /// <remarks>
 /// Ballots are ordered by round first and by proposer second, so two proposers that pick the same round
 /// still produce distinct, totally ordered ballots. This total order is what lets acceptors reject stale

@@ -25,7 +25,7 @@ namespace Lumoin.Verisync.Core;
 /// real payload bytes, then zero fill to the bucket. This quantizes the wire length so an observer cannot
 /// distinguish message types by frame size; see <see cref="FramePadding"/> for the full wire format. The
 /// reading peer must be configured with the same policy, exactly as it must share
-/// <paramref name="maxFrameLength" />: a mismatch yields a deserialization failure, not a clean error.
+/// <c>maxFrameLength</c>: a mismatch yields a deserialization failure, not a clean error.
 /// </para>
 /// </remarks>
 public sealed class MessageChannelWriter<TMessage>
