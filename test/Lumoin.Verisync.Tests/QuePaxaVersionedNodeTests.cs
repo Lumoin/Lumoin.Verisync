@@ -335,6 +335,110 @@ internal sealed class QuePaxaVersionedNodeTests
 
 
     /// <summary>
+    /// The chain check at the learn, which is the path a record arrives by without being asked to serve
+    /// anything and the one a publisher drives. The record is well formed in every other respect — strictly
+    /// newer than the held one, over the same replicas in the same order — so the chain arm is the only rule
+    /// that can refuse it, and nothing this host holds moves.
+    /// </summary>
+    /// <remarks>
+    /// The refusal stands beside the ordinary answer it must remain distinguishable from: a record of this
+    /// host's own chain that does not advance is ignored and reported false, while a record of another chain
+    /// is refused whether or not it is newer, because version order is a fact inside one chain and says
+    /// nothing across two.
+    /// </remarks>
+    [TestMethod]
+    public void ARecordOfAnotherChainIsRefusedAtTheLearnAndMovesNothing()
+    {
+        VersionedValue<string> held = Record(4UL, Second);
+        QuePaxaVersionedNode<string> host = new(Configuration, First, held);
+        QuePaxaRecorder<VersionedValue<string>> before = host.Recorder;
+        QuePaxaLeaderSchedule schedule = host.LeaderSchedule;
+
+        //Same replicas in the same order, minted at a different genesis, so nothing about the member list can
+        //be what refuses this.
+        Assert.IsTrue(Configuration.Members.SequenceEqual(ForeignChain.Members));
+        Assert.AreNotEqual(Configuration.Cluster, ForeignChain.Cluster);
+
+        VersionedValue<string> foreign = Installing(5UL, Second, ForeignChain);
+
+        Assert.IsTrue(host.DeclinesLearn(foreign));
+
+        ArgumentException refused = Assert.ThrowsExactly<ArgumentException>(() => _ = host.Learn(foreign));
+
+        Assert.AreEqual("committed", refused.ParamName);
+        Assert.Contains("another chain", refused.Message);
+
+        //The committed record is the one the host started from, read by reference because an adoption
+        //replaces it, and the live instance still follows it.
+        Assert.AreSame(held, host.Committed);
+        Assert.AreEqual(new RegisterVersion(5UL), host.LiveVersion);
+
+        //The membership is read by chain and by member rather than by position, and it is this host's own.
+        Assert.AreEqual(Configuration, host.ActiveConfiguration);
+        Assert.AreEqual(Configuration.Cluster, host.ActiveConfiguration.Cluster);
+        Assert.IsTrue(host.ActiveConfiguration.Contains(First));
+        Assert.IsTrue(host.ActiveConfiguration.Contains(Third));
+
+        //The schedule is the same memo and still derives the leader from the writer of the record held.
+        Assert.AreSame(schedule, host.LeaderSchedule);
+        Assert.AreEqual(ProposerLane.For(Second), host.LeaderSchedule.LeaderFor(Second));
+        Assert.AreSame(before, host.Recorder);
+        Assert.AreEqual(RecorderStep.Zero, host.Recorder.Step);
+
+        //A foreign record standing below the held one is refused on the same arm, because reporting it as a
+        //record that did not advance would hide a wiring defect behind an ordinary answer.
+        VersionedValue<string> foreignAndOlder = Installing(4UL, Second, ForeignChain);
+
+        Assert.IsTrue(host.DeclinesLearn(foreignAndOlder));
+        Assert.ThrowsExactly<ArgumentException>(() => _ = host.Learn(foreignAndOlder));
+
+        //The ordinary answer: a record of this host's own chain that does not advance is no decline at all.
+        Assert.IsFalse(host.DeclinesLearn(Record(4UL, Second)));
+        Assert.IsFalse(host.Learn(Record(4UL, Second)));
+        Assert.AreSame(held, host.Committed);
+    }
+
+
+    /// <summary>
+    /// Learning is membership-blind and the chain arm does not narrow that. A record that removes this host is
+    /// adopted, and so is the next record on the same chain while the host stands outside the membership the
+    /// first one installed, because a removed host learns it is out from the protocol rather than from silence
+    /// and a joiner catches up from whoever holds the record.
+    /// </summary>
+    /// <remarks>
+    /// Both records reach the site the chain refusal reads — each is strictly newer and names this host's own
+    /// chain — so an arm widened to refuse by membership fails here rather than passing unpinned.
+    /// </remarks>
+    [TestMethod]
+    public void ARecordRemovingTheHostIsLearnedAndSoIsTheNextOneWhileItStandsOutside()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaConfiguration without = Configuration.Without(First);
+        VersionedValue<string> removing = Installing(5UL, Second, without);
+
+        //This host's own chain and a membership this host is not in, which is the pair the arm separates.
+        Assert.AreEqual(Configuration.Cluster, removing.NextConfiguration.Cluster);
+        Assert.IsFalse(without.Contains(First));
+
+        Assert.IsFalse(host.DeclinesLearn(removing));
+        Assert.IsTrue(host.Learn(removing));
+        Assert.AreEqual(without, host.ActiveConfiguration);
+        Assert.IsFalse(host.ActiveConfiguration.Contains(First));
+
+        //Being outside the membership refuses requests and nothing else, so the next record on the chain is
+        //adopted by a host that may no longer serve a single one.
+        Assert.IsTrue(host.Declines(Carrying(6UL, 6UL, without, ProposalPriority.Lowest, Second, "next")));
+
+        VersionedValue<string> later = Installing(6UL, Second, without);
+
+        Assert.IsFalse(host.DeclinesLearn(later));
+        Assert.IsTrue(host.Learn(later));
+        Assert.AreSame(later, host.Committed);
+        Assert.AreEqual(new RegisterVersion(7UL), host.LiveVersion);
+    }
+
+
+    /// <summary>
     /// The membership filter. A host a configuration change removed is outside the set a quorum for the live
     /// instance is counted over, so it refuses rather than answering as a recorder no arithmetic accounts for.
     /// Nothing else about the request differs from one this host serves.

@@ -56,7 +56,9 @@ namespace Lumoin.Verisync.Core;
 /// made durable before the call completes. A learn that moved
 /// <see cref="QuePaxaVersionedNode{TValue}.ActiveConfiguration"/> is the one exception: it is checkpointed
 /// under either durability, because the record that installs a membership may be the only copy of it inside
-/// the membership it installs.
+/// the membership it installs. A record of another chain faults its own learn and leaves the loop serving, on
+/// the rule the request path follows: <see cref="QuePaxaVersionedNode{TValue}.DeclinesLearn"/> is what the
+/// filter reads there, as <see cref="QuePaxaVersionedNode{TValue}.Declines"/> is on the request path.
 /// </para>
 /// <para>
 /// A catch-up read goes through <see cref="ReadCommittedAsync"/>, which makes the state durable before
@@ -138,6 +140,7 @@ public sealed class QuePaxaVersionedRunner<TValue>
     /// <returns><see langword="true"/> when the record advanced the host in memory.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="committed"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="durability"/> is not a defined <see cref="LearnDurability"/>.</exception>
+    /// <exception cref="ArgumentException">Thrown through the returned task when the record names a chain other than the host's, which faults this call alone.</exception>
     /// <exception cref="ChannelClosedException">Thrown through the returned task when no further work is accepted after <see cref="Complete"/> or after the loop has ended.</exception>
     /// <remarks>
     /// <para>
@@ -161,6 +164,13 @@ public sealed class QuePaxaVersionedRunner<TValue>
     /// The result reports adoption in memory whichever durability was asked for. After a
     /// <see cref="LearnDurability.Durable"/> call that completed the state IS durable, and after one that
     /// faulted nothing is promised, so there is nothing a second flag could say.
+    /// </para>
+    /// <para>
+    /// A record of another chain faults this call with the host's own refusal and leaves the loop serving,
+    /// exactly as a declined request does at <see cref="RecordAsync"/>. The refusal is a fault rather than a
+    /// value the result carries, because the result reports adoption and a caller told <see langword="false"/>
+    /// would read a wiring defect as the ordinary record that did not advance, while the two ask for opposite
+    /// acts: one is a record already held and the other is a publisher to rewire.
     /// </para>
     /// <para>
     /// A <see cref="LearnDurability.Durable"/> learn to <see cref="RegisterVersion.MaxValue"/> fires the
@@ -385,7 +395,22 @@ public sealed class QuePaxaVersionedRunner<TValue>
                 //The adoption is computed before the write and handed over after it, so a failed write
                 //leaves the loop without ever reporting an adoption the crash would lose.
                 QuePaxaConfiguration held = Node.ActiveConfiguration;
-                bool advanced = Node.LearnForOwner(learn.Committed);
+                bool advanced;
+                try
+                {
+                    advanced = Node.LearnForOwner(learn.Committed);
+                }
+                catch(Exception refusal) when(Node.DeclinesLearn(learn.Committed))
+                {
+                    //A record of another chain is a defect at the publisher that pushed it and not a failure
+                    //of this host, and the refusal precedes any mutation, so it faults its own call and the
+                    //loop keeps serving. The filter reads the host's own classifier, as the record arm's
+                    //does, so the refusal reaches the caller as a fault while a record that merely did not
+                    //advance still reports false.
+                    _ = learn.Source.TrySetException(refusal);
+
+                    return;
+                }
 
                 //A learn that installed a membership is checkpointed under either durability, because the
                 //record carrying that membership may be the only copy of it inside the membership it

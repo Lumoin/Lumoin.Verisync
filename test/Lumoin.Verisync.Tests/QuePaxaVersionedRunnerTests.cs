@@ -228,6 +228,110 @@ internal sealed class QuePaxaVersionedRunnerTests
 
 
     /// <summary>
+    /// A record of another chain faults its own learn and the loop keeps serving. A loop that ended on it
+    /// would take a host down for a defect at someone else's publisher, and the refusal is exactly what a
+    /// publisher wired across two chains produces.
+    /// </summary>
+    /// <remarks>
+    /// The fault stands beside the ordinary answer it must remain distinguishable from: a record of this
+    /// host's own chain that does not advance reports false through the same call, so a caller reading the
+    /// result alone could not tell a wiring defect from a repeated dissemination. The write count is read only
+    /// after <see cref="QuePaxaVersionedRunner{TValue}.Complete"/> and a drained loop, because a call's
+    /// completion is no barrier for the dispatcher's own writes.
+    /// </remarks>
+    [TestMethod]
+    public async Task ALearnOfAnotherChainsRecordFaultsItsOwnCallAndTheLoopKeepsServing()
+    {
+        VersionedValue<string> held = Record(4UL, Second);
+        QuePaxaVersionedNode<string> host = new(Configuration, First, held);
+        QuePaxaVersionedRunner<string> runner = new(host);
+        RecordingStore store = new();
+        Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
+
+        //Strictly newer than the held record and over the same replicas in the same order, so the chain is the
+        //only rule that can refuse it.
+        VersionedValue<string> foreign = Record(5UL, Second, ForeignChain);
+
+        ArgumentException refused = await Assert.ThrowsExactlyAsync<ArgumentException>(
+            () => runner.LearnAsync(foreign, LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual("committed", refused.ParamName);
+        Assert.AreSame(held, host.Committed);
+
+        //The ordinary answer through the same call, which a refusal reported as a result would be
+        //indistinguishable from.
+        Assert.IsFalse(await runner.LearnAsync(Record(4UL, Second), LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+
+        //The loop that faulted the refusal is the one that adopts this and answers the read, which is the
+        //whole claim.
+        Assert.IsTrue(await runner.LearnAsync(Record(5UL, Third), LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+
+        VersionedValue<string>? read = await runner.ReadCommittedAsync(TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(new RegisterVersion(5UL), read!.Version);
+
+        runner.Complete();
+        await run.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //One write, for the read that persisted what the learn moved: the refusal owed none.
+        Assert.HasCount(1, store.States);
+    }
+
+
+    /// <summary>
+    /// A boundary push from a publisher wired to another chain is refused at the receiving host, which keeps
+    /// the record and the membership it had. The seam records the arrival, so what refused the record is the
+    /// host and not a seam that declined to hand it over.
+    /// </summary>
+    /// <remarks>
+    /// The push names <see cref="LearnDurability.Durable"/> as a boundary push does, so the refusal is reached
+    /// ahead of the durability gate rather than by a store that refused the write. The write count is read
+    /// only after <see cref="QuePaxaVersionedRunner{TValue}.Complete"/> and a drained loop, because a call's
+    /// completion is no barrier for the dispatcher's own writes.
+    /// </remarks>
+    [TestMethod]
+    public async Task APushedRecordOfAnotherChainIsRefusedAndLeavesTheHostOnItsOwnChain()
+    {
+        VersionedValue<string> held = Record(4UL, Second);
+        QuePaxaVersionedNode<string> host = new(Configuration, First, held);
+        QuePaxaVersionedRunner<string> runner = new(host);
+        RecordingStore store = new();
+        Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
+
+        LearnSeamSpy seam = new(runner);
+        PushingPublisher publisher = new(First, seam);
+
+        //The conversion is the contract: this is what a deployment assigns where the register expects a push.
+        PublishCommittedRecordDelegate<string> push = publisher.PublishAsync;
+
+        //A record another chain decided, installing a membership of that chain, which is the shape a boundary
+        //push carries and the one that would poison this host silently.
+        VersionedValue<string> foreign = Record(5UL, Second, ForeignChain.With(Stranger));
+
+        _ = await Assert.ThrowsExactlyAsync<ArgumentException>(
+            () => push(foreign, [First], TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        //The push reached the seam and the seam handed the record over, so the refusal is the host's own act.
+        Assert.HasCount(1, seam.Named);
+        Assert.AreEqual(LearnDurability.Durable, seam.Named[0]);
+
+        Assert.AreSame(held, host.Committed);
+        Assert.AreEqual(Configuration, host.ActiveConfiguration);
+        Assert.IsFalse(host.ActiveConfiguration.Contains(Stranger));
+
+        //The loop kept serving, so this host's own chain still disseminates into it.
+        Assert.IsTrue(await runner.LearnAsync(Record(5UL, Third, Configuration.With(Stranger)), LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+
+        runner.Complete();
+        await run.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //One write, for the learn that installed a membership: the refused push owed none.
+        Assert.HasCount(1, store.States);
+        Assert.AreEqual(Configuration.Cluster, store.States[0].ActiveConfiguration.Cluster);
+    }
+
+
+    /// <summary>
     /// A host a configuration change removed declines every record request and its loop stays alive, because a
     /// removal is an operability rule rather than a failure. The host still learns, still checkpoints and still
     /// answers a catch-up read, which is how a removed host is decommissioned by its deployment rather than by

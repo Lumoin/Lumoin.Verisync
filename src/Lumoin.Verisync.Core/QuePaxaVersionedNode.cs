@@ -49,6 +49,13 @@ namespace Lumoin.Verisync.Core;
 /// assumption that lets a recorder's own reply be believed.
 /// </para>
 /// <para>
+/// The chain is checked on every path a record arrives by, so <see cref="Learn"/> refuses another chain's
+/// record exactly as <see cref="Handle"/> and <see cref="FromState"/> do, and a publisher wired across two
+/// chains cannot install here what this chain never decided. Nothing else about the membership is read there:
+/// dissemination stays membership-blind, because a host that a change removed learns it is out from the
+/// record that removed it, and a joiner catches up from whoever holds the record.
+/// </para>
+/// <para>
 /// Restarting is this host's own operation and not the recorder's alone. <see cref="ToState"/> snapshots the
 /// committed record beside the recorder serving the instance that record implies, and <see cref="FromState"/>
 /// refuses a snapshot whose stored leader or stored version disagrees with the record beside it, which is what
@@ -342,7 +349,7 @@ public sealed class QuePaxaVersionedNode<TValue>
             return RequestRefusal.CarriedRecord;
         }
 
-        if(!carried.NextConfiguration.Cluster.Equals(ActiveConfiguration.Cluster))
+        if(NamesAnotherChain(carried))
         {
             return RequestRefusal.Cluster;
         }
@@ -387,12 +394,34 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <param name="committed">A decided record.</param>
     /// <returns><see langword="true"/> when the record advanced this host, and <see langword="false"/> when it was not newer than what it already held.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="committed"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">Thrown if the record names a chain other than <see cref="ActiveConfiguration"/>'s.</exception>
     /// <exception cref="InvalidOperationException">Thrown if a runner owns this host.</exception>
     /// <remarks>
     /// <para>
     /// A record that does not advance is ignored rather than refused, because a host disseminating the same
     /// decision twice is ordinary. Knowledge of committed state therefore only ever runs forward, and the live
     /// instance with it.
+    /// </para>
+    /// <para>
+    /// A record of another chain is refused instead, on the comparison <see cref="Handle"/> makes at a request
+    /// and <see cref="FromState"/> makes at a restore. Dissemination is the one path that adopts a record
+    /// without being asked to serve anything, so a publisher wired across two chains would otherwise install
+    /// here a record this chain never decided. The refusal precedes every mutation: the held record, the
+    /// membership and the instance are exactly what they were, which is what lets a runner keep serving after
+    /// faulting the call. <see cref="DeclinesLearn"/> is the classifier and this is the act, and both read one
+    /// predicate, as the request path's pair do.
+    /// </para>
+    /// <para>
+    /// The chain is read before the version, because version order is a fact inside one chain and says nothing
+    /// across two: a foreign record standing below the held one is a wiring defect rather than a stale
+    /// dissemination, and reporting it as a record that did not advance would hide the defect behind an
+    /// ordinary answer.
+    /// </para>
+    /// <para>
+    /// The rule is the chain and never the membership. A record that removes this host is adopted like any
+    /// other, because a removed host learns it is out from the record that removed it and a joiner catches up
+    /// from whoever holds the record; a membership filter here would leave both waiting on a message they
+    /// cannot be sent.
     /// </para>
     /// <para>
     /// A learn beside a running loop is refused, because it replaces both the committed record and the
@@ -429,6 +458,11 @@ public sealed class QuePaxaVersionedNode<TValue>
     {
         ArgumentNullException.ThrowIfNull(committed);
 
+        if(NamesAnotherChain(committed))
+        {
+            throw new ArgumentException($"This host records for chain {ActiveConfiguration.Cluster} and the record names another chain. Dissemination adopts what it is handed, so a publisher wired across two chains would install a record this chain never decided, and a host that adopted one would serve an instance under a membership no quorum here agreed on.", nameof(committed));
+        }
+
         if(Committed is { } held && committed.Version <= held.Version)
         {
             return false;
@@ -441,6 +475,46 @@ public sealed class QuePaxaVersionedNode<TValue>
 
         return true;
     }
+
+
+    /// <summary>
+    /// Reports whether <see cref="Learn"/> would refuse <paramref name="committed"/> rather than considering
+    /// it.
+    /// </summary>
+    /// <param name="committed">The record to classify.</param>
+    /// <returns><see langword="true"/> when the record names a chain other than <see cref="ActiveConfiguration"/>'s.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="committed"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// <para>
+    /// A classifier and not a guard, as <see cref="Declines"/> is: no rule here throws, and adopting remains
+    /// <see cref="Learn"/>'s act. A runner's filter reads this to tell a refusal, which faults one call, from a
+    /// defect, which ends its loop, and it reads it from inside an exception filter, where a throw would be
+    /// swallowed and the refusal would be misread as the defect.
+    /// </para>
+    /// <para>
+    /// A record that does not advance this host reports <see langword="false"/> here, because it is ignored
+    /// rather than refused: an ordinary repeated dissemination is not a decline, and a classifier answering
+    /// otherwise would have a runner fault the calls that carry it.
+    /// </para>
+    /// </remarks>
+    public bool DeclinesLearn(VersionedValue<TValue> committed)
+    {
+        ArgumentNullException.ThrowIfNull(committed);
+
+        return NamesAnotherChain(committed);
+    }
+
+
+    /// <summary>Whether <paramref name="carried"/> names a chain other than the one this host runs.</summary>
+    /// <param name="carried">The record whose membership names the chain.</param>
+    /// <returns><see langword="true"/> when the record's chain identity differs from this host's own.</returns>
+    /// <remarks>
+    /// The one comparison every path a record arrives by reads, so the rule cannot hold at a request and not
+    /// at a learn. It compares the chain identity by value and nothing else about the membership, so two
+    /// configurations of one chain that list different members agree here and a configuration minted at
+    /// another genesis does not.
+    /// </remarks>
+    private bool NamesAnotherChain(VersionedValue<TValue> carried) => !carried.NextConfiguration.Cluster.Equals(ActiveConfiguration.Cluster);
 
 
     /// <summary>
