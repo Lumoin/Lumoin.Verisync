@@ -246,7 +246,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
         Assert.AreEqual(ProposerLane.For(First), wrongLeader.ConfiguredLeader);
         Assert.AreEqual(Second, wrongLeader.Committed!.Writer);
 
-        ArgumentException refusedLeader = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, wrongLeader));
+        StateRestoreException refusedLeader = Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, wrongLeader));
 
         Assert.AreEqual("state", refusedLeader.ParamName);
 
@@ -256,7 +256,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
 
         Assert.AreEqual(new RegisterVersion(9UL), wrongVersion.RecorderVersion);
 
-        ArgumentException refusedVersion = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, wrongVersion));
+        StateRestoreException refusedVersion = Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, wrongVersion));
 
         Assert.AreEqual("state", refusedVersion.ParamName);
 
@@ -270,7 +270,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
         Assert.AreEqual(RecorderStep.Zero, unwrittenCarrying.Recorder.Step);
         Assert.IsNotNull(unwrittenCarrying.Recorder.First);
 
-        ArgumentException refusedUnwritten = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, unwrittenCarrying));
+        StateRestoreException refusedUnwritten = Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, unwrittenCarrying));
 
         Assert.AreEqual("state", refusedUnwritten.ParamName);
 
@@ -282,7 +282,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
         Assert.HasCount(4, wrongMembership.ActiveConfiguration.Members);
         Assert.AreEqual(Configuration.Cluster, wrongMembership.ActiveConfiguration.Cluster);
 
-        ArgumentException refusedMembership = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, wrongMembership));
+        StateRestoreException refusedMembership = Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, wrongMembership));
 
         Assert.AreEqual("state", refusedMembership.ParamName);
     }

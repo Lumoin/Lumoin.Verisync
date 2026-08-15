@@ -177,7 +177,7 @@ internal sealed class QuePaxaRecorderStateTests
     {
         QuePaxaRecorderState<string> state = new(Four.Next(), null, Ordinary(20, OtherReplicaLane, "b"), null);
 
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, state));
+        Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, state));
     }
 
 
@@ -196,15 +196,15 @@ internal sealed class QuePaxaRecorderStateTests
         //an inverse at the bottom of the range.
         QuePaxaRecorderState<string> unwritten = new(RecorderStep.Zero, null, null, null);
 
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, unwritten));
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, QuePaxaRecorder<string>.Leaderless.ToState()));
+        Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, unwritten));
+        Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, QuePaxaRecorder<string>.Leaderless.ToState()));
 
         //A register recorded at step zero directly folds an aggregate while its first proposal stays null.
         //Algorithm 3 permits that state and the recorder's floor puts it out of reach, so the step refuses it
         //before the first-proposal rule ever has to reason about it.
         QuePaxaRecorderState<string> foldedAtZero = new(RecorderStep.Zero, null, Ordinary(20, LeaderLane, "a"), null);
 
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, foldedAtZero));
+        Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, foldedAtZero));
 
         //The steps between zero and the floor are the ones a rule stated as "not zero" would admit. Each is
         //well formed for its own step and unreachable only because the recorder refuses to record there, and
@@ -216,7 +216,7 @@ internal sealed class QuePaxaRecorderStateTests
             PrioritizedProposal<string> proposal = Ordinary(30, LeaderLane, "b");
             QuePaxaRecorderState<string> belowFloor = new(new RecorderStep(step), proposal, proposal, Ordinary(10, OtherReplicaLane, "c"));
 
-            Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, belowFloor));
+            Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, belowFloor));
         }
     }
 
@@ -236,7 +236,7 @@ internal sealed class QuePaxaRecorderStateTests
         QuePaxaRecorderState<string> state = new(Four, Reserved(LeaderLane, "a"), Reserved(OtherReplicaLane, "b"), null);
 
         Assert.IsGreaterThan(state.First!.Key, state.CurrentAggregate!.Key, "The aggregate must dominate the first proposal, or the ordering rule could be what refuses this state.");
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(OtherReplicaLane, state));
+        Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(OtherReplicaLane, state));
     }
 
 
@@ -253,7 +253,7 @@ internal sealed class QuePaxaRecorderStateTests
         QuePaxaRecorderState<string> state = new(Four, Reserved(LeaderLane, "a"), Reserved(OtherReplicaLane, "b"), null);
 
         Assert.IsGreaterThan(state.First!.Key, state.CurrentAggregate!.Key, "The aggregate must dominate the first proposal, or the ordering rule could be what refuses this state.");
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, state));
+        Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, state));
     }
 
 
@@ -268,7 +268,7 @@ internal sealed class QuePaxaRecorderStateTests
         //though it stands at the round's first step.
         QuePaxaRecorderState<string> state = new(Four, Ordinary(10, LeaderLane, "a"), null, null);
 
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, state));
+        Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, state));
     }
 
 
@@ -283,7 +283,7 @@ internal sealed class QuePaxaRecorderStateTests
         QuePaxaRecorderState<string> state = new(Four, Ordinary(20, LeaderLane, "high"), Ordinary(10, OtherReplicaLane, "low"), null);
 
         Assert.IsLessThan(state.First!.Key, state.CurrentAggregate!.Key, "The aggregate must order below the first proposal, or the rule under test cannot fire.");
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, state));
+        Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, state));
     }
 
 
@@ -300,7 +300,7 @@ internal sealed class QuePaxaRecorderStateTests
         //refuse.
         QuePaxaRecorderState<string> state = new(Four, Ordinary(10, LeaderLane, "a"), Ordinary(10, LeaderLane, "a"), Ordinary(5, OtherReplicaLane, "carried"));
 
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, state));
+        Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, state));
     }
 
 
@@ -333,7 +333,7 @@ internal sealed class QuePaxaRecorderStateTests
 
             QuePaxaRecorderState<string> foreignCarry = new(five, ordinary, ordinary, Reserved(owner, "carried"));
 
-            Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, foreignCarry));
+            Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LeaderLane, foreignCarry));
         }
 
         //The leader's own claim is honoured at the round's first step and becomes the carry on an advance by one,
@@ -373,7 +373,7 @@ internal sealed class QuePaxaRecorderStateTests
 
             QuePaxaRecorderState<string> state = new(Four, Reserved(owner, "v"), Reserved(owner, "v"), null);
 
-            Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(null, state));
+            Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(null, state));
         }
     }
 

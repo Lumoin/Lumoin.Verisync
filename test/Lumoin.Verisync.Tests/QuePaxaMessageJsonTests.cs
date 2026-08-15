@@ -501,7 +501,7 @@ internal sealed class QuePaxaMessageJsonTests
         Assert.AreEqual(Four, decoded.Step);
         Assert.IsNull(decoded.First);
 
-        ArgumentException refused = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LaneA, decoded));
+        StateRestoreException refused = Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LaneA, decoded));
 
         Assert.AreEqual("state", refused.ParamName);
     }
@@ -530,7 +530,7 @@ internal sealed class QuePaxaMessageJsonTests
         Assert.IsTrue(decoded.First!.Key.Priority.IsReserved);
         Assert.AreEqual(LaneB, decoded.First.Key.Owner);
 
-        ArgumentException refused = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LaneA, decoded));
+        StateRestoreException refused = Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LaneA, decoded));
 
         Assert.AreEqual("state", refused.ParamName);
     }

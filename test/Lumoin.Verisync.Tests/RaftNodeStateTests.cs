@@ -91,7 +91,7 @@ internal sealed class RaftNodeStateTests
         //neither.
         RaftNodeState<string> state = new(Term.First, [0x01, 0x02], []);
 
-        Assert.ThrowsExactly<ArgumentException>(() => RaftNode<string>.FromState(N1, Members, state));
+        Assert.ThrowsExactly<StateRestoreException>(() => RaftNode<string>.FromState(N1, Members, state));
     }
 
 
@@ -102,7 +102,7 @@ internal sealed class RaftNodeStateTests
         ReplicaId outsider = Replica(9);
         RaftNodeState<string> state = new(Term.First, [.. outsider.AsSpan()], []);
 
-        Assert.ThrowsExactly<ArgumentException>(() => RaftNode<string>.FromState(N1, Members, state));
+        Assert.ThrowsExactly<StateRestoreException>(() => RaftNode<string>.FromState(N1, Members, state));
     }
 
 
@@ -124,7 +124,7 @@ internal sealed class RaftNodeStateTests
         //Log terms are non-decreasing by construction; a drop means the log was reordered or forged.
         RaftNodeState<string> state = new(new Term(3), [], [new RaftLogEntry<string>(new Term(2), "a"), new RaftLogEntry<string>(Term.First, "b")]);
 
-        Assert.ThrowsExactly<ArgumentException>(() => RaftNode<string>.FromState(N1, Members, state));
+        Assert.ThrowsExactly<StateRestoreException>(() => RaftNode<string>.FromState(N1, Members, state));
     }
 
 
@@ -134,7 +134,7 @@ internal sealed class RaftNodeStateTests
         //No entry can be tagged with a term the node has never reached; CurrentTerm bounds every entry term.
         RaftNodeState<string> state = new(Term.First, [], [new RaftLogEntry<string>(new Term(2), "a")]);
 
-        Assert.ThrowsExactly<ArgumentException>(() => RaftNode<string>.FromState(N1, Members, state));
+        Assert.ThrowsExactly<StateRestoreException>(() => RaftNode<string>.FromState(N1, Members, state));
     }
 
 

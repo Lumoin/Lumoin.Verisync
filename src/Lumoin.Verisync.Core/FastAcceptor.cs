@@ -210,22 +210,22 @@ public sealed class FastAcceptor<TValue>
 
         if(state.Promised < FastBallot.InitialFast())
         {
-            throw new ArgumentException($"A restored promise cannot stand below the initial fast ballot, got {Describe(state.Promised)}. An acceptor is pre-promised to that ballot, a prepare promises only a ballot at or above the standing promise, and an accept raises the promise rather than lowering it, so no acceptor holds a promise below it.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.AcceptorPromiseBelowInitialBallot, $"A restored promise cannot stand below the initial fast ballot, got {Describe(state.Promised)}. An acceptor is pre-promised to that ballot, a prepare promises only a ballot at or above the standing promise, and an accept raises the promise rather than lowering it, so no acceptor holds a promise below it.", nameof(state));
         }
 
         if(!state.AcceptedBallot.IsZero && state.AcceptedBallot < FastBallot.InitialFast())
         {
-            throw new ArgumentException($"A restored accepted ballot is either the zero ballot or at least the initial fast ballot, got {Describe(state.AcceptedBallot)}. An accept records the ballot it accepted, which stood at or above the promise, and a promise never stands below the initial fast ballot, so the only accepted ballot below it is the zero ballot an acceptor that accepted nothing carries.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.AcceptorAcceptedBallotBelowInitialBallot, $"A restored accepted ballot is either the zero ballot or at least the initial fast ballot, got {Describe(state.AcceptedBallot)}. An accept records the ballot it accepted, which stood at or above the promise, and a promise never stands below the initial fast ballot, so the only accepted ballot below it is the zero ballot an acceptor that accepted nothing carries.", nameof(state));
         }
 
         if(state.AcceptedBallot > state.Promised)
         {
-            throw new ArgumentException($"A restored promise cannot trail the accepted ballot, got {DescribeTrailingContrast(state.Promised, state.AcceptedBallot)}. Accepting raises the promise to at least the accepted ballot and nothing lowers it, which is what stops a stale lower-ballot accept arriving late from overwriting the record of a possibly-chosen value.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.AcceptorPromiseTrailsAcceptedBallot, $"A restored promise cannot trail the accepted ballot, got {DescribeTrailingContrast(state.Promised, state.AcceptedBallot)}. Accepting raises the promise to at least the accepted ballot and nothing lowers it, which is what stops a stale lower-ballot accept arriving late from overwriting the record of a possibly-chosen value.", nameof(state));
         }
 
         if(state.AcceptedBallot.IsZero && !EqualityComparer<TValue>.Default.Equals(state.AcceptedValue, default))
         {
-            throw new ArgumentException("A restored acceptor holding the zero accepted ballot cannot carry a value, because the accepted ballot and the accepted value are assigned together and only by an accept, whose ballot stands at or above the promise and so is never the zero ballot.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.AcceptorValueWithoutAcceptedBallot, "A restored acceptor holding the zero accepted ballot cannot carry a value, because the accepted ballot and the accepted value are assigned together and only by an accept, whose ballot stands at or above the promise and so is never the zero ballot.", nameof(state));
         }
 
         return new FastAcceptor<TValue>(state.Promised, state.AcceptedBallot, state.AcceptedValue);

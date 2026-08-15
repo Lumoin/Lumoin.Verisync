@@ -493,10 +493,12 @@ internal sealed class QuePaxaVersionedNodeTests
 
         VersionedValue<string> foreign = Installing(4UL, Second, ForeignChain);
 
-        ArgumentException refused = Assert.ThrowsExactly<ArgumentException>(() => _ = new QuePaxaVersionedNode<string>(Configuration, First, foreign));
+        StateRestoreException refused = Assert.ThrowsExactly<StateRestoreException>(() => _ = new QuePaxaVersionedNode<string>(Configuration, First, foreign));
 
+        //One rule, two doors: the constructor names the record it was handed and the restore names the
+        //snapshot it decoded, and the refusal a caller switches on is the same either way.
+        Assert.AreEqual(StateRestoreRefusal.HostForeignChain, refused.Refusal);
         Assert.AreEqual("committed", refused.ParamName);
-        Assert.Contains("must name the chain this host was given", refused.Message);
 
         //The chain identity is the only difference the refusal can have read: the same record under this host's
         //own chain constructs, and the host it builds serves the version after it under its writer's lane.
@@ -516,7 +518,7 @@ internal sealed class QuePaxaVersionedNodeTests
         //own genesis is the foreign chain, so what separates the two calls is the genesis each was handed.
         QuePaxaVersionedNodeState<string> state = new QuePaxaVersionedNode<string>(ForeignChain, First, foreign).ToState();
 
-        ArgumentException restored = Assert.ThrowsExactly<ArgumentException>(() => _ = QuePaxaVersionedNode<string>.FromState(Configuration, First, state));
+        StateRestoreException restored = Assert.ThrowsExactly<StateRestoreException>(() => _ = QuePaxaVersionedNode<string>.FromState(Configuration, First, state));
 
         Assert.AreEqual("state", restored.ParamName);
         Assert.Contains("must name the chain this host was given", restored.Message);
