@@ -591,7 +591,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         int maxAttempts,
         CancellationToken cancellationToken)
     {
-        QuePaxaWriteOutcome<TValue> outcome = new(QuePaxaWriteStatus.Undecided, NextVersion, default, null, RecorderStep.Zero, 0, false);
+        QuePaxaWriteOutcome<TValue> outcome = new(QuePaxaWriteStatus.Undecided, NextVersion, null, RecorderStep.Zero, 0, false);
 
         for(int attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -625,7 +625,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         //to find out.
         if(!instance.Configuration.Contains(Self))
         {
-            return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.OutsideConfiguration, instance.Version, default, null, RecorderStep.Zero, spent, false);
+            return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.OutsideConfiguration, instance.Version, null, RecorderStep.Zero, spent, false);
         }
 
         QuePaxaConfiguration next = change is null ? instance.Configuration : change(instance.Configuration);
@@ -646,7 +646,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
                 RegisterVersion observed = await ObserveCommittedVersion(cancellationToken).ConfigureAwait(false);
                 if(observed >= instance.Version)
                 {
-                    return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Undecided, instance.Version, default, null, RecorderStep.Zero, spent, false);
+                    return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Undecided, instance.Version, null, RecorderStep.Zero, spent, false);
                 }
             }
         }
@@ -665,7 +665,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
         if(!outcome.IsDecided || outcome.Value is not { } decided)
         {
-            return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Undecided, instance.Version, default, null, RecorderStep.Zero, spent + 1, true);
+            return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Undecided, instance.Version, null, RecorderStep.Zero, spent + 1, true);
         }
 
         //A misrouted decision kept out of the committed state cannot set the next instance's leader.
@@ -681,7 +681,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         //A value can be chosen by a quorum and still not be this writer's, so the test is over the whole record.
         QuePaxaWriteStatus status = decided.Equals(record) ? QuePaxaWriteStatus.Committed : QuePaxaWriteStatus.Superseded;
 
-        return new QuePaxaWriteOutcome<TValue>(status, instance.Version, decided.Value, decided.Writer, outcome.DecidedAt, spent + 1, true);
+        return new QuePaxaWriteOutcome<TValue>(status, instance.Version, decided, outcome.DecidedAt, spent + 1, true);
     }
 
 
@@ -878,7 +878,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// </remarks>
     private static QuePaxaWriteOutcome<TValue> Unchanged(VersionedValue<TValue> committed)
     {
-        return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Committed, committed.Version, committed.Value, committed.Writer, RecorderStep.Zero, 0, false);
+        return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Committed, committed.Version, committed, RecorderStep.Zero, 0, false);
     }
 
 

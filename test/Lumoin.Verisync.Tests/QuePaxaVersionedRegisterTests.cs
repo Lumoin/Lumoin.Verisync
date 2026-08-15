@@ -629,6 +629,73 @@ internal sealed class QuePaxaVersionedRegisterTests
 
 
     /// <summary>
+    /// A reconfiguration's outcome names the membership it installed, so an operator learns what its own
+    /// write did without reading the register again.
+    /// </summary>
+    /// <remarks>
+    /// Nothing here touches <see cref="QuePaxaVersionedRegister{TValue}.ActiveConfiguration"/> or
+    /// <see cref="QuePaxaVersionedRegister{TValue}.Committed"/>, which is the point: both are memos any learn
+    /// can move, so a caller reading them after a write reads the cluster's state and not its own write's
+    /// result. An outcome carrying the record the round decided cannot drift that way.
+    /// </remarks>
+    [TestMethod]
+    public async Task AReconfigurationsOutcomeCarriesTheMembershipItInstalled()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(WiderSchedule(), 4);
+        RecordingPublisher publisher = new(cluster);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: publisher.PublishAsync);
+
+        _ = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        QuePaxaWriteOutcome<string> shrunk = await register.ReconfigureAsync(current => current.Without(Fourth), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, shrunk.Status);
+        Assert.IsNotNull(shrunk.Record, "A committed reconfiguration reported no record, so its caller cannot learn what it installed.");
+        Assert.IsFalse(shrunk.Record.NextConfiguration.Contains(Fourth), "The outcome named the membership the instance ran under rather than the one the record installs.");
+        Assert.HasCount(3, shrunk.Record.NextConfiguration.Members);
+
+        //The value is carried forward by a reconfiguration, so the record proves the change was a membership
+        //change and not also a value write.
+        Assert.AreEqual("a", shrunk.Record.Value);
+        Assert.AreEqual(First, shrunk.Record.Writer);
+    }
+
+
+    /// <summary>
+    /// An outcome carries a record exactly where a version was decided, and the record it carries names the
+    /// outcome's own version.
+    /// </summary>
+    /// <remarks>
+    /// The three record-free statuses are asserted beside the decided one because the absence is the contract:
+    /// a version reported without a record is what an undecided attempt, a stood-down writer and a refused
+    /// membership each establish, and a record invented for any of them would claim a decision that was never
+    /// taken.
+    /// </remarks>
+    [TestMethod]
+    public async Task AnOutcomeCarriesARecordExactlyWhereAVersionWasDecided()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First);
+
+        QuePaxaWriteOutcome<string> decided = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, decided.Status);
+        Assert.IsNotNull(decided.Record);
+        Assert.AreEqual(decided.Version, decided.Record.Version, "The carried record names a version other than the one the outcome reports.");
+        Assert.AreEqual(decided.Record.Value, decided.Value, "The projected value disagrees with the carried record.");
+        Assert.AreEqual(decided.Record.Writer, decided.Writer, "The projected writer disagrees with the carried record.");
+
+        QuePaxaVersionedRegister<string> outsider = Register(cluster, Stranger);
+        QuePaxaWriteOutcome<string> refused = await outsider.WriteAsync(static _ => "b", maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.OutsideConfiguration, refused.Status);
+        Assert.IsNull(refused.Record, "A write refused for membership reported a record, so it claimed a decision it never took.");
+        Assert.IsNull(refused.Value);
+        Assert.IsNull(refused.Writer);
+    }
+
+
+    /// <summary>
     /// A prohibition is absent code, so it is pinned by what the records actually carry.
     /// </summary>
     /// <remarks>
@@ -762,6 +829,12 @@ internal sealed class QuePaxaVersionedRegisterTests
         Assert.IsFalse(again.Activated);
         Assert.AreEqual(new RegisterVersion(2UL), again.Version);
         Assert.HasCount(served, cluster.Recorded, "A change that installs nothing put a request on the wire.");
+
+        //The evidence for a change that ran nothing is the record already committed, so the outcome names it
+        //rather than reporting a decision with nothing behind it.
+        Assert.IsNotNull(again.Record, "A reconfiguration that installed nothing reported no record, so its caller cannot see the membership it asked for is already in place.");
+        Assert.AreEqual(again.Version, again.Record.Version);
+        Assert.IsFalse(again.Record.NextConfiguration.Contains(Fourth));
     }
 
 
