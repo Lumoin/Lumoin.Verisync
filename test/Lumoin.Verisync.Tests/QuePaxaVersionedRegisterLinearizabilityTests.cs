@@ -382,9 +382,9 @@ internal sealed class QuePaxaVersionedRegisterLinearizabilityTests
         QuePaxaVersionedRegister<string> register = cluster.CreateRegister(First, AttemptsPerRecorder);
         Task<QuePaxaWriteOutcome<string>> write = register.TryWriteAsync("a", TestContext.CancellationToken);
 
-        InvalidOperationException reported = Assert.ThrowsExactly<InvalidOperationException>(() => cluster.RunToQuiescence([write]));
+        ConsensusRefusedException reported = Assert.ThrowsExactly<ConsensusRefusedException>(() => cluster.RunToQuiescence([write]));
 
-        Assert.Contains("The version range is spent", reported.Message);
+        Assert.AreEqual(ConsensusRefusal.VersionRangeSpent, reported.Refusal);
     }
 
 
@@ -475,7 +475,7 @@ internal sealed class QuePaxaVersionedRegisterLinearizabilityTests
             //superseded attempt has already adopted the winner and needs none.
             if(outcome.Status == QuePaxaWriteStatus.Undecided)
             {
-                _ = await register.ReadAsync(cancellationToken).ConfigureAwait(false);
+                _ = await register.ReadAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
             }
 
             //AN EFFECT CAN LAND AFTER ITS OWN ATTEMPT GAVE UP, carried by another proposer and decided in the

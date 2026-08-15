@@ -283,7 +283,10 @@ internal sealed class ConsensusMessageJsonTests
             ConsensusMessageJson.CreateAcceptorStateDeserializer(ReadString));
 
         Assert.AreEqual(FastBallot.Zero, decoded.Promised);
-        Assert.ThrowsExactly<ArgumentException>(() => FastAcceptor<string>.FromState(decoded));
+
+        StateRestoreException refused = Assert.ThrowsExactly<StateRestoreException>(() => FastAcceptor<string>.FromState(decoded));
+
+        Assert.AreEqual(StateRestoreRefusal.AcceptorPromiseBelowInitialBallot, refused.Refusal);
     }
 
 
@@ -295,7 +298,10 @@ internal sealed class ConsensusMessageJsonTests
             ConsensusMessageJson.CreateAcceptorStateDeserializer(ReadString));
 
         Assert.AreEqual(FastBallot.Classic(2, R1), decoded.AcceptedBallot);
-        Assert.ThrowsExactly<ArgumentException>(() => FastAcceptor<string>.FromState(decoded));
+
+        StateRestoreException refused = Assert.ThrowsExactly<StateRestoreException>(() => FastAcceptor<string>.FromState(decoded));
+
+        Assert.AreEqual(StateRestoreRefusal.AcceptorPromiseTrailsAcceptedBallot, refused.Refusal);
     }
 
 
@@ -310,7 +316,10 @@ internal sealed class ConsensusMessageJsonTests
             ConsensusMessageJson.CreateAcceptorStateDeserializer(ReadString));
 
         Assert.AreEqual(new FastBallot(0, R1), decoded.AcceptedBallot);
-        Assert.ThrowsExactly<ArgumentException>(() => FastAcceptor<string>.FromState(decoded));
+
+        StateRestoreException refused = Assert.ThrowsExactly<StateRestoreException>(() => FastAcceptor<string>.FromState(decoded));
+
+        Assert.AreEqual(StateRestoreRefusal.AcceptorAcceptedBallotBelowInitialBallot, refused.Refusal);
     }
 
 

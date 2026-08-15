@@ -746,9 +746,9 @@ internal sealed class QuePaxaVersionedRunnerTests
 
         //The spent-range refusal is a different exception type than the version mismatch, and both must
         //fault their own call: a decline filter narrowed to the range type would end the loop here instead.
-        _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        _ = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
             () => runner.RecordAsync(Request(5UL, ProposalPriority.Lowest, Second, "a"), TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
-        _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        _ = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
             () => runner.RecordAsync(Request(6UL, ProposalPriority.Lowest, Second, "b"), TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
 
         Assert.IsEmpty(store.States);
@@ -1157,8 +1157,13 @@ internal sealed class QuePaxaVersionedRunnerTests
         InvalidOperationException fault = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => learn.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
 
-        Assert.IsInstanceOfType<InvalidOperationException>(fault.InnerException);
-        _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => run.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+        //The call is faulted with the loop's failure wrapped, because the call did not fail on its own
+        //account, and the loop itself ends carrying the refusal that ended it.
+        Assert.IsInstanceOfType<ConsensusRefusedException>(fault.InnerException);
+
+        ConsensusRefusedException ended = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(() => run.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(ConsensusRefusal.VersionRangeSpent, ended.Refusal);
         Assert.IsEmpty(store.States);
     }
 
@@ -1465,8 +1470,11 @@ internal sealed class QuePaxaVersionedRunnerTests
         InvalidOperationException fault = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => read.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
 
-        Assert.IsInstanceOfType<InvalidOperationException>(fault.InnerException);
-        _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => run.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+        Assert.IsInstanceOfType<ConsensusRefusedException>(fault.InnerException);
+
+        ConsensusRefusedException ended = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(() => run.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(ConsensusRefusal.VersionRangeSpent, ended.Refusal);
         Assert.IsEmpty(store.States);
     }
 
@@ -1495,7 +1503,7 @@ internal sealed class QuePaxaVersionedRunnerTests
             TimeProvider.System,
             resolveCommittedRecordReader: member => member.Equals(First) ? reader : throw new InvalidOperationException($"This test runs one host and it is not {member}."));
 
-        VersionedValue<string>? caughtUp = await register.ReadAsync(TestContext.CancellationToken).WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+        VersionedValue<string>? caughtUp = await register.ReadAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreSame(learned, caughtUp);
         Assert.AreEqual(new RegisterVersion(6UL), register.NextVersion);
@@ -1545,7 +1553,7 @@ internal sealed class QuePaxaVersionedRunnerTests
         //The caller's own token is never signalled here, so the cancellation the stopped host answers with is
         //that host's unavailability wearing a cancellation's type; a reader that rethrew it would abort the
         //catch-up at every host after it and learn nothing from any of them.
-        Task<VersionedValue<string>?> catchUp = register.ReadAsync(CancellationToken.None);
+        Task<VersionedValue<string>?> catchUp = register.ReadAsync(Timeout.InfiniteTimeSpan, CancellationToken.None);
         await stoppingToken.CancelAsync().ConfigureAwait(false);
 
         Assert.AreSame(learned, await catchUp.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
@@ -1575,7 +1583,7 @@ internal sealed class QuePaxaVersionedRunnerTests
             resolveCommittedRecordReader: _ => blockingRunner.ReadCommittedAsync);
 
         using CancellationTokenSource callerToken = new();
-        Task<VersionedValue<string>?> ownCancellation = caller.ReadAsync(callerToken.Token);
+        Task<VersionedValue<string>?> ownCancellation = caller.ReadAsync(Timeout.InfiniteTimeSpan, callerToken.Token);
         await callerToken.CancelAsync().ConfigureAwait(false);
 
         _ = await Assert.ThrowsAsync<OperationCanceledException>(() => ownCancellation.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);

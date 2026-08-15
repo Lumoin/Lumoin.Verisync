@@ -25,6 +25,18 @@ internal sealed class QuePaxaVersionedRegisterTests
     private static TimeSpan BaseDelay { get; } = TimeSpan.FromMilliseconds(40);
 
     /// <summary>
+    /// The per-member patience the deadline rows spend. It is measured on a fake clock, so the value only has
+    /// to be one a test can advance past exactly.
+    /// </summary>
+    private static TimeSpan ProbeDeadline { get; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// How long a row waits on real time for a side effect it expects, so a defect names itself instead of
+    /// hanging the suite. It is never spent on a passing run.
+    /// </summary>
+    private static TimeSpan Told { get; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// The membership a register over this suite's agreed order stamps on its records, so a record built here
     /// compares equal to one the register wrote.
     /// </summary>
@@ -395,6 +407,65 @@ internal sealed class QuePaxaVersionedRegisterTests
 
 
     /// <summary>
+    /// A reply carrying another member's identity is refused on a retransmission exactly as it is on a first
+    /// send, so a mis-answering recorder concludes as unavailability inside the attempt budget.
+    /// </summary>
+    /// <remarks>
+    /// The neighbouring row points two slots at one host, so the mis-wiring is in the resolver and those hosts
+    /// never serve at all. Here the wiring is honest and the hosts do serve: each mis-answering member drops
+    /// its first send without answering, which is the only way the proposer spends a retransmission on it, and
+    /// answers the retransmission with a rewritten identity. A register that checked identity only on a first
+    /// send would count both retransmitted replies and commit on three answers against a quorum of two, so the
+    /// undecided outcome fires on the identity rule and on nothing else — the dropped first sends alone cannot
+    /// produce it.
+    /// </remarks>
+    [TestMethod]
+    public async Task AMismatchedIdentityIsRefusedOnARetransmissionAsWellAsOnAFirstSend()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+
+        //The counter lives outside the resolver because the resolver is invoked once per member per attempt,
+        //so state kept inside it would reset before the retransmission it is counting.
+        Dictionary<ReplicaId, int> sends = new() { [Second] = 0, [Third] = 0 };
+
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, resolve: member =>
+        {
+            VersionedRecorderEndpointDelegate<VersionedValue<string>> inner = cluster.Resolve(member);
+            if(member.Equals(First))
+            {
+                return inner;
+            }
+
+            return async (request, token) =>
+            {
+                if(sends[member]++ == 0)
+                {
+                    throw new IOException("The first send to this member is dropped, so the proposer spends a retransmission on it.");
+                }
+
+                VersionedRecordReply<VersionedValue<string>> reply = await inner(request, token).ConfigureAwait(false);
+
+                return reply with { Recorder = First };
+            };
+        });
+
+        QuePaxaWriteOutcome<string> outcome = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Undecided, outcome.Status);
+        Assert.IsNull(register.Committed);
+        Assert.IsNull(outcome.Record);
+
+        //A retransmission was actually spent on each mis-answering member, and each host actually answered it,
+        //so the refusal was taken against a reply that existed rather than against a transport that carried
+        //nothing.
+        Assert.IsGreaterThan(1, sends[Second]);
+        Assert.IsGreaterThan(1, sends[Third]);
+        Assert.IsGreaterThan(0, cluster.Served[1]);
+        Assert.IsGreaterThan(0, cluster.Served[2]);
+    }
+
+
+    /// <summary>
     /// A round that decided a record carrying another version faults the write rather than being adopted.
     /// </summary>
     /// <remarks>
@@ -420,8 +491,10 @@ internal sealed class QuePaxaVersionedRegisterTests
             };
         });
 
-        InvalidOperationException reported = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        ConsensusRefusedException reported = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
             async () => await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(ConsensusRefusal.MisroutedDecision, reported.Refusal);
 
         Assert.Contains("decided a record carrying version", reported.Message);
         Assert.IsNull(register.Committed, "A record the write refused was adopted anyway.");
@@ -452,8 +525,10 @@ internal sealed class QuePaxaVersionedRegisterTests
         Task<QuePaxaWriteOutcome<string>> pending = register.TryWriteAsync("a", TestContext.CancellationToken);
 
         //One proposal key naming two values is what the key's uniqueness contract forbids.
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        ConsensusRefusedException concurrent = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
             async () => await register.TryWriteAsync("b", TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(ConsensusRefusal.ConcurrentWrite, concurrent.Refusal);
 
         clock.Advance(2 * BaseDelay);
         _ = await pending.ConfigureAwait(false);
@@ -550,7 +625,7 @@ internal sealed class QuePaxaVersionedRegisterTests
 
         Assert.IsNull(register.Committed);
 
-        VersionedValue<string>? read = await register.ReadAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        VersionedValue<string>? read = await register.ReadAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreEqual(committed, read);
         Assert.AreEqual(new RegisterVersion(8UL), register.NextVersion);
@@ -625,6 +700,73 @@ internal sealed class QuePaxaVersionedRegisterTests
 
         Assert.AreEqual(QuePaxaWriteStatus.Undecided, missed.Status, "One resolvable member of three decided, so the quorum was counted over the resolved members rather than over the membership.");
         Assert.IsNull(withTwoUnresolved.Committed);
+    }
+
+
+    /// <summary>
+    /// A reconfiguration's outcome names the membership it installed, so an operator learns what its own
+    /// write did without reading the register again.
+    /// </summary>
+    /// <remarks>
+    /// Nothing here touches <see cref="QuePaxaVersionedRegister{TValue}.ActiveConfiguration"/> or
+    /// <see cref="QuePaxaVersionedRegister{TValue}.Committed"/>, which is the point: both are memos any learn
+    /// can move, so a caller reading them after a write reads the cluster's state and not its own write's
+    /// result. An outcome carrying the record the round decided cannot drift that way.
+    /// </remarks>
+    [TestMethod]
+    public async Task AReconfigurationsOutcomeCarriesTheMembershipItInstalled()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(WiderSchedule(), 4);
+        RecordingPublisher publisher = new(cluster);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, publish: publisher.PublishAsync);
+
+        _ = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        QuePaxaWriteOutcome<string> shrunk = await register.ReconfigureAsync(current => current.Without(Fourth), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, shrunk.Status);
+        Assert.IsNotNull(shrunk.Record, "A committed reconfiguration reported no record, so its caller cannot learn what it installed.");
+        Assert.IsFalse(shrunk.Record.NextConfiguration.Contains(Fourth), "The outcome named the membership the instance ran under rather than the one the record installs.");
+        Assert.HasCount(3, shrunk.Record.NextConfiguration.Members);
+
+        //The value is carried forward by a reconfiguration, so the record proves the change was a membership
+        //change and not also a value write.
+        Assert.AreEqual("a", shrunk.Record.Value);
+        Assert.AreEqual(First, shrunk.Record.Writer);
+    }
+
+
+    /// <summary>
+    /// An outcome carries a record exactly where a version was decided, and the record it carries names the
+    /// outcome's own version.
+    /// </summary>
+    /// <remarks>
+    /// The three record-free statuses are asserted beside the decided one because the absence is the contract:
+    /// a version reported without a record is what an undecided attempt, a stood-down writer and a refused
+    /// membership each establish, and a record invented for any of them would claim a decision that was never
+    /// taken.
+    /// </remarks>
+    [TestMethod]
+    public async Task AnOutcomeCarriesARecordExactlyWhereAVersionWasDecided()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First);
+
+        QuePaxaWriteOutcome<string> decided = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Committed, decided.Status);
+        Assert.IsNotNull(decided.Record);
+        Assert.AreEqual(decided.Version, decided.Record.Version, "The carried record names a version other than the one the outcome reports.");
+        Assert.AreEqual(decided.Record.Value, decided.Value, "The projected value disagrees with the carried record.");
+        Assert.AreEqual(decided.Record.Writer, decided.Writer, "The projected writer disagrees with the carried record.");
+
+        QuePaxaVersionedRegister<string> outsider = Register(cluster, Stranger);
+        QuePaxaWriteOutcome<string> refused = await outsider.WriteAsync(static _ => "b", maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.OutsideConfiguration, refused.Status);
+        Assert.IsNull(refused.Record, "A write refused for membership reported a record, so it claimed a decision it never took.");
+        Assert.IsNull(refused.Value);
+        Assert.IsNull(refused.Writer);
     }
 
 
@@ -737,9 +879,10 @@ internal sealed class QuePaxaVersionedRegisterTests
         VersionedQuePaxaCluster<string> cluster = new(WiderSchedule(), 4);
         QuePaxaVersionedRegister<string> register = Register(cluster, First);
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        ConsensusRefusedException refused = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
             async () => await register.ReconfigureAsync(current => current.Without(Fourth), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
 
+        Assert.AreEqual(ConsensusRefusal.NothingCommittedToReconfigure, refused.Refusal);
         Assert.IsEmpty(cluster.Recorded);
     }
 
@@ -762,6 +905,12 @@ internal sealed class QuePaxaVersionedRegisterTests
         Assert.IsFalse(again.Activated);
         Assert.AreEqual(new RegisterVersion(2UL), again.Version);
         Assert.HasCount(served, cluster.Recorded, "A change that installs nothing put a request on the wire.");
+
+        //The evidence for a change that ran nothing is the record already committed, so the outcome names it
+        //rather than reporting a decision with nothing behind it.
+        Assert.IsNotNull(again.Record, "A reconfiguration that installed nothing reported no record, so its caller cannot see the membership it asked for is already in place.");
+        Assert.AreEqual(again.Version, again.Record.Version);
+        Assert.IsFalse(again.Record.NextConfiguration.Contains(Fourth));
     }
 
 
@@ -881,7 +1030,7 @@ internal sealed class QuePaxaVersionedRegisterTests
             ? throw new IOException("The third member is unreachable.")
             : new ValueTask<MemberVersionReport>(new MemberVersionReport(member, member.Equals(First) ? new RegisterVersion(4UL) : new RegisterVersion(3UL))));
 
-        RegisterReadiness readiness = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        RegisterReadiness readiness = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreEqual(cluster.Genesis, readiness.Configuration);
         Assert.AreEqual(2, readiness.Reachable);
@@ -904,8 +1053,12 @@ internal sealed class QuePaxaVersionedRegisterTests
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
         QuePaxaVersionedRegister<string> register = Register(cluster, First);
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            async () => await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+        ConsensusRefusedException refused = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
+            async () => await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        //An unwired query and a cluster that answered nothing are told apart by the rule, which is the whole
+        //reason this refusal exists rather than an empty report.
+        Assert.AreEqual(ConsensusRefusal.ReadinessWithoutMemberQuery, refused.Refusal);
     }
 
 
@@ -925,10 +1078,10 @@ internal sealed class QuePaxaVersionedRegisterTests
         QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (_, _) =>
             new ValueTask<MemberVersionReport>(new MemberVersionReport(First, new RegisterVersion(3UL))));
 
-        InvalidOperationException reported = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            async () => await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+        ConsensusRefusedException reported = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
+            async () => await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
 
-        Assert.Contains("was answered by", reported.Message);
+        Assert.AreEqual(ConsensusRefusal.ProbeAnsweredByAnotherMember, reported.Refusal);
     }
 
 
@@ -950,7 +1103,7 @@ internal sealed class QuePaxaVersionedRegisterTests
             : new ValueTask<MemberVersionReport>(new MemberVersionReport(member, new RegisterVersion(2UL))));
 
         QuePaxaConfiguration incoming = cluster.Genesis.With(Fourth);
-        RegisterReadiness readiness = await register.ReadReadinessAsync(incoming, TestContext.CancellationToken).ConfigureAwait(false);
+        RegisterReadiness readiness = await register.ReadReadinessAsync(incoming, Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreEqual(incoming, readiness.Configuration);
         Assert.AreSequenceEqual(new[] { First, Second, Third, Fourth }, readiness.Members.Select(member => member.Member));
@@ -959,9 +1112,233 @@ internal sealed class QuePaxaVersionedRegisterTests
 
         QuePaxaConfiguration foreign = QuePaxaConfiguration.CreateGenesis([First, Second]);
         ArgumentException refused = await Assert.ThrowsExactlyAsync<ArgumentException>(
-            async () => await register.ReadReadinessAsync(foreign, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+            async () => await register.ReadReadinessAsync(foreign, Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
 
         Assert.Contains("another chain", refused.Message);
+    }
+
+
+    /// <summary>
+    /// A member that answers nothing at all is reported unreachable once its deadline passes, and the members
+    /// after it are still asked.
+    /// </summary>
+    /// <remarks>
+    /// The silent probe ignores the token it is handed, which is the whole point of the row: a deadline
+    /// enforced by cancellation alone would leave this report parked forever, because nothing obliges a query
+    /// to honour anything. The one-line rewrite this fails against is awaiting the probe directly instead of
+    /// racing it, which does not report a wrong answer — it never reports at all.
+    /// </remarks>
+    [TestMethod]
+    public async Task ASilentMemberIsReportedUnreachableAndTheMembersAfterItAreStillAsked()
+    {
+        FakeTimeProvider clock = new();
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+
+        TaskCompletionSource asked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<MemberVersionReport> silent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, clock: clock, observeMember: (member, token) =>
+        {
+            if(!member.Equals(Second))
+            {
+                return new ValueTask<MemberVersionReport>(new MemberVersionReport(member, new RegisterVersion(2UL)));
+            }
+
+            _ = asked.TrySetResult();
+
+            return new ValueTask<MemberVersionReport>(silent.Task);
+        });
+
+        Task<RegisterReadiness> reading = register.ReadReadinessAsync(ProbeDeadline, TestContext.CancellationToken);
+
+        await asked.Task.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        clock.Advance(ProbeDeadline);
+
+        RegisterReadiness readiness = await reading.ConfigureAwait(false);
+
+        Assert.HasCount(3, readiness.Members);
+        Assert.IsTrue(readiness.Members[0].Reachable);
+        Assert.IsFalse(readiness.Members[1].Reachable, "A member that answered nothing at all was not reported unreachable.");
+        Assert.IsTrue(readiness.Members[2].Reachable, "A silent member cost the members after it their answers, so the deadline was spent over the report rather than per member.");
+
+        //The abandoned probe is still running, and answering it after the fact changes nothing that was
+        //already reported.
+        _ = silent.TrySetResult(new MemberVersionReport(Second, new RegisterVersion(2UL)));
+    }
+
+
+    /// <summary>
+    /// A probe that honours its token is cancelled at the deadline rather than merely abandoned.
+    /// </summary>
+    /// <remarks>
+    /// The race is what bounds the report and the token is what lets a well-behaved query release its
+    /// transport instead of holding it until it finishes on its own. Only the second is asserted here,
+    /// because the first is the row above.
+    /// <para>
+    /// The probe reports its own cancellation through a completion rather than a flag, because the report is
+    /// finished the moment the race is decided and the abandoned probe's continuation has not run yet. A flag
+    /// read straight after the report is read before it is written.
+    /// </para>
+    /// </remarks>
+    [TestMethod]
+    public async Task TheDeadlineCancelsACooperativeProbeBesideGivingUpOnIt()
+    {
+        FakeTimeProvider clock = new();
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+
+        TaskCompletionSource asked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource told = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, clock: clock, observeMember: async (member, token) =>
+        {
+            if(!member.Equals(First))
+            {
+                return new MemberVersionReport(member, new RegisterVersion(2UL));
+            }
+
+            _ = asked.TrySetResult();
+
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+            }
+            catch(OperationCanceledException)
+            {
+                _ = told.TrySetResult();
+
+                throw;
+            }
+
+            return new MemberVersionReport(member, RegisterVersion.First);
+        });
+
+        Task<RegisterReadiness> reading = register.ReadReadinessAsync(ProbeDeadline, TestContext.CancellationToken);
+
+        await asked.Task.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        clock.Advance(ProbeDeadline);
+
+        RegisterReadiness readiness = await reading.ConfigureAwait(false);
+
+        Assert.IsFalse(readiness.Members[0].Reachable);
+
+        //The barrier, not a flag: a probe that was never told would leave this wait to expire, which names the
+        //defect instead of racing it.
+        await told.Task.WaitAsync(Told, TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+
+    /// <summary>
+    /// The caller's own cancellation ends the report, and is not absorbed as a member's unreachability.
+    /// </summary>
+    /// <remarks>
+    /// A deadline and a caller's signal both arrive as cancellation at the same await, and only one of them
+    /// means the caller stopped asking. The row exists because collapsing them would make a cancelled report
+    /// return a plausible answer instead of throwing.
+    /// </remarks>
+    [TestMethod]
+    public async Task ACallersCancellationDuringAProbeEndsTheReportRatherThanReportingUnreachable()
+    {
+        FakeTimeProvider clock = new();
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+
+        using CancellationTokenSource caller = new();
+        TaskCompletionSource asked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<MemberVersionReport> silent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, clock: clock, observeMember: (member, token) =>
+        {
+            _ = asked.TrySetResult();
+
+            return new ValueTask<MemberVersionReport>(silent.Task);
+        });
+
+        Task<RegisterReadiness> reading = register.ReadReadinessAsync(ProbeDeadline, caller.Token);
+
+        await asked.Task.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        await caller.CancelAsync().ConfigureAwait(false);
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => reading).ConfigureAwait(false);
+
+        _ = silent.TrySetResult(new MemberVersionReport(First, RegisterVersion.First));
+    }
+
+
+    /// <summary>
+    /// A deadline is positive, or infinite said out loud.
+    /// </summary>
+    /// <remarks>
+    /// Zero is refused rather than read as no patience: it reports every member unreachable, which is what a
+    /// wholly silent cluster reports, and this surface already refuses that collapse when no query was
+    /// supplied at all.
+    /// </remarks>
+    [TestMethod]
+    public async Task AProbeDeadlineIsPositiveOrExplicitlyInfinite()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (member, _) =>
+            new ValueTask<MemberVersionReport>(new MemberVersionReport(member, RegisterVersion.First)));
+
+        _ = await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(
+            async () => await register.ReadReadinessAsync(TimeSpan.Zero, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        _ = await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(
+            async () => await register.ReadReadinessAsync(TimeSpan.FromSeconds(-5), TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        _ = await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(
+            async () => await register.ReadAsync(TimeSpan.Zero, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        //The one negative span that is not a refusal, said out loud rather than spelled as a number.
+        RegisterReadiness patient = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(3, patient.Reachable);
+    }
+
+
+    /// <summary>
+    /// A catch-up query that answers nothing is skipped once its deadline passes, and the members after it are
+    /// still asked.
+    /// </summary>
+    /// <remarks>
+    /// The catch-up's exposure is the readiness read's, one seam over, and its cure is the same: a host that
+    /// says nothing is a host that failed without admitting it, and learning from fewer hosts is a weaker
+    /// result rather than a wrong one. The silent query here ignores its token for the reason the readiness
+    /// row's does.
+    /// </remarks>
+    [TestMethod]
+    public async Task ASilentCatchUpQueryIsSkippedAndTheMembersAfterItAreStillAsked()
+    {
+        FakeTimeProvider clock = new();
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> writer = Register(cluster, First);
+
+        _ = await writer.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        VersionedValue<string> committed = writer.Committed!;
+        TaskCompletionSource asked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<VersionedValue<string>?> silent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        QuePaxaVersionedRegister<string> behind = Register(cluster, Second, clock: clock, readCommitted: member => member.Equals(First)
+            ? token =>
+            {
+                _ = asked.TrySetResult();
+
+                return new ValueTask<VersionedValue<string>?>(silent.Task);
+            }
+            : token => new ValueTask<VersionedValue<string>?>(committed));
+
+        Assert.IsNull(behind.Committed);
+
+        Task<VersionedValue<string>?> reading = behind.ReadAsync(ProbeDeadline, TestContext.CancellationToken);
+
+        await asked.Task.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        clock.Advance(ProbeDeadline);
+
+        VersionedValue<string>? caughtUp = await reading.ConfigureAwait(false);
+
+        Assert.IsNotNull(caughtUp, "A silent first member parked the catch-up, so the members after it were never asked.");
+        Assert.AreEqual(committed.Version, caughtUp.Version);
+
+        _ = silent.TrySetResult(null);
     }
 
 
@@ -979,7 +1356,8 @@ internal sealed class QuePaxaVersionedRegisterTests
         TimeSpan? baseDelay = null,
         PublishCommittedRecordDelegate<string>? publish = null,
         ResolveRecorderEndpointDelegate<string>? resolve = null,
-        ObserveMemberVersionDelegate? observeMember = null)
+        ObserveMemberVersionDelegate? observeMember = null,
+        ResolveCommittedRecordReaderDelegate<string>? readCommitted = null)
     {
         return new QuePaxaVersionedRegister<string>(
             cluster.Genesis,
@@ -990,6 +1368,7 @@ internal sealed class QuePaxaVersionedRegisterTests
             AttemptsPerRecorder,
             clock ?? TimeProvider.System,
             observe,
+            resolveCommittedRecordReader: readCommitted,
             publishCommittedRecord: publish,
             observeMemberVersion: observeMember);
     }

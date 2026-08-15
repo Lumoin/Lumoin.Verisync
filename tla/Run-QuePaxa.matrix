@@ -1,0 +1,57 @@
+# The pinned matrix for Run-QuePaxa. Both runners read this file, so the set of configurations and the outcome
+# each must produce are stated once rather than in two places that can drift apart.
+#
+# Each row is the configuration, the specification, the expected outcome, and for a negative the invariant it
+# must break, separated by tabs. Blank lines and lines opening with a hash are ignored. The modules SANY
+# parses are the distinct specifications named here, in the order they first appear, so a specification
+# reaches SANY by having a configuration rather than by being listed a second time.
+#
+# An expected red run is a negative model: a configuration that enables a forbidden behaviour or removes a
+# shipped guard, and whose run must report a violation. A green negative means the model lost its defect and
+# its positive runs prove nothing. A red run must also break the invariant named here, because a negative
+# that goes red on something else has stopped testing what it was written for.
+MCAbstractSafety.cfg	QuePaxaAbstract.tla	green
+MCAbstractCrash.cfg	QuePaxaAbstract.tla	green
+MCAbstractTieDetection.cfg	QuePaxaAbstract.tla	green
+MCAbstractSweep.cfg	QuePaxaAbstract.tla	green
+MCAbstractNoUniversalWitness.cfg	QuePaxaAbstract.tla	red	Agreement
+MCAbstractDecideOnCommon.cfg	QuePaxaAbstract.tla	red	Agreement
+MCAbstractCarryExistent.cfg	QuePaxaAbstract.tla	red	Agreement
+MCAbstractTiedPriorities.cfg	QuePaxaAbstract.tla	red	Agreement
+MCConcreteSingleLeader.cfg	QuePaxaConcrete.tla	green
+MCConcreteTwoLeaders.cfg	QuePaxaConcrete.tla	red	Agreement
+MCConcreteIdenticalKeyOnly.cfg	QuePaxaConcrete.tla	red	Agreement
+MCConcreteFirstClaimBindsOnly.cfg	QuePaxaConcrete.tla	red	Agreement
+MCConcreteConfiguredLeaderOnly.cfg	QuePaxaConcrete.tla	green
+MCConcreteTwoLeadersGuarded.cfg	QuePaxaConcrete.tla	green
+MCConcreteDeclaredScheduleBinds.cfg	QuePaxaConcrete.tla	green
+MCConcreteSingleLeaderDeclaredSchedule.cfg	QuePaxaConcrete.tla	green
+MCConcreteMixedLeaderlessWideDowngrade.cfg	QuePaxaConcrete.tla	red	Agreement
+MCConcreteMixedLeaderlessNarrowDowngrade.cfg	QuePaxaConcrete.tla	green
+MCConcreteSplitLeadersWideDowngrade.cfg	QuePaxaConcrete.tla	red	Agreement
+MCConcreteSplitLeadersNarrowDowngrade.cfg	QuePaxaConcrete.tla	red	Agreement
+MCDurableRecorder.cfg	QuePaxaDurable.tla	green
+MCDurableVolatileReply.cfg	QuePaxaDurable.tla	red	ServedFirstIsStable
+MCDurableFreshRestart.cfg	QuePaxaDurable.tla	red	ServedFirstIsStable
+MCDurablePartialPersist.cfg	QuePaxaDurable.tla	red	ServedPriorAggregateIsStable
+MCDurableStepZeroServed.cfg	QuePaxaDurable.tla	red	StepZeroDurableStateWasNeverServed
+MCTornAtomic.cfg	QuePaxaTornWrite.tla	green
+MCTornAtomicUnvalidated.cfg	QuePaxaTornWrite.tla	green
+MCTornRefusedTear.cfg	QuePaxaTornWrite.tla	red	DurableStateIsRestorable
+MCTornAcceptedTear.cfg	QuePaxaTornWrite.tla	red	DurableRestoreKeepsEveryAnswer
+MCTornRestoreLoses.cfg	QuePaxaTornWrite.tla	red	ServedFirstIsStable
+MCTornPriorAggregate.cfg	QuePaxaTornWrite.tla	red	ServedPriorAggregateIsStable
+MCTornDurableShape.cfg	QuePaxaTornWrite.tla	red	TypeOK
+MCTornStepZeroPremise.cfg	QuePaxaTornWrite.tla	green
+MCTornUnguardedRestore.cfg	QuePaxaTornWrite.tla	red	RegisterHoldsOnlyRecorderStates
+MCTornFabricated.cfg	QuePaxaTornWrite.tla	red	DurableRestoreKeepsEveryAnswer
+MCMembershipShipped.cfg	QuePaxaMembership.tla	green
+MCMembershipDisjointChange.cfg	QuePaxaMembership.tla	green
+MCMembershipRemovedProposer.cfg	QuePaxaMembership.tla	green
+MCMembershipGuardedGenesis.cfg	QuePaxaMembership.tla	green
+MCMembershipLocalConfig.cfg	QuePaxaMembership.tla	red	OneConfigurationPerInstance
+MCMembershipSplitGenesis.cfg	QuePaxaMembership.tla	red	Agreement
+MCMembershipCrossClusterQuorum.cfg	QuePaxaMembership.tla	red	NoCrossClusterDecision
+MCMembershipServesAWindow.cfg	QuePaxaMembership.tla	red	DecisionsCountOnlyCaughtUpHosts
+MCMembershipOutsiderCounted.cfg	QuePaxaMembership.tla	red	DecisionsCountOnlyMembers
+MCMembershipEagerDecommission.cfg	QuePaxaMembership.tla	red	LatestDecisionSurvives

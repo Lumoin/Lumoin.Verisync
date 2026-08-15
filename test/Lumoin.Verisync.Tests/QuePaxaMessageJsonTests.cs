@@ -501,8 +501,9 @@ internal sealed class QuePaxaMessageJsonTests
         Assert.AreEqual(Four, decoded.Step);
         Assert.IsNull(decoded.First);
 
-        ArgumentException refused = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LaneA, decoded));
+        StateRestoreException refused = Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LaneA, decoded));
 
+        Assert.AreEqual(StateRestoreRefusal.RecorderFirstProposalMissing, refused.Refusal);
         Assert.AreEqual("state", refused.ParamName);
     }
 
@@ -530,7 +531,11 @@ internal sealed class QuePaxaMessageJsonTests
         Assert.IsTrue(decoded.First!.Key.Priority.IsReserved);
         Assert.AreEqual(LaneB, decoded.First.Key.Owner);
 
-        ArgumentException refused = Assert.ThrowsExactly<ArgumentException>(() => QuePaxaRecorder<string>.FromState(LaneA, decoded));
+        //The claim decodes into both slots, so RecorderForeignClaimInFirstProposal and
+        //RecorderForeignClaimInAggregate are jointly reachable and only the order the rules are stated in
+        //decides which one answers. The row names no refusal, because what it pins is the split between the
+        //decoder and the restore rather than which half of the reserved-claim rule refuses the value.
+        StateRestoreException refused = Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaRecorder<string>.FromState(LaneA, decoded));
 
         Assert.AreEqual("state", refused.ParamName);
     }

@@ -14,9 +14,11 @@ documented in each module's header comment.
 
 A negative model is a configuration that enables a forbidden behavior (or removes a shipped
 guard) and whose TLC run MUST report a violation. A green negative run means the model is too
-abstract to trust and its positive runs prove nothing. The runners (`Run-SessionAndSeal.ps1`,
-`Run-QuePaxa.ps1` and `Run-Raft.ps1`) enforce the expected outcome of every configuration in the
-matrices below and fail on any deviation. A configuration that no runner pins does not belong in this directory.
+abstract to trust and its positive runs prove nothing. The runners (`Run-SessionAndSeal`,
+`Run-QuePaxa` and `Run-Raft`, each as a `.ps1` and a `.sh`) enforce the expected outcome of every
+configuration in the matrices below and fail on any deviation. A configuration that no runner pins does not
+belong in this directory. The two shapes of each runner pin the same matrix, and each refuses to run when
+its count of configurations disagrees with its counterpart's.
 
 A bound is derived from what the property needs to express, not from what finishes quickly. A
 constant chosen for cost can leave the hazard unwritable rather than unreached: a scenario that
@@ -35,18 +37,44 @@ certifies nothing about the states between them.
 
 ## Toolchain
 
-A JRE, a current `tla2tools.jar`, and `sany` / `tlc` wrappers around it (heap-bounded; override with
-`TLA_JAVA_HEAP`). The runners take the wrappers from `PATH`, or from the directory `TLAPLUS_HOME`
-names, or from `-ToolchainPath`, and accept whichever extension the operating system uses, so where
-the toolchain is installed and what its wrappers are called are properties of the machine and not of
-this repository. Run from this directory:
+A `tla2tools.jar` and a Java runtime to run it with. The standard TLA+ distribution supplies both,
+the jar at the top of the toolchain directory and a bundled runtime beneath it in `jre`, so
+installing that distribution is the whole prerequisite.
+
+What a machine has to tell the runners is where the jar is. `TLAPLUS_HOME`, or `-ToolchainPath`,
+names the directory holding `tla2tools.jar`; `TLA2TOOLS_JAR`, or `-Tla2ToolsJar`, names the jar
+itself, for an installation that keeps it somewhere other than beside the rest of the toolchain.
+Each runner invokes `java` directly with an explicit class path and enters `tla2sany.SANY` and
+`tlc2.TLC` by main class, so nothing has to be on `PATH` and no wrapper script has to exist.
+
+The runtime is taken from the toolchain's own `jre` directory first, then from `JAVA_HOME`, and only
+then from `PATH`. That order matters on a machine that carries an older `java` on `PATH` for
+something else: the current toolchain does not run on it, and the failure that produces reads as a
+specification error rather than as the missing prerequisite it is.
+
+`TLA_JAVA_HEAP` sets the heap TLC runs with and defaults to `-Xmx2g`; raise it for a configuration
+whose state space outgrows that. SANY parses rather than model-checks and keeps a small heap of its
+own regardless. Run from this directory:
 
     $env:TLAPLUS_HOME = "<the toolchain directory>"
-    sany .\SessionPair.tla
-    tlc -workers 4 -checkpoint 0 -config .\MCSessionPairSafety.cfg .\SessionPair.tla
     .\Run-SessionAndSeal.ps1
     .\Run-QuePaxa.ps1
     .\Run-Raft.ps1
+
+or, on a shell:
+
+    export TLAPLUS_HOME=<the toolchain directory>
+    ./Run-SessionAndSeal.sh
+    ./Run-QuePaxa.sh
+    ./Run-Raft.sh
+
+Both shapes take the same switches, spelled for their own host: `-Workers`, `-ToolchainPath` and
+`-Tla2ToolsJar` in PowerShell, and `--workers`, `--toolchain-path` and `--tla2tools-jar` on a shell.
+
+A single module or configuration takes the same two entry points the runners take:
+
+    & "$env:TLAPLUS_HOME\jre\bin\java.exe" -Xmx512m -cp "$env:TLAPLUS_HOME\tla2tools.jar" tla2sany.SANY .\SessionPair.tla
+    & "$env:TLAPLUS_HOME\jre\bin\java.exe" -Xmx2g -XX:+UseParallelGC -cp "$env:TLAPLUS_HOME\tla2tools.jar" tlc2.TLC -workers 4 -checkpoint 0 -config .\MCSessionPairSafety.cfg .\SessionPair.tla
 
 ## The session and seal matrix
 

@@ -1,0 +1,26 @@
+# The pinned matrix for Run-Raft. Both runners read this file, so the set of configurations and the outcome
+# each must produce are stated once rather than in two places that can drift apart.
+#
+# Each row is the configuration, the specification, the expected outcome, and for a negative the invariant it
+# must break, separated by tabs. Blank lines and lines opening with a hash are ignored. The modules SANY
+# parses are the distinct specifications named here, in the order they first appear, so a specification
+# reaches SANY by having a configuration rather than by being listed a second time.
+#
+# An expected red run is a negative model: a configuration that enables a forbidden behaviour or removes a
+# shipped guard, and whose run must report a violation. A green negative means the model lost its defect and
+# its positive runs prove nothing. A red run must also break the invariant named here, because a negative
+# that goes red on something else has stopped testing what it was written for.
+#
+# Each log pair is a negative and the positive it licenses, at identical constants. The bound a pair runs at
+# is the one its own negative goes red at, so it cannot be shortened without making the pair meaningless. All
+# four quotient the state space by ServerSymmetry, which is what holds MCRaftLogFigure8 to about ninety
+# seconds instead of the forty minutes the brute-force run over the same bound costs.
+MCRaftElectionClosed.cfg	RaftElection.tla	green
+MCRaftElectionOutsiderUnguarded.cfg	RaftElection.tla	red	ElectionSafety
+MCRaftElectionOutsiderGuarded.cfg	RaftElection.tla	green
+MCRaftElectionTermInflation.cfg	RaftElection.tla	red	NoTermInflation
+MCRaftElectionFilterFirst.cfg	RaftElection.tla	green
+MCRaftLogVolatileReplicas.cfg	RaftLog.tla	red	CommittedIsDurableAtAQuorum
+MCRaftLogDurable.cfg	RaftLog.tla	green
+MCRaftLogFigure8Withdrawn.cfg	RaftLog.tla	red	LeaderCompleteness
+MCRaftLogFigure8.cfg	RaftLog.tla	green

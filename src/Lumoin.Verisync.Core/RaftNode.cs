@@ -182,13 +182,13 @@ public sealed class RaftNode<TCommand>
         {
             if(state.VotedFor.Length != ReplicaId.Size)
             {
-                throw new ArgumentException($"A restored vote must be empty or exactly {ReplicaId.Size} bytes, got {state.VotedFor.Length}.", nameof(state));
+                throw new StateRestoreException(StateRestoreRefusal.RaftVoteMalformed, $"A restored vote must be empty or exactly {ReplicaId.Size} bytes, got {state.VotedFor.Length}.", nameof(state));
             }
 
             ReplicaId vote = ReplicaId.FromSpan(state.VotedFor.AsSpan());
             if(!members.Contains(vote))
             {
-                throw new ArgumentException("A restored vote must name a member of the cluster.", nameof(state));
+                throw new StateRestoreException(StateRestoreRefusal.RaftVoteOutsideMembership, "A restored vote must name a member of the cluster.", nameof(state));
             }
 
             votedFor = vote;
@@ -201,7 +201,7 @@ public sealed class RaftNode<TCommand>
             Term entryTerm = log[i].Term;
             if(entryTerm < previousTerm)
             {
-                throw new ArgumentException($"Restored log terms cannot decrease, got {entryTerm.Value} after {previousTerm.Value} at index {i + 1}.", nameof(state));
+                throw new StateRestoreException(StateRestoreRefusal.RaftLogTermsDecrease, $"Restored log terms cannot decrease, got {entryTerm.Value} after {previousTerm.Value} at index {i + 1}.", nameof(state));
             }
 
             previousTerm = entryTerm;
@@ -209,7 +209,7 @@ public sealed class RaftNode<TCommand>
 
         if(previousTerm > state.CurrentTerm)
         {
-            throw new ArgumentException($"A restored last log term ({previousTerm.Value}) cannot exceed the current term ({state.CurrentTerm.Value}).", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.RaftLastLogTermAboveCurrentTerm, $"A restored last log term ({previousTerm.Value}) cannot exceed the current term ({state.CurrentTerm.Value}).", nameof(state));
         }
 
         node.CurrentTerm = state.CurrentTerm;

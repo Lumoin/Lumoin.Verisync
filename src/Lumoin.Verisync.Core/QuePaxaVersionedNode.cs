@@ -132,7 +132,7 @@ public sealed class QuePaxaVersionedNode<TValue>
         QuePaxaConfiguration active = ConfigurationFor(committed, genesis);
         if(!active.Cluster.Equals(genesis.Cluster))
         {
-            throw new ArgumentException($"A committed record must name the chain this host was given, which is {genesis.Cluster}, and it names {active.Cluster}. A host started on another chain's record runs that chain and declines its own at every later path, so two independently bootstrapped chains lose progress rather than merging.", nameof(committed));
+            throw new StateRestoreException(StateRestoreRefusal.HostForeignChain, $"A committed record must name the chain this host was given, which is {genesis.Cluster}, and it names {active.Cluster}. A host started on another chain's record runs that chain and declines its own at every later path, so two independently bootstrapped chains lose progress rather than merging.", nameof(committed));
         }
 
         Genesis = genesis;
@@ -420,7 +420,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     {
         return refusal switch
         {
-            RequestRefusal.Exhausted => new InvalidOperationException("The version range is spent; the last representable version has no successor. This host serves no version at all and refuses every request without recording it."),
+            RequestRefusal.Exhausted => new ConsensusRefusedException(ConsensusRefusal.VersionRangeSpent, "The version range is spent; the last representable version has no successor. This host serves no version at all and refuses every request without recording it."),
             RequestRefusal.Instance => new ArgumentOutOfRangeException(
                 nameof(request),
                 request.Version.Value,
@@ -814,23 +814,23 @@ public sealed class QuePaxaVersionedNode<TValue>
 
         if(state.ConfiguredLeader != derivedLeader)
         {
-            throw new ArgumentException($"A restored configured leader must be the one the schedule derives from the restored record, which is {Describe(derivedLeader)}, and it is {Describe(state.ConfiguredLeader)}. Two hosts whose records imply different leaders for one instance admit two reserved claims at the step the fast path reads.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.HostLeaderMismatch, $"A restored configured leader must be the one the schedule derives from the restored record, which is {Describe(derivedLeader)}, and it is {Describe(state.ConfiguredLeader)}. Two hosts whose records imply different leaders for one instance admit two reserved claims at the step the fast path reads.", nameof(state));
         }
 
         RegisterVersion live = state.Committed is { } committed ? committed.Version.Next() : RegisterVersion.First;
         if(state.RecorderVersion != live)
         {
-            throw new ArgumentException($"A restored recorder must serve the version after the restored record's, which is {live.Value}, and it serves {state.RecorderVersion.Value}. A register from one instance beside a record from another is a snapshot written in two parts and torn between them.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.HostRecorderVersionMismatch, $"A restored recorder must serve the version after the restored record's, which is {live.Value}, and it serves {state.RecorderVersion.Value}. A register from one instance beside a record from another is a snapshot written in two parts and torn between them.", nameof(state));
         }
 
         if(!state.ActiveConfiguration.Equals(derived))
         {
-            throw new ArgumentException("A restored membership must be the one the restored record implies, which is its next configuration, or the genesis membership when no record was restored. A register from one instance beside a configuration from another is a snapshot written in two parts and torn between them.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.HostConfigurationMismatch, "A restored membership must be the one the restored record implies, which is its next configuration, or the genesis membership when no record was restored. A register from one instance beside a configuration from another is a snapshot written in two parts and torn between them.", nameof(state));
         }
 
         if(!derived.Cluster.Equals(genesis.Cluster))
         {
-            throw new ArgumentException($"A restored membership must name the chain this host was given, which is {genesis.Cluster}, and it names {derived.Cluster}. A store attached to the wrong cluster, or a genesis changed under a restarting host, is an operator act, and joining the wrong chain merges two that have never agreed on anything.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.HostForeignChain, $"A restored membership must name the chain this host was given, which is {genesis.Cluster}, and it names {derived.Cluster}. A store attached to the wrong cluster, or a genesis changed under a restarting host, is an operator act, and joining the wrong chain merges two that have never agreed on anything.", nameof(state));
         }
 
         QuePaxaRecorder<VersionedValue<TValue>> recorder;
@@ -838,7 +838,7 @@ public sealed class QuePaxaVersionedNode<TValue>
         {
             if(state.Recorder.First is not null || state.Recorder.CurrentAggregate is not null || state.Recorder.PriorAggregate is not null)
             {
-                throw new ArgumentException("A restored recorder at step zero must be the unwritten register, carrying no proposal in any slot. A recorder records nothing below round one phase zero, so a proposal standing at step zero was never recorded there and rebuilding the register unwritten would discard it.", nameof(state));
+                throw new StateRestoreException(StateRestoreRefusal.HostUnwrittenRecorderCarriesProposal, "A restored recorder at step zero must be the unwritten register, carrying no proposal in any slot. A recorder records nothing below round one phase zero, so a proposal standing at step zero was never recorded there and rebuilding the register unwritten would discard it.", nameof(state));
             }
 
             recorder = schedule.RecorderFor<VersionedValue<TValue>>(previousWriter);

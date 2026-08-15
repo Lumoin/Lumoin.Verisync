@@ -68,7 +68,7 @@ internal sealed class RegisterVersionTests
         Assert.IsTrue(RegisterVersion.MaxValue.IsExhausted);
 
         //Wrapping would name a consensus instance that has already decided.
-        Assert.ThrowsExactly<InvalidOperationException>(() => _ = RegisterVersion.MaxValue.Next());
+        Assert.ThrowsExactly<ConsensusRefusedException>(() => _ = RegisterVersion.MaxValue.Next());
     }
 
 
