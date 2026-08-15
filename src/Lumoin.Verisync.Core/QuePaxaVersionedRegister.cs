@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -155,6 +156,12 @@ public sealed class QuePaxaVersionedRegister<TValue>
         ObserveMemberVersion = observeMemberVersion;
         ActiveConfiguration = genesis;
         LeaderSchedule = ScheduleFor(genesis, baseDelay);
+
+        //The chain a register belongs to never moves, because the active membership's chain is the genesis
+        //membership's by an enforced invariant, so the dimension is rendered once instead of per emission.
+        Chain = Convert.ToHexStringLower(genesis.Cluster.AsSpan());
+
+        RecordMembership();
     }
 
 
@@ -234,6 +241,9 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
     private ObserveMemberVersionDelegate? ObserveMemberVersion { get; }
 
+    /// <summary>The chain identity this register's measurements are dimensioned by, rendered once.</summary>
+    private string Chain { get; }
+
     /// <summary>The lane counter this register allocates its own proposals from.</summary>
     private LaneAllocation Lanes { get; set; } = LaneAllocation.None;
 
@@ -262,6 +272,8 @@ public sealed class QuePaxaVersionedRegister<TValue>
         Committed = committed;
         ActiveConfiguration = committed.NextConfiguration;
         LeaderSchedule = ScheduleFor(ActiveConfiguration, BaseDelay);
+
+        RecordMembership();
 
         return true;
     }
@@ -453,6 +465,8 @@ public sealed class QuePaxaVersionedRegister<TValue>
             throw new InvalidOperationException("This register was built without a per-member version query and cannot report readiness. A report of nothing is indistinguishable from a cluster that answered nothing, and a decommission gate cleared against the second is how a quorum is lost.");
         }
 
+        using Activity? activity = VerisyncActivitySource.Instance.StartActivity(VerisyncTelemetry.ActivityNameConsensusReadiness);
+
         ImmutableArray<MemberReadiness>.Builder reports = ImmutableArray.CreateBuilder<MemberReadiness>(membership.Members.Length);
         foreach(ReplicaId member in membership.Members)
         {
@@ -470,8 +484,11 @@ public sealed class QuePaxaVersionedRegister<TValue>
             {
                 throw;
             }
-            catch(Exception)
+            catch(Exception failure)
             {
+                //The report collapses silence and a fault into one entry because a gate cannot act
+                //differently on them. A human diagnosing can, so the two are told apart here.
+                RecordProbe(member, failure is TimeoutException ? VerisyncTelemetry.ProbeTimedOut : VerisyncTelemetry.ProbeFaulted);
                 reports.Add(new MemberReadiness(member, null));
 
                 continue;
@@ -484,10 +501,20 @@ public sealed class QuePaxaVersionedRegister<TValue>
                 throw new InvalidOperationException($"The version probe for member {member} was answered by {reported.Recorder}, so this deployment's endpoint map does not reach the membership it names. A readiness report counting that answer would clear a decommission gate on fewer distinct replicas than it claims.");
             }
 
+            RecordProbe(member, VerisyncTelemetry.ProbeAnswered);
             reports.Add(new MemberReadiness(member, reported.Version));
         }
 
-        return new RegisterReadiness(membership, reports.ToImmutable());
+        RegisterReadiness readiness = new(membership, reports.ToImmutable());
+
+        if(activity is not null)
+        {
+            _ = activity.SetTag(VerisyncTelemetry.TagCluster, Chain);
+            _ = activity.SetTag(VerisyncTelemetry.ActivityMeasuredMembers, readiness.Members.Length);
+            _ = activity.SetTag(VerisyncTelemetry.ActivityReachableMembers, readiness.Reachable);
+        }
+
+        return readiness;
     }
 
 
@@ -508,9 +535,16 @@ public sealed class QuePaxaVersionedRegister<TValue>
     public async Task<QuePaxaWriteOutcome<TValue>> TryWriteAsync(TValue value, CancellationToken cancellationToken)
     {
         EnterWrite();
+        using Activity? activity = VerisyncActivitySource.Instance.StartActivity(VerisyncTelemetry.ActivityNameConsensusWrite);
         try
         {
-            return await AttemptAsync(_ => value, null, 0, cancellationToken).ConfigureAwait(false);
+            return Measured(activity, await AttemptAsync(_ => value, null, 0, cancellationToken).ConfigureAwait(false));
+        }
+        catch(Exception failure)
+        {
+            _ = activity?.SetStatus(ActivityStatusCode.Error, failure.Message);
+
+            throw;
         }
         finally
         {
@@ -564,9 +598,16 @@ public sealed class QuePaxaVersionedRegister<TValue>
         ArgumentOutOfRangeException.ThrowIfLessThan(maxAttempts, 1);
 
         EnterWrite();
+        using Activity? activity = VerisyncActivitySource.Instance.StartActivity(VerisyncTelemetry.ActivityNameConsensusWrite);
         try
         {
-            return await RunAttemptsAsync(update, null, maxAttempts, cancellationToken).ConfigureAwait(false);
+            return Measured(activity, await RunAttemptsAsync(update, null, maxAttempts, cancellationToken).ConfigureAwait(false));
+        }
+        catch(Exception failure)
+        {
+            _ = activity?.SetStatus(ActivityStatusCode.Error, failure.Message);
+
+            throw;
         }
         finally
         {
@@ -618,6 +659,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         ArgumentOutOfRangeException.ThrowIfLessThan(maxAttempts, 1);
 
         EnterWrite();
+        using Activity? activity = VerisyncActivitySource.Instance.StartActivity(VerisyncTelemetry.ActivityNameConsensusWrite);
         try
         {
             if(Committed is null)
@@ -625,7 +667,13 @@ public sealed class QuePaxaVersionedRegister<TValue>
                 throw new InvalidOperationException("A reconfiguration carries the committed value forward and this register holds no committed record. A chain is bootstrapped by writing once under its genesis membership, and reconfigured after that.");
             }
 
-            return await RunAttemptsAsync(current => current!, change, maxAttempts, cancellationToken).ConfigureAwait(false);
+            return Measured(activity, await RunAttemptsAsync(current => current!, change, maxAttempts, cancellationToken).ConfigureAwait(false));
+        }
+        catch(Exception failure)
+        {
+            _ = activity?.SetStatus(ActivityStatusCode.Error, failure.Message);
+
+            throw;
         }
         finally
         {
@@ -811,6 +859,80 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
         return audience.ToImmutable();
     }
+
+
+    /// <summary>Reports what <paramref name="outcome"/> established, and returns it unchanged.</summary>
+    /// <param name="activity">The span covering the write, or <see langword="null"/> when nothing is listening.</param>
+    /// <param name="outcome">What the write established.</param>
+    /// <returns><paramref name="outcome"/>.</returns>
+    /// <remarks>
+    /// It measures the public call and not the attempt, so the attempt count is the number a write spent
+    /// rather than a running total and the status is the one a caller was given.
+    /// </remarks>
+    private QuePaxaWriteOutcome<TValue> Measured(Activity? activity, QuePaxaWriteOutcome<TValue> outcome)
+    {
+        TagList tags = new()
+        {
+            { VerisyncTelemetry.TagCluster, Chain },
+            { VerisyncTelemetry.TagWriteStatus, Describe(outcome.Status) },
+            { VerisyncTelemetry.TagFastPath, outcome.TookFastPath }
+        };
+
+        VerisyncMetrics.ConsensusWrites.Add(1, tags);
+        VerisyncMetrics.ConsensusWriteAttempts.Record(outcome.Attempts, tags);
+
+        if(activity is not null)
+        {
+            _ = activity.SetTag(VerisyncTelemetry.TagCluster, Chain);
+            _ = activity.SetTag(VerisyncTelemetry.TagWriteStatus, Describe(outcome.Status));
+            _ = activity.SetTag(VerisyncTelemetry.TagFastPath, outcome.TookFastPath);
+            _ = activity.SetTag(VerisyncTelemetry.ActivityWriteAttempts, outcome.Attempts);
+        }
+
+        return outcome;
+    }
+
+
+    /// <summary>Reports how one member answered a version probe.</summary>
+    /// <param name="member">The member that was asked.</param>
+    /// <param name="outcome">How it answered, which is one of the probe outcomes <see cref="VerisyncTelemetry"/> names.</param>
+    private void RecordProbe(ReplicaId member, string outcome)
+    {
+        VerisyncMetrics.ConsensusProbes.Add(1, new TagList
+        {
+            { VerisyncTelemetry.TagCluster, Chain },
+            { VerisyncTelemetry.TagMember, Convert.ToHexStringLower(member.AsSpan()) },
+            { VerisyncTelemetry.TagProbeOutcome, outcome }
+        });
+    }
+
+
+    /// <summary>Reports the membership this register's next write runs under.</summary>
+    /// <remarks>
+    /// Recorded where the membership is set and where a record moves it, which are the only two places it
+    /// changes. The quorum is the membership's own arithmetic rather than the proposer's count of resolved
+    /// endpoints; the two cannot disagree, because an unresolvable member keeps its slot precisely so that
+    /// they cannot, and the membership's is the number the protocol and the operator both reason with.
+    /// </remarks>
+    private void RecordMembership()
+    {
+        TagList tags = new() { { VerisyncTelemetry.TagCluster, Chain } };
+
+        VerisyncMetrics.ConsensusMembershipSize.Record(ActiveConfiguration.Members.Length, tags);
+        VerisyncMetrics.ConsensusMembershipQuorum.Record(ActiveConfiguration.Quorum, tags);
+    }
+
+
+    /// <summary>The dimension value naming <paramref name="status"/>.</summary>
+    /// <param name="status">What a write established.</param>
+    /// <returns>A constant, so a measured write allocates nothing to name its own outcome.</returns>
+    private static string Describe(QuePaxaWriteStatus status) => status switch
+    {
+        QuePaxaWriteStatus.Committed => nameof(QuePaxaWriteStatus.Committed),
+        QuePaxaWriteStatus.Superseded => nameof(QuePaxaWriteStatus.Superseded),
+        QuePaxaWriteStatus.OutsideConfiguration => nameof(QuePaxaWriteStatus.OutsideConfiguration),
+        _ => nameof(QuePaxaWriteStatus.Undecided)
+    };
 
 
     /// <summary>The rule a per-member deadline satisfies.</summary>
