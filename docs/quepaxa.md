@@ -195,6 +195,34 @@ its runner and makes its state durable first, so the store's latency is inside i
 conservative tuning a timeout has always needed, and it is not the hedging delay, which may be zero and is not
 a timeout at all.
 
+### What the register reports to a monitoring system
+
+The library publishes one meter and one activity source, both named `Lumoin.Verisync`. Subscribe with
+`AddMeter("Lumoin.Verisync")` and `AddSource("Lumoin.Verisync")`; the names are a published contract and are
+pinned by test against what is actually emitted.
+
+| instrument | kind | dimensions |
+|---|---|---|
+| `verisync.consensus.writes` | counter | chain, write status, fast path |
+| `verisync.consensus.write.attempts` | histogram | chain, write status |
+| `verisync.consensus.membership.size` | gauge | chain |
+| `verisync.consensus.membership.quorum` | gauge | chain |
+| `verisync.consensus.probes` | counter | chain, member, probe outcome |
+
+The fast-path rate is the write counter's own ratio rather than an instrument of its own, because a rate
+computed in the library would fix the window it is averaged over. The membership gauges are recorded where a
+register is built and wherever a record moves the membership, which are the only two places it changes, so a
+cluster that never reconfigures still reports its size and quorum. The quorum is the membership's own
+arithmetic, which is the number the procedures above reason with.
+
+`verisync.consensus.probes` is the one place a member that answered nothing is told apart from one that
+faulted: its outcome dimension is `answered`, `faulted` or `timed_out`, where a readiness report deliberately
+reports both failures as the same unreachable entry. It counts probes and not cluster state — readiness is
+measured only when a caller asks for it, so a deployment that never reads readiness emits nothing here.
+
+Two spans are raised, `verisync.consensus.write` and `verisync.consensus.readiness`, carrying what the call
+established and what the report measured. A write that throws leaves its span marked an error.
+
 ### Restart and rejoin
 
 A host restarts from its own durable store, restoring the node from the genesis membership, its own replica
