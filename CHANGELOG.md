@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 - `StateRestoreException` and `StateRestoreRefusal`. Every durable-state restore now names the rule it refused on, across the QuePaxa recorder, the versioned host, the Fast CASPaxos acceptor and the Raft node, so a caller switches on the refusal instead of matching the sentence beside it. It derives from `ArgumentException` and keeps `ParamName`, which names which argument was refused and is a separate question from which rule refused it: the chain check reports `HostForeignChain` whether it is raised against a record handed to a constructor or a snapshot handed to a restore.
 
+- `ConsensusRefusedException` and `ConsensusRefusal`, the same for the refusals a running register and host raise: a concurrent write, a spent version range, a reconfiguration with nothing committed, a readiness report without a member query, a probe answered by another member, and a misrouted decision. The two families stay apart because they answer different questions — durable state a host was handed, against an operation asked for on state that is already sound. `VersionRangeSpent` is reported by both sites that raise it, which carried the same sentence and so could not be told apart at all.
+
 - Metrics and spans for the consensus surface, on the meter and activity source the library already publishes: membership size and quorum, per-member probe outcomes, the write status distribution and the fast-path rate.
 
 ### Changed
@@ -28,7 +30,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 - **Breaking.** `QuePaxaWriteOutcome<TValue>` carries `Record`, the record the version was decided at, and its `Value` and `Writer` are read off that record rather than passed beside it. A caller learns the membership a reconfiguration installed from `Record.NextConfiguration` instead of re-reading `ActiveConfiguration`, which any learn arriving meanwhile has already moved.
 
-- **Breaking.** Restore refusals throw `StateRestoreException` where they threw `ArgumentException`. Catching `ArgumentException` still catches them.
+- **Breaking.** Restore refusals throw `StateRestoreException` where they threw `ArgumentException`, and the register's and host's running refusals throw `ConsensusRefusedException` where they threw `InvalidOperationException`. Catching the base types still catches both.
 
 ### Fixed
 
