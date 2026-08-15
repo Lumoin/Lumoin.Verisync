@@ -39,6 +39,7 @@ internal sealed class FastAcceptorStateTests
         FastAcceptorState<string> zeroed = FastAcceptor<string>.Initial.ToState() with { Promised = FastBallot.Zero };
 
         StateRestoreException zeroedRefusal = Assert.ThrowsExactly<StateRestoreException>(() => FastAcceptor<string>.FromState(zeroed));
+        Assert.AreEqual(StateRestoreRefusal.AcceptorPromiseBelowInitialBallot, zeroedRefusal.Refusal);
         Assert.AreEqual("state", zeroedRefusal.ParamName);
 
         //A round-zero ballot owning a proposer is not the zero ballot yet still orders below the initial fast
@@ -46,10 +47,13 @@ internal sealed class FastAcceptorStateTests
         FastAcceptorState<string> roundZeroClassic = FastAcceptor<string>.Initial.ToState() with { Promised = new FastBallot(0, R1) };
 
         StateRestoreException roundZeroRefusal = Assert.ThrowsExactly<StateRestoreException>(() => FastAcceptor<string>.FromState(roundZeroClassic));
+        Assert.AreEqual(StateRestoreRefusal.AcceptorPromiseBelowInitialBallot, roundZeroRefusal.Refusal);
         Assert.AreEqual("state", roundZeroRefusal.ParamName);
 
         //A negative-round promise cannot fire this rule alone — the zero accepted ballot then orders above the
-        //promise and the trailing-promise rule fires too — so negative rounds are swept for refusal only.
+        //promise and the trailing-promise rule fires too — so negative rounds are swept for refusal only. The
+        //row names no refusal because AcceptorPromiseBelowInitialBallot and AcceptorPromiseTrailsAcceptedBallot
+        //are both reachable on this state and only the order the rules are stated in decides between them.
         foreach(int round in (int[])[-1, int.MinValue])
         {
             FastAcceptorState<string> negative = FastAcceptor<string>.Initial.ToState() with { Promised = new FastBallot(round, null) };
@@ -69,11 +73,13 @@ internal sealed class FastAcceptorStateTests
         FastAcceptorState<string> roundZeroClassic = FastAcceptor<string>.Initial.ToState() with { AcceptedBallot = new FastBallot(0, R1) };
 
         StateRestoreException roundZeroRefusal = Assert.ThrowsExactly<StateRestoreException>(() => FastAcceptor<string>.FromState(roundZeroClassic));
+        Assert.AreEqual(StateRestoreRefusal.AcceptorAcceptedBallotBelowInitialBallot, roundZeroRefusal.Refusal);
         Assert.AreEqual("state", roundZeroRefusal.ParamName);
 
         FastAcceptorState<string> negativeFast = FastAcceptor<string>.Initial.ToState() with { AcceptedBallot = new FastBallot(-2, null) };
 
         StateRestoreException negativeRefusal = Assert.ThrowsExactly<StateRestoreException>(() => FastAcceptor<string>.FromState(negativeFast));
+        Assert.AreEqual(StateRestoreRefusal.AcceptorAcceptedBallotBelowInitialBallot, negativeRefusal.Refusal);
         Assert.AreEqual("state", negativeRefusal.ParamName);
     }
 
@@ -91,6 +97,7 @@ internal sealed class FastAcceptorStateTests
         };
 
         StateRestoreException sameRoundRefusal = Assert.ThrowsExactly<StateRestoreException>(() => FastAcceptor<string>.FromState(sameRound));
+        Assert.AreEqual(StateRestoreRefusal.AcceptorPromiseTrailsAcceptedBallot, sameRoundRefusal.Refusal);
         Assert.AreEqual("state", sameRoundRefusal.ParamName);
 
         //The across-round shape mutates a snapshot an accept produced, raising only the accepted ballot.
@@ -98,6 +105,7 @@ internal sealed class FastAcceptorStateTests
         FastAcceptorState<string> acrossRounds = accepted.ToState() with { AcceptedBallot = FastBallot.Classic(3, R1) };
 
         StateRestoreException acrossRoundsRefusal = Assert.ThrowsExactly<StateRestoreException>(() => FastAcceptor<string>.FromState(acrossRounds));
+        Assert.AreEqual(StateRestoreRefusal.AcceptorPromiseTrailsAcceptedBallot, acrossRoundsRefusal.Refusal);
         Assert.AreEqual("state", acrossRoundsRefusal.ParamName);
     }
 
@@ -111,6 +119,7 @@ internal sealed class FastAcceptorStateTests
         FastAcceptorState<string> ghost = FastAcceptor<string>.Initial.ToState() with { AcceptedValue = "v" };
 
         StateRestoreException ghostRefusal = Assert.ThrowsExactly<StateRestoreException>(() => FastAcceptor<string>.FromState(ghost));
+        Assert.AreEqual(StateRestoreRefusal.AcceptorValueWithoutAcceptedBallot, ghostRefusal.Refusal);
         Assert.AreEqual("state", ghostRefusal.ParamName);
 
         //The struct vector pins the comparer form of the rule: a boxed null test would refuse every struct
@@ -118,6 +127,7 @@ internal sealed class FastAcceptorStateTests
         FastAcceptorState<int> structGhost = FastAcceptor<int>.Initial.ToState() with { AcceptedValue = 7 };
 
         StateRestoreException structRefusal = Assert.ThrowsExactly<StateRestoreException>(() => FastAcceptor<int>.FromState(structGhost));
+        Assert.AreEqual(StateRestoreRefusal.AcceptorValueWithoutAcceptedBallot, structRefusal.Refusal);
         Assert.AreEqual("state", structRefusal.ParamName);
     }
 

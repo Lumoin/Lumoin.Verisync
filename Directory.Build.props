@@ -79,7 +79,7 @@
 
     <AppendToReleaseNotesProperty>
       <![CDATA[
-See full changelog at https://github.com/lumoin/Verisync/blob/main/CHANGELOG.md.]]>
+See full changelog at https://github.com/lumoin/Lumoin.Verisync/blob/main/CHANGELOG.md.]]>
     </AppendToReleaseNotesProperty>
     <ChangelogFile>../../CHANGELOG.md</ChangelogFile>
 

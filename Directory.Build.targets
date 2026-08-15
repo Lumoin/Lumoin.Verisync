@@ -1,0 +1,49 @@
+<Project>
+
+  <!-- NuGet.org refuses a package whose release notes exceed a length limit, and the notes are not written
+       by hand: SIL.ReleaseTasks folds the newest changelog section into PackageReleaseNotes at pack time, so
+       the notes grow with the release rather than with anyone's intent. A section long enough to be refused
+       fails the publish after the version is already tagged, which is a bad place to learn it. The bound is
+       therefore applied in the build, and the notes are always publishable. -->
+  <PropertyGroup>
+    <!-- The published limit is 35,000, and it is not stated whether it counts characters or bytes, nor
+         whether it applies to the raw text or to the XML-escaped form written into the nuspec. The margin
+         costs nothing and settles every one of those questions. -->
+    <MaxPackageReleaseNotesLength Condition="'$(MaxPackageReleaseNotesLength)' == ''">30000</MaxPackageReleaseNotesLength>
+    <TruncatedReleaseNotesPointer Condition="'$(TruncatedReleaseNotesPointer)' == ''">
+
+The notes for this release continue in the changelog at $(RepositoryUrl)/blob/main/CHANGELOG.md.</TruncatedReleaseNotesPointer>
+  </PropertyGroup>
+
+  <!-- SetReleaseNotesProp is the SIL target that sets PackageReleaseNotes, and it runs before GenerateNuspec.
+       Running after it by name lands inside that window; declaring BeforeTargets="GenerateNuspec" on both
+       would leave their order between themselves undetermined. -->
+  <Target Name="BoundPackageReleaseNotes"
+          AfterTargets="SetReleaseNotesProp"
+          Condition="'$(PackageReleaseNotes)' != '' AND $(PackageReleaseNotes.Length) &gt; $(MaxPackageReleaseNotesLength)">
+
+    <PropertyGroup>
+      <_FullReleaseNotesLength>$(PackageReleaseNotes.Length)</_FullReleaseNotesLength>
+      <_ReleaseNotesHead>$(PackageReleaseNotes.Substring(0, $(MaxPackageReleaseNotesLength)))</_ReleaseNotesHead>
+
+      <!-- Cutting on a line boundary keeps the last bullet whole rather than ending the notes mid-sentence. -->
+      <_ReleaseNotesCut>$(_ReleaseNotesHead.LastIndexOf('%0A'))</_ReleaseNotesCut>
+    </PropertyGroup>
+
+    <!-- A section with no line break inside the bound has no boundary to cut on, so the bound itself is the
+         cut. -->
+    <PropertyGroup Condition="'$(_ReleaseNotesCut)' == '-1'">
+      <_ReleaseNotesCut>$(MaxPackageReleaseNotesLength)</_ReleaseNotesCut>
+    </PropertyGroup>
+
+    <PropertyGroup>
+      <PackageReleaseNotes>$(_ReleaseNotesHead.Substring(0, $(_ReleaseNotesCut)))$(TruncatedReleaseNotesPointer)</PackageReleaseNotes>
+    </PropertyGroup>
+
+    <!-- A warning rather than an error, because the package is now publishable and stopping the release would
+         be the failure this target exists to remove. It is an MSBuild warning and not a compiler one, so
+         TreatWarningsAsErrors does not turn it back into that failure. -->
+    <Warning Text="The release notes folded from the changelog are $(_FullReleaseNotesLength) characters, above the $(MaxPackageReleaseNotesLength) this package publishes, and were cut to the last whole line with a pointer to the changelog appended. Shorten the newest changelog section to publish it whole." />
+  </Target>
+
+</Project>

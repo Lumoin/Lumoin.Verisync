@@ -14,6 +14,28 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Security
 -->
 
+## [Unreleased]
+
+### Added
+
+- `StateRestoreException` and `StateRestoreRefusal`. Every durable-state restore now names the rule it refused on, across the QuePaxa recorder, the versioned host, the Fast CASPaxos acceptor and the Raft node, so a caller switches on the refusal instead of matching the sentence beside it. It derives from `ArgumentException` and keeps `ParamName`, which names which argument was refused and is a separate question from which rule refused it: the chain check reports `HostForeignChain` whether it is raised against a record handed to a constructor or a snapshot handed to a restore.
+
+- Metrics and spans for the consensus surface, on the meter and activity source the library already publishes: membership size and quorum, per-member probe outcomes, the write status distribution and the fast-path rate.
+
+### Changed
+
+- **Breaking.** `ReadReadinessAsync` and `ReadAsync` take a per-member deadline. A member that answers nothing at all is reported unreachable, which is the entry a member that faults already produces, and the members after it are still asked. The probe is raced against the deadline rather than only told about it, because no delegate contract obliges a query to honour its token; a query that ignores it is bounded all the same and is then abandoned still running. The deadline is a required argument rather than construction, since an operator sweep and an automated gate want different patience. `Timeout.InfiniteTimeSpan` asks for the previous behaviour; zero and negative spans are refused, because a report in which nothing answered is what a silent cluster reports.
+
+- **Breaking.** `QuePaxaWriteOutcome<TValue>` carries `Record`, the record the version was decided at, and its `Value` and `Writer` are read off that record rather than passed beside it. A caller learns the membership a reconfiguration installed from `Record.NextConfiguration` instead of re-reading `ActiveConfiguration`, which any learn arriving meanwhile has already moved.
+
+- **Breaking.** Restore refusals throw `StateRestoreException` where they threw `ArgumentException`. Catching `ArgumentException` still catches them.
+
+### Fixed
+
+- A recorder whose replies carry another host's identity is refused on a retransmission as well as on a first send. Without that, a register counts replies gathered on retransmissions and can commit on fewer distinct replicas than the quorum names.
+
+- The release notes folded into each package are bounded, so a changelog section that grows past what NuGet.org accepts no longer fails the publish after the release is tagged.
+
 ## [0.0.8] - 2026-08-15
 
 ### Added

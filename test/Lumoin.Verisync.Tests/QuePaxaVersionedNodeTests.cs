@@ -520,8 +520,8 @@ internal sealed class QuePaxaVersionedNodeTests
 
         StateRestoreException restored = Assert.ThrowsExactly<StateRestoreException>(() => _ = QuePaxaVersionedNode<string>.FromState(Configuration, First, state));
 
+        Assert.AreEqual(StateRestoreRefusal.HostForeignChain, restored.Refusal);
         Assert.AreEqual("state", restored.ParamName);
-        Assert.Contains("must name the chain this host was given", restored.Message);
 
         //Each entry point accepts under the chain it was handed, so neither refusal is the record's own shape.
         Assert.AreEqual(new RegisterVersion(5UL), QuePaxaVersionedNode<string>.FromState(ForeignChain, First, state).LiveVersion);
