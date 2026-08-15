@@ -420,7 +420,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     {
         return refusal switch
         {
-            RequestRefusal.Exhausted => new InvalidOperationException("The version range is spent; the last representable version has no successor. This host serves no version at all and refuses every request without recording it."),
+            RequestRefusal.Exhausted => new ConsensusRefusedException(ConsensusRefusal.VersionRangeSpent, "The version range is spent; the last representable version has no successor. This host serves no version at all and refuses every request without recording it."),
             RequestRefusal.Instance => new ArgumentOutOfRangeException(
                 nameof(request),
                 request.Version.Value,

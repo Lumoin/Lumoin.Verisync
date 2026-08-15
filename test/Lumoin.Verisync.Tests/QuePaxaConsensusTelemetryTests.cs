@@ -223,7 +223,7 @@ internal sealed class QuePaxaConsensusTelemetryTests
         QuePaxaVersionedRegister<string> register = Register(cluster, First);
 
         //A reconfiguration before anything is committed has no value to carry forward and refuses.
-        _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        _ = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
             async () => await register.ReconfigureAsync(current => current.Without(Third), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
 
         Activity span = spans.Single(VerisyncTelemetry.ActivityNameConsensusWrite);

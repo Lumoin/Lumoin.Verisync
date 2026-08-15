@@ -75,7 +75,7 @@ public readonly record struct RegisterVersion(ulong Value): IComparable<Register
     {
         if(IsExhausted)
         {
-            throw new InvalidOperationException("The version range is spent; the last representable version has no successor.");
+            throw new ConsensusRefusedException(ConsensusRefusal.VersionRangeSpent, "The version range is spent; the last representable version has no successor.");
         }
 
         return new RegisterVersion(Value + 1);

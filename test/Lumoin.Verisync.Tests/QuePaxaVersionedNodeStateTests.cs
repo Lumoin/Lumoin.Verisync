@@ -464,11 +464,17 @@ internal sealed class QuePaxaVersionedNodeStateTests
         VersionedValue<string> spent = new(RegisterVersion.MaxValue, Second, Configuration, "last");
         QuePaxaVersionedNode<string> host = new(Configuration, First, spent);
 
-        Assert.ThrowsExactly<InvalidOperationException>(() => _ = host.ToState());
+        ConsensusRefusedException snapshotting = Assert.ThrowsExactly<ConsensusRefusedException>(() => _ = host.ToState());
+
+        Assert.AreEqual(ConsensusRefusal.VersionRangeSpent, snapshotting.Refusal);
 
         QuePaxaVersionedNodeState<string> state = new(spent, RegisterVersion.First, ProposerLane.For(Second), Configuration, RestorableRecorder());
 
-        Assert.ThrowsExactly<InvalidOperationException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, state));
+        //One rule reported from both halves of the seam, which prose could not tell apart at all: the same
+        //sentence stood at the version's own successor and at a host that can serve no version because of it.
+        ConsensusRefusedException restoring = Assert.ThrowsExactly<ConsensusRefusedException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, state));
+
+        Assert.AreEqual(ConsensusRefusal.VersionRangeSpent, restoring.Refusal);
     }
 
 

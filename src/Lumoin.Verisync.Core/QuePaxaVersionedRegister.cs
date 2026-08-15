@@ -462,7 +462,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
         if(ObserveMemberVersion is null)
         {
-            throw new InvalidOperationException("This register was built without a per-member version query and cannot report readiness. A report of nothing is indistinguishable from a cluster that answered nothing, and a decommission gate cleared against the second is how a quorum is lost.");
+            throw new ConsensusRefusedException(ConsensusRefusal.ReadinessWithoutMemberQuery, "This register was built without a per-member version query and cannot report readiness. A report of nothing is indistinguishable from a cluster that answered nothing, and a decommission gate cleared against the second is how a quorum is lost.");
         }
 
         using Activity? activity = VerisyncActivitySource.Instance.StartActivity(VerisyncTelemetry.ActivityNameConsensusReadiness);
@@ -498,7 +498,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
             //distinct members, so it is a wiring defect surfaced loudly rather than a weaker reading.
             if(!reported.Recorder.Equals(member))
             {
-                throw new InvalidOperationException($"The version probe for member {member} was answered by {reported.Recorder}, so this deployment's endpoint map does not reach the membership it names. A readiness report counting that answer would clear a decommission gate on fewer distinct replicas than it claims.");
+                throw new ConsensusRefusedException(ConsensusRefusal.ProbeAnsweredByAnotherMember, $"The version probe for member {member} was answered by {reported.Recorder}, so this deployment's endpoint map does not reach the membership it names. A readiness report counting that answer would clear a decommission gate on fewer distinct replicas than it claims.");
             }
 
             RecordProbe(member, VerisyncTelemetry.ProbeAnswered);
@@ -664,7 +664,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         {
             if(Committed is null)
             {
-                throw new InvalidOperationException("A reconfiguration carries the committed value forward and this register holds no committed record. A chain is bootstrapped by writing once under its genesis membership, and reconfigured after that.");
+                throw new ConsensusRefusedException(ConsensusRefusal.NothingCommittedToReconfigure, "A reconfiguration carries the committed value forward and this register holds no committed record. A chain is bootstrapped by writing once under its genesis membership, and reconfigured after that.");
             }
 
             return Measured(activity, await RunAttemptsAsync(current => current!, change, maxAttempts, cancellationToken).ConfigureAwait(false));
@@ -768,7 +768,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         //A misrouted decision kept out of the committed state cannot set the next instance's leader.
         if(decided.Version != instance.Version)
         {
-            throw new InvalidOperationException($"The instance for version {instance.Version.Value} decided a record carrying version {decided.Version.Value}, so a request reached an instance it was not addressed to.");
+            throw new ConsensusRefusedException(ConsensusRefusal.MisroutedDecision, $"The instance for version {instance.Version.Value} decided a record carrying version {decided.Version.Value}, so a request reached an instance it was not addressed to.");
         }
 
         _ = Learn(decided);
@@ -1160,7 +1160,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     {
         if(Interlocked.Exchange(ref writing, 1) != 0)
         {
-            throw new InvalidOperationException("A versioned register writes one value at a time; two writes at one version would propose on one lane, and one proposal key naming two values is what the key's uniqueness contract forbids.");
+            throw new ConsensusRefusedException(ConsensusRefusal.ConcurrentWrite, "A versioned register writes one value at a time; two writes at one version would propose on one lane, and one proposal key naming two values is what the key's uniqueness contract forbids.");
         }
     }
 

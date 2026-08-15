@@ -491,8 +491,10 @@ internal sealed class QuePaxaVersionedRegisterTests
             };
         });
 
-        InvalidOperationException reported = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        ConsensusRefusedException reported = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
             async () => await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(ConsensusRefusal.MisroutedDecision, reported.Refusal);
 
         Assert.Contains("decided a record carrying version", reported.Message);
         Assert.IsNull(register.Committed, "A record the write refused was adopted anyway.");
@@ -523,8 +525,10 @@ internal sealed class QuePaxaVersionedRegisterTests
         Task<QuePaxaWriteOutcome<string>> pending = register.TryWriteAsync("a", TestContext.CancellationToken);
 
         //One proposal key naming two values is what the key's uniqueness contract forbids.
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        ConsensusRefusedException concurrent = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
             async () => await register.TryWriteAsync("b", TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(ConsensusRefusal.ConcurrentWrite, concurrent.Refusal);
 
         clock.Advance(2 * BaseDelay);
         _ = await pending.ConfigureAwait(false);
@@ -875,9 +879,10 @@ internal sealed class QuePaxaVersionedRegisterTests
         VersionedQuePaxaCluster<string> cluster = new(WiderSchedule(), 4);
         QuePaxaVersionedRegister<string> register = Register(cluster, First);
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        ConsensusRefusedException refused = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
             async () => await register.ReconfigureAsync(current => current.Without(Fourth), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
 
+        Assert.AreEqual(ConsensusRefusal.NothingCommittedToReconfigure, refused.Refusal);
         Assert.IsEmpty(cluster.Recorded);
     }
 
@@ -1048,8 +1053,12 @@ internal sealed class QuePaxaVersionedRegisterTests
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
         QuePaxaVersionedRegister<string> register = Register(cluster, First);
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        ConsensusRefusedException refused = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
             async () => await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        //An unwired query and a cluster that answered nothing are told apart by the rule, which is the whole
+        //reason this refusal exists rather than an empty report.
+        Assert.AreEqual(ConsensusRefusal.ReadinessWithoutMemberQuery, refused.Refusal);
     }
 
 
@@ -1069,10 +1078,10 @@ internal sealed class QuePaxaVersionedRegisterTests
         QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (_, _) =>
             new ValueTask<MemberVersionReport>(new MemberVersionReport(First, new RegisterVersion(3UL))));
 
-        InvalidOperationException reported = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        ConsensusRefusedException reported = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
             async () => await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
 
-        Assert.Contains("was answered by", reported.Message);
+        Assert.AreEqual(ConsensusRefusal.ProbeAnsweredByAnotherMember, reported.Refusal);
     }
 
 
