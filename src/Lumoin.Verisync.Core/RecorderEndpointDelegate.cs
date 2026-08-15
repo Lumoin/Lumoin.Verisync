@@ -33,6 +33,22 @@ namespace Lumoin.Verisync.Core;
 /// abandoning the proposal.
 /// </para>
 /// <para>
+/// A LAYER BETWEEN THIS DELEGATE AND ITS RECORDER MAY DELAY A SEND, DENY IT, OR DROP IT, AND AGREEMENT
+/// HOLDS. That is a guarantee and not an accident of the current implementation: the protocol is safe under
+/// asynchrony, so a request that arrives late, never arrives, or is refused before it leaves costs the
+/// attempt a recorder and costs the deployment availability, and only a quorum counted over fewer replicas
+/// than the membership names could cost agreement — which is why an unresolvable member keeps its endpoint
+/// slot instead of shrinking the array. A deployment placing admission control, pacing or a kernel-level
+/// enforcer on this path is exercising that guarantee rather than testing it.
+/// </para>
+/// <para>
+/// What such a layer must not do is answer one call with another call's reply. Delay, denial and loss are
+/// asynchrony; misdelivery is a correlation defect, and it is the one failure the guarantee above does not
+/// cover. The register checks the instance and the answering member on every reply and refuses a mismatch
+/// rather than counting it, so the defect is caught rather than absorbed, but a transport that reorders
+/// replies between calls is outside what any of this promises.
+/// </para>
+/// <para>
 /// Correlation is per call and never per recorder. The proposer abandons rather than cancels the endpoints
 /// still outstanding once a quorum has answered, and the next step calls every recorder again, so two calls to
 /// one recorder can be outstanding at once. A reply carries the recorder's own step rather than the step of

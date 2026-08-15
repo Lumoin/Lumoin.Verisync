@@ -15,6 +15,15 @@ namespace Lumoin.Verisync.Core;
 /// <returns>A task that completes when the record has been offered to those hosts.</returns>
 /// <remarks>
 /// <para>
+/// THIS IS THE PATH A GOVERNANCE LAYER SHOULD STARVE LAST. Delaying, denying or dropping what this delegate
+/// carries costs no agreement, on the same rule the record path rests on, and the register absorbs a publish
+/// fault rather than reporting it, because the decision is already taken and already learned by the time
+/// this runs. What it costs is progress: a record nobody receives leaves the next version unservable until
+/// some host learns the current one by another route, so sustained interference here wedges a chain that is
+/// still perfectly safe. A deployment shaping Verisync traffic should treat dissemination as the class it
+/// protects rather than the class it sheds.
+/// </para>
+/// <para>
 /// A recorder host serves the one instance whose leader it can derive, which is the version after the record
 /// it has learned. Until a quorum of hosts has learned version v, nothing can be written at v+1, so
 /// dissemination is the precondition of the next write: a retry whose predecessor has not reached the hosts

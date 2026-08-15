@@ -118,7 +118,7 @@ endpoint resolver, a priority source, a clock and an attempts-per-recorder bound
 | optional seam | what is lost by omitting it |
 |---|---|
 | committed-version observer | a delayed writer cannot stand down on a version already closed, so every scheduled writer activates on its delay |
-| per-member record reader | `ReadAsync` reports only what this replica already holds and cannot catch up |
+| per-member record reader | `ReadAsync` reports only what this replica already holds and cannot catch up, and its deadline argument governs nothing |
 | committed-record publisher | decided records are retained but never disseminated, so the next version stays unservable until a host learns the current one by another route |
 | per-member version query | `ReadReadinessAsync` refuses rather than reporting nothing, because a report of nothing is also what a silent cluster produces |
 
@@ -179,6 +179,50 @@ a member other than the one it asked: that is a wiring error in the endpoint map
 host would let one replica fill two slots and clear a decommission gate on fewer distinct replicas than it
 claims — and never a fault of the member. The identity is the host's own claim rather than authentication.
 
+`ReadReadinessAsync` takes a per-member deadline, and so does the catch-up `ReadAsync`. It is a required
+argument rather than a setting, because an operator's sweep and an automated gate want different patience and
+neither should inherit a value nobody chose. A member that answers nothing before its deadline is reported
+unreachable — the same entry a member that faults produces, because a gate asking whether a named replica has
+learned a version cannot act differently on the two. The probe is raced against the deadline and not merely
+told about it, so a query that never returns costs one member's entry rather than the whole report; the
+abandoned query keeps running until it finishes on its own. The deadline is spent per member, so a wholly
+silent membership costs it once per member. `Timeout.InfiniteTimeSpan` waits without bound and is the one way
+to ask for that; zero and negative spans are refused, because a report in which nothing answered is what a
+silent cluster produces and a gate cannot tell those apart.
+
+Pick a deadline above the round trip a probe actually takes, remembering that a host answers a probe through
+its runner and makes its state durable first, so the store's latency is inside it. This is the same
+conservative tuning a timeout has always needed, and it is not the hedging delay, which may be zero and is not
+a timeout at all.
+
+### What the register reports to a monitoring system
+
+The library publishes one meter and one activity source, both named `Lumoin.Verisync`. Subscribe with
+`AddMeter("Lumoin.Verisync")` and `AddSource("Lumoin.Verisync")`; the names are a published contract and are
+pinned by test against what is actually emitted.
+
+| instrument | kind | dimensions |
+|---|---|---|
+| `verisync.consensus.writes` | counter | chain, write status, fast path |
+| `verisync.consensus.write.attempts` | histogram | chain, write status |
+| `verisync.consensus.membership.size` | gauge | chain |
+| `verisync.consensus.membership.quorum` | gauge | chain |
+| `verisync.consensus.probes` | counter | chain, member, probe outcome |
+
+The fast-path rate is the write counter's own ratio rather than an instrument of its own, because a rate
+computed in the library would fix the window it is averaged over. The membership gauges are recorded where a
+register is built and wherever a record moves the membership, which are the only two places it changes, so a
+cluster that never reconfigures still reports its size and quorum. The quorum is the membership's own
+arithmetic, which is the number the procedures above reason with.
+
+`verisync.consensus.probes` is the one place a member that answered nothing is told apart from one that
+faulted: its outcome dimension is `answered`, `faulted` or `timed_out`, where a readiness report deliberately
+reports both failures as the same unreachable entry. It counts probes and not cluster state — readiness is
+measured only when a caller asks for it, so a deployment that never reads readiness emits nothing here.
+
+Two spans are raised, `verisync.consensus.write` and `verisync.consensus.readiness`, carrying what the call
+established and what the report measured. A write that throws leaves its span marked an error.
+
 ### Restart and rejoin
 
 A host restarts from its own durable store, restoring the node from the genesis membership, its own replica
@@ -189,6 +233,38 @@ names. After an outage the live membership is whatever the highest surviving rec
 job is to find that record and get it to a quorum of the membership it names. A replica removed by mistake
 rejoins by being admitted again, which is not a rollback: it joins an instance that did not exist while it
 was out.
+
+### What a governance layer may do to this traffic
+
+A deployment that paces, admits, denies or drops Verisync traffic — an application-level shaper, an
+admission controller, a kernel enforcer — is exercising a guarantee rather than testing one.
+
+**Delay, denial and loss cannot cost agreement.** The protocol is safe under asynchrony, so a request that
+arrives late, never arrives, or is refused before it leaves costs an attempt one recorder. What that costs is
+availability. Only a quorum counted over fewer replicas than the membership names could cost agreement, and
+nothing a governance layer does to traffic can shrink a membership: a member the endpoint map cannot resolve
+keeps its slot precisely so a majority stays a majority of what the membership claims.
+
+**The one thing outside the guarantee is misdelivery.** Answering one call with another call's reply is a
+correlation defect rather than asynchrony, and no shaper does it, but it is worth naming as the boundary. The
+register checks the instance and the answering member on every reply — including on retransmissions — and
+refuses a mismatch rather than counting it.
+
+**Shed from the record path before the dissemination path.** Both are safe to interfere with, but they cost
+differently. Starving record requests slows writes. Starving dissemination leaves the next version
+unservable until some host learns the current record another way, so sustained interference there wedges a
+chain that remains perfectly safe. If a shaper must classify, dissemination is the class it protects.
+
+**Interference makes readiness gates refuse, never clear.** A probe a shaper delays past its deadline or
+drops reports its member unreachable, and an unreachable member does not count toward a quorum-has-learned
+gate. Governance can therefore cost an operator a gate that will not open; it cannot open one that should
+have stayed shut.
+
+**The rateless tier is loss- and order-tolerant by construction.** Symbols are independent and linear over
+GF(2), so a peer that loses them absorbs more and one that receives them out of order decodes the same set.
+It also has no operation-level size to declare: how many symbols an exchange needs tracks the symmetric
+difference, which neither side knows in advance. A shaper sizes a batch, which it can do exactly — item
+width plus checksum width per symbol, times the symbol count the sender chose for that batch.
 
 ### Rules an operator can break from outside
 

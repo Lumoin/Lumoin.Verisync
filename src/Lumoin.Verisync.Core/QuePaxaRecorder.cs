@@ -226,42 +226,42 @@ public sealed class QuePaxaRecorder<TValue>
 
         if(state.Step < RecorderStep.RoundOnePhaseZero)
         {
-            throw new ArgumentException($"A restored step cannot stand below round one phase zero, got step {state.Step.Value}. A recorder records nothing below that step, and a snapshot returning at step zero is the crash this restore exists to prevent rather than a state to rebuild; an unwritten recorder comes from Leaderless or LedBy.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.RecorderStepBelowFloor, $"A restored step cannot stand below round one phase zero, got step {state.Step.Value}. A recorder records nothing below that step, and a snapshot returning at step zero is the crash this restore exists to prevent rather than a state to rebuild; an unwritten recorder comes from Leaderless or LedBy.", nameof(state));
         }
 
         if(state.Step > RecorderStep.Zero && state.First is null)
         {
-            throw new ArgumentException($"A restored register above step zero must carry a first proposal, got step {state.Step.Value} with none.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.RecorderFirstProposalMissing, $"A restored register above step zero must carry a first proposal, got step {state.Step.Value} with none.", nameof(state));
         }
 
         if(state.Step == RecorderStep.RoundOnePhaseZero && HoldsForeignReservedClaim(state.First, configuredLeader))
         {
-            throw new ArgumentException("A restored first proposal at round one phase zero cannot hold the reserved priority for a lane other than the configured leader, because the recorder downgrades that claim before the register sees it.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.RecorderForeignClaimInFirstProposal, "A restored first proposal at round one phase zero cannot hold the reserved priority for a lane other than the configured leader, because the recorder downgrades that claim before the register sees it.", nameof(state));
         }
 
         if(state.Step == RecorderStep.RoundOnePhaseZero && HoldsForeignReservedClaim(state.CurrentAggregate, configuredLeader))
         {
-            throw new ArgumentException("A restored current aggregate at round one phase zero cannot hold the reserved priority for a lane other than the configured leader, because the downgrade runs upstream of the fold and both slots at that step come from the downgraded stream.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.RecorderForeignClaimInAggregate, "A restored current aggregate at round one phase zero cannot hold the reserved priority for a lane other than the configured leader, because the downgrade runs upstream of the fold and both slots at that step come from the downgraded stream.", nameof(state));
         }
 
         if(state.First is not null && state.CurrentAggregate is null)
         {
-            throw new ArgumentException("A restored register carrying a first proposal must carry a current aggregate, because the advancing branch sets both from one proposal and the fold only ever replaces the aggregate.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.RecorderAggregateMissing, "A restored register carrying a first proposal must carry a current aggregate, because the advancing branch sets both from one proposal and the fold only ever replaces the aggregate.", nameof(state));
         }
 
         if(state.First is not null && state.CurrentAggregate is not null && state.CurrentAggregate.Key < state.First.Key)
         {
-            throw new ArgumentException("A restored current aggregate cannot order below the first proposal at the same step, because the fold keeps the greatest key recorded there.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.RecorderAggregateBelowFirstProposal, "A restored current aggregate cannot order below the first proposal at the same step, because the fold keeps the greatest key recorded there.", nameof(state));
         }
 
         if(state.Step == RecorderStep.RoundOnePhaseZero && state.PriorAggregate is not null)
         {
-            throw new ArgumentException("A restored register at round one phase zero cannot carry a prior aggregate, because a recorder reaches that step from step zero, which is a non-adjacent advance and clears the carry.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.RecorderPriorAggregateAtFloor, "A restored register at round one phase zero cannot carry a prior aggregate, because a recorder reaches that step from step zero, which is a non-adjacent advance and clears the carry.", nameof(state));
         }
 
         if(state.Step.IsNextAfter(RecorderStep.RoundOnePhaseZero) && HoldsForeignReservedClaim(state.PriorAggregate, configuredLeader))
         {
-            throw new ArgumentException("A restored prior aggregate one step above round one phase zero cannot hold the reserved priority for a lane other than the configured leader, because a non-null carry at that step is the aggregate an advance by exactly one brought down from round one phase zero, and that step's aggregate is drawn from the downgraded stream.", nameof(state));
+            throw new StateRestoreException(StateRestoreRefusal.RecorderForeignClaimInPriorAggregate, "A restored prior aggregate one step above round one phase zero cannot hold the reserved priority for a lane other than the configured leader, because a non-null carry at that step is the aggregate an advance by exactly one brought down from round one phase zero, and that step's aggregate is drawn from the downgraded stream.", nameof(state));
         }
 
         return new QuePaxaRecorder<TValue>(configuredLeader, IntervalSummaryRegister<TValue>.FromState(state));

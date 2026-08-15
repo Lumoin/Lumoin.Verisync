@@ -14,6 +14,30 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Security
 -->
 
+## [0.0.9] - 2026-08-15
+
+### Added
+
+- `StateRestoreException` and `StateRestoreRefusal`. Every durable-state restore now names the rule it refused on, across the QuePaxa recorder, the versioned host, the Fast CASPaxos acceptor and the Raft node, so a caller switches on the refusal instead of matching the sentence beside it. It derives from `ArgumentException` and keeps `ParamName`, which names which argument was refused and is a separate question from which rule refused it: the chain check reports `HostForeignChain` whether it is raised against a record handed to a constructor or a snapshot handed to a restore.
+
+- `ConsensusRefusedException` and `ConsensusRefusal`, the same for the refusals a running register and host raise: a concurrent write, a spent version range, a reconfiguration with nothing committed, a readiness report without a member query, a probe answered by another member, and a misrouted decision. The two families stay apart because they answer different questions — durable state a host was handed, against an operation asked for on state that is already sound. `VersionRangeSpent` is reported by both sites that raise it, which carried the same sentence and so could not be told apart at all.
+
+- Metrics and spans for the consensus surface, on the meter and activity source the library already publishes: membership size and quorum, per-member probe outcomes, the write status distribution and the fast-path rate.
+
+- A stated guarantee for deployments that pace, admit, deny or drop Verisync traffic: delay, denial and loss cost availability and never agreement, misdelivery of one call's reply to another is the boundary that guarantee does not cover, dissemination is the path to protect rather than shed, an interfered-with readiness probe makes a gate refuse rather than clear, and the rateless tier is loss- and order-tolerant with no operation-level size to declare.
+
+### Changed
+
+- **Breaking.** `ReadReadinessAsync` and `ReadAsync` take a per-member deadline. A member that answers nothing at all is reported unreachable, which is the entry a member that faults already produces, and the members after it are still asked. The probe is raced against the deadline rather than only told about it, because no delegate contract obliges a query to honour its token; a query that ignores it is bounded all the same and is then abandoned still running. The deadline is a required argument rather than construction, since an operator sweep and an automated gate want different patience. `Timeout.InfiniteTimeSpan` asks for the previous behaviour; zero and negative spans are refused, because a report in which nothing answered is what a silent cluster reports.
+
+- **Breaking.** `QuePaxaWriteOutcome<TValue>` carries `Record`, the record the version was decided at, and its `Value` and `Writer` are read off that record rather than passed beside it. A caller learns the membership a reconfiguration installed from `Record.NextConfiguration` instead of re-reading `ActiveConfiguration`, which any learn arriving meanwhile has already moved.
+
+- **Breaking.** Restore refusals throw `StateRestoreException` where they threw `ArgumentException`, and the register's and host's running refusals throw `ConsensusRefusedException` where they threw `InvalidOperationException`. Catching the base types still catches both.
+
+### Fixed
+
+- A recorder whose replies carry another host's identity is refused on a retransmission as well as on a first send. Without that, a register counts replies gathered on retransmissions and can commit on fewer distinct replicas than the quorum names.
+
 ## [0.0.8] - 2026-08-15
 
 ### Added

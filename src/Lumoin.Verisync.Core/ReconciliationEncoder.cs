@@ -26,6 +26,21 @@ namespace Lumoin.Verisync.Core;
 /// current net set would produce at that index; the incremental machinery (produced cell buffers plus a heap
 /// of pending walk cursors) is an implementation detail and never observable.
 /// </para>
+/// <para>
+/// THE STREAM HAS NO LENGTH TO DECLARE IN ADVANCE, WHICH IS THE POINT OF IT RATHER THAN A GAP. How many
+/// symbols a peer must absorb tracks the size of the symmetric difference, which neither side knows before
+/// the exchange; an encoder that could state a budget would not be rateless. A layer that shapes or paces
+/// this traffic therefore sizes a batch rather than an operation, and it can size that exactly: a symbol is
+/// <see cref="ReconciliationContract.ItemWidth"/> plus <see cref="ReconciliationContract.ChecksumWidth"/>
+/// bytes of payload, and the batch's own symbol count is whatever the caller put in it. A hint claiming a
+/// whole operation's size would be a fiction whichever number it carried.
+/// </para>
+/// <para>
+/// Delay, loss and reordering of symbols cost the exchange nothing but time. The encoding is linear over
+/// GF(2) and every symbol is independent of the order it arrives in, so a peer that drops symbols simply
+/// absorbs more of them, and one that receives them out of order decodes the same set. That tolerance is
+/// structural, not a retry loop layered on top.
+/// </para>
 /// </remarks>
 public sealed class ReconciliationEncoder: IDisposable
 {

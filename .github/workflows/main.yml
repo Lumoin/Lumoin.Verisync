@@ -212,6 +212,24 @@ jobs:
         done
       shell: bash
 
+    # The build bounds the release notes so that a long changelog section cannot fail the publish, and this
+    # asserts the bound held on the artifact that is actually pushed, so a defect in the bound fails here
+    # rather than at the registry once the version is already tagged.
+    - name: Verify packed release notes length
+      if: ${{ matrix.os == 'ubuntu-latest' && github.repository_owner == 'lumoin' }}
+      run: |
+        limit=35000
+        for package in nupkgs/*.nupkg; do
+          nuspec=$(unzip -p "$package" '*.nuspec')
+          notes=$(printf '%s' "$nuspec" | python3 -c 'import sys,xml.etree.ElementTree as e;r=e.fromstring(sys.stdin.read());n=r.find(".//{*}releaseNotes");print(len(n.text or "") if n is not None else 0)')
+          if [ "$notes" -gt "$limit" ]; then
+            echo "::error::$package carries $notes characters of release notes, above the $limit NuGet.org accepts."
+            exit 1
+          fi
+          echo "$package release notes are $notes characters."
+        done
+      shell: bash
+
     # Sigstore artifact attestation needs the public-good Fulcio/Rekor transparency
     # log, unavailable while the repository is private — the step errors with the
     # current plan. Gated on repository visibility so it is skipped while private and

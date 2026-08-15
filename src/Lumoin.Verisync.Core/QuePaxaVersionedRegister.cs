@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -110,7 +111,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// by some other route.
     /// </param>
     /// <param name="observeMemberVersion">
-    /// An optional per-member version query, which is what <see cref="ReadReadinessAsync(CancellationToken)"/> is built from.
+    /// An optional per-member version query, which is what <see cref="ReadReadinessAsync(TimeSpan, CancellationToken)"/> is built from.
     /// Unlike its resolver neighbours it is the query itself, invoked directly with the member and the token.
     /// When <see langword="null"/> this register reports no readiness at all rather than reporting an empty
     /// one.
@@ -155,6 +156,12 @@ public sealed class QuePaxaVersionedRegister<TValue>
         ObserveMemberVersion = observeMemberVersion;
         ActiveConfiguration = genesis;
         LeaderSchedule = ScheduleFor(genesis, baseDelay);
+
+        //The chain a register belongs to never moves, because the active membership's chain is the genesis
+        //membership's by an enforced invariant, so the dimension is rendered once instead of per emission.
+        Chain = Convert.ToHexStringLower(genesis.Cluster.AsSpan());
+
+        RecordMembership();
     }
 
 
@@ -234,6 +241,9 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
     private ObserveMemberVersionDelegate? ObserveMemberVersion { get; }
 
+    /// <summary>The chain identity this register's measurements are dimensioned by, rendered once.</summary>
+    private string Chain { get; }
+
     /// <summary>The lane counter this register allocates its own proposals from.</summary>
     private LaneAllocation Lanes { get; set; } = LaneAllocation.None;
 
@@ -263,6 +273,8 @@ public sealed class QuePaxaVersionedRegister<TValue>
         ActiveConfiguration = committed.NextConfiguration;
         LeaderSchedule = ScheduleFor(ActiveConfiguration, BaseDelay);
 
+        RecordMembership();
+
         return true;
     }
 
@@ -271,8 +283,13 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// Catches up on versions this replica missed by asking the members of the active membership what they
     /// have learned.
     /// </summary>
+    /// <param name="queryDeadline">
+    /// How long one member's query may take before that member is given up on. Must be positive, or
+    /// <see cref="Timeout.InfiniteTimeSpan"/> to wait for every member however long it takes.
+    /// </param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The highest committed record known after the round, or <see langword="null"/> when none is known.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="queryDeadline"/> is neither positive nor <see cref="Timeout.InfiniteTimeSpan"/>.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled, and if a host answers with a cancellation of its own.</exception>
     /// <remarks>
     /// <para>
@@ -284,6 +301,13 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// host whose runner stopped answers its pending read cancelled under the runner's token, and that is the
     /// host's unavailability wearing a cancellation's type, so it is skipped like any other failing host
     /// rather than aborting the catch-up at every host after it.
+    /// </para>
+    /// <para>
+    /// A member that answers nothing at all is skipped on that same rule once
+    /// <paramref name="queryDeadline"/> has passed, because a silent host is a failing host that has not
+    /// admitted it yet, and a catch-up that parks is worse than one that learns from fewer hosts. The deadline
+    /// is spent per member rather than over the round, so one silent member costs one deadline and not the
+    /// catch-up.
     /// </para>
     /// <para>
     /// The member list is read once, before the first query. A record adopted mid-round moves the membership,
@@ -299,8 +323,10 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// recovered from.
     /// </para>
     /// </remarks>
-    public async Task<VersionedValue<TValue>?> ReadAsync(CancellationToken cancellationToken)
+    public async Task<VersionedValue<TValue>?> ReadAsync(TimeSpan queryDeadline, CancellationToken cancellationToken)
     {
+        ValidateDeadline(queryDeadline, nameof(queryDeadline));
+
         if(ResolveCommittedRecordReader is null)
         {
             return Committed;
@@ -313,7 +339,10 @@ public sealed class QuePaxaVersionedRegister<TValue>
             VersionedValue<TValue>? reported;
             try
             {
-                reported = await ResolveCommittedRecordReader(member)(cancellationToken).ConfigureAwait(false);
+                reported = await WithinDeadlineAsync(
+                    token => ResolveCommittedRecordReader(member)(token).AsTask(),
+                    queryDeadline,
+                    cancellationToken).ConfigureAwait(false);
             }
             catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested)
             {
@@ -337,16 +366,22 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <summary>
     /// Asks every member of the active membership how far it has caught up.
     /// </summary>
+    /// <param name="probeDeadline">
+    /// How long one member's probe may take before that member is reported unreachable. Must be positive, or
+    /// <see cref="Timeout.InfiniteTimeSpan"/> to wait for every member however long it takes.
+    /// </param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>One entry per member, in the membership's own order, beside the membership it was measured over.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="probeDeadline"/> is neither positive nor <see cref="Timeout.InfiniteTimeSpan"/>.</exception>
     /// <exception cref="InvalidOperationException">Thrown if this register was built without a per-member version query, and if a member's probe was answered by a host asserting another member's identity.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled, and if a member answers with a cancellation of its own.</exception>
     /// <remarks>
-    /// The active-membership form of <see cref="ReadReadinessAsync(QuePaxaConfiguration, CancellationToken)"/>,
+    /// The active-membership form of <see cref="ReadReadinessAsync(QuePaxaConfiguration, TimeSpan, CancellationToken)"/>,
     /// which carries the rules: what the report gates, why an unwired query is refused, why a fault is a
-    /// member's answer, and why an answer naming another member fails the report.
+    /// member's answer, why silence is the same answer, and why an answer naming another member fails the
+    /// report.
     /// </remarks>
-    public Task<RegisterReadiness> ReadReadinessAsync(CancellationToken cancellationToken) => ReadReadinessAsync(ActiveConfiguration, cancellationToken);
+    public Task<RegisterReadiness> ReadReadinessAsync(TimeSpan probeDeadline, CancellationToken cancellationToken) => ReadReadinessAsync(ActiveConfiguration, probeDeadline, cancellationToken);
 
 
     /// <summary>
@@ -354,10 +389,15 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// membership is the one this register runs under.
     /// </summary>
     /// <param name="membership">The membership to measure over.</param>
+    /// <param name="probeDeadline">
+    /// How long one member's probe may take before that member is reported unreachable. Must be positive, or
+    /// <see cref="Timeout.InfiniteTimeSpan"/> to wait for every member however long it takes.
+    /// </param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>One entry per member, in the membership's own order, beside the membership it was measured over.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="membership"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">Thrown if <paramref name="membership"/> names a chain other than this register's.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="probeDeadline"/> is neither positive nor <see cref="Timeout.InfiniteTimeSpan"/>.</exception>
     /// <exception cref="InvalidOperationException">Thrown if this register was built without a per-member version query, and if a member's probe was answered by a host asserting another member's identity.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled, and if a member answers with a cancellation of its own.</exception>
     /// <remarks>
@@ -386,6 +426,22 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// the caller's own signal.
     /// </para>
     /// <para>
+    /// A MEMBER THAT ANSWERS NOTHING AT ALL IS THE SAME ANSWER, and <paramref name="probeDeadline"/> is what
+    /// decides when nothing has been answered. Silence and a fault are one entry rather than two, because the
+    /// report exists to say whether a named replica has learned a version and both answer that with the same
+    /// thing: this member did not tell us. A gate given a third state could not act differently on it. What a
+    /// deadline changes is that the question terminates: the probe is raced against the deadline rather than
+    /// merely told about it, so a query that never returns and ignores its token costs one member's entry
+    /// instead of the whole report. An abandoned probe holds whatever it holds until it completes, which is
+    /// the price of an answer arriving at all.
+    /// </para>
+    /// <para>
+    /// The deadline is spent per member and not over the report. Members are asked in turn, so a report over a
+    /// wholly silent membership takes the deadline once per member; bounding the report instead would mark
+    /// later members unreachable because earlier ones were slow, which would report about the caller's
+    /// patience rather than about those members.
+    /// </para>
+    /// <para>
     /// An answer naming another member fails the report loudly rather than being counted or reported
     /// unreachable. The report is counted over distinct members of the membership it measures, reached
     /// through an endpoint map a deployment wires by hand, and two probe routes landing on one host would let
@@ -394,9 +450,11 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// and is not authentication.
     /// </para>
     /// </remarks>
-    public async Task<RegisterReadiness> ReadReadinessAsync(QuePaxaConfiguration membership, CancellationToken cancellationToken)
+    public async Task<RegisterReadiness> ReadReadinessAsync(QuePaxaConfiguration membership, TimeSpan probeDeadline, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(membership);
+        ValidateDeadline(probeDeadline, nameof(probeDeadline));
+
         if(!membership.Cluster.Equals(ActiveConfiguration.Cluster))
         {
             throw new ArgumentException("The membership names another chain, so a report over it would answer a question about a different register.", nameof(membership));
@@ -404,8 +462,10 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
         if(ObserveMemberVersion is null)
         {
-            throw new InvalidOperationException("This register was built without a per-member version query and cannot report readiness. A report of nothing is indistinguishable from a cluster that answered nothing, and a decommission gate cleared against the second is how a quorum is lost.");
+            throw new ConsensusRefusedException(ConsensusRefusal.ReadinessWithoutMemberQuery, "This register was built without a per-member version query and cannot report readiness. A report of nothing is indistinguishable from a cluster that answered nothing, and a decommission gate cleared against the second is how a quorum is lost.");
         }
+
+        using Activity? activity = VerisyncActivitySource.Instance.StartActivity(VerisyncTelemetry.ActivityNameConsensusReadiness);
 
         ImmutableArray<MemberReadiness>.Builder reports = ImmutableArray.CreateBuilder<MemberReadiness>(membership.Members.Length);
         foreach(ReplicaId member in membership.Members)
@@ -415,14 +475,20 @@ public sealed class QuePaxaVersionedRegister<TValue>
             MemberVersionReport reported;
             try
             {
-                reported = await ObserveMemberVersion(member, cancellationToken).ConfigureAwait(false);
+                reported = await WithinDeadlineAsync(
+                    token => ObserveMemberVersion(member, token).AsTask(),
+                    probeDeadline,
+                    cancellationToken).ConfigureAwait(false);
             }
             catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
-            catch(Exception)
+            catch(Exception failure)
             {
+                //The report collapses silence and a fault into one entry because a gate cannot act
+                //differently on them. A human diagnosing can, so the two are told apart here.
+                RecordProbe(member, failure is TimeoutException ? VerisyncTelemetry.ProbeTimedOut : VerisyncTelemetry.ProbeFaulted);
                 reports.Add(new MemberReadiness(member, null));
 
                 continue;
@@ -432,13 +498,23 @@ public sealed class QuePaxaVersionedRegister<TValue>
             //distinct members, so it is a wiring defect surfaced loudly rather than a weaker reading.
             if(!reported.Recorder.Equals(member))
             {
-                throw new InvalidOperationException($"The version probe for member {member} was answered by {reported.Recorder}, so this deployment's endpoint map does not reach the membership it names. A readiness report counting that answer would clear a decommission gate on fewer distinct replicas than it claims.");
+                throw new ConsensusRefusedException(ConsensusRefusal.ProbeAnsweredByAnotherMember, $"The version probe for member {member} was answered by {reported.Recorder}, so this deployment's endpoint map does not reach the membership it names. A readiness report counting that answer would clear a decommission gate on fewer distinct replicas than it claims.");
             }
 
+            RecordProbe(member, VerisyncTelemetry.ProbeAnswered);
             reports.Add(new MemberReadiness(member, reported.Version));
         }
 
-        return new RegisterReadiness(membership, reports.ToImmutable());
+        RegisterReadiness readiness = new(membership, reports.ToImmutable());
+
+        if(activity is not null)
+        {
+            _ = activity.SetTag(VerisyncTelemetry.TagCluster, Chain);
+            _ = activity.SetTag(VerisyncTelemetry.ActivityMeasuredMembers, readiness.Members.Length);
+            _ = activity.SetTag(VerisyncTelemetry.ActivityReachableMembers, readiness.Reachable);
+        }
+
+        return readiness;
     }
 
 
@@ -459,9 +535,16 @@ public sealed class QuePaxaVersionedRegister<TValue>
     public async Task<QuePaxaWriteOutcome<TValue>> TryWriteAsync(TValue value, CancellationToken cancellationToken)
     {
         EnterWrite();
+        using Activity? activity = VerisyncActivitySource.Instance.StartActivity(VerisyncTelemetry.ActivityNameConsensusWrite);
         try
         {
-            return await AttemptAsync(_ => value, null, 0, cancellationToken).ConfigureAwait(false);
+            return Measured(activity, await AttemptAsync(_ => value, null, 0, cancellationToken).ConfigureAwait(false));
+        }
+        catch(Exception failure)
+        {
+            _ = activity?.SetStatus(ActivityStatusCode.Error, failure.Message);
+
+            throw;
         }
         finally
         {
@@ -515,9 +598,16 @@ public sealed class QuePaxaVersionedRegister<TValue>
         ArgumentOutOfRangeException.ThrowIfLessThan(maxAttempts, 1);
 
         EnterWrite();
+        using Activity? activity = VerisyncActivitySource.Instance.StartActivity(VerisyncTelemetry.ActivityNameConsensusWrite);
         try
         {
-            return await RunAttemptsAsync(update, null, maxAttempts, cancellationToken).ConfigureAwait(false);
+            return Measured(activity, await RunAttemptsAsync(update, null, maxAttempts, cancellationToken).ConfigureAwait(false));
+        }
+        catch(Exception failure)
+        {
+            _ = activity?.SetStatus(ActivityStatusCode.Error, failure.Message);
+
+            throw;
         }
         finally
         {
@@ -569,14 +659,21 @@ public sealed class QuePaxaVersionedRegister<TValue>
         ArgumentOutOfRangeException.ThrowIfLessThan(maxAttempts, 1);
 
         EnterWrite();
+        using Activity? activity = VerisyncActivitySource.Instance.StartActivity(VerisyncTelemetry.ActivityNameConsensusWrite);
         try
         {
             if(Committed is null)
             {
-                throw new InvalidOperationException("A reconfiguration carries the committed value forward and this register holds no committed record. A chain is bootstrapped by writing once under its genesis membership, and reconfigured after that.");
+                throw new ConsensusRefusedException(ConsensusRefusal.NothingCommittedToReconfigure, "A reconfiguration carries the committed value forward and this register holds no committed record. A chain is bootstrapped by writing once under its genesis membership, and reconfigured after that.");
             }
 
-            return await RunAttemptsAsync(current => current!, change, maxAttempts, cancellationToken).ConfigureAwait(false);
+            return Measured(activity, await RunAttemptsAsync(current => current!, change, maxAttempts, cancellationToken).ConfigureAwait(false));
+        }
+        catch(Exception failure)
+        {
+            _ = activity?.SetStatus(ActivityStatusCode.Error, failure.Message);
+
+            throw;
         }
         finally
         {
@@ -591,7 +688,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         int maxAttempts,
         CancellationToken cancellationToken)
     {
-        QuePaxaWriteOutcome<TValue> outcome = new(QuePaxaWriteStatus.Undecided, NextVersion, default, null, RecorderStep.Zero, 0, false);
+        QuePaxaWriteOutcome<TValue> outcome = new(QuePaxaWriteStatus.Undecided, NextVersion, null, RecorderStep.Zero, 0, false);
 
         for(int attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -625,7 +722,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         //to find out.
         if(!instance.Configuration.Contains(Self))
         {
-            return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.OutsideConfiguration, instance.Version, default, null, RecorderStep.Zero, spent, false);
+            return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.OutsideConfiguration, instance.Version, null, RecorderStep.Zero, spent, false);
         }
 
         QuePaxaConfiguration next = change is null ? instance.Configuration : change(instance.Configuration);
@@ -646,7 +743,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
                 RegisterVersion observed = await ObserveCommittedVersion(cancellationToken).ConfigureAwait(false);
                 if(observed >= instance.Version)
                 {
-                    return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Undecided, instance.Version, default, null, RecorderStep.Zero, spent, false);
+                    return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Undecided, instance.Version, null, RecorderStep.Zero, spent, false);
                 }
             }
         }
@@ -665,13 +762,13 @@ public sealed class QuePaxaVersionedRegister<TValue>
 
         if(!outcome.IsDecided || outcome.Value is not { } decided)
         {
-            return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Undecided, instance.Version, default, null, RecorderStep.Zero, spent + 1, true);
+            return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Undecided, instance.Version, null, RecorderStep.Zero, spent + 1, true);
         }
 
         //A misrouted decision kept out of the committed state cannot set the next instance's leader.
         if(decided.Version != instance.Version)
         {
-            throw new InvalidOperationException($"The instance for version {instance.Version.Value} decided a record carrying version {decided.Version.Value}, so a request reached an instance it was not addressed to.");
+            throw new ConsensusRefusedException(ConsensusRefusal.MisroutedDecision, $"The instance for version {instance.Version.Value} decided a record carrying version {decided.Version.Value}, so a request reached an instance it was not addressed to.");
         }
 
         _ = Learn(decided);
@@ -681,7 +778,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
         //A value can be chosen by a quorum and still not be this writer's, so the test is over the whole record.
         QuePaxaWriteStatus status = decided.Equals(record) ? QuePaxaWriteStatus.Committed : QuePaxaWriteStatus.Superseded;
 
-        return new QuePaxaWriteOutcome<TValue>(status, instance.Version, decided.Value, decided.Writer, outcome.DecidedAt, spent + 1, true);
+        return new QuePaxaWriteOutcome<TValue>(status, instance.Version, decided, outcome.DecidedAt, spent + 1, true);
     }
 
 
@@ -704,7 +801,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// The register owes this guard whatever the delegate's signature says, which is why the delegate has no
     /// result type reporting failure: a .NET delegate can always throw, so a result would add a second route
     /// for the same event and leave this guard standing anyway. What a caller reads instead is
-    /// <see cref="ReadReadinessAsync(CancellationToken)"/>, which reports what the hosts actually hold rather than what a push
+    /// <see cref="ReadReadinessAsync(TimeSpan, CancellationToken)"/>, which reports what the hosts actually hold rather than what a push
     /// attempt claimed.
     /// </para>
     /// </remarks>
@@ -761,6 +858,162 @@ public sealed class QuePaxaVersionedRegister<TValue>
         }
 
         return audience.ToImmutable();
+    }
+
+
+    /// <summary>Reports what <paramref name="outcome"/> established, and returns it unchanged.</summary>
+    /// <param name="activity">The span covering the write, or <see langword="null"/> when nothing is listening.</param>
+    /// <param name="outcome">What the write established.</param>
+    /// <returns><paramref name="outcome"/>.</returns>
+    /// <remarks>
+    /// It measures the public call and not the attempt, so the attempt count is the number a write spent
+    /// rather than a running total and the status is the one a caller was given.
+    /// </remarks>
+    private QuePaxaWriteOutcome<TValue> Measured(Activity? activity, QuePaxaWriteOutcome<TValue> outcome)
+    {
+        TagList tags = new()
+        {
+            { VerisyncTelemetry.TagCluster, Chain },
+            { VerisyncTelemetry.TagWriteStatus, Describe(outcome.Status) },
+            { VerisyncTelemetry.TagFastPath, outcome.TookFastPath }
+        };
+
+        VerisyncMetrics.ConsensusWrites.Add(1, tags);
+        VerisyncMetrics.ConsensusWriteAttempts.Record(outcome.Attempts, tags);
+
+        if(activity is not null)
+        {
+            _ = activity.SetTag(VerisyncTelemetry.TagCluster, Chain);
+            _ = activity.SetTag(VerisyncTelemetry.TagWriteStatus, Describe(outcome.Status));
+            _ = activity.SetTag(VerisyncTelemetry.TagFastPath, outcome.TookFastPath);
+            _ = activity.SetTag(VerisyncTelemetry.ActivityWriteAttempts, outcome.Attempts);
+        }
+
+        return outcome;
+    }
+
+
+    /// <summary>Reports how one member answered a version probe.</summary>
+    /// <param name="member">The member that was asked.</param>
+    /// <param name="outcome">How it answered, which is one of the probe outcomes <see cref="VerisyncTelemetry"/> names.</param>
+    private void RecordProbe(ReplicaId member, string outcome)
+    {
+        VerisyncMetrics.ConsensusProbes.Add(1, new TagList
+        {
+            { VerisyncTelemetry.TagCluster, Chain },
+            { VerisyncTelemetry.TagMember, Convert.ToHexStringLower(member.AsSpan()) },
+            { VerisyncTelemetry.TagProbeOutcome, outcome }
+        });
+    }
+
+
+    /// <summary>Reports the membership this register's next write runs under.</summary>
+    /// <remarks>
+    /// Recorded where the membership is set and where a record moves it, which are the only two places it
+    /// changes. The quorum is the membership's own arithmetic rather than the proposer's count of resolved
+    /// endpoints; the two cannot disagree, because an unresolvable member keeps its slot precisely so that
+    /// they cannot, and the membership's is the number the protocol and the operator both reason with.
+    /// </remarks>
+    private void RecordMembership()
+    {
+        TagList tags = new() { { VerisyncTelemetry.TagCluster, Chain } };
+
+        VerisyncMetrics.ConsensusMembershipSize.Record(ActiveConfiguration.Members.Length, tags);
+        VerisyncMetrics.ConsensusMembershipQuorum.Record(ActiveConfiguration.Quorum, tags);
+    }
+
+
+    /// <summary>The dimension value naming <paramref name="status"/>.</summary>
+    /// <param name="status">What a write established.</param>
+    /// <returns>A constant, so a measured write allocates nothing to name its own outcome.</returns>
+    private static string Describe(QuePaxaWriteStatus status) => status switch
+    {
+        QuePaxaWriteStatus.Committed => nameof(QuePaxaWriteStatus.Committed),
+        QuePaxaWriteStatus.Superseded => nameof(QuePaxaWriteStatus.Superseded),
+        QuePaxaWriteStatus.OutsideConfiguration => nameof(QuePaxaWriteStatus.OutsideConfiguration),
+        _ => nameof(QuePaxaWriteStatus.Undecided)
+    };
+
+
+    /// <summary>The rule a per-member deadline satisfies.</summary>
+    /// <param name="deadline">The deadline a caller supplied.</param>
+    /// <param name="parameterName">The parameter the deadline arrived as.</param>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="deadline"/> is neither positive nor <see cref="Timeout.InfiniteTimeSpan"/>.</exception>
+    /// <remarks>
+    /// Zero is refused rather than read as no patience at all. A zero deadline reports every member
+    /// unreachable, and a report in which nothing answered is exactly what a silent cluster produces, which is
+    /// the collapse this surface already refuses when no query was supplied. A caller that means to wait
+    /// without bound says so with <see cref="Timeout.InfiniteTimeSpan"/>, which states the choice rather than
+    /// spelling it as a number nobody recognises.
+    /// </remarks>
+    private static void ValidateDeadline(TimeSpan deadline, string parameterName)
+    {
+        if(deadline != Timeout.InfiniteTimeSpan && deadline <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(parameterName, deadline, "A per-member deadline is positive, or Timeout.InfiniteTimeSpan to wait without bound. A zero deadline reports every member unreachable, which is what a wholly silent cluster reports, and a gate cannot tell those two apart.");
+        }
+    }
+
+
+    /// <summary>
+    /// Asks one member and gives up on it after <paramref name="deadline"/>.
+    /// </summary>
+    /// <typeparam name="TAnswer">What the member answers.</typeparam>
+    /// <param name="ask">Starts the question against the token this method decides to hand it.</param>
+    /// <param name="deadline">How long the answer may take.</param>
+    /// <param name="cancellationToken">The caller's own token.</param>
+    /// <returns>The member's answer.</returns>
+    /// <exception cref="TimeoutException">Thrown when the deadline passed before the member answered, which every caller here reads as unavailability.</exception>
+    /// <exception cref="OperationCanceledException">Thrown when <paramref name="cancellationToken"/> is signalled.</exception>
+    /// <remarks>
+    /// <para>
+    /// THE TOKEN IS THE COURTESY AND THE RACE IS THE GUARANTEE. The question is handed a token linked to the
+    /// deadline, so a query that honours cancellation stops promptly and releases what it holds; but no
+    /// delegate contract obliges a query to honour anything, so the wait is also raced against the deadline
+    /// and the loser is abandoned. A deadline enforced by the token alone would bound only the queries that
+    /// were never the problem.
+    /// </para>
+    /// <para>
+    /// The clock is the register's own <see cref="TimeProvider"/>, so a deployment and a test measure the
+    /// deadline the same way. An infinite deadline takes the direct path, which arms no timer at all: the
+    /// caller asked for the behaviour this method exists to replace, and it should cost nothing.
+    /// </para>
+    /// <para>
+    /// The abandoned call keeps running. That is the cost of an answer arriving at all, and the alternative is
+    /// the caller waiting on it forever; what this method owes it is that its fault is observed, so a question
+    /// nobody is still asking cannot surface later as an unobserved exception.
+    /// </para>
+    /// </remarks>
+    private async Task<TAnswer> WithinDeadlineAsync<TAnswer>(Func<CancellationToken, Task<TAnswer>> ask, TimeSpan deadline, CancellationToken cancellationToken)
+    {
+        if(deadline == Timeout.InfiniteTimeSpan)
+        {
+            return await ask(cancellationToken).ConfigureAwait(false);
+        }
+
+        using var deadlineSource = new CancellationTokenSource(deadline, TimeProvider);
+        using var askSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadlineSource.Token);
+
+        Task<TAnswer> asked = ask(askSource.Token);
+
+        //An infinite delay under the linked token completes when the deadline or the caller signals and arms
+        //no timer of its own, so one probe holds one timer however the race ends.
+        Task abandoned = Task.Delay(Timeout.InfiniteTimeSpan, askSource.Token);
+
+        if(await Task.WhenAny(asked, abandoned).ConfigureAwait(false) == asked)
+        {
+            return await asked.ConfigureAwait(false);
+        }
+
+        _ = asked.ContinueWith(
+            static abandonedCall => _ = abandonedCall.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        throw new TimeoutException($"A member did not answer within {deadline}, so it is reported unavailable rather than waited on. The query was asked under a token carrying the deadline and did not return, so it is abandoned and still running.");
     }
 
 
@@ -878,7 +1131,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// </remarks>
     private static QuePaxaWriteOutcome<TValue> Unchanged(VersionedValue<TValue> committed)
     {
-        return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Committed, committed.Version, committed.Value, committed.Writer, RecorderStep.Zero, 0, false);
+        return new QuePaxaWriteOutcome<TValue>(QuePaxaWriteStatus.Committed, committed.Version, committed, RecorderStep.Zero, 0, false);
     }
 
 
@@ -907,7 +1160,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     {
         if(Interlocked.Exchange(ref writing, 1) != 0)
         {
-            throw new InvalidOperationException("A versioned register writes one value at a time; two writes at one version would propose on one lane, and one proposal key naming two values is what the key's uniqueness contract forbids.");
+            throw new ConsensusRefusedException(ConsensusRefusal.ConcurrentWrite, "A versioned register writes one value at a time; two writes at one version would propose on one lane, and one proposal key naming two values is what the key's uniqueness contract forbids.");
         }
     }
 

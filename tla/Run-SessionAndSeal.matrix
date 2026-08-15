@@ -1,0 +1,25 @@
+# The pinned matrix for Run-SessionAndSeal. Both runners read this file, so the set of configurations and the outcome
+# each must produce are stated once rather than in two places that can drift apart.
+#
+# Each row is the configuration, the specification, the expected outcome, and for a negative the invariant it
+# must break, separated by tabs. Blank lines and lines opening with a hash are ignored. The modules SANY
+# parses are the distinct specifications named here, in the order they first appear, so a specification
+# reaches SANY by having a configuration rather than by being listed a second time.
+#
+# An expected red run is a negative model: a configuration that enables a forbidden behaviour or removes a
+# shipped guard, and whose run must report a violation. A green negative means the model lost its defect and
+# its positive runs prove nothing. A red run must also break the invariant named here, because a negative
+# that goes red on something else has stopped testing what it was written for.
+MCSessionPairSafety.cfg	SessionPair.tla	green
+MCSessionPairTC.cfg	SessionPair.tla	green
+MCSessionPairCrashTC.cfg	SessionPair.tla	green
+MCSessionPairDrainClobber.cfg	SessionPair.tla	red
+MCSessionPairEagerDrops.cfg	SessionPair.tla	red
+MCSessionPairLiveness.cfg	SessionPair.tla	green
+MCSealSafety.cfg	SealProtocol.tla	green
+MCSealIsland.cfg	SealProtocol.tla	red
+MCSealRace.cfg	SealProtocol.tla	red
+MCSealProbeOnly.cfg	SealProtocol.tla	red
+MCSealGuarded.cfg	SealProtocol.tla	green
+MCRebirthDetector.cfg	SealRebirth.tla	green
+MCRebirthSilent.cfg	SealRebirth.tla	red
