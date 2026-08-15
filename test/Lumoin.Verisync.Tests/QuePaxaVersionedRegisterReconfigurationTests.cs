@@ -103,7 +103,7 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
         Assert.IsGreaterThan(0, cluster.RecordRequestsAt(Second), "No request reached the second member, so a count of zero at the joiner says nothing about the request path.");
         Assert.IsGreaterThan(0, cluster.RecordRequestsAt(Third), "No request reached the third member, so a count of zero at the joiner says nothing about the request path.");
 
-        RegisterReadiness readiness = await DriveAsync(cluster, writer.ReadReadinessAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+        RegisterReadiness readiness = await DriveAsync(cluster, writer.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
         TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness after the grow: {Describe(readiness)}"));
         Assert.AreSequenceEqual(new[] { First, Second, Third, Fourth }, readiness.Members.Select(member => member.Member));
@@ -112,7 +112,7 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
 
         //Writing resumes through the register that was refused before the change, and the only thing about it
         //that moved is the membership.
-        _ = await DriveAsync(cluster, joiner.ReadAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+        _ = await DriveAsync(cluster, joiner.ReadAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
         QuePaxaWriteOutcome<string> afterAdmission = await DriveAsync(cluster, joiner.WriteAsync(_ => "d", AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
 
@@ -153,14 +153,14 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
 
         //It is running the whole time: the catch-up below reaches it and it answers, and its own write path
         //reports the refusal rather than throwing at a caller that could not have known.
-        _ = await DriveAsync(cluster, departing.ReadAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+        _ = await DriveAsync(cluster, departing.ReadAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
         QuePaxaWriteOutcome<string> refused = await DriveAsync(cluster, departing.WriteAsync(_ => "x", AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
 
         Assert.AreEqual(QuePaxaWriteStatus.OutsideConfiguration, refused.Status);
         Assert.AreEqual(0, refused.Attempts, "The removed replica's own write spent an attempt on a refusal only a configuration change can lift.");
 
-        RegisterReadiness readiness = await DriveAsync(cluster, writer.ReadReadinessAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+        RegisterReadiness readiness = await DriveAsync(cluster, writer.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
         TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness after the shrink: {Describe(readiness)}"));
         Assert.AreSequenceEqual(new[] { First, Second, Third }, readiness.Members.Select(member => member.Member));
@@ -216,7 +216,7 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
         Assert.AreEqual(0, cluster.RecordRequestsAt(Fourth), "The replacement answered a record request before it was a member, so the push is no longer the only route the installing record can have taken to it.");
         Assert.IsGreaterThan(0, cluster.RecordRequestsAt(Third), "The replaced member answered nothing while it was one, so a count of zero at the replacement says nothing about the request path.");
 
-        RegisterReadiness readiness = await DriveAsync(cluster, writer.ReadReadinessAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+        RegisterReadiness readiness = await DriveAsync(cluster, writer.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
         TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness after the replacement: {Describe(readiness)}"));
         Assert.AreSequenceEqual(new[] { First, Second, Fourth }, readiness.Members.Select(member => member.Member));
@@ -256,7 +256,7 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
         Assert.AreEqual(RegisterVersion.First, cluster.CommittedAt(Third)!.Version, "The held member took the record it was offered, so nothing here is behind.");
         Assert.IsNull(cluster.CommittedAt(Fourth), "The held joiner took the record it was offered, so nothing here is behind.");
 
-        RegisterReadiness cold = await DriveAsync(cluster, writer.ReadReadinessAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+        RegisterReadiness cold = await DriveAsync(cluster, writer.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
         TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness while two members are behind: {Describe(cold)}"));
         Assert.AreEqual(4, cold.Reachable, "A member that answers was reported unreachable, so this reading cannot tell reachability and learning apart.");
@@ -273,7 +273,7 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
         cluster.Disseminate(cluster.CommittedAt(First)!, [Third, Fourth]);
         cluster.RunToQuiescence([]);
 
-        RegisterReadiness warm = await DriveAsync(cluster, writer.ReadReadinessAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+        RegisterReadiness warm = await DriveAsync(cluster, writer.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
         TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness once the stragglers caught up: {Describe(warm)}"));
         Assert.AreEqual(4, warm.Reachable);
@@ -324,7 +324,7 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
 
         //The second operator's register catches up before it changes anything, because a reconfiguration
         //carries a committed value forward and this register has written none of its own.
-        _ = await DriveAsync(cluster, shrinking.ReadAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+        _ = await DriveAsync(cluster, shrinking.ReadAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
         Assert.AreEqual(bootstrap.Version, shrinking.Committed!.Version, "The second operator's register did not catch up, so its change would be refused for want of a value rather than contend for the instance.");
 
@@ -412,7 +412,7 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
         cluster.HoldDissemination(Fifth);
         cluster.HoldDissemination(Sixth);
 
-        RegisterReadiness before = await DriveAsync(cluster, outgoing.ReadReadinessAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+        RegisterReadiness before = await DriveAsync(cluster, outgoing.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
         TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness before the change: {Describe(before)}"));
         Assert.IsTrue(before.QuorumHasLearned(bootstrap.Version), "The membership the change is decided under has not learned the record it builds on, so the change would be unavailable for a reason this scenario is not about.");
@@ -442,11 +442,11 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
 
         //The incoming register stands on genesis until it reads: its host holds the installing record and its
         //register does not, and the catch-up is what moves it onto the membership that record installs.
-        _ = await DriveAsync(cluster, incoming.ReadAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+        _ = await DriveAsync(cluster, incoming.ReadAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
         Assert.AreSequenceEqual(new[] { Fourth, Fifth, Sixth }, incoming.ActiveConfiguration.Members, "The catch-up read did not move the incoming register onto the membership it is a member of.");
 
-        RegisterReadiness cold = await DriveAsync(cluster, incoming.ReadReadinessAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+        RegisterReadiness cold = await DriveAsync(cluster, incoming.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
         TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness while the incoming membership is behind: {Describe(cold)}"));
         Assert.AreEqual(3, cold.Reachable, "A member that answers was reported unreachable, so this reading cannot tell an unavailable membership from a behind one.");
@@ -465,7 +465,7 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
         cluster.Disseminate(cluster.CommittedAt(Fourth)!, [Fifth, Sixth]);
         cluster.RunToQuiescence([]);
 
-        RegisterReadiness warm = await DriveAsync(cluster, incoming.ReadReadinessAsync(TestContext.CancellationToken)).ConfigureAwait(false);
+        RegisterReadiness warm = await DriveAsync(cluster, incoming.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
         TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness once the incoming membership caught up: {Describe(warm)}"));
         Assert.IsTrue(warm.QuorumHasLearned(moved.Version), "The catch-up landed and the report still shows no quorum at the installing version.");

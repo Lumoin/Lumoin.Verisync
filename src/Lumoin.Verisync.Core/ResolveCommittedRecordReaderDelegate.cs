@@ -24,6 +24,13 @@ namespace Lumoin.Verisync.Core;
 /// quorum rule and it has no counterpart here.
 /// </para>
 /// <para>
+/// A member that answers nothing at all is a third way of failing beside throwing and faulting, and the query
+/// owes no bound against it: a read takes a deadline per member and races the query against it, so a query
+/// that never returns costs that member's answer and not the catch-up. The token the query is handed carries
+/// the deadline, and a query that honours it releases its transport rather than holding it until it finishes
+/// on its own.
+/// </para>
+/// <para>
 /// A host that lags across a complete membership turnover is recovered by the deployment's locator and not by
 /// the protocol, and this is the seam it is recovered through. A read asks the members of the membership the
 /// reader holds, so a host whose held membership has been replaced outright asks replicas that may all be

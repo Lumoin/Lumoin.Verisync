@@ -573,7 +573,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
 
             Assert.IsNull(register.Committed);
 
-            VersionedValue<string>? read = await register.ReadAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            VersionedValue<string>? read = await register.ReadAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
             Assert.AreEqual(committed, read);
             Assert.AreEqual(new RegisterVersion(8UL), register.NextVersion);
@@ -615,7 +615,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
             _ = await cluster.LearnAtAsync(0, record, TestContext.CancellationToken).ConfigureAwait(false);
             _ = await cluster.LearnAtAsync(1, record, TestContext.CancellationToken).ConfigureAwait(false);
 
-            RegisterReadiness behind = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            RegisterReadiness behind = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
             TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness while one member is behind: {Describe(behind)}"));
             Assert.AreEqual(Configuration, behind.Configuration, "The report was measured over a membership other than the one this register runs under.");
@@ -629,7 +629,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
 
             _ = await cluster.LearnAtAsync(2, record, TestContext.CancellationToken).ConfigureAwait(false);
 
-            RegisterReadiness caughtUp = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            RegisterReadiness caughtUp = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
             TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness once the straggler caught up: {Describe(caughtUp)}"));
             Assert.AreEqual(3, caughtUp.Reachable);
@@ -670,7 +670,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
 
             await cluster.LearnAllAsync(register.Committed!, TestContext.CancellationToken).ConfigureAwait(false);
 
-            RegisterReadiness reached = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            RegisterReadiness reached = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
             TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness while every route is up: {Describe(reached)}"));
             Assert.AreEqual(3, reached.Reachable, "A member answered nothing while every route was up, so the reading below would not be the route's doing.");
@@ -679,7 +679,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
             //The host keeps running and keeps the record it learned; what it loses is the route to it.
             cluster.Partition(2);
 
-            RegisterReadiness faulted = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            RegisterReadiness faulted = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
             TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness while one member's endpoints fault: {Describe(faulted)}"));
             Assert.AreEqual(2, faulted.Reachable, "A member whose calls fault was counted among those that answered.");
@@ -696,7 +696,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
 
             cluster.Heal(2);
 
-            RegisterReadiness healed = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            RegisterReadiness healed = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
             TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness once the route is restored: {Describe(healed)}"));
             Assert.AreEqual(3, healed.Reachable, "The host behind the restored route did not answer again, so the run cannot say the cut was the endpoints rather than the host.");
@@ -909,7 +909,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
             //about which members answered rather than about which of them was able to.
             await cluster.LearnAllAsync(register.Committed!, TestContext.CancellationToken).ConfigureAwait(false);
 
-            RegisterReadiness ready = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            RegisterReadiness ready = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
             TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness once the whole installed membership caught up: {Describe(ready)}"));
             Assert.AreEqual(4, ready.Reachable, "A member that answers over its connection was reported unreachable.");
@@ -927,7 +927,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
             //member that could not be asked answers again with the record it held all along.
             cluster.Heal(hosts.IndexOf(Third));
 
-            RegisterReadiness healed = await register.ReadReadinessAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            RegisterReadiness healed = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
             TestContext.WriteLine(string.Create(CultureInfo.InvariantCulture, $"readiness once the cut route is restored: {Describe(healed)}"));
             Assert.AreEqual(grown.Version, healed.Members.Single(member => member.Member.Equals(Third)).Version, "The member whose route was cut does not hold the installing record, so it could not have served the write that ran without it.");
@@ -1092,7 +1092,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
             //superseded attempt has already adopted the winner and needs none.
             if(outcome.Status == QuePaxaWriteStatus.Undecided)
             {
-                _ = await register.ReadAsync(cancellationToken).ConfigureAwait(false);
+                _ = await register.ReadAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
             }
 
             int at = register.Committed?.Value.IndexOf(label, StringComparison.Ordinal) ?? -1;

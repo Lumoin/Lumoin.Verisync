@@ -118,7 +118,7 @@ endpoint resolver, a priority source, a clock and an attempts-per-recorder bound
 | optional seam | what is lost by omitting it |
 |---|---|
 | committed-version observer | a delayed writer cannot stand down on a version already closed, so every scheduled writer activates on its delay |
-| per-member record reader | `ReadAsync` reports only what this replica already holds and cannot catch up |
+| per-member record reader | `ReadAsync` reports only what this replica already holds and cannot catch up, and its deadline argument governs nothing |
 | committed-record publisher | decided records are retained but never disseminated, so the next version stays unservable until a host learns the current one by another route |
 | per-member version query | `ReadReadinessAsync` refuses rather than reporting nothing, because a report of nothing is also what a silent cluster produces |
 
@@ -178,6 +178,22 @@ Each answer is a `MemberVersionReport` naming the host that produced it, and the
 a member other than the one it asked: that is a wiring error in the endpoint map — two routes landing on one
 host would let one replica fill two slots and clear a decommission gate on fewer distinct replicas than it
 claims — and never a fault of the member. The identity is the host's own claim rather than authentication.
+
+`ReadReadinessAsync` takes a per-member deadline, and so does the catch-up `ReadAsync`. It is a required
+argument rather than a setting, because an operator's sweep and an automated gate want different patience and
+neither should inherit a value nobody chose. A member that answers nothing before its deadline is reported
+unreachable — the same entry a member that faults produces, because a gate asking whether a named replica has
+learned a version cannot act differently on the two. The probe is raced against the deadline and not merely
+told about it, so a query that never returns costs one member's entry rather than the whole report; the
+abandoned query keeps running until it finishes on its own. The deadline is spent per member, so a wholly
+silent membership costs it once per member. `Timeout.InfiniteTimeSpan` waits without bound and is the one way
+to ask for that; zero and negative spans are refused, because a report in which nothing answered is what a
+silent cluster produces and a gate cannot tell those apart.
+
+Pick a deadline above the round trip a probe actually takes, remembering that a host answers a probe through
+its runner and makes its state durable first, so the store's latency is inside it. This is the same
+conservative tuning a timeout has always needed, and it is not the hedging delay, which may be zero and is not
+a timeout at all.
 
 ### Restart and rejoin
 

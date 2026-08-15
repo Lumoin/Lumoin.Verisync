@@ -35,6 +35,13 @@ namespace Lumoin.Verisync.Core;
 /// against a silent cluster.
 /// </para>
 /// <para>
+/// THIS DELEGATE OWES NO BOUNDEDNESS, BECAUSE THE REGISTER NO LONGER ASSUMES IT. A readiness read takes a
+/// deadline per member and races this call against it, so an implementation that never returns costs that one
+/// member's entry rather than the whole report. The token it is handed carries the deadline, and honouring it
+/// is worth doing — a query that stops when told releases its transport instead of holding it until it
+/// completes on its own — but a query that ignores it is bounded all the same.
+/// </para>
+/// <para>
 /// It is the flat seam beside a curried one. <see cref="ResolveCommittedRecordReaderDelegate{TValue}"/>,
 /// its per-member neighbour in the register's constructor, returns a query that is invoked in a second
 /// call, while this one answers in the call it is given; the difference is the resolve step, not the

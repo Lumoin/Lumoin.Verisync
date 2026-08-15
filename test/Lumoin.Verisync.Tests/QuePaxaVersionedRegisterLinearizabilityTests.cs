@@ -475,7 +475,7 @@ internal sealed class QuePaxaVersionedRegisterLinearizabilityTests
             //superseded attempt has already adopted the winner and needs none.
             if(outcome.Status == QuePaxaWriteStatus.Undecided)
             {
-                _ = await register.ReadAsync(cancellationToken).ConfigureAwait(false);
+                _ = await register.ReadAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
             }
 
             //AN EFFECT CAN LAND AFTER ITS OWN ATTEMPT GAVE UP, carried by another proposer and decided in the

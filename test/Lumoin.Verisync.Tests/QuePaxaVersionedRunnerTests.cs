@@ -1495,7 +1495,7 @@ internal sealed class QuePaxaVersionedRunnerTests
             TimeProvider.System,
             resolveCommittedRecordReader: member => member.Equals(First) ? reader : throw new InvalidOperationException($"This test runs one host and it is not {member}."));
 
-        VersionedValue<string>? caughtUp = await register.ReadAsync(TestContext.CancellationToken).WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+        VersionedValue<string>? caughtUp = await register.ReadAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreSame(learned, caughtUp);
         Assert.AreEqual(new RegisterVersion(6UL), register.NextVersion);
@@ -1545,7 +1545,7 @@ internal sealed class QuePaxaVersionedRunnerTests
         //The caller's own token is never signalled here, so the cancellation the stopped host answers with is
         //that host's unavailability wearing a cancellation's type; a reader that rethrew it would abort the
         //catch-up at every host after it and learn nothing from any of them.
-        Task<VersionedValue<string>?> catchUp = register.ReadAsync(CancellationToken.None);
+        Task<VersionedValue<string>?> catchUp = register.ReadAsync(Timeout.InfiniteTimeSpan, CancellationToken.None);
         await stoppingToken.CancelAsync().ConfigureAwait(false);
 
         Assert.AreSame(learned, await catchUp.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
@@ -1575,7 +1575,7 @@ internal sealed class QuePaxaVersionedRunnerTests
             resolveCommittedRecordReader: _ => blockingRunner.ReadCommittedAsync);
 
         using CancellationTokenSource callerToken = new();
-        Task<VersionedValue<string>?> ownCancellation = caller.ReadAsync(callerToken.Token);
+        Task<VersionedValue<string>?> ownCancellation = caller.ReadAsync(Timeout.InfiniteTimeSpan, callerToken.Token);
         await callerToken.CancelAsync().ConfigureAwait(false);
 
         _ = await Assert.ThrowsAsync<OperationCanceledException>(() => ownCancellation.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
