@@ -31,6 +31,12 @@ internal sealed class QuePaxaVersionedRegisterTests
     private static TimeSpan ProbeDeadline { get; } = TimeSpan.FromSeconds(5);
 
     /// <summary>
+    /// How long a row waits on real time for a side effect it expects, so a defect names itself instead of
+    /// hanging the suite. It is never spent on a passing run.
+    /// </summary>
+    private static TimeSpan Told { get; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// The membership a register over this suite's agreed order stamps on its records, so a record built here
     /// compares equal to one the register wrote.
     /// </summary>
@@ -397,6 +403,65 @@ internal sealed class QuePaxaVersionedRegisterTests
         Assert.IsGreaterThan(0, cluster.Served[0]);
         Assert.AreEqual(0, cluster.Served[1]);
         Assert.AreEqual(0, cluster.Served[2]);
+    }
+
+
+    /// <summary>
+    /// A reply carrying another member's identity is refused on a retransmission exactly as it is on a first
+    /// send, so a mis-answering recorder concludes as unavailability inside the attempt budget.
+    /// </summary>
+    /// <remarks>
+    /// The neighbouring row points two slots at one host, so the mis-wiring is in the resolver and those hosts
+    /// never serve at all. Here the wiring is honest and the hosts do serve: each mis-answering member drops
+    /// its first send without answering, which is the only way the proposer spends a retransmission on it, and
+    /// answers the retransmission with a rewritten identity. A register that checked identity only on a first
+    /// send would count both retransmitted replies and commit on three answers against a quorum of two, so the
+    /// undecided outcome fires on the identity rule and on nothing else — the dropped first sends alone cannot
+    /// produce it.
+    /// </remarks>
+    [TestMethod]
+    public async Task AMismatchedIdentityIsRefusedOnARetransmissionAsWellAsOnAFirstSend()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+
+        //The counter lives outside the resolver because the resolver is invoked once per member per attempt,
+        //so state kept inside it would reset before the retransmission it is counting.
+        Dictionary<ReplicaId, int> sends = new() { [Second] = 0, [Third] = 0 };
+
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, resolve: member =>
+        {
+            VersionedRecorderEndpointDelegate<VersionedValue<string>> inner = cluster.Resolve(member);
+            if(member.Equals(First))
+            {
+                return inner;
+            }
+
+            return async (request, token) =>
+            {
+                if(sends[member]++ == 0)
+                {
+                    throw new IOException("The first send to this member is dropped, so the proposer spends a retransmission on it.");
+                }
+
+                VersionedRecordReply<VersionedValue<string>> reply = await inner(request, token).ConfigureAwait(false);
+
+                return reply with { Recorder = First };
+            };
+        });
+
+        QuePaxaWriteOutcome<string> outcome = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Undecided, outcome.Status);
+        Assert.IsNull(register.Committed);
+        Assert.IsNull(outcome.Record);
+
+        //A retransmission was actually spent on each mis-answering member, and each host actually answered it,
+        //so the refusal was taken against a reply that existed rather than against a transport that carried
+        //nothing.
+        Assert.IsGreaterThan(1, sends[Second]);
+        Assert.IsGreaterThan(1, sends[Third]);
+        Assert.IsGreaterThan(0, cluster.Served[1]);
+        Assert.IsGreaterThan(0, cluster.Served[2]);
     }
 
 
@@ -1100,6 +1165,11 @@ internal sealed class QuePaxaVersionedRegisterTests
     /// The race is what bounds the report and the token is what lets a well-behaved query release its
     /// transport instead of holding it until it finishes on its own. Only the second is asserted here,
     /// because the first is the row above.
+    /// <para>
+    /// The probe reports its own cancellation through a completion rather than a flag, because the report is
+    /// finished the moment the race is decided and the abandoned probe's continuation has not run yet. A flag
+    /// read straight after the report is read before it is written.
+    /// </para>
     /// </remarks>
     [TestMethod]
     public async Task TheDeadlineCancelsACooperativeProbeBesideGivingUpOnIt()
@@ -1108,7 +1178,7 @@ internal sealed class QuePaxaVersionedRegisterTests
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
 
         TaskCompletionSource asked = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        bool cancelled = false;
+        TaskCompletionSource told = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         QuePaxaVersionedRegister<string> register = Register(cluster, First, clock: clock, observeMember: async (member, token) =>
         {
@@ -1125,7 +1195,7 @@ internal sealed class QuePaxaVersionedRegisterTests
             }
             catch(OperationCanceledException)
             {
-                cancelled = true;
+                _ = told.TrySetResult();
 
                 throw;
             }
@@ -1141,7 +1211,10 @@ internal sealed class QuePaxaVersionedRegisterTests
         RegisterReadiness readiness = await reading.ConfigureAwait(false);
 
         Assert.IsFalse(readiness.Members[0].Reachable);
-        Assert.IsTrue(cancelled, "The probe was given up on without being told, so a cooperative query holds its transport until it finishes on its own.");
+
+        //The barrier, not a flag: a probe that was never told would leave this wait to expire, which names the
+        //defect instead of racing it.
+        await told.Task.WaitAsync(Told, TestContext.CancellationToken).ConfigureAwait(false);
     }
 
 
