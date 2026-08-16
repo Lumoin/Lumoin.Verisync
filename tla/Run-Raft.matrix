@@ -13,8 +13,8 @@
 #
 # Each log pair is a negative and the positive it licenses, at identical constants. The bound a pair runs at
 # is the one its own negative goes red at, so it cannot be shortened without making the pair meaningless. All
-# four quotient the state space by ServerSymmetry, which is what holds MCRaftLogFigure8 to about ninety
-# seconds instead of the forty minutes the brute-force run over the same bound costs.
+# four quotient the state space by ServerSymmetry, which is what keeps MCRaftLogFigure8 tractable at that
+# bound; the brute-force run over the same bound costs many times more, on whatever machine runs it.
 MCRaftElectionClosed.cfg	RaftElection.tla	green
 MCRaftElectionOutsiderUnguarded.cfg	RaftElection.tla	red	ElectionSafety
 MCRaftElectionOutsiderGuarded.cfg	RaftElection.tla	green
