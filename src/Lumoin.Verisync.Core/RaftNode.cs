@@ -161,14 +161,19 @@ public sealed class RaftNode<TCommand>
     /// <returns>A follower restored to the persisted durable triple.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
-    /// Thrown by the constructor when <paramref name="members"/> is empty or omits <paramref name="id"/>, and
-    /// when the durable state is internally impossible in a way only the whole state shows: a
+    /// Thrown by the constructor when <paramref name="members"/> is empty or omits <paramref name="id"/>.
+    /// </exception>
+    /// <exception cref="StateRestoreException">
+    /// Thrown when the durable state is internally impossible in a way only the whole state shows: a
     /// <see cref="RaftNodeState{TCommand}.VotedFor"/> that is neither empty nor exactly
-    /// <see cref="ReplicaId.Size"/> bytes; a non-empty vote that is not a member; log terms that decrease; or
-    /// a last log term above the current term. Everything a single value can be wrong about is refused before
-    /// a state can be built at all: an out-of-range term or index by <see cref="Term"/> and
-    /// <see cref="LogIndex"/>, and a log entry tagged below <see cref="Term.First"/> by
-    /// <see cref="RaftLogEntry{TCommand}"/>.
+    /// <see cref="ReplicaId.Size"/> bytes, carrying <see cref="StateRestoreRefusal.RaftVoteMalformed"/>; a
+    /// non-empty vote that is not a member, carrying
+    /// <see cref="StateRestoreRefusal.RaftVoteOutsideMembership"/>; log terms that decrease, carrying
+    /// <see cref="StateRestoreRefusal.RaftLogTermsDecrease"/>; or a last log term above the current term,
+    /// carrying <see cref="StateRestoreRefusal.RaftLastLogTermAboveCurrentTerm"/>. Everything a single value
+    /// can be wrong about is refused before a state can be built at all: an out-of-range term or index by
+    /// <see cref="Term"/> and <see cref="LogIndex"/>, and a log entry tagged below
+    /// <see cref="Term.First"/> by <see cref="RaftLogEntry{TCommand}"/>.
     /// </exception>
     public static RaftNode<TCommand> FromState(ReplicaId id, ImmutableArray<ReplicaId> members, RaftNodeState<TCommand> state)
     {

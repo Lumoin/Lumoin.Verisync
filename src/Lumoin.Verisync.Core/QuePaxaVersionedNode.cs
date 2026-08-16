@@ -95,7 +95,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <param name="self">This host's own identity, which the membership filter reads against the active configuration.</param>
     /// <param name="committed">The committed record this host starts from, or <see langword="null"/> when it has learned none.</param>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="genesis"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException">Thrown if <paramref name="committed"/>'s membership names a chain other than <paramref name="genesis"/>'s.</exception>
+    /// <exception cref="StateRestoreException">Thrown if <paramref name="committed"/>'s membership names a chain other than <paramref name="genesis"/>'s, carrying <see cref="StateRestoreRefusal.HostForeignChain"/>.</exception>
     /// <remarks>
     /// <para>
     /// The committed record is taken at construction rather than defaulted, as <see cref="QuePaxaNode{TValue}"/>
@@ -205,14 +205,14 @@ public sealed class QuePaxaVersionedNode<TValue>
     public VersionedValue<TValue>? Committed { get; private set; }
 
     /// <summary>The one version this host serves, which is the one after the committed record's.</summary>
-    /// <exception cref="InvalidOperationException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it, carrying <see cref="ConsensusRefusal.VersionRangeSpent"/>.</exception>
     public RegisterVersion LiveVersion => LiveVersionFor(Committed);
 
     /// <summary>
     /// The instance this host serves, as one read: the version, the membership it runs under and the
     /// previous writer, every field derived from a single capture of the committed record.
     /// </summary>
-    /// <exception cref="InvalidOperationException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it, carrying <see cref="ConsensusRefusal.VersionRangeSpent"/>.</exception>
     /// <remarks>
     /// The three facts are also readable one property at a time, and a reader beside a running loop must not
     /// pair them that way: a learn replaces the record and then the derived memos, so separate reads can pair
@@ -281,7 +281,8 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <see cref="Self"/> is outside <see cref="ActiveConfiguration"/>, or if the carried record's own version
     /// is absent or differs from the envelope's.
     /// </exception>
-    /// <exception cref="InvalidOperationException">Thrown if a runner owns this host, or if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that this host serves no version at all.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if a runner owns this host.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that this host serves no version at all, carrying <see cref="ConsensusRefusal.VersionRangeSpent"/>.</exception>
     /// <remarks>
     /// <para>
     /// Every refusal is <see cref="Declines"/>'s classification raised as an exception, and the two are one
@@ -670,7 +671,8 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// instance that record implies.
     /// </summary>
     /// <returns>The durable state to make stable before any dependent reply is sent.</returns>
-    /// <exception cref="InvalidOperationException">Thrown if a runner owns this host, or if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that this host serves no version at all.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if a runner owns this host.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that this host serves no version at all, carrying <see cref="ConsensusRefusal.VersionRangeSpent"/>.</exception>
     /// <remarks>
     /// <para>
     /// The derived leader and the live version are written into the snapshot rather than left to be recomputed
@@ -752,7 +754,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <param name="state">The durable state to restore.</param>
     /// <returns>A host serving the instance the restored record implies.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="genesis"/> or <paramref name="state"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException">
+    /// <exception cref="StateRestoreException">
     /// Thrown when the snapshot's parts disagree: a
     /// <see cref="QuePaxaVersionedNodeState{TValue}.ConfiguredLeader"/> other than the one
     /// <see cref="QuePaxaLeaderSchedule.LeaderFor(ReplicaId?)"/> derives from the restored record; a
@@ -764,7 +766,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <see cref="QuePaxaRecorder{TValue}.FromState(ProposerLane?, QuePaxaRecorderState{TValue})"/> defines
     /// them.
     /// </exception>
-    /// <exception cref="InvalidOperationException">Thrown if the restored record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it and this host would serve none.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown if the restored record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it and this host would serve none, carrying <see cref="ConsensusRefusal.VersionRangeSpent"/>.</exception>
     /// <remarks>
     /// <para>
     /// The cross-checks are what a torn snapshot fails, and each reads a stored copy of something the record
@@ -855,7 +857,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <summary>The version a host holding <paramref name="committed"/> serves.</summary>
     /// <param name="committed">The committed record to derive from, or <see langword="null"/> for a host that has learned none.</param>
     /// <returns>The version after the record's.</returns>
-    /// <exception cref="InvalidOperationException">Thrown if the record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown if the record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it, carrying <see cref="ConsensusRefusal.VersionRangeSpent"/>.</exception>
     /// <remarks>
     /// The derivation takes the record rather than reading <see cref="Committed"/>, so a caller needing the
     /// record and the version it implies together reads the field once and derives from that one snapshot.

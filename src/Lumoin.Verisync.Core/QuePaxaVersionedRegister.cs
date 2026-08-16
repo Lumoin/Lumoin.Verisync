@@ -373,7 +373,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>One entry per member, in the membership's own order, beside the membership it was measured over.</returns>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="probeDeadline"/> is neither positive nor <see cref="Timeout.InfiniteTimeSpan"/>.</exception>
-    /// <exception cref="InvalidOperationException">Thrown if this register was built without a per-member version query, and if a member's probe was answered by a host asserting another member's identity.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown if this register was built without a per-member version query, carrying <see cref="ConsensusRefusal.ReadinessWithoutMemberQuery"/>, and if a member's probe was answered by a host asserting another member's identity, carrying <see cref="ConsensusRefusal.ProbeAnsweredByAnotherMember"/>.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled, and if a member answers with a cancellation of its own.</exception>
     /// <remarks>
     /// The active-membership form of <see cref="ReadReadinessAsync(QuePaxaConfiguration, TimeSpan, CancellationToken)"/>,
@@ -398,7 +398,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="membership"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">Thrown if <paramref name="membership"/> names a chain other than this register's.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="probeDeadline"/> is neither positive nor <see cref="Timeout.InfiniteTimeSpan"/>.</exception>
-    /// <exception cref="InvalidOperationException">Thrown if this register was built without a per-member version query, and if a member's probe was answered by a host asserting another member's identity.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown if this register was built without a per-member version query, carrying <see cref="ConsensusRefusal.ReadinessWithoutMemberQuery"/>, and if a member's probe was answered by a host asserting another member's identity, carrying <see cref="ConsensusRefusal.ProbeAnsweredByAnotherMember"/>.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled, and if a member answers with a cancellation of its own.</exception>
     /// <remarks>
     /// <para>
@@ -524,7 +524,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <param name="value">The value to propose.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>What the attempt established.</returns>
-    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if the version range is spent, or if the round decided a record carrying a version other than the instance's own, which is a misrouted decision refused rather than adopted. A recorder whose reply mis-answers its envelope — another instance's version, or another member's name — is absorbed as an unreachable recorder instead and surfaces as an undecided outcome, never as this throw.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown if a write is already in flight on this register, carrying <see cref="ConsensusRefusal.ConcurrentWrite"/>; if the version range is spent, carrying <see cref="ConsensusRefusal.VersionRangeSpent"/>; or if the round decided a record carrying a version other than the instance's own, which is a misrouted decision refused rather than adopted, carrying <see cref="ConsensusRefusal.MisroutedDecision"/>. A recorder whose reply mis-answers its envelope — another instance's version, or another member's name — is absorbed as an unreachable recorder instead and surfaces as an undecided outcome, never as this throw.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled.</exception>
     /// <remarks>
     /// One attempt and no retry, so an undecided outcome is reported rather than retried. A caller that wants
@@ -566,7 +566,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <returns>What the write established.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="update"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="maxAttempts"/> is less than one.</exception>
-    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if the version range is spent, or if the round decided a record carrying a version other than the instance's own, which is a misrouted decision refused rather than adopted. A recorder whose reply mis-answers its envelope — another instance's version, or another member's name — is absorbed as an unreachable recorder instead and surfaces as an undecided outcome, never as this throw.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown if a write is already in flight on this register, carrying <see cref="ConsensusRefusal.ConcurrentWrite"/>; if the version range is spent, carrying <see cref="ConsensusRefusal.VersionRangeSpent"/>; or if the round decided a record carrying a version other than the instance's own, which is a misrouted decision refused rather than adopted, carrying <see cref="ConsensusRefusal.MisroutedDecision"/>. A recorder whose reply mis-answers its envelope — another instance's version, or another member's name — is absorbed as an unreachable recorder instead and surfaces as an undecided outcome, never as this throw.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled.</exception>
     /// <remarks>
     /// <para>
@@ -626,7 +626,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <returns>What the reconfiguration established, which names the record that installed the membership.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="change"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="maxAttempts"/> is less than one.</exception>
-    /// <exception cref="InvalidOperationException">Thrown if a write is already in flight on this register, if nothing is committed yet, if the version range is spent, or if the round decided a record carrying a version other than the instance's own, which is a misrouted decision refused rather than adopted. A recorder whose reply mis-answers its envelope — another instance's version, or another member's name — is absorbed as an unreachable recorder instead and surfaces as an undecided outcome, never as this throw.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown if a write is already in flight on this register, carrying <see cref="ConsensusRefusal.ConcurrentWrite"/>; if nothing is committed yet, carrying <see cref="ConsensusRefusal.NothingCommittedToReconfigure"/>; if the version range is spent, carrying <see cref="ConsensusRefusal.VersionRangeSpent"/>; or if the round decided a record carrying a version other than the instance's own, carrying <see cref="ConsensusRefusal.MisroutedDecision"/>. A recorder whose reply mis-answers its envelope — another instance's version, or another member's name — is absorbed as an unreachable recorder instead and surfaces as an undecided outcome, never as this throw.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled.</exception>
     /// <remarks>
     /// <para>

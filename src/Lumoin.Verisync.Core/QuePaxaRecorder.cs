@@ -161,7 +161,7 @@ public sealed class QuePaxaRecorder<TValue>
     /// <param name="state">The durable state to restore.</param>
     /// <returns>A recorder standing at the restored step.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException">
+    /// <exception cref="StateRestoreException">
     /// Thrown when the durable state is impossible in a way only the whole state shows: a
     /// <see cref="QuePaxaRecorderState{TValue}.Step"/> below <see cref="RecorderStep.RoundOnePhaseZero"/>;
     /// a step above <see cref="RecorderStep.Zero"/> with no
@@ -177,7 +177,17 @@ public sealed class QuePaxaRecorder<TValue>
     /// <see cref="RecorderStep.RoundOnePhaseZero"/> holding a reserved priority owned by a lane other than
     /// <paramref name="configuredLeader"/>. Everything a single value can be wrong about is refused
     /// before a state can be built at all: a step outside its range by <see cref="RecorderStep"/> and a
-    /// negative lane by <see cref="ProposerLane"/>.
+    /// negative lane by <see cref="ProposerLane"/>. Which rule refused the state is
+    /// <see cref="StateRestoreException.Refusal"/>, one of
+    /// <see cref="StateRestoreRefusal.RecorderStepBelowFloor"/>,
+    /// <see cref="StateRestoreRefusal.RecorderFirstProposalMissing"/>,
+    /// <see cref="StateRestoreRefusal.RecorderForeignClaimInFirstProposal"/>,
+    /// <see cref="StateRestoreRefusal.RecorderForeignClaimInAggregate"/>,
+    /// <see cref="StateRestoreRefusal.RecorderAggregateMissing"/>,
+    /// <see cref="StateRestoreRefusal.RecorderAggregateBelowFirstProposal"/>,
+    /// <see cref="StateRestoreRefusal.RecorderPriorAggregateAtFloor"/> or
+    /// <see cref="StateRestoreRefusal.RecorderForeignClaimInPriorAggregate"/>, so a caller switches on the
+    /// rule rather than on the message.
     /// </exception>
     /// <remarks>
     /// <para>
