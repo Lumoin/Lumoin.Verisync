@@ -163,12 +163,18 @@ public sealed class FastAcceptor<TValue>
     /// <param name="state">The durable state to restore.</param>
     /// <returns>An acceptor standing at the restored promise.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="state"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException">
+    /// <exception cref="StateRestoreException">
     /// Thrown when the durable state is one no acceptor can hold: a
     /// <see cref="FastAcceptorState{TValue}.Promised"/> below <see cref="FastBallot.InitialFast"/>; a
     /// <see cref="FastAcceptorState{TValue}.AcceptedBallot"/> that is neither <see cref="FastBallot.Zero"/>
     /// nor at least <see cref="FastBallot.InitialFast"/>; an accepted ballot above the promise; or a
     /// non-default <see cref="FastAcceptorState{TValue}.AcceptedValue"/> under the zero accepted ballot.
+    /// Which rule refused the state is <see cref="StateRestoreException.Refusal"/>, one of
+    /// <see cref="StateRestoreRefusal.AcceptorPromiseBelowInitialBallot"/>,
+    /// <see cref="StateRestoreRefusal.AcceptorAcceptedBallotBelowInitialBallot"/>,
+    /// <see cref="StateRestoreRefusal.AcceptorPromiseTrailsAcceptedBallot"/> or
+    /// <see cref="StateRestoreRefusal.AcceptorValueWithoutAcceptedBallot"/>, so a caller switches on the rule
+    /// rather than on the message.
     /// </exception>
     /// <remarks>
     /// <para>

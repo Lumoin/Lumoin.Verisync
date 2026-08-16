@@ -65,7 +65,7 @@ public readonly record struct RegisterVersion(ulong Value): IComparable<Register
 
     /// <summary>The version after this one.</summary>
     /// <returns>The successor version.</returns>
-    /// <exception cref="InvalidOperationException">Thrown if this is <see cref="MaxValue"/>.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown if this is <see cref="MaxValue"/>, carrying <see cref="ConsensusRefusal.VersionRangeSpent"/>.</exception>
     /// <remarks>
     /// The throw is the fail-closed backstop for a caller that did not test <see cref="IsExhausted"/> first. A
     /// register that has spent the range is reconfigured rather than wrapped, because a wrapped version would
