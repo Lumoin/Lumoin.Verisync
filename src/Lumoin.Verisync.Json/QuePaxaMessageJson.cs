@@ -440,7 +440,7 @@ public static class QuePaxaMessageJson
         writer.WriteStartObject();
         writer.WriteString("cluster", Convert.ToHexStringLower(configuration.Cluster.AsSpan()));
         writer.WriteStartArray("members");
-        foreach(ConfiguredMember member in configuration.Members)
+        foreach(HostId member in configuration.Members)
         {
             writer.WriteStartObject();
             writer.WriteString("replica", Convert.ToHexStringLower(member.Replica.AsSpan()));
@@ -462,12 +462,12 @@ public static class QuePaxaMessageJson
         //factories, so one construction carries every one of them and the codec adds none.
         return Construct(() =>
         {
-            ImmutableArray<ConfiguredMember>.Builder listed = ImmutableArray.CreateBuilder<ConfiguredMember>();
+            ImmutableArray<HostId>.Builder listed = ImmutableArray.CreateBuilder<HostId>();
             foreach(JsonElement member in members.EnumerateArray())
             {
                 string replica = RequireProperty(member, "replica", ConfigurationLabel).GetString()!;
                 string incarnation = RequireProperty(member, "incarnation", ConfigurationLabel).GetString()!;
-                listed.Add(new ConfiguredMember(ReplicaId.FromSpan(Convert.FromHexString(replica)), StoreIncarnation.FromSpan(Convert.FromHexString(incarnation))));
+                listed.Add(new HostId(ReplicaId.FromSpan(Convert.FromHexString(replica)), StoreIncarnation.FromSpan(Convert.FromHexString(incarnation))));
             }
 
             return QuePaxaConfiguration.Create(ClusterId.FromSpan(Convert.FromHexString(cluster.GetString()!)), listed.ToImmutable());

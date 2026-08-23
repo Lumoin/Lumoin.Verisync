@@ -98,7 +98,7 @@ internal static class RmwQuePaxaArm
         //incarnation derived from its own bytes: well formed, reproducible across trials, and distinct per
         //replica without a source of entropy the harness would then have to hold fixed.
         QuePaxaConfiguration genesis = QuePaxaConfiguration.CreateGenesis(
-            [.. members.Select(replica => new ConfiguredMember(replica, StoreIncarnation.FromSpan(replica.AsSpan()[..StoreIncarnation.Size])))]);
+            [.. members.Select(replica => new HostId(replica, StoreIncarnation.FromSpan(replica.AsSpan()[..StoreIncarnation.Size])))]);
 
         var nodes = new QuePaxaVersionedNode<string>[replicaCount];
         for(int site = 0; site < replicaCount; site++)

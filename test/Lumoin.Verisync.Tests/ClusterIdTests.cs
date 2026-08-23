@@ -105,8 +105,8 @@ internal sealed class ClusterIdTests
         //The order is load-bearing, because the first member is the bootstrap leader. Two operators who wrote
         //the same replicas in different orders must mint DIFFERENT identities and block each other, rather
         //than agree on one identity while disagreeing on who bootstraps.
-        ImmutableArray<ConfiguredMember> forward = Membership.Of(Replica(1), Replica(2), Replica(3));
-        ImmutableArray<ConfiguredMember> reordered = Membership.Of(Replica(2), Replica(1), Replica(3));
+        ImmutableArray<HostId> forward = Membership.Of(Replica(1), Replica(2), Replica(3));
+        ImmutableArray<HostId> reordered = Membership.Of(Replica(2), Replica(1), Replica(3));
 
         Assert.AreNotEqual(ClusterId.FromGenesisMembers(forward), ClusterId.FromGenesisMembers(reordered));
     }
@@ -117,8 +117,8 @@ internal sealed class ClusterIdTests
     {
         //Two independently built member arrays holding the same bytes in the same order are the same genesis,
         //so every host that reads one genesis file mints one identity.
-        ImmutableArray<ConfiguredMember> first = Membership.Of(Replica(1), Replica(2), Replica(3));
-        ImmutableArray<ConfiguredMember> second = Membership.Of(Replica(1), Replica(2), Replica(3));
+        ImmutableArray<HostId> first = Membership.Of(Replica(1), Replica(2), Replica(3));
+        ImmutableArray<HostId> second = Membership.Of(Replica(1), Replica(2), Replica(3));
 
         Assert.AreEqual(ClusterId.FromGenesisMembers(first), ClusterId.FromGenesisMembers(second));
     }

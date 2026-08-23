@@ -58,21 +58,21 @@ internal sealed class QuePaxaConfigurationTests
     /// </summary>
     private static ReplicaId ATwin { get; } = Replica(1, 0, 0, 0, 9);
 
-    private static ConfiguredMember MemberA { get; } = new(A, Incarnation(1));
-    private static ConfiguredMember MemberB { get; } = new(B, Incarnation(2));
-    private static ConfiguredMember MemberC { get; } = new(C, Incarnation(3));
-    private static ConfiguredMember MemberD { get; } = new(D, Incarnation(4));
+    private static HostId MemberA { get; } = new(A, Incarnation(1));
+    private static HostId MemberB { get; } = new(B, Incarnation(2));
+    private static HostId MemberC { get; } = new(C, Incarnation(3));
+    private static HostId MemberD { get; } = new(D, Incarnation(4));
 
     /// <summary>
     /// Differs from <see cref="MemberA"/> in both halves only past the fourth byte, so it is a different
     /// member that hashes exactly as that one does.
     /// </summary>
-    private static ConfiguredMember MemberATwin { get; } = new(ATwin, Incarnation(1, 0, 0, 0, 9));
+    private static HostId MemberATwin { get; } = new(ATwin, Incarnation(1, 0, 0, 0, 9));
 
     /// <summary>
     /// A's replica under another store: a different member that is still the same member of a quorum.
     /// </summary>
-    private static ConfiguredMember MemberARestored { get; } = new(A, Incarnation(11));
+    private static HostId MemberARestored { get; } = new(A, Incarnation(11));
 
     private static ClusterId Chain { get; } = ClusterId.FromGenesisMembers([MemberA, MemberB, MemberC]);
     private static ClusterId OtherChain { get; } = ClusterId.FromGenesisMembers([MemberD, MemberB, MemberC]);
@@ -449,9 +449,9 @@ internal sealed class QuePaxaConfigurationTests
         QuePaxaConfiguration equalToLeft = QuePaxaConfiguration.Create(
             Chain,
             [
-                new ConfiguredMember(Replica(1), Incarnation(1)),
-                new ConfiguredMember(Replica(2), Incarnation(2)),
-                new ConfiguredMember(Replica(3), Incarnation(3))
+                new HostId(Replica(1), Incarnation(1)),
+                new HostId(Replica(2), Incarnation(2)),
+                new HostId(Replica(3), Incarnation(3))
             ]);
 
         Assert.IsFalse(configurations.Add(equalToLeft));
@@ -475,7 +475,7 @@ internal sealed class QuePaxaConfigurationTests
     }
 
 
-    private static QuePaxaConfiguration Configuration(params ConfiguredMember[] members)
+    private static QuePaxaConfiguration Configuration(params HostId[] members)
     {
         return QuePaxaConfiguration.Create(Chain, [.. members]);
     }
@@ -491,7 +491,7 @@ internal sealed class QuePaxaConfigurationTests
             writer.WriteStartObject();
             writer.WriteString("cluster", Convert.ToHexStringLower(configuration.Cluster.AsSpan()));
             writer.WriteStartArray("members");
-            foreach(ConfiguredMember member in configuration.Members)
+            foreach(HostId member in configuration.Members)
             {
                 writer.WriteStartObject();
                 writer.WriteString("replica", Convert.ToHexStringLower(member.Replica.AsSpan()));
@@ -514,12 +514,12 @@ internal sealed class QuePaxaConfigurationTests
 
         ClusterId cluster = ClusterId.FromSpan(Convert.FromHexString(root.GetProperty("cluster").GetString()!));
 
-        ImmutableArray<ConfiguredMember>.Builder members = ImmutableArray.CreateBuilder<ConfiguredMember>();
+        ImmutableArray<HostId>.Builder members = ImmutableArray.CreateBuilder<HostId>();
         foreach(JsonElement member in root.GetProperty("members").EnumerateArray())
         {
             ReplicaId replica = ReplicaId.FromSpan(Convert.FromHexString(member.GetProperty("replica").GetString()!));
             StoreIncarnation incarnation = StoreIncarnation.FromSpan(Convert.FromHexString(member.GetProperty("incarnation").GetString()!));
-            members.Add(new ConfiguredMember(replica, incarnation));
+            members.Add(new HostId(replica, incarnation));
         }
 
         return QuePaxaConfiguration.Create(cluster, members.ToImmutable());

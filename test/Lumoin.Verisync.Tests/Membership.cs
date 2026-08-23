@@ -25,9 +25,9 @@ internal static class Membership
     /// <summary>The membership listing <paramref name="replicas"/> in the given order.</summary>
     /// <param name="replicas">The replicas to list, in their configured order.</param>
     /// <returns>The member list.</returns>
-    internal static ImmutableArray<ConfiguredMember> Of(params ReplicaId[] replicas)
+    internal static ImmutableArray<HostId> Of(params ReplicaId[] replicas)
     {
-        ImmutableArray<ConfiguredMember>.Builder members = ImmutableArray.CreateBuilder<ConfiguredMember>(replicas.Length);
+        ImmutableArray<HostId>.Builder members = ImmutableArray.CreateBuilder<HostId>(replicas.Length);
         foreach(ReplicaId replica in replicas)
         {
             members.Add(Member(replica));
@@ -40,9 +40,9 @@ internal static class Membership
     /// <summary>The member for <paramref name="replica"/> under its derived store incarnation.</summary>
     /// <param name="replica">The replica to admit.</param>
     /// <returns>The member.</returns>
-    internal static ConfiguredMember Member(ReplicaId replica)
+    internal static HostId Member(ReplicaId replica)
     {
-        return new ConfiguredMember(replica, IncarnationFor(replica));
+        return new HostId(replica, IncarnationFor(replica));
     }
 
 
@@ -56,7 +56,7 @@ internal static class Membership
     /// This is what a vector about the binding reaches for: a host holding this member is the same replica as
     /// <see cref="Member(ReplicaId)"/>'s and a different store, which is the whole hazard in one value.
     /// </remarks>
-    internal static ConfiguredMember Restored(ReplicaId replica)
+    internal static HostId Restored(ReplicaId replica)
     {
         Span<byte> buffer = stackalloc byte[StoreIncarnation.Size];
         replica.AsSpan()[..StoreIncarnation.Size].CopyTo(buffer);
@@ -68,7 +68,7 @@ internal static class Membership
             buffer[index] = (byte)~buffer[index];
         }
 
-        return new ConfiguredMember(replica, StoreIncarnation.FromSpan(buffer));
+        return new HostId(replica, StoreIncarnation.FromSpan(buffer));
     }
 
 

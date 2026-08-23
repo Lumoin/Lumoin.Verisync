@@ -18,7 +18,7 @@ namespace Lumoin.Verisync.Core;
 /// </para>
 /// <para>
 /// The order is part of the value, not an incidental arrangement of a set. The first member is the bootstrap
-/// leader, and <see cref="ClusterId.FromGenesisMembers(ImmutableArray{ConfiguredMember})"/> is order-sensitive for
+/// leader, and <see cref="ClusterId.FromGenesisMembers(ImmutableArray{HostId})"/> is order-sensitive for
 /// exactly that reason, so two configurations listing the same replicas in different orders are different
 /// configurations and are unequal here.
 /// </para>
@@ -42,7 +42,7 @@ namespace Lumoin.Verisync.Core;
 [DebuggerDisplay("{DebuggerDisplay,nq}")]
 public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
 {
-    private QuePaxaConfiguration(ClusterId cluster, ImmutableArray<ConfiguredMember> members)
+    private QuePaxaConfiguration(ClusterId cluster, ImmutableArray<HostId> members)
     {
         Cluster = cluster;
         Members = members;
@@ -70,7 +70,7 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
     /// decision would be taken by fewer replicas than the arithmetic claims.
     /// </para>
     /// </remarks>
-    public static QuePaxaConfiguration Create(ClusterId cluster, ImmutableArray<ConfiguredMember> members)
+    public static QuePaxaConfiguration Create(ClusterId cluster, ImmutableArray<HostId> members)
     {
         if(members.IsDefaultOrEmpty)
         {
@@ -106,7 +106,7 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
     /// under another. Every host of a chain reaches this with the same member list in the same order, and a
     /// host that does not mints a different identity and is declined.
     /// </remarks>
-    public static QuePaxaConfiguration CreateGenesis(ImmutableArray<ConfiguredMember> members)
+    public static QuePaxaConfiguration CreateGenesis(ImmutableArray<HostId> members)
     {
         return Create(ClusterId.FromGenesisMembers(members), members);
     }
@@ -116,7 +116,7 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
     public ClusterId Cluster { get; }
 
     /// <summary>The ordered member list, which is both the recorder set and the hedging order.</summary>
-    public ImmutableArray<ConfiguredMember> Members { get; }
+    public ImmutableArray<HostId> Members { get; }
 
     /// <summary>The number of members a decision under this configuration must be taken by.</summary>
     public int Quorum => (Members.Length / 2) + 1;
@@ -147,10 +147,10 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
 
 
     /// <summary>
-    /// The configuration with <paramref name="replica"/> added at the end of the member list, or this one when
+    /// The configuration with <paramref name="host"/> added at the end of the member list, or this one when
     /// it is already a member.
     /// </summary>
-    /// <param name="replica">The member to add.</param>
+    /// <param name="host">The host to add.</param>
     /// <returns>The resulting configuration, on the same chain.</returns>
     /// <exception cref="InvalidOperationException">
     /// Thrown when the member's replica is already listed under another store incarnation, because replacing a
@@ -164,12 +164,12 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
     /// listed replica under a different incarnation is a store replacement, and answering it with the receiver
     /// would drop the operator's request silently.
     /// </remarks>
-    public QuePaxaConfiguration With(ConfiguredMember replica)
+    public QuePaxaConfiguration With(HostId host)
     {
-        int index = IndexOf(replica.Replica);
+        int index = IndexOf(host.Replica);
         if(index >= 0)
         {
-            if(!Members[index].Equals(replica))
+            if(!Members[index].Equals(host))
             {
                 throw new InvalidOperationException("A member's store cannot be replaced by an addition; retire the member and admit the replacement.");
             }
@@ -179,7 +179,7 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
 
         //The receiver is duplicate-free and the addition was just proven absent, so the appended list is
         //duplicate-free without a second scan.
-        return new QuePaxaConfiguration(Cluster, Members.Add(replica));
+        return new QuePaxaConfiguration(Cluster, Members.Add(host));
     }
 
 
@@ -230,7 +230,7 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
     /// disseminates to first, and the leavers are who a readiness gate must stop counting. Two memberships of
     /// different chains have no delta, because they never were one fleet.
     /// </remarks>
-    public ImmutableArray<ConfiguredMember> Joining(QuePaxaConfiguration incoming)
+    public ImmutableArray<HostId> Joining(QuePaxaConfiguration incoming)
     {
         ArgumentNullException.ThrowIfNull(incoming);
         if(!Cluster.Equals(incoming.Cluster))
@@ -238,8 +238,8 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
             throw new ArgumentException("The membership names another chain, so the two never were one fleet and have no delta.", nameof(incoming));
         }
 
-        ImmutableArray<ConfiguredMember>.Builder joiners = ImmutableArray.CreateBuilder<ConfiguredMember>();
-        foreach(ConfiguredMember member in incoming.Members)
+        ImmutableArray<HostId>.Builder joiners = ImmutableArray.CreateBuilder<HostId>();
+        foreach(HostId member in incoming.Members)
         {
             if(!Members.Contains(member))
             {
@@ -264,7 +264,7 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
     /// a leaver is retired only once a quorum of the incoming membership has learned the record that removes
     /// it.
     /// </remarks>
-    public ImmutableArray<ConfiguredMember> Leaving(QuePaxaConfiguration incoming)
+    public ImmutableArray<HostId> Leaving(QuePaxaConfiguration incoming)
     {
         ArgumentNullException.ThrowIfNull(incoming);
         if(!Cluster.Equals(incoming.Cluster))
@@ -272,8 +272,8 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
             throw new ArgumentException("The membership names another chain, so the two never were one fleet and have no delta.", nameof(incoming));
         }
 
-        ImmutableArray<ConfiguredMember>.Builder leavers = ImmutableArray.CreateBuilder<ConfiguredMember>();
-        foreach(ConfiguredMember member in Members)
+        ImmutableArray<HostId>.Builder leavers = ImmutableArray.CreateBuilder<HostId>();
+        foreach(HostId member in Members)
         {
             if(!incoming.Members.Contains(member))
             {
@@ -344,7 +344,7 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
     {
         var hash = new HashCode();
         hash.Add(Cluster);
-        foreach(ConfiguredMember member in Members)
+        foreach(HostId member in Members)
         {
             hash.Add(member);
         }
