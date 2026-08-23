@@ -332,8 +332,10 @@ public sealed class QuePaxaVersionedRegister<TValue>
             return Committed;
         }
 
-        foreach(ReplicaId member in ActiveConfiguration.Members)
+        foreach(ConfiguredMember configured in ActiveConfiguration.Members)
         {
+            ReplicaId member = configured.Replica;
+
             cancellationToken.ThrowIfCancellationRequested();
 
             VersionedValue<TValue>? reported;
@@ -468,8 +470,10 @@ public sealed class QuePaxaVersionedRegister<TValue>
         using Activity? activity = VerisyncActivitySource.Instance.StartActivity(VerisyncTelemetry.ActivityNameConsensusReadiness);
 
         ImmutableArray<MemberReadiness>.Builder reports = ImmutableArray.CreateBuilder<MemberReadiness>(membership.Members.Length);
-        foreach(ReplicaId member in membership.Members)
+        foreach(ConfiguredMember configured in membership.Members)
         {
+            ReplicaId member = configured.Replica;
+
             cancellationToken.ThrowIfCancellationRequested();
 
             MemberVersionReport reported;
@@ -844,16 +848,20 @@ public sealed class QuePaxaVersionedRegister<TValue>
     {
         if(incoming.Equals(outgoing))
         {
-            return outgoing.Members;
+            return ImmutableArray.CreateRange(outgoing.Members, static member => member.Replica);
         }
 
         ImmutableArray<ReplicaId>.Builder audience = ImmutableArray.CreateBuilder<ReplicaId>(outgoing.Members.Length + incoming.Members.Length);
-        audience.AddRange(outgoing.Members);
-        foreach(ReplicaId joining in incoming.Members)
+        foreach(ConfiguredMember outgoingMember in outgoing.Members)
         {
-            if(!outgoing.Contains(joining))
+            audience.Add(outgoingMember.Replica);
+        }
+
+        foreach(ConfiguredMember joining in incoming.Members)
+        {
+            if(!outgoing.Contains(joining.Replica))
             {
-                audience.Add(joining);
+                audience.Add(joining.Replica);
             }
         }
 
@@ -1041,11 +1049,11 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// </remarks>
     private RecorderEndpointDelegate<VersionedValue<TValue>>[] EndpointsFor(RegisterInstance instance)
     {
-        ImmutableArray<ReplicaId> members = instance.Configuration.Members;
+        ImmutableArray<ConfiguredMember> members = instance.Configuration.Members;
         var endpoints = new RecorderEndpointDelegate<VersionedValue<TValue>>[members.Length];
         for(int index = 0; index < members.Length; index++)
         {
-            ReplicaId member = members[index];
+            ReplicaId member = members[index].Replica;
             VersionedRecorderEndpointDelegate<VersionedValue<TValue>> host;
             try
             {
