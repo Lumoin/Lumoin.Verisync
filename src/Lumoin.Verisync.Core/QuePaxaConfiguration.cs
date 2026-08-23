@@ -150,18 +150,30 @@ public sealed class QuePaxaConfiguration: IEquatable<QuePaxaConfiguration>
     /// The configuration with <paramref name="replica"/> added at the end of the member list, or this one when
     /// it is already a member.
     /// </summary>
-    /// <param name="replica">The replica to add.</param>
+    /// <param name="replica">The member to add.</param>
     /// <returns>The resulting configuration, on the same chain.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when the member's replica is already listed under another store incarnation, because replacing a
+    /// member's store retires one member and admits another rather than adding one.
+    /// </exception>
     /// <remarks>
     /// A joiner is appended rather than inserted, so the existing members keep their positions and the
     /// bootstrap leader keeps its own. Adding a member that is already listed returns the receiver, which is
     /// what lets a change be re-applied against a winning configuration after a superseded write instead of
-    /// failing the operator's whole request.
+    /// failing the operator's whole request. That idempotence is over the whole member: an addition naming a
+    /// listed replica under a different incarnation is a store replacement, and answering it with the receiver
+    /// would drop the operator's request silently.
     /// </remarks>
     public QuePaxaConfiguration With(ConfiguredMember replica)
     {
-        if(Contains(replica.Replica))
+        int index = IndexOf(replica.Replica);
+        if(index >= 0)
         {
+            if(!Members[index].Equals(replica))
+            {
+                throw new InvalidOperationException("A member's store cannot be replaced by an addition; retire the member and admit the replacement.");
+            }
+
             return this;
         }
 
