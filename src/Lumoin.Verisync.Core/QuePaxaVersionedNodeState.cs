@@ -3,12 +3,15 @@ using System;
 namespace Lumoin.Verisync.Core;
 
 /// <summary>
-/// The durable state of a <see cref="QuePaxaVersionedNode{TValue}"/>: the committed record the host has
-/// learned together with the recorder serving the instance that record implies. Obtain it with
+/// The durable state of a <see cref="QuePaxaVersionedNode{TValue}"/>: the store's own incarnation, the
+/// committed record the host has learned, and the recorder serving the instance that record implies. Obtain it with
 /// <see cref="QuePaxaVersionedNode{TValue}.ToState"/> and reconstruct with
 /// <see cref="QuePaxaVersionedNode{TValue}.FromState"/>.
 /// </summary>
 /// <typeparam name="TValue">The application value type.</typeparam>
+/// <param name="Incarnation">
+/// The store this state was written by, which is the incarnation minted when that store was created.
+/// </param>
 /// <param name="Committed">
 /// The committed record this host has learned, or <see langword="null"/> when it has learned none.
 /// </param>
@@ -27,14 +30,24 @@ namespace Lumoin.Verisync.Core;
 /// <param name="Recorder">The recorder's own durable state, which is the register serving <paramref name="RecorderVersion"/>.</param>
 /// <remarks>
 /// <para>
-/// Three of the five fields are derivable from <paramref name="Committed"/> and are stored anyway. That
+/// The incarnation is the one field that is nobody's derivation. It is what the store says about itself, and
+/// it is here rather than in a parameter of
+/// <see cref="QuePaxaVersionedNode{TValue}.FromState"/> because a store's identity has to survive a restart
+/// without anyone restating it: a caller that restated it could hand back the value the configuration admits
+/// however its store came back, and the membership filter would then test a claim rather than a fact. The
+/// replica this store answers under is not here for the mirror-image reason. A replica is a role a deployment
+/// assigns and a configuration change can move, so it is configuration and reaches the restore as its
+/// parameter, and the two halves are composed into one <see cref="HostId"/> there.
+/// </para>
+/// <para>
+/// Three of the six fields are derivable from <paramref name="Committed"/> and are stored anyway. That
 /// redundancy is the point rather than an oversight: a restore that recomputed the leader, the version and the
 /// membership from the committed record would compare each with itself and could never fail, while a stored
 /// copy lets the restore compare what a host wrote against what its own record implies, which is how a snapshot
 /// torn across two writes announces itself instead of restoring as a second leader on one instance.
 /// </para>
 /// <para>
-/// The five fields are one durable write and not two. The recorder serves the version the committed record
+/// The fields are one durable write and not two. The recorder serves the version the committed record
 /// implies, so a host that wrote the record and the register separately and crashed between them comes back
 /// holding a register from one instance beside a record from another, and
 /// <see cref="QuePaxaVersionedNode{TValue}.FromState"/> refuses exactly that pairing. Making the record durable
@@ -50,13 +63,15 @@ namespace Lumoin.Verisync.Core;
 /// the host was handed.
 /// </para>
 /// <para>
-/// A durable store that came back empty is not detectable from these five fields, and no field could make it
-/// so. A wiped snapshot and a host that has genuinely learned nothing carry the same values, so a restore reads
-/// both as a bootstrap host. What separates them is a fact outside the snapshot, which is the deployment's to
-/// hold.
+/// A durable store that came back empty is still not detectable here, and it is not this record's job to
+/// detect it. A wiped store has no snapshot at all, so nothing reaches a restore and the host is constructed
+/// as a bootstrap one; what separates it from a store that has genuinely learned nothing is that it can no
+/// longer present the incarnation this record held, and a configuration admitting that incarnation refuses
+/// the store that replaced it.
 /// </para>
 /// </remarks>
 public sealed record QuePaxaVersionedNodeState<TValue>(
+    StoreIncarnation Incarnation,
     VersionedValue<TValue>? Committed,
     RegisterVersion RecorderVersion,
     ProposerLane? ConfiguredLeader,

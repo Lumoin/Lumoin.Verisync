@@ -1006,7 +1006,8 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
 
             //Only the version is swapped: a payload short of its recorder would be refused by the codec and
             //the register's instance check would never be reached.
-            writer.WriteString("recorder", root.GetProperty("recorder").GetString());
+            writer.WritePropertyName("recorder");
+            root.GetProperty("recorder").WriteTo(writer);
             writer.WritePropertyName("reply");
             root.GetProperty("reply").WriteTo(writer);
             writer.WriteEndObject();

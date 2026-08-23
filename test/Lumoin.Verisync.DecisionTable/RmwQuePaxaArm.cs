@@ -103,7 +103,7 @@ internal static class RmwQuePaxaArm
         var nodes = new QuePaxaVersionedNode<string>[replicaCount];
         for(int site = 0; site < replicaCount; site++)
         {
-            nodes[site] = new QuePaxaVersionedNode<string>(genesis, members[site]);
+            nodes[site] = new QuePaxaVersionedNode<string>(genesis, genesis.Members[site]);
         }
 
         var registers = new QuePaxaVersionedRegister<string>[request.WriterCount];

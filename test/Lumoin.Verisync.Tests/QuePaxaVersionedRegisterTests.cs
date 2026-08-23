@@ -407,6 +407,45 @@ internal sealed class QuePaxaVersionedRegisterTests
 
 
     /// <summary>
+    /// A reply carrying the addressed member under another store is refused on the same comparison, because a
+    /// store the membership never admitted filling a slot of a quorum is the majority intersection failing at
+    /// a member rather than at an arithmetic.
+    /// </summary>
+    /// <remarks>
+    /// Every rewritten reply names the member the slot was addressed to, so the mis-wiring arm provably
+    /// cannot fire and only the store comparison can refuse them. The hosts do serve — the counts below say
+    /// so — which is what separates this from a transport that carried nothing, and it is what a register
+    /// comparing only replicas would count into a commit.
+    /// </remarks>
+    [TestMethod]
+    public async Task AReplyCarryingTheAddressedMemberUnderAnotherStoreIsRefusedRatherThanCounted()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, resolve: member =>
+        {
+            VersionedRecorderEndpointDelegate<VersionedValue<string>> inner = cluster.Resolve(member);
+
+            return async (request, token) =>
+            {
+                VersionedRecordReply<VersionedValue<string>> reply = await inner(request, token).ConfigureAwait(false);
+
+                return reply with { Recorder = Membership.Restored(member) };
+            };
+        });
+
+        QuePaxaWriteOutcome<string> outcome = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuePaxaWriteStatus.Undecided, outcome.Status);
+        Assert.IsNull(register.Committed);
+
+        //Every host answered, so the write failed on the store each answer named and not on silence.
+        Assert.IsGreaterThan(0, cluster.Served[0]);
+        Assert.IsGreaterThan(0, cluster.Served[1]);
+        Assert.IsGreaterThan(0, cluster.Served[2]);
+    }
+
+
+    /// <summary>
     /// A reply carrying another member's identity is refused on a retransmission exactly as it is on a first
     /// send, so a mis-answering recorder concludes as unavailability inside the attempt budget.
     /// </summary>
@@ -445,7 +484,7 @@ internal sealed class QuePaxaVersionedRegisterTests
 
                 VersionedRecordReply<VersionedValue<string>> reply = await inner(request, token).ConfigureAwait(false);
 
-                return reply with { Recorder = First };
+                return reply with { Recorder = Membership.Member(First) };
             };
         });
 
@@ -1028,7 +1067,7 @@ internal sealed class QuePaxaVersionedRegisterTests
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
         QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (member, _) => member.Equals(Third)
             ? throw new IOException("The third member is unreachable.")
-            : new ValueTask<MemberVersionReport>(new MemberVersionReport(member, member.Equals(First) ? new RegisterVersion(4UL) : new RegisterVersion(3UL))));
+            : new ValueTask<MemberVersionReport>(new MemberVersionReport(Membership.Member(member), member.Equals(First) ? new RegisterVersion(4UL) : new RegisterVersion(3UL))));
 
         RegisterReadiness readiness = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -1076,12 +1115,45 @@ internal sealed class QuePaxaVersionedRegisterTests
     {
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
         QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (_, _) =>
-            new ValueTask<MemberVersionReport>(new MemberVersionReport(First, new RegisterVersion(3UL))));
+            new ValueTask<MemberVersionReport>(new MemberVersionReport(Membership.Member(First), new RegisterVersion(3UL))));
 
         ConsensusRefusedException reported = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
             async () => await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
 
         Assert.AreEqual(ConsensusRefusal.ProbeAnsweredByAnotherMember, reported.Refusal);
+    }
+
+
+    /// <summary>
+    /// A probe answered under the right member by another store fails the report on its own rule, because a
+    /// gate that retires a member on a report from the store that replaced it measures the wrong store at the
+    /// one moment the membership is being changed.
+    /// </summary>
+    /// <remarks>
+    /// Every answer names the member that was asked, so the wrong-member arm provably cannot fire and the
+    /// refusal is the store arm's alone. Its own refusal is asserted for the same reason: two rules under one
+    /// name would leave an operator unable to tell a mis-wired map from a replaced store.
+    /// </remarks>
+    [TestMethod]
+    public async Task AReadinessProbeAnsweredByAnotherStoreOfTheSameMemberFailsTheReportRatherThanCounting()
+    {
+        VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
+        QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (member, _) =>
+            new ValueTask<MemberVersionReport>(new MemberVersionReport(Membership.Restored(member), new RegisterVersion(3UL))));
+
+        ConsensusRefusedException reported = await Assert.ThrowsExactlyAsync<ConsensusRefusedException>(
+            async () => await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(ConsensusRefusal.ProbeAnsweredByAnotherStore, reported.Refusal);
+
+        //The admitted store answers the same probe and the report is taken, so what refused it is the store
+        //and not the shape of the answer.
+        QuePaxaVersionedRegister<string> honest = Register(cluster, First, observeMember: (member, _) =>
+            new ValueTask<MemberVersionReport>(new MemberVersionReport(Membership.Member(member), new RegisterVersion(3UL))));
+
+        RegisterReadiness readiness = await honest.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(3, readiness.Reachable);
     }
 
 
@@ -1100,7 +1172,7 @@ internal sealed class QuePaxaVersionedRegisterTests
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
         QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (member, _) => member.Equals(Fourth)
             ? throw new IOException("The joiner is not serving yet.")
-            : new ValueTask<MemberVersionReport>(new MemberVersionReport(member, new RegisterVersion(2UL))));
+            : new ValueTask<MemberVersionReport>(new MemberVersionReport(Membership.Member(member), new RegisterVersion(2UL))));
 
         QuePaxaConfiguration incoming = cluster.Genesis.With(Membership.Member(Fourth));
         RegisterReadiness readiness = await register.ReadReadinessAsync(incoming, Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
@@ -1141,7 +1213,7 @@ internal sealed class QuePaxaVersionedRegisterTests
         {
             if(!member.Equals(Second))
             {
-                return new ValueTask<MemberVersionReport>(new MemberVersionReport(member, new RegisterVersion(2UL)));
+                return new ValueTask<MemberVersionReport>(new MemberVersionReport(Membership.Member(member), new RegisterVersion(2UL)));
             }
 
             _ = asked.TrySetResult();
@@ -1163,7 +1235,7 @@ internal sealed class QuePaxaVersionedRegisterTests
 
         //The abandoned probe is still running, and answering it after the fact changes nothing that was
         //already reported.
-        _ = silent.TrySetResult(new MemberVersionReport(Second, new RegisterVersion(2UL)));
+        _ = silent.TrySetResult(new MemberVersionReport(Membership.Member(Second), new RegisterVersion(2UL)));
     }
 
 
@@ -1193,7 +1265,7 @@ internal sealed class QuePaxaVersionedRegisterTests
         {
             if(!member.Equals(First))
             {
-                return new MemberVersionReport(member, new RegisterVersion(2UL));
+                return new MemberVersionReport(Membership.Member(member), new RegisterVersion(2UL));
             }
 
             _ = asked.TrySetResult();
@@ -1209,7 +1281,7 @@ internal sealed class QuePaxaVersionedRegisterTests
                 throw;
             }
 
-            return new MemberVersionReport(member, RegisterVersion.First);
+            return new MemberVersionReport(Membership.Member(member), RegisterVersion.First);
         });
 
         Task<RegisterReadiness> reading = register.ReadReadinessAsync(ProbeDeadline, TestContext.CancellationToken);
@@ -1259,7 +1331,7 @@ internal sealed class QuePaxaVersionedRegisterTests
 
         _ = await Assert.ThrowsAsync<OperationCanceledException>(() => reading).ConfigureAwait(false);
 
-        _ = silent.TrySetResult(new MemberVersionReport(First, RegisterVersion.First));
+        _ = silent.TrySetResult(new MemberVersionReport(Membership.Member(First), RegisterVersion.First));
     }
 
 
@@ -1276,7 +1348,7 @@ internal sealed class QuePaxaVersionedRegisterTests
     {
         VersionedQuePaxaCluster<string> cluster = new(Schedule(), 3);
         QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (member, _) =>
-            new ValueTask<MemberVersionReport>(new MemberVersionReport(member, RegisterVersion.First)));
+            new ValueTask<MemberVersionReport>(new MemberVersionReport(Membership.Member(member), RegisterVersion.First)));
 
         _ = await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(
             async () => await register.ReadReadinessAsync(TimeSpan.Zero, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);

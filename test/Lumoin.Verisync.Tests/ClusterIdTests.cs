@@ -16,9 +16,10 @@ internal sealed class ClusterIdTests
 {
     /// <summary>
     /// The digest of the three-member genesis list below under the pinned canonical encoding: the domain
-    /// separator, the member count as four big-endian bytes, then every member's bytes in array order.
+    /// separator, the member count as four big-endian bytes, then every member's replica followed by its
+    /// store incarnation, in array order.
     /// </summary>
-    private const string PinnedGenesisDigest = "a8403cc0ad331152143610bca35b37125c0ec07895b99a241104cf3672412d56";
+    private const string PinnedGenesisDigest = "a736d4572e5d0f007bcd89173c522514f6f5ae1428f6e5146724bae666f1d49b";
 
 
     [TestMethod]

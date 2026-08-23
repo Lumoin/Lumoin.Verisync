@@ -35,7 +35,7 @@ internal sealed class VersionedQuePaxaCluster<TValue>
         Partitioned = new bool[hostCount];
         for(int index = 0; index < hostCount; index++)
         {
-            Hosts[index] = new QuePaxaVersionedNode<TValue>(Genesis, schedule.Schedule.Order[index], committed);
+            Hosts[index] = new QuePaxaVersionedNode<TValue>(Genesis, Genesis.Members[index], committed);
         }
     }
 
@@ -185,7 +185,7 @@ internal sealed class VersionedQuePaxaCluster<TValue>
     {
         for(int index = 0; index < Hosts.Length; index++)
         {
-            if(Hosts[index].Self.Equals(member))
+            if(Hosts[index].Self.Replica.Equals(member))
             {
                 return index;
             }

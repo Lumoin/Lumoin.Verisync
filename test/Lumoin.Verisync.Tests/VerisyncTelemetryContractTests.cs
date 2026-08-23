@@ -109,7 +109,7 @@ internal sealed class VerisyncTelemetryContractTests
 
         QuePaxaVersionedRegister<string> register = Register(cluster, observeMember: (member, token) => member.Equals(Third)
             ? throw new IOException("This member's transport is down.")
-            : new ValueTask<MemberVersionReport>(new MemberVersionReport(member, RegisterVersion.First)));
+            : new ValueTask<MemberVersionReport>(new MemberVersionReport(Membership.Member(member), RegisterVersion.First)));
 
         _ = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
         _ = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
@@ -161,7 +161,7 @@ internal sealed class VerisyncTelemetryContractTests
         ActivitySource.AddActivityListener(listener);
 
         QuePaxaVersionedRegister<string> register = Register(cluster, observeMember: (member, token) =>
-            new ValueTask<MemberVersionReport>(new MemberVersionReport(member, RegisterVersion.First)));
+            new ValueTask<MemberVersionReport>(new MemberVersionReport(Membership.Member(member), RegisterVersion.First)));
 
         _ = await register.TryWriteAsync("a", TestContext.CancellationToken).ConfigureAwait(false);
         _ = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);

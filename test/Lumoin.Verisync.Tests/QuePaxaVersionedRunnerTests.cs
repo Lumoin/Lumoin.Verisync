@@ -25,6 +25,12 @@ internal sealed class QuePaxaVersionedRunnerTests
     /// <summary>A replica outside the membership under test, which a removed host stands in for.</summary>
     private static ReplicaId Stranger { get; } = Replica(9);
 
+    /// <summary>The host the membership admits for <see cref="First"/>, which every host here serves under.</summary>
+    private static HostId FirstHost { get; } = Membership.Member(First);
+
+    /// <summary>The host for <see cref="Stranger"/>, which no membership under test lists.</summary>
+    private static HostId StrangerHost { get; } = Membership.Member(Stranger);
+
     /// <summary>
     /// The genesis membership every host in this suite runs under, and the membership every record it holds
     /// carries forward unchanged.
@@ -46,7 +52,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task AReplyIsWithheldUntilThePersistReturns()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         GatedStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -79,7 +85,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task TheNodeStaysReadableBesideItsOwnLoop()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(null, TestContext.CancellationToken);
 
@@ -101,7 +107,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ARequestThatChangesNothingCostsNoFurtherWriteAndIsStillAnswered()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -123,7 +129,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ARedeliveryAfterAFailedPersistWritesAgainBeforeItAnswers()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> failed = new(host);
         FailingStore failing = new();
         Task failedRun = failed.RunAsync(failing.PersistAsync, TestContext.CancellationToken);
@@ -163,7 +169,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task AFailedPersistFaultsTheCallInsteadOfAnsweringIt()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         FailingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -182,7 +188,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task AFailedPersistFaultsEveryQueuedCallInsteadOfLeavingThemSilent()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         FailingStore store = new();
 
@@ -203,7 +209,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADeclineFaultsOnlyItsOwnCallAndTheHostKeepsServing()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -232,7 +238,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task AChainOrRecordDeclineFaultsItsOwnCallAndTheLoopKeepsServing()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -274,7 +280,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     public async Task ALearnOfAnotherChainsRecordFaultsItsOwnCallAndTheLoopKeepsServing()
     {
         VersionedValue<string> held = Record(4UL, Second);
-        QuePaxaVersionedNode<string> host = new(Configuration, First, held);
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, held);
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -324,7 +330,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     public async Task APushedRecordOfAnotherChainIsRefusedAndLeavesTheHostOnItsOwnChain()
     {
         VersionedValue<string> held = Record(4UL, Second);
-        QuePaxaVersionedNode<string> host = new(Configuration, First, held);
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, held);
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -375,7 +381,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task AHostOutsideItsMembershipDeclinesAndItsLoopKeepsLearning()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, Stranger, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, StrangerHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -404,7 +410,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADeclineIsAFaultAndNeverAReply()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
 
@@ -429,7 +435,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task AnInMemoryLearnStillCostsNoWrite()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -450,7 +456,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ALearnedRecordIsDurableBeforeTheFirstReplyThatDependsOnIt()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         GatedStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -479,7 +485,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ARestoredHostCostsNoWriteForARequestItAlreadyRecorded()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -508,7 +514,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ARepeatedDisseminationIsAdoptedSilently()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -529,7 +535,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task OverlappingCallsAreServedOneAtATimeAndEachGetsItsOwnReply()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
 
@@ -554,7 +560,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ACallCancelledByItsOwnTokenCompletesInsteadOfHanging()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         GatedStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -584,7 +590,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task TheLoopRunsOnceAndARestartTakesAFreshRunner()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
 
@@ -602,7 +608,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task WorkQueuedAfterCompletionFailsFastInsteadOfHanging()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
         runner.Complete();
@@ -617,7 +623,7 @@ internal sealed class QuePaxaVersionedRunnerTests
 
         //The same fail-fast holds after a loop that ended on a failed write, so a producer never parks on a
         //runner that will not dispatch again.
-        QuePaxaVersionedNode<string> second = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> second = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> failed = new(second);
         FailingStore store = new();
         Task failedRun = failed.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -633,7 +639,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task QueuedWorkTakesEffectOnlyWhenTheLoopDispatchesIt()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         VersionedValue<string>? committed = host.Committed;
         QuePaxaRecorder<VersionedValue<string>> recorder = host.Recorder;
@@ -660,7 +666,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task AHostRestartedFromWhatTheRunnerWroteAnswersTheSameWay()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         SerializingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -691,7 +697,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task NullPersistDelegateAnswersImmediatelyAndCheckpointsAreNoOps()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
 
@@ -708,7 +714,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADeclineOnAHostPastTheFailedWriteCostsNoWriteAndLeavesTheStateAlone()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -735,7 +741,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ASpentHostDeclinesEachCallAndTheLoopKeepsServing()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -761,7 +767,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task RunnerCancellationCancelsPendingCallsRatherThanFaultingThem()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         GatedStore store = new();
         using CancellationTokenSource cancellation = new();
@@ -790,7 +796,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADeclinedCallKeepsItsFaultWhenTheLoopLaterEnds()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         FailingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -812,7 +818,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     {
         Assert.ThrowsExactly<ArgumentNullException>(() => _ = new QuePaxaVersionedRunner<string>(null!));
 
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
 
         _ = await Assert.ThrowsExactlyAsync<ArgumentNullException>(async () => _ = await runner.RecordAsync(null!, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
@@ -823,7 +829,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ASecondRunnerOverAnOwnedNodeIsRefusedAndTheFirstKeepsServing()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> owner = new(host);
         QuePaxaVersionedRunner<string> intruder = new(host);
         Task run = owner.RunAsync(cancellationToken: TestContext.CancellationToken);
@@ -851,7 +857,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task AFreshRunnerTakesTheNodeOnceTheFirstLoopHasEnded()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> completed = new(host);
         Task completedRun = completed.RunAsync(cancellationToken: TestContext.CancellationToken);
         completed.Complete();
@@ -869,7 +875,7 @@ internal sealed class QuePaxaVersionedRunnerTests
 
         //The failure exit takes the same path, which is the shape the documented restart after a failed write
         //rests on: the release rides a finally rather than the drained end of the loop.
-        QuePaxaVersionedNode<string> failedHost = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> failedHost = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> failed = new(failedHost);
         FailingStore failing = new();
         Task failedRun = failed.RunAsync(failing.PersistAsync, TestContext.CancellationToken);
@@ -893,7 +899,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ARefusedSecondRunAsyncDoesNotReleaseTheOwnersClaim()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> owner = new(host);
         Task run = owner.RunAsync(cancellationToken: TestContext.CancellationToken);
 
@@ -918,7 +924,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADirectCheckpointOnAnOwnedHostIsRefused()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -945,7 +951,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADirectHandleOnAnOwnedHostIsRefused()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
         QuePaxaRecorder<VersionedValue<string>> before = host.Recorder;
@@ -967,7 +973,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADirectLearnOnAnOwnedHostIsRefused()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
         VersionedValue<string>? committed = host.Committed;
@@ -989,7 +995,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ToStateOnAnOwnedHostIsRefused()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
 
@@ -1012,7 +1018,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADurableLearnIsPersistedBeforeItCompletes()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         GatedStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1039,7 +1045,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ACallerDrivenCheckpointAfterAnInMemoryLearnIsStillTheEscapeHatch()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1061,7 +1067,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADurableLearnThatFailsToPersistFaultsInsteadOfReportingAdoption()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         FailingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1083,7 +1089,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADurableLearnOnAHostThatAlreadyOwesNothingCostsNoWrite()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1104,7 +1110,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADurableLearnThatAdvancesNothingStillWritesWhatIsOwed()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1128,7 +1134,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADurableLearnUnderANullPersistDelegateCompletesSuccessfully()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
 
@@ -1145,7 +1151,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ADurableLearnIntoTheSpentRangeEndsTheLoopAsACheckpointDoes()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1171,7 +1177,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task AnUndefinedLearnDurabilityIsRefused()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1205,7 +1211,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task AnInMemoryLearnThatInstallsAMembershipIsHeldAcrossACrash()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1242,7 +1248,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task APushedMembershipChangeNamesADurableLearnAndIsHeldAcrossACrash()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1289,7 +1295,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task OneLeaderlessLearnAfterAnotherIsWrittenThoughTheRecorderNeverMoved()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1334,7 +1340,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task AnOrdinaryLearnUnderAnEquallyValuedMembershipWritesNothing()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1355,7 +1361,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ACatchUpReadPersistsBeforeItRepublishes()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         GatedStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1385,7 +1391,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     public async Task ACatchUpReadOnAHostThatOwesNothingCostsNoWrite()
     {
         VersionedValue<string> committed = Record(4UL, Second);
-        QuePaxaVersionedNode<string> host = new(Configuration, First, committed);
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, committed);
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1408,7 +1414,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ACatchUpReadIsQueuedRatherThanServedFromTheProducer()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         QuePaxaRecorder<VersionedValue<string>> recorder = host.Recorder;
 
@@ -1430,7 +1436,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ACatchUpReadThatFailsToPersistFaultsInsteadOfRepublishing()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         FailingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1453,7 +1459,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ACatchUpReadOnASpentHostEndsTheLoopAsACheckpointDoes()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
@@ -1483,7 +1489,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     public async Task ACatchUpReadIsARecordReader()
     {
         QuePaxaLeaderSchedule schedule = Schedule();
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
 
@@ -1517,7 +1523,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     public async Task AReadSkipsAHostWhoseRunnerStoppedAndStillEndsOnTheCallersOwnCancellation()
     {
         QuePaxaLeaderSchedule schedule = Schedule();
-        QuePaxaVersionedNode<string> stopping = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> stopping = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> stoppingRunner = new(stopping);
         GatedStore held = new();
         using CancellationTokenSource stoppingToken = new();
@@ -1528,7 +1534,7 @@ internal sealed class QuePaxaVersionedRunnerTests
         Task<VersionedRecordReply<VersionedValue<string>>> parked = stoppingRunner.RecordAsync(Request(5UL, ProposalPriority.Lowest, Second, "park"), TestContext.CancellationToken).AsTask();
         await held.Entered.WaitAsync(TestContext.CancellationToken).WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
 
-        QuePaxaVersionedNode<string> surviving = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> surviving = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> survivingRunner = new(surviving);
         Task survivingRun = survivingRunner.RunAsync(cancellationToken: TestContext.CancellationToken);
         VersionedValue<string> learned = Record(5UL, Third);
@@ -1565,7 +1571,7 @@ internal sealed class QuePaxaVersionedRunnerTests
 
         //The filter's other arm: a cancellation that IS the caller's own signal still ends the round, so a
         //caller that stopped asking is not handed a stale answer assembled from the hosts after it.
-        QuePaxaVersionedNode<string> blocking = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> blocking = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> blockingRunner = new(blocking);
         GatedStore blocked = new();
         Task blockingRun = blockingRunner.RunAsync(blocked.PersistAsync, TestContext.CancellationToken);
@@ -1598,7 +1604,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ACatchUpReadAfterCompletionFailsFastInsteadOfHanging()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
         runner.Complete();
@@ -1614,7 +1620,7 @@ internal sealed class QuePaxaVersionedRunnerTests
     [TestMethod]
     public async Task ACatchUpReadPendingWhenTheRunnerStopsIsCancelledRatherThanFaulted()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaVersionedRunner<string> runner = new(host);
         GatedStore store = new();
         using CancellationTokenSource cancellation = new();

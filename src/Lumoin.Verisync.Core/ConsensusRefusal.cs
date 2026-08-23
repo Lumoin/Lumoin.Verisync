@@ -41,5 +41,17 @@ public enum ConsensusRefusal
     ProbeAnsweredByAnotherMember = 5,
 
     /// <summary>The round decided a record carrying a version other than the instance's own.</summary>
-    MisroutedDecision = 6
+    MisroutedDecision = 6,
+
+    /// <summary>
+    /// A host's replica is a member of the configuration it runs under, and the store it holds is not the one
+    /// admitted to answer for that replica.
+    /// </summary>
+    StoreNotAdmittedForMember = 7,
+
+    /// <summary>
+    /// A member's version probe was answered under that member's identity by a store other than the admitted
+    /// one.
+    /// </summary>
+    ProbeAnsweredByAnotherStore = 8
 }

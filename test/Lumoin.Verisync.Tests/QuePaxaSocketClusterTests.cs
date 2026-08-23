@@ -280,7 +280,7 @@ internal sealed class QuePaxaSocketClusterTests
         var runTasks = new Task[count];
         for(int i = 0; i < count; i++)
         {
-            runners[i] = new QuePaxaVersionedRunner<string>(new QuePaxaVersionedNode<string>(genesis, order[i]));
+            runners[i] = new QuePaxaVersionedRunner<string>(new QuePaxaVersionedNode<string>(genesis, genesis.Members[i]));
             runTasks[i] = runners[i].RunAsync(cancellationToken: TestContext.CancellationToken);
         }
 
@@ -461,7 +461,7 @@ internal sealed class QuePaxaSocketClusterTests
         var runTasks = new Task[count];
         for(int i = 0; i < count; i++)
         {
-            runners[i] = new QuePaxaVersionedRunner<string>(new QuePaxaVersionedNode<string>(genesis, hosts[i]));
+            runners[i] = new QuePaxaVersionedRunner<string>(new QuePaxaVersionedNode<string>(genesis, Membership.Member(hosts[i])));
             runTasks[i] = runners[i].RunAsync(cancellationToken: TestContext.CancellationToken);
         }
 
@@ -702,10 +702,10 @@ internal sealed class QuePaxaSocketClusterTests
         //chain differs.
         QuePaxaConfiguration otherChain = QuePaxaConfiguration.Create(ClusterId.FromGenesisMembers(Membership.Of(Third, Second, First)), Membership.Of(First, Second, Third));
 
-        Assert.AreSequenceEqual(Configuration.Members, otherChain.Members.Select(configured => configured.Replica), "The two chains differ in their members, so a refusal here would not be the chain rule's alone.");
+        Assert.AreSequenceEqual(Configuration.Members, otherChain.Members, "The two chains differ in their members, so a refusal here would not be the chain rule's alone.");
         Assert.AreNotEqual(Configuration.Cluster, otherChain.Cluster, "The two genesis lists mint one identity, so the host below has nothing to refuse.");
 
-        QuePaxaVersionedRunner<string> runner = new(new QuePaxaVersionedNode<string>(otherChain, First));
+        QuePaxaVersionedRunner<string> runner = new(new QuePaxaVersionedNode<string>(otherChain, Membership.Member(First)));
         Task runTask = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
 
         VersionedRecordRequest<VersionedValue<string>> foreign = new(
@@ -811,7 +811,7 @@ internal sealed class QuePaxaSocketClusterTests
             //The same connection, the same loop and the same host answer the next call, so what refused the
             //first is the chain the record named rather than a host that had stopped serving.
             Assert.AreEqual(RegisterVersion.First, served.Version);
-            Assert.AreEqual(First, served.Recorder);
+            Assert.AreEqual(Membership.Member(First), served.Recorder);
             Assert.AreEqual(RecorderStep.RoundOnePhaseZero, served.Reply.Step);
             Assert.AreEqual(own.Request.Proposal, served.Reply.First, "The host answered without recording the proposal it was asked to record.");
 
