@@ -57,3 +57,4 @@ MCMembershipOutsiderCounted.cfg	QuePaxaMembership.tla	red	DecisionsCountOnlyMemb
 MCMembershipEagerDecommission.cfg	QuePaxaMembership.tla	red	LatestDecisionSurvives
 MCIncarnationGuarded.cfg	QuePaxaIncarnation.tla	green
 MCIncarnationShared.cfg	QuePaxaIncarnation.tla	red	Agreement
+MCIncarnationVolatile.cfg	QuePaxaIncarnation.tla	red	Agreement

@@ -33,6 +33,7 @@ CONSTANTS
     Values,         \* The values a round can decide.
     Quorum,         \* How many DISTINCT identities a decision rests on.
     DetectorOn,     \* When true, an identity is bound to one incarnation; false is the shipped behaviour.
+    BindingDurable, \* When false a binding can be lost, standing for one held only in a proposer's memory.
     NoValue,        \* A model value standing for a host that has recorded nothing.
     NoIncarnation   \* A model value standing for an identity not yet bound.
 
@@ -85,9 +86,20 @@ Decide(v) ==
     /\ decided' = decided \union {v}
     /\ UNCHANGED <<recorded, boundTo>>
 
+(* A binding held only in the memory of the process that learned it is lost when that process is
+   replaced. Modelling that loss is what decides where the binding has to live: if agreement survives
+   it, a memo suffices; if it does not, the binding must come from something durable that every host
+   derives the same answer from. *)
+ForgetBindings ==
+    /\ ~BindingDurable
+    /\ boundTo # [i \in Identities |-> NoIncarnation]
+    /\ boundTo' = [i \in Identities |-> NoIncarnation]
+    /\ UNCHANGED <<recorded, decided>>
+
 Next ==
     \/ \E h \in Hosts, v \in Values : Record(h, v)
     \/ \E v \in Values : Decide(v)
+    \/ ForgetBindings
 
 Spec == Init /\ [][Next]_vars
 
