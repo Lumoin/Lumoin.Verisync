@@ -28,11 +28,13 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 - **Breaking.** `QuePaxaVersionedNode<TValue>.Self` is a `HostId`, and the constructor takes one. The membership filter then refuses a host whose store the active membership does not admit, which is the same rule as the one that refuses a host no membership lists, one dimension over.
 
-- **Breaking.** `QuePaxaVersionedNodeState<TValue>` carries the incarnation of the store that wrote it, and `QuePaxaVersionedNode<TValue>.FromState` takes a replica rather than a host and composes the identity from that replica and the snapshot's store. A restore that accepted an incarnation would let a deployment restate its store's identity at every start, and a deployment restating it can hand back the value the configuration admits whatever its store actually holds; taking it from the snapshot leaves exactly one place a store incarnation is ever stated, which is the constructor that runs when the store is created. A store that came back empty reaches that constructor and not the restore, because there is no snapshot to restore from.
+- **Breaking.** `QuePaxaVersionedNodeState<TValue>` carries the host that wrote it, and `QuePaxaVersionedNode<TValue>.FromState` takes a `HostId` and refuses a snapshot written by another host with `StateRestoreRefusal.HostIdentityMismatch`. That refuses a store attached to the wrong machine, a store restored under a replica it never served, and a deployment restating its store's incarnation as the value the membership admits rather than the one its store holds — which is the claim the membership filter would otherwise be testing instead of a fact. A store that came back empty reaches the constructor and not the restore, because there is no snapshot to restore from, so the constructor is the one path on which a deployment's word about its own store is taken.
+
+- **Breaking.** `StateRestoreRefusal` gains `HostIdentityMismatch`, and the acceptor and Raft members that followed it move up by one so the host family stays contiguous.
 
 - **Breaking.** The chain identity's digest covers each genesis member's store incarnation as well as its replica, so a genesis over the same replicas under different stores is a different chain.
 
-- **Breaking.** A configuration member is encoded as an object carrying `replica` and `incarnation`, on the wire and in a durable node state alike, and a reply's recorder carries the same pair. A durable node state also carries the writing store's `incarnation`.
+- **Breaking.** A host is encoded as an object carrying `replica` and `incarnation` wherever one appears: a configuration member, a reply's recorder, and a durable node state's `host`.
 
 - Provisioning a host is two-phase, and `docs/quepaxa.md` states it: create the store, read the incarnation it minted, form the genesis list from the pairs, then start the hosts under that list.
 

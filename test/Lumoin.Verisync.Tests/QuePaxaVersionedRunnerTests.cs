@@ -496,7 +496,7 @@ internal sealed class QuePaxaVersionedRunnerTests
         await run.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
         Assert.HasCount(1, store.States);
 
-        QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(Configuration, First, store.States[0]);
+        QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(Configuration, FirstHost, store.States[0]);
         QuePaxaVersionedRunner<string> fresh = new(restored);
         RecordingStore after = new();
         Task freshRun = fresh.RunAsync(after.PersistAsync, TestContext.CancellationToken);
@@ -677,7 +677,7 @@ internal sealed class QuePaxaVersionedRunnerTests
         await run.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
 
         QuePaxaVersionedNodeState<string> state = QuePaxaMessageJson.CreateVersionedNodeStateDeserializer(ReadValue)(new ReadOnlySequence<byte>(store.Bytes!));
-        QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(Configuration, First, state);
+        QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(Configuration, FirstHost, state);
         QuePaxaVersionedRunner<string> fresh = new(restored);
         RecordingStore after = new();
         Task freshRun = fresh.RunAsync(after.PersistAsync, TestContext.CancellationToken);
@@ -1226,7 +1226,7 @@ internal sealed class QuePaxaVersionedRunnerTests
         Assert.AreSame(installing, store.States[0].Committed);
 
         //The crash: the runner and the host are gone, and what comes back is built from the store alone.
-        QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(Configuration, First, store.States[0]);
+        QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(Configuration, FirstHost, store.States[0]);
 
         Assert.AreEqual(new RegisterVersion(5UL), restored.Committed!.Version);
         Assert.AreEqual(installing.NextConfiguration, restored.ActiveConfiguration);
@@ -1271,7 +1271,7 @@ internal sealed class QuePaxaVersionedRunnerTests
         runner.Complete();
         await run.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
 
-        QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(Configuration, First, durable);
+        QuePaxaVersionedNode<string> restored = QuePaxaVersionedNode<string>.FromState(Configuration, FirstHost, durable);
 
         Assert.AreSame(installing, restored.Committed);
         Assert.AreEqual(installing.NextConfiguration, restored.ActiveConfiguration);

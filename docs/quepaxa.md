@@ -116,9 +116,10 @@ and there is none: bootstrap by writing once under genesis.
 
 Each host runs a `QuePaxaVersionedNode<TValue>` over the genesis membership and its own `HostId`, driven by
 a `QuePaxaVersionedRunner<TValue>` whose loop is given a persist delegate. The constructor is the only place
-a store incarnation is ever stated, and a deployment owes it the one its store was created under:
-`FromState` takes no incarnation at all and reads it from the snapshot, so a host that has ever been made
-durable carries what its store holds and no restart can restate it. A register also requires a recorder
+a store incarnation is taken on a deployment's word, and a deployment owes it the one its store was created
+under. Every later start goes through `FromState`, which refuses a snapshot written by a host other than the
+one restoring it, so a restart that restates anything else -- the value the membership admits, or a replica
+the store never served -- is refused rather than served. A register also requires a recorder
 endpoint resolver, a priority source, a clock and an attempts-per-recorder bound. Four seams are optional.
 
 | optional seam | what is lost by omitting it |

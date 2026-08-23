@@ -129,12 +129,12 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// replica it is in order to notice.
     /// </para>
     /// <para>
-    /// This is the one entry point that states a store incarnation, and a deployment owes it the incarnation
-    /// its store was created under and no other. A store that came back empty is a new store: it has nothing
-    /// to present the incarnation the configuration admitted from, and presenting that value anyway is a claim
-    /// the deployment makes on its behalf which nothing here can refute. <see cref="FromState"/> takes no
-    /// incarnation at all for that reason, so a host that has ever been made durable carries the one its store
-    /// holds and every later start reads it rather than restating it.
+    /// This is the one entry point that takes a store incarnation on a deployment's word, and a deployment owes
+    /// it the incarnation its store was created under and no other. A store that came back empty is a new
+    /// store: it has nothing to present the incarnation the configuration admitted from, and presenting that
+    /// value anyway is a claim the deployment makes on its behalf which nothing here can refute. Every later
+    /// start goes through <see cref="FromState"/>, which compares the identity it is handed against the one
+    /// the store's own snapshot names, so a restart restating anything else is refused.
     /// </para>
     /// </remarks>
     public QuePaxaVersionedNode(QuePaxaConfiguration genesis, HostId self, VersionedValue<TValue>? committed = null)
@@ -754,7 +754,7 @@ public sealed class QuePaxaVersionedNode<TValue>
         VersionedValue<TValue>? committed = Committed;
         QuePaxaRecorder<VersionedValue<TValue>> recorder = Recorder;
 
-        return new QuePaxaVersionedNodeState<TValue>(Self.Incarnation, committed, LiveVersionFor(committed), recorder.ConfiguredLeader, ActiveConfiguration, recorder.ToState());
+        return new QuePaxaVersionedNodeState<TValue>(Self, committed, LiveVersionFor(committed), recorder.ConfiguredLeader, ActiveConfiguration, recorder.ToState());
     }
 
 
@@ -794,15 +794,16 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// <see cref="RaftNode{TCommand}.FromState"/>.
     /// </param>
     /// <param name="self">
-    /// The replica this host serves under, which is deployment configuration. The store answering for it is
-    /// not a parameter: it is read from <paramref name="state"/>, and the two are composed into the identity
-    /// the membership filter reads against the restored configuration.
+    /// This host's own identity, which the membership filter reads against the restored configuration. It is
+    /// compared against the host <paramref name="state"/> names, so a snapshot restored under another
+    /// identity is refused rather than served.
     /// </param>
     /// <param name="state">The durable state to restore.</param>
     /// <returns>A host serving the instance the restored record implies.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="genesis"/> or <paramref name="state"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
-    /// Thrown when the snapshot's parts disagree: a
+    /// Thrown when the snapshot was written by a host other than <paramref name="self"/>, and when the
+    /// snapshot's parts disagree: a
     /// <see cref="QuePaxaVersionedNodeState{TValue}.ConfiguredLeader"/> other than the one
     /// <see cref="QuePaxaLeaderSchedule.LeaderFor(ReplicaId?)"/> derives from the restored record; a
     /// <see cref="QuePaxaVersionedNodeState{TValue}.RecorderVersion"/> other than the version after the restored
@@ -849,19 +850,26 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// step below the recorder's floor still reaches the recorder's restore and is refused there.
     /// </para>
     /// <para>
-    /// The store incarnation is taken from the snapshot and never from the caller, which is what makes the
-    /// membership filter mean anything. A restore that accepted one would let a deployment restate its store's
-    /// identity at every start, and a deployment restating it can hand back the value the configuration
-    /// admits whatever its store actually holds; taking it from the snapshot leaves exactly one place a store
-    /// incarnation is ever stated, which is the constructor that runs when the store is created. A store that
-    /// came back empty reaches that constructor and not this method, because there is no snapshot to restore
-    /// from.
+    /// The identity check comes before every derivation and is a different claim from the tears below it. A
+    /// snapshot naming another host is not this host's state at all, so reading a leader or a version out of
+    /// it would report a tear against a record that was never this host's to hold. It is what refuses a store
+    /// attached to the wrong machine, a store restored under a replica it never served, and a deployment that
+    /// restated its store's incarnation as the value the configuration admits rather than the one its store
+    /// holds — which is the claim the membership filter would otherwise be testing instead of a fact. A store
+    /// that came back empty reaches the constructor and not this method, because there is no snapshot to
+    /// restore from, and the constructor is therefore the one place a store incarnation is taken on a
+    /// deployment's word.
     /// </para>
     /// </remarks>
-    public static QuePaxaVersionedNode<TValue> FromState(QuePaxaConfiguration genesis, ReplicaId self, QuePaxaVersionedNodeState<TValue> state)
+    public static QuePaxaVersionedNode<TValue> FromState(QuePaxaConfiguration genesis, HostId self, QuePaxaVersionedNodeState<TValue> state)
     {
         ArgumentNullException.ThrowIfNull(genesis);
         ArgumentNullException.ThrowIfNull(state);
+
+        if(!state.Host.Equals(self))
+        {
+            throw new StateRestoreException(StateRestoreRefusal.HostIdentityMismatch, $"A restored state must have been written by the host restoring it, which is {self}, and it was written by {state.Host}. A store answering under a replica it never served, or under a store incarnation other than the one it holds, is an operator act, and a host that carried either into the membership filter would be tested against a claim rather than against what its store is.", nameof(state));
+        }
 
         //The derivation reads the record and the genesis alone, never the stored copies the rules below
         //compare against, so a single torn field trips exactly the one rule that reads it.
@@ -906,7 +914,7 @@ public sealed class QuePaxaVersionedNode<TValue>
             recorder = schedule.RecorderFor<VersionedValue<TValue>>(previousWriter, state.Recorder);
         }
 
-        return new QuePaxaVersionedNode<TValue>(genesis, new HostId(self, state.Incarnation), state.Committed, derived, schedule, new QuePaxaNode<VersionedValue<TValue>>(recorder));
+        return new QuePaxaVersionedNode<TValue>(genesis, self, state.Committed, derived, schedule, new QuePaxaNode<VersionedValue<TValue>>(recorder));
     }
 
 

@@ -3,14 +3,15 @@ using System;
 namespace Lumoin.Verisync.Core;
 
 /// <summary>
-/// The durable state of a <see cref="QuePaxaVersionedNode{TValue}"/>: the store's own incarnation, the
-/// committed record the host has learned, and the recorder serving the instance that record implies. Obtain it with
+/// The durable state of a <see cref="QuePaxaVersionedNode{TValue}"/>: the host that wrote it, the committed
+/// record that host has learned, and the recorder serving the instance that record implies. Obtain it with
 /// <see cref="QuePaxaVersionedNode{TValue}.ToState"/> and reconstruct with
 /// <see cref="QuePaxaVersionedNode{TValue}.FromState"/>.
 /// </summary>
 /// <typeparam name="TValue">The application value type.</typeparam>
-/// <param name="Incarnation">
-/// The store this state was written by, which is the incarnation minted when that store was created.
+/// <param name="Host">
+/// The host that wrote this state: the replica it served under, beside the incarnation minted when its store
+/// was created.
 /// </param>
 /// <param name="Committed">
 /// The committed record this host has learned, or <see langword="null"/> when it has learned none.
@@ -30,14 +31,14 @@ namespace Lumoin.Verisync.Core;
 /// <param name="Recorder">The recorder's own durable state, which is the register serving <paramref name="RecorderVersion"/>.</param>
 /// <remarks>
 /// <para>
-/// The incarnation is the one field that is nobody's derivation. It is what the store says about itself, and
-/// it is here rather than in a parameter of
-/// <see cref="QuePaxaVersionedNode{TValue}.FromState"/> because a store's identity has to survive a restart
-/// without anyone restating it: a caller that restated it could hand back the value the configuration admits
-/// however its store came back, and the membership filter would then test a claim rather than a fact. The
-/// replica this store answers under is not here for the mirror-image reason. A replica is a role a deployment
-/// assigns and a configuration change can move, so it is configuration and reaches the restore as its
-/// parameter, and the two halves are composed into one <see cref="HostId"/> there.
+/// The host is the one field that is nobody's derivation. It is what the writing host says about itself, and
+/// it is stored so that <see cref="QuePaxaVersionedNode{TValue}.FromState"/> can compare the host being
+/// restored against the host that wrote the state it was handed. Both halves are stored and not just the
+/// store's own: a member's replica cannot move between stores while either survives, because replacing a
+/// member's store retires one member and admits another, so a store that came back under another replica is
+/// an operator act and not a configuration change. Storing the pair is also what <see cref="HostId"/>'s own
+/// rule asks for, since a state holding one half would let a restore pair one host's role with another's
+/// store.
 /// </para>
 /// <para>
 /// Three of the six fields are derivable from <paramref name="Committed"/> and are stored anyway. That
@@ -67,11 +68,12 @@ namespace Lumoin.Verisync.Core;
 /// detect it. A wiped store has no snapshot at all, so nothing reaches a restore and the host is constructed
 /// as a bootstrap one; what separates it from a store that has genuinely learned nothing is that it can no
 /// longer present the incarnation this record held, and a configuration admitting that incarnation refuses
-/// the store that replaced it.
+/// the store that replaced it. The constructor is therefore the one path on which a deployment's word about
+/// its own store is taken, and it is the path a store reaches exactly once, when it is created.
 /// </para>
 /// </remarks>
 public sealed record QuePaxaVersionedNodeState<TValue>(
-    StoreIncarnation Incarnation,
+    HostId Host,
     VersionedValue<TValue>? Committed,
     RegisterVersion RecorderVersion,
     ProposerLane? ConfiguredLeader,

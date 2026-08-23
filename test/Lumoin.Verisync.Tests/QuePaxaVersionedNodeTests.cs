@@ -527,13 +527,13 @@ internal sealed class QuePaxaVersionedNodeTests
         //own genesis is the foreign chain, so what separates the two calls is the genesis each was handed.
         QuePaxaVersionedNodeState<string> state = new QuePaxaVersionedNode<string>(ForeignChain, FirstHost, foreign).ToState();
 
-        StateRestoreException restored = Assert.ThrowsExactly<StateRestoreException>(() => _ = QuePaxaVersionedNode<string>.FromState(Configuration, First, state));
+        StateRestoreException restored = Assert.ThrowsExactly<StateRestoreException>(() => _ = QuePaxaVersionedNode<string>.FromState(Configuration, FirstHost, state));
 
         Assert.AreEqual(StateRestoreRefusal.HostForeignChain, restored.Refusal);
         Assert.AreEqual("state", restored.ParamName);
 
         //Each entry point accepts under the chain it was handed, so neither refusal is the record's own shape.
-        Assert.AreEqual(new RegisterVersion(5UL), QuePaxaVersionedNode<string>.FromState(ForeignChain, First, state).LiveVersion);
+        Assert.AreEqual(new RegisterVersion(5UL), QuePaxaVersionedNode<string>.FromState(ForeignChain, FirstHost, state).LiveVersion);
     }
 
 

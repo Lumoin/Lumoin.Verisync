@@ -333,7 +333,7 @@ public static class QuePaxaMessageJson
         {
             using var writer = new Utf8JsonWriter(output);
             writer.WriteStartObject();
-            writer.WriteString("incarnation", Convert.ToHexStringLower(state.Incarnation.AsSpan()));
+            WriteHost(writer, "host", state.Host);
             WriteRecordOrNull(writer, "committed", state.Committed, writeValue);
             writer.WriteNumber("recorderVersion", state.RecorderVersion.Value);
             WriteLaneOrNull(writer, "configuredLeader", state.ConfiguredLeader);
@@ -366,14 +366,14 @@ public static class QuePaxaMessageJson
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
-            string incarnation = RequireProperty(root, "incarnation", VersionedNodeStateLabel).GetString()!;
+            JsonElement host = RequireProperty(root, "host", VersionedNodeStateLabel);
             VersionedValue<TValue>? committed = ReadRecordOrNull(root, "committed", VersionedNodeStateLabel, readValue);
             ulong recorderVersion = RequireProperty(root, "recorderVersion", VersionedNodeStateLabel).GetUInt64();
             ProposerLane? configuredLeader = ReadLaneOrNull(root, "configuredLeader", VersionedNodeStateLabel);
             QuePaxaConfiguration activeConfiguration = ReadConfiguration(RequireProperty(root, "activeConfiguration", VersionedNodeStateLabel));
             QuePaxaRecorderState<VersionedValue<TValue>> recorder = ReadRecorderState(RequireProperty(root, "recorder", VersionedNodeStateLabel), readRecord);
 
-            return Construct(() => new QuePaxaVersionedNodeState<TValue>(StoreIncarnation.FromSpan(Convert.FromHexString(incarnation)), committed, new RegisterVersion(recorderVersion), configuredLeader, activeConfiguration, recorder));
+            return Construct(() => new QuePaxaVersionedNodeState<TValue>(ReadHost(host, VersionedNodeStateLabel), committed, new RegisterVersion(recorderVersion), configuredLeader, activeConfiguration, recorder));
         });
     }
 
