@@ -50,13 +50,13 @@ internal sealed class QuePaxaVersionedNodeStateTests
     /// The genesis membership every host in this suite runs under, and the membership every record it holds
     /// carries forward unchanged.
     /// </summary>
-    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Third));
 
     /// <summary>
     /// A membership over the same replicas in the same order on a different chain, which is what an
     /// independently bootstrapped cluster mints.
     /// </summary>
-    private static QuePaxaConfiguration ForeignChain { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Stranger]).Without(Stranger).With(Third);
+    private static QuePaxaConfiguration ForeignChain { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Stranger)).Without(Stranger).With(Membership.Member(Third));
 
     /// <summary>The round's first step, which is where the fast path is read and where a host's first record lands.</summary>
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
@@ -502,9 +502,9 @@ internal sealed class QuePaxaVersionedNodeStateTests
         //configuration because the order is the hedging order and the first member is the bootstrap leader.
         QuePaxaConfiguration[] torn =
         [
-            Configuration.With(Fourth),
+            Configuration.With(Membership.Member(Fourth)),
             Configuration.Without(Third),
-            QuePaxaConfiguration.Create(Configuration.Cluster, [Third, Second, First])
+            QuePaxaConfiguration.Create(Configuration.Cluster, Membership.Of(Third, Second, First))
         ];
 
         foreach(QuePaxaConfiguration stored in torn)
@@ -525,7 +525,7 @@ internal sealed class QuePaxaVersionedNodeStateTests
 
         //A host that has learned nothing stands at genesis, so the rule fires there too rather than only where
         //a record is present to derive from.
-        QuePaxaVersionedNodeState<string> bootstrap = new(null, RegisterVersion.First, ProposerLane.For(First), Configuration.With(Fourth), RestorableRecorder());
+        QuePaxaVersionedNodeState<string> bootstrap = new(null, RegisterVersion.First, ProposerLane.For(First), Configuration.With(Membership.Member(Fourth)), RestorableRecorder());
 
         StateRestoreException refusedBootstrap = Assert.ThrowsExactly<StateRestoreException>(() => QuePaxaVersionedNode<string>.FromState(Configuration, First, bootstrap));
 

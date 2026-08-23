@@ -23,13 +23,13 @@ internal sealed class QuePaxaVersionedNodeTests
     /// The genesis membership every host in this suite runs under, and the membership every record it holds
     /// carries forward unchanged.
     /// </summary>
-    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Third));
 
     /// <summary>
     /// A membership over the same replicas in the same order on a different chain, which is what an
     /// independently bootstrapped cluster mints.
     /// </summary>
-    private static QuePaxaConfiguration ForeignChain { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Stranger]).Without(Stranger).With(Third);
+    private static QuePaxaConfiguration ForeignChain { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Stranger)).Without(Stranger).With(Membership.Member(Third));
 
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
 
@@ -555,7 +555,7 @@ internal sealed class QuePaxaVersionedNodeTests
 
         //A joiner: outside the genesis this deployment handed it, inside the membership its record installs,
         //and serving from the first version that membership runs.
-        QuePaxaConfiguration grown = Configuration.With(Fourth);
+        QuePaxaConfiguration grown = Configuration.With(Membership.Member(Fourth));
         QuePaxaVersionedNode<string> joiner = new(Configuration, Fourth, Installing(4UL, Second, grown));
 
         Assert.IsFalse(Configuration.Contains(Fourth));
@@ -704,15 +704,15 @@ internal sealed class QuePaxaVersionedNodeTests
     {
         QuePaxaVersionedNode<string> grown = new(Configuration, First, Record(4UL, Second));
 
-        Assert.IsTrue(grown.Learn(Installing(5UL, Second, Configuration.With(Fourth))));
+        Assert.IsTrue(grown.Learn(Installing(5UL, Second, Configuration.With(Membership.Member(Fourth)))));
 
-        Assert.AreEqual(Configuration.With(Fourth), grown.ActiveConfiguration);
+        Assert.AreEqual(Configuration.With(Membership.Member(Fourth)), grown.ActiveConfiguration);
         Assert.HasCount(4, grown.ActiveConfiguration.Members);
         Assert.AreEqual(ProposerLane.For(Second), grown.Recorder.ConfiguredLeader);
 
         //The reserved claim is the fast path itself: honoured, it stands at the round's first step under the
         //reserved priority, and a demoted instance would record it at the lowest ordinary one.
-        VersionedRecordReply<VersionedValue<string>> led = grown.Handle(Carrying(6UL, 6UL, Configuration.With(Fourth), ProposalPriority.Reserved, Second, "fast"));
+        VersionedRecordReply<VersionedValue<string>> led = grown.Handle(Carrying(6UL, 6UL, Configuration.With(Membership.Member(Fourth)), ProposalPriority.Reserved, Second, "fast"));
 
         Assert.AreEqual(ProposalPriority.Reserved, led.Reply.First.Key.Priority);
 
@@ -747,13 +747,13 @@ internal sealed class QuePaxaVersionedNodeTests
         QuePaxaVersionedNode<string> host = new(Configuration, First);
 
         Assert.AreEqual(Configuration, host.ActiveConfiguration);
-        Assert.IsTrue(Configuration.Members.SequenceEqual(host.LeaderSchedule.Schedule.Order));
+        Assert.IsTrue(Configuration.Members.Select(configured => configured.Replica).SequenceEqual(host.LeaderSchedule.Schedule.Order));
 
-        QuePaxaConfiguration grown = Configuration.With(Fourth);
+        QuePaxaConfiguration grown = Configuration.With(Membership.Member(Fourth));
 
         Assert.IsTrue(host.Learn(Installing(1UL, First, grown)));
         Assert.AreEqual(grown, host.ActiveConfiguration);
-        Assert.IsTrue(grown.Members.SequenceEqual(host.LeaderSchedule.Schedule.Order));
+        Assert.IsTrue(grown.Members.Select(configured => configured.Replica).SequenceEqual(host.LeaderSchedule.Schedule.Order));
 
         //A record that does not advance the host is ignored, membership included: a stale dissemination
         //carrying an older configuration cannot walk the membership backwards.

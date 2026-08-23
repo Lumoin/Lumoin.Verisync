@@ -40,7 +40,7 @@ internal sealed class QuePaxaVersionedRegisterTests
     /// The membership a register over this suite's agreed order stamps on its records, so a record built here
     /// compares equal to one the register wrote.
     /// </summary>
-    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Third));
 
     private static int[] LaneZero { get; } = [0];
     private static int[] LanesZeroAndOne { get; } = [0, 1];
@@ -867,9 +867,9 @@ internal sealed class QuePaxaVersionedRegisterTests
         Assert.AreEqual(First, outcome.Writer);
         Assert.AreEqual(1, outcome.Attempts);
 
-        Assert.AreSequenceEqual(new[] { First, Second, Third }, register.ActiveConfiguration.Members);
+        Assert.AreSequenceEqual(new[] { First, Second, Third }, register.ActiveConfiguration.Members.Select(configured => configured.Replica));
         Assert.AreEqual(cluster.Genesis.Cluster, register.ActiveConfiguration.Cluster, "A membership change minted a new chain.");
-        Assert.AreSequenceEqual(new[] { First, Second, Third }, cluster.Host(0).ActiveConfiguration.Members);
+        Assert.AreSequenceEqual(new[] { First, Second, Third }, cluster.Host(0).ActiveConfiguration.Members.Select(configured => configured.Replica));
     }
 
 
@@ -1009,7 +1009,7 @@ internal sealed class QuePaxaVersionedRegisterTests
         Assert.Contains(Second, afterRemoval);
         Assert.Contains(Third, afterRemoval);
 
-        _ = await register.ReconfigureAsync(current => current.Without(Second).With(Fourth), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
+        _ = await register.ReconfigureAsync(current => current.Without(Second).With(Membership.Member(Fourth)), maxAttempts: 1, TestContext.CancellationToken).ConfigureAwait(false);
 
         ImmutableArray<ReplicaId> replacement = publisher.Audiences[3];
 
@@ -1018,7 +1018,7 @@ internal sealed class QuePaxaVersionedRegisterTests
         Assert.Contains(Fourth, replacement, "The joiner was dropped from the union.");
         Assert.Contains(First, replacement);
         Assert.Contains(Third, replacement);
-        Assert.AreSequenceEqual(new[] { First, Third, Fourth }, register.ActiveConfiguration.Members);
+        Assert.AreSequenceEqual(new[] { First, Third, Fourth }, register.ActiveConfiguration.Members.Select(configured => configured.Replica));
     }
 
 
@@ -1102,7 +1102,7 @@ internal sealed class QuePaxaVersionedRegisterTests
             ? throw new IOException("The joiner is not serving yet.")
             : new ValueTask<MemberVersionReport>(new MemberVersionReport(member, new RegisterVersion(2UL))));
 
-        QuePaxaConfiguration incoming = cluster.Genesis.With(Fourth);
+        QuePaxaConfiguration incoming = cluster.Genesis.With(Membership.Member(Fourth));
         RegisterReadiness readiness = await register.ReadReadinessAsync(incoming, Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreEqual(incoming, readiness.Configuration);
@@ -1110,7 +1110,7 @@ internal sealed class QuePaxaVersionedRegisterTests
         Assert.IsFalse(readiness.Members.Single(member => member.Member.Equals(Fourth)).Reachable);
         Assert.IsTrue(readiness.QuorumHasLearned(new RegisterVersion(2UL)), "Three of four answered at the version, which is the incoming membership's own quorum.");
 
-        QuePaxaConfiguration foreign = QuePaxaConfiguration.CreateGenesis([First, Second]);
+        QuePaxaConfiguration foreign = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second));
         ArgumentException refused = await Assert.ThrowsExactlyAsync<ArgumentException>(
             async () => await register.ReadReadinessAsync(foreign, Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
 

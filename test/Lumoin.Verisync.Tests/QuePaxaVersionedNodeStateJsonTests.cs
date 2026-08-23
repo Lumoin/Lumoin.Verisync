@@ -48,7 +48,7 @@ internal sealed class QuePaxaVersionedNodeStateJsonTests
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
 
     /// <summary>The membership the records in this suite carry.</summary>
-    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Replica(3)]);
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Replica(3)));
 
     /// <summary>The chain identity the memberships in this suite carry, in lower-case hexadecimal.</summary>
     private static string ClusterHex { get; } = Convert.ToHexStringLower(Configuration.Cluster.AsSpan());

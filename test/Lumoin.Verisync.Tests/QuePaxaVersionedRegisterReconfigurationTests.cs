@@ -56,10 +56,10 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
     private static ImmutableArray<ReplicaId> AllHostsAndASecondMembership { get; } = [First, Second, Third, Fourth, Fifth, Sixth];
 
     /// <summary>The chain three of those four hosts found, leaving the fourth running outside it.</summary>
-    private static QuePaxaConfiguration ThreeMemberGenesis { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+    private static QuePaxaConfiguration ThreeMemberGenesis { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Third));
 
     /// <summary>The chain all four found, which is where a scenario shrinks from.</summary>
-    private static QuePaxaConfiguration FourMemberGenesis { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third, Fourth]);
+    private static QuePaxaConfiguration FourMemberGenesis { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Third, Fourth));
 
     private static TimeSpan BaseDelay { get; } = TimeSpan.FromMilliseconds(40);
 
@@ -84,7 +84,7 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
         Assert.AreEqual(QuePaxaWriteStatus.Committed, bootstrap.Status);
         Assert.IsNull(cluster.CommittedAt(Fourth), "The host outside the membership was offered an ordinary decide, so the audience is this bench's host list rather than the membership.");
 
-        QuePaxaWriteOutcome<string> grown = await DriveAsync(cluster, writer.ReconfigureAsync(current => current.With(Fourth), AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
+        QuePaxaWriteOutcome<string> grown = await DriveAsync(cluster, writer.ReconfigureAsync(current => current.With(Membership.Member(Fourth)), AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
 
         Assert.AreEqual(QuePaxaWriteStatus.Committed, grown.Status);
         Assert.AreEqual(new RegisterVersion(2UL), grown.Version);
@@ -197,10 +197,10 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
 
         //One member out and one brand-new identity in, in one change, which is what replacing a machine whose
         //store was wiped amounts to: the old identity never comes back and the new one starts empty.
-        QuePaxaWriteOutcome<string> replaced = await DriveAsync(cluster, writer.ReconfigureAsync(current => current.Without(Third).With(Fourth), AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
+        QuePaxaWriteOutcome<string> replaced = await DriveAsync(cluster, writer.ReconfigureAsync(current => current.Without(Third).With(Membership.Member(Fourth)), AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
 
         Assert.AreEqual(QuePaxaWriteStatus.Committed, replaced.Status);
-        Assert.AreSequenceEqual(new[] { First, Second, Fourth }, writer.ActiveConfiguration.Members);
+        Assert.AreSequenceEqual(new[] { First, Second, Fourth }, writer.ActiveConfiguration.Members.Select(configured => configured.Replica));
 
         VersionedValue<string>? departed = cluster.CommittedAt(Third);
         VersionedValue<string>? admitted = cluster.CommittedAt(Fourth);
@@ -250,7 +250,7 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
         cluster.HoldDissemination(Third);
         cluster.HoldDissemination(Fourth);
 
-        QuePaxaWriteOutcome<string> grown = await DriveAsync(cluster, writer.ReconfigureAsync(current => current.With(Fourth), AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
+        QuePaxaWriteOutcome<string> grown = await DriveAsync(cluster, writer.ReconfigureAsync(current => current.With(Membership.Member(Fourth)), AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
 
         Assert.AreEqual(QuePaxaWriteStatus.Committed, grown.Status);
         Assert.AreEqual(RegisterVersion.First, cluster.CommittedAt(Third)!.Version, "The held member took the record it was offered, so nothing here is behind.");
@@ -333,12 +333,12 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
             cluster.HoldDissemination(host);
         }
 
-        QuePaxaWriteOutcome<string> grown = await DriveAsync(cluster, growing.ReconfigureAsync(current => current.With(Fourth), AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
+        QuePaxaWriteOutcome<string> grown = await DriveAsync(cluster, growing.ReconfigureAsync(current => current.With(Membership.Member(Fourth)), AttemptBudget, TestContext.CancellationToken)).ConfigureAwait(false);
 
         Assert.AreEqual(QuePaxaWriteStatus.Committed, grown.Status);
         Assert.AreEqual(new RegisterVersion(2UL), grown.Version);
         Assert.AreEqual(1, grown.Attempts, "The change that won the instance spent more than one attempt, so what the other one meets is not a single decided record.");
-        foreach(ReplicaId member in ThreeMemberGenesis.Members)
+        foreach(ReplicaId member in ThreeMemberGenesis.Members.Select(configured => configured.Replica))
         {
             Assert.AreEqual(bootstrap.Version, cluster.CommittedAt(member)!.Version, "A host took the record the winning change decided, so it declines the losing change rather than telling it what won.");
         }
@@ -367,8 +367,8 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
         VersionedValue<string> installed = cluster.CommittedAt(First)!;
 
         Assert.AreEqual(new RegisterVersion(3UL), installed.Version, "The host holds an earlier record than the one the retry decided.");
-        Assert.AreSequenceEqual(new[] { First, Second, Fourth }, installed.NextConfiguration.Members, "The installed membership is not what the two deltas compose to, so the retry re-applied its change against a membership other than the one that won the instance.");
-        Assert.AreSequenceEqual(new[] { First, Second, Fourth }, shrinking.ActiveConfiguration.Members, "The register that retried runs under a membership other than the one its own retry installed.");
+        Assert.AreSequenceEqual(new[] { First, Second, Fourth }, installed.NextConfiguration.Members.Select(configured => configured.Replica), "The installed membership is not what the two deltas compose to, so the retry re-applied its change against a membership other than the one that won the instance.");
+        Assert.AreSequenceEqual(new[] { First, Second, Fourth }, shrinking.ActiveConfiguration.Members.Select(configured => configured.Replica), "The register that retried runs under a membership other than the one its own retry installed.");
 
         AssertUniqueHighestCommittedPerVersion(cluster, leastVersions: 3, "a change superseded by a rival change");
     }
@@ -418,13 +418,13 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
         Assert.IsTrue(before.QuorumHasLearned(bootstrap.Version), "The membership the change is decided under has not learned the record it builds on, so the change would be unavailable for a reason this scenario is not about.");
 
         QuePaxaWriteOutcome<string> moved = await DriveAsync(cluster, outgoing.ReconfigureAsync(
-            current => current.With(Fourth).With(Fifth).With(Sixth).Without(First).Without(Second).Without(Third),
+            current => current.With(Membership.Member(Fourth)).With(Membership.Member(Fifth)).With(Membership.Member(Sixth)).Without(First).Without(Second).Without(Third),
             AttemptBudget,
             TestContext.CancellationToken)).ConfigureAwait(false);
 
         Assert.AreEqual(QuePaxaWriteStatus.Committed, moved.Status, "A change to a membership sharing no member with the current one was refused, and reachability is not a fact the register holds.");
         Assert.AreEqual(new RegisterVersion(2UL), moved.Version);
-        Assert.AreSequenceEqual(new[] { Fourth, Fifth, Sixth }, outgoing.ActiveConfiguration.Members, "The membership installed is not the disjoint one the delta computed.");
+        Assert.AreSequenceEqual(new[] { Fourth, Fifth, Sixth }, outgoing.ActiveConfiguration.Members.Select(configured => configured.Replica), "The membership installed is not the disjoint one the delta computed.");
         Assert.AreEqual(ThreeMemberGenesis.Cluster, outgoing.ActiveConfiguration.Cluster, "The disjoint membership names another chain, so the change founded a cluster rather than reconfiguring one.");
 
         //Safe: every replica of the membership that decided the change is now outside the one it installed,
@@ -444,7 +444,7 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
         //register does not, and the catch-up is what moves it onto the membership that record installs.
         _ = await DriveAsync(cluster, incoming.ReadAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
-        Assert.AreSequenceEqual(new[] { Fourth, Fifth, Sixth }, incoming.ActiveConfiguration.Members, "The catch-up read did not move the incoming register onto the membership it is a member of.");
+        Assert.AreSequenceEqual(new[] { Fourth, Fifth, Sixth }, incoming.ActiveConfiguration.Members.Select(configured => configured.Replica), "The catch-up read did not move the incoming register onto the membership it is a member of.");
 
         RegisterReadiness cold = await DriveAsync(cluster, incoming.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken)).ConfigureAwait(false);
 
@@ -505,7 +505,7 @@ internal sealed class QuePaxaVersionedRegisterReconfigurationTests
 
         Assert.IsNotNull(byWriter.Disagreement, "Two records at one version differing in the writer were read as agreement.");
 
-        SafetyReading byMembership = ReadTwoHeldRecords(one, new VersionedValue<string>(RegisterVersion.First, First, ThreeMemberGenesis.With(Fourth), "a"), seed: 29);
+        SafetyReading byMembership = ReadTwoHeldRecords(one, new VersionedValue<string>(RegisterVersion.First, First, ThreeMemberGenesis.With(Membership.Member(Fourth)), "a"), seed: 29);
 
         Assert.IsNotNull(byMembership.Disagreement, "Two records at one version differing in the membership they install were read as agreement.");
 

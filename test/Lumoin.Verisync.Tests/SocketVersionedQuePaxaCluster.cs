@@ -80,7 +80,7 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         int hostCount = listeners.Length;
 
         Schedule = schedule;
-        Genesis = genesis ?? QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
+        Genesis = genesis ?? QuePaxaConfiguration.CreateGenesis(Membership.Of([.. schedule.Schedule.Order]));
         TamperReplyPayload = tamperReplyPayload;
         Listeners = listeners;
         Clients = clients;

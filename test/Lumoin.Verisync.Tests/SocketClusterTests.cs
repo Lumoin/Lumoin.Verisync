@@ -573,7 +573,7 @@ internal sealed class SocketClusterTests
     /// under.
     /// </summary>
     private static QuePaxaConfiguration VersionedMembership { get; } =
-        QuePaxaConfiguration.CreateGenesis([VersionedReplica(1), VersionedReplica(2), VersionedReplica(3)]);
+        QuePaxaConfiguration.CreateGenesis(Membership.Of(VersionedReplica(1), VersionedReplica(2), VersionedReplica(3)));
 
 
     private static ReplicaId VersionedReplica(byte id)

@@ -26,10 +26,10 @@ internal sealed class VersionedValueTests
     private static ReplicaId Third { get; } = Replica(3);
 
     /// <summary>The membership a record carries here.</summary>
-    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Third));
 
     /// <summary>The membership that same chain reaches by admitting a fourth replica.</summary>
-    private static QuePaxaConfiguration Grown { get; } = Configuration.With(Replica(4));
+    private static QuePaxaConfiguration Grown { get; } = Configuration.With(Membership.Member(Replica(4)));
 
 
     public TestContext TestContext { get; set; } = null!;
@@ -112,8 +112,8 @@ internal sealed class VersionedValueTests
     {
         //The register compares whole proposals, so a record's equality has to read the configuration's members
         //rather than the identity of the array holding them.
-        VersionedValue<string> left = new(new RegisterVersion(3UL), Second, QuePaxaConfiguration.CreateGenesis([First, Second, Third]), "v");
-        VersionedValue<string> right = new(new RegisterVersion(3UL), Second, QuePaxaConfiguration.CreateGenesis([Replica(1), Replica(2), Replica(3)]), "v");
+        VersionedValue<string> left = new(new RegisterVersion(3UL), Second, QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Third)), "v");
+        VersionedValue<string> right = new(new RegisterVersion(3UL), Second, QuePaxaConfiguration.CreateGenesis(Membership.Of(Replica(1), Replica(2), Replica(3))), "v");
 
         Assert.AreNotSame(left.NextConfiguration, right.NextConfiguration);
         Assert.AreEqual(left, right);

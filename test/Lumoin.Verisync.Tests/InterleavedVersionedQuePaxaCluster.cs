@@ -823,7 +823,7 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     {
         ArgumentNullException.ThrowIfNull(schedule);
 
-        return QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
+        return QuePaxaConfiguration.CreateGenesis(Membership.Of([.. schedule.Schedule.Order]));
     }
 
 

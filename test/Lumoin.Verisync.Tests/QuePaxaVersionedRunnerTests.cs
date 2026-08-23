@@ -29,13 +29,13 @@ internal sealed class QuePaxaVersionedRunnerTests
     /// The genesis membership every host in this suite runs under, and the membership every record it holds
     /// carries forward unchanged.
     /// </summary>
-    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Third));
 
     /// <summary>
     /// A membership over the same replicas in the same order on a different chain, which is what an
     /// independently bootstrapped cluster mints.
     /// </summary>
-    private static QuePaxaConfiguration ForeignChain { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Stranger]).Without(Stranger).With(Third);
+    private static QuePaxaConfiguration ForeignChain { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Stranger)).Without(Stranger).With(Membership.Member(Third));
 
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
     private static RecorderStep Five { get; } = RecorderStep.FromRoundAndPhase(1, 1);
@@ -337,7 +337,7 @@ internal sealed class QuePaxaVersionedRunnerTests
 
         //A record another chain decided, installing a membership of that chain, which is the shape a boundary
         //push carries and the one that would poison this host silently.
-        VersionedValue<string> foreign = Record(5UL, Second, ForeignChain.With(Stranger));
+        VersionedValue<string> foreign = Record(5UL, Second, ForeignChain.With(Membership.Member(Stranger)));
 
         _ = await Assert.ThrowsExactlyAsync<ArgumentException>(
             () => push(foreign, [First], TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
@@ -351,7 +351,7 @@ internal sealed class QuePaxaVersionedRunnerTests
         Assert.IsFalse(host.ActiveConfiguration.Contains(Stranger));
 
         //The loop kept serving, so this host's own chain still disseminates into it.
-        Assert.IsTrue(await runner.LearnAsync(Record(5UL, Third, Configuration.With(Stranger)), LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+        Assert.IsTrue(await runner.LearnAsync(Record(5UL, Third, Configuration.With(Membership.Member(Stranger))), LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
 
         runner.Complete();
         await run.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
@@ -1210,7 +1210,7 @@ internal sealed class QuePaxaVersionedRunnerTests
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
 
-        VersionedValue<string> installing = Record(5UL, Third, Configuration.With(Stranger));
+        VersionedValue<string> installing = Record(5UL, Third, Configuration.With(Membership.Member(Stranger)));
         Assert.IsTrue(await runner.LearnAsync(installing, LearnDurability.InMemory, TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
 
         runner.Complete();
@@ -1252,7 +1252,7 @@ internal sealed class QuePaxaVersionedRunnerTests
 
         //The conversion is the contract: this is what a deployment assigns where the register expects a push.
         PublishCommittedRecordDelegate<string> push = publisher.PublishAsync;
-        VersionedValue<string> installing = Record(5UL, Third, Configuration.With(Stranger));
+        VersionedValue<string> installing = Record(5UL, Third, Configuration.With(Membership.Member(Stranger)));
 
         await push(installing, [First, Second, Third, Stranger], TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -1339,7 +1339,7 @@ internal sealed class QuePaxaVersionedRunnerTests
         RecordingStore store = new();
         Task run = runner.RunAsync(store.PersistAsync, TestContext.CancellationToken);
 
-        QuePaxaConfiguration copied = QuePaxaConfiguration.Create(Configuration.Cluster, [First, Second, Third]);
+        QuePaxaConfiguration copied = QuePaxaConfiguration.Create(Configuration.Cluster, Membership.Of(First, Second, Third));
 
         Assert.AreEqual(Configuration, copied);
         Assert.IsFalse(Configuration.Members.Equals(copied.Members), "The two member lists are one array, so this vector cannot tell a structural comparison from a reference one.");

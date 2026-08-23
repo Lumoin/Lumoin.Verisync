@@ -49,7 +49,7 @@ internal sealed class QuePaxaEnvelopeJsonTests
     private static string WriterHex { get; } = Convert.ToHexStringLower(Replica(2).AsSpan());
 
     /// <summary>The membership the records in this suite carry.</summary>
-    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([Replica(1), Replica(2), Replica(3)]);
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(Replica(1), Replica(2), Replica(3)));
 
     /// <summary>The membership's payload, written the way the record codec writes it.</summary>
     private static string ConfigurationJson { get; } = $$"""{"cluster":"{{Convert.ToHexStringLower(Configuration.Cluster.AsSpan())}}","members":["{{ReplicaHex}}","{{WriterHex}}","{{Convert.ToHexStringLower(Replica(3).AsSpan())}}"]}""";
@@ -231,7 +231,7 @@ internal sealed class QuePaxaEnvelopeJsonTests
         //element-wise rather than an identity the encoder and decoder happen to share.
         Assert.AreNotSame(Configuration, decoded.Request.Proposal.Value.NextConfiguration);
         Assert.AreEqual(Configuration, decoded.Request.Proposal.Value.NextConfiguration);
-        Assert.AreSequenceEqual(Configuration.Members, decoded.Request.Proposal.Value.NextConfiguration.Members);
+        Assert.AreSequenceEqual(Configuration.Members.Select(configured => configured.Replica), decoded.Request.Proposal.Value.NextConfiguration.Members.Select(configured => configured.Replica));
         Assert.AreEqual(Configuration.Cluster, decoded.Request.Proposal.Value.NextConfiguration.Cluster);
     }
 
