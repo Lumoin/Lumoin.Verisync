@@ -58,3 +58,4 @@ MCMembershipEagerDecommission.cfg	QuePaxaMembership.tla	red	LatestDecisionSurviv
 MCIncarnationGuarded.cfg	QuePaxaIncarnation.tla	green
 MCIncarnationShared.cfg	QuePaxaIncarnation.tla	red	Agreement
 MCIncarnationVolatile.cfg	QuePaxaIncarnation.tla	red	Agreement
+MCIncarnationWitness.cfg	QuePaxaIncarnation.tla	red	NothingDecided
