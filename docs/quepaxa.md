@@ -103,7 +103,10 @@ governing one version is the next membership named by the record at the version 
 holding that record derives the same recorder set, quorum, hedging order and leader without exchanging a
 message. Genesis is the base case — `QuePaxaConfiguration.CreateGenesis` mints the chain identity as an
 order-sensitive digest of the founding member list, carried unchanged by every later membership, and two
-hosts given different genesis lists mint different identities and decline each other forever. A change is an
+hosts given different genesis lists mint different identities and decline each other forever. A member of
+that list is a `HostId`: the replica id, which is a role, beside the store incarnation admitted to answer for
+it. The digest covers both halves, so a genesis formed over the same replicas but different stores is a
+different chain. A change is an
 ordinary write whose record names a different membership, decided entirely under the membership that existed
 before it while the new one governs the version after, so no joint consensus is needed. `ReconfigureAsync` is
 that path, and it refuses before a chain's first write because a change carries the committed value forward
@@ -111,8 +114,12 @@ and there is none: bootstrap by writing once under genesis.
 
 ### What a host wires
 
-Each host runs a `QuePaxaVersionedNode<TValue>` over the genesis membership and its own replica id, driven by
-a `QuePaxaVersionedRunner<TValue>` whose loop is given a persist delegate. A register also requires a recorder
+Each host runs a `QuePaxaVersionedNode<TValue>` over the genesis membership and its own `HostId`, driven by
+a `QuePaxaVersionedRunner<TValue>` whose loop is given a persist delegate. The constructor is the only place
+a store incarnation is taken on a deployment's word, and a deployment owes it the one its store was created
+under. Every later start goes through `FromState`, which refuses a snapshot written by a host other than the
+one restoring it, so a restart that restates anything else -- the value the membership admits, or a replica
+the store never served -- is refused rather than served. A register also requires a recorder
 endpoint resolver, a priority source, a clock and an attempts-per-recorder bound. Four seams are optional.
 
 | optional seam | what is lost by omitting it |
@@ -126,10 +133,22 @@ The endpoint map from member id to address is the deployment's. The register res
 and builds its endpoint array in the membership's own order, and a member the map cannot resolve keeps its
 slot: a quorum is counted over the slots built, so dropping one would shrink the majority, not reachability.
 
+### Provisioning is two-phase
+
+A store mints its own incarnation when it is created, and the membership admits the store rather than the
+role, so a genesis list cannot be written before the stores it names exist. Create each host's empty store,
+read the incarnation out of it, form the genesis list from the pairs, and only then start the hosts under
+that list. The same order holds for a joiner.
+
+The cost of getting it wrong is visible rather than silent. A host started under an incarnation the
+membership does not admit declines every record request with
+`ConsensusRefusal.StoreNotAdmittedForMember`, and a writer that reaches it refuses the answer instead of
+counting it, so the deployment fails loudly at the first write rather than agreeing with itself twice later.
+
 ### Admitting a member
 
-1. Mint a fresh replica id, provision the host with the same genesis membership and an empty durable store,
-   and start it. It holds no record and is not yet a member.
+1. Create the joiner's store, read its incarnation, and provision the host with the same genesis membership
+   and that `HostId`. It holds no record and is not yet a member.
 2. Update the endpoint map so every member resolves the joiner and the joiner resolves everyone, before the
    change — otherwise the joiner is a member of the quorum arithmetic and of nothing else.
 3. Read readiness over the membership the change would install. `ReadReadinessAsync` takes a membership, so
@@ -156,6 +175,12 @@ odd *n* to *n*+1.
 4. The gate: confirm through a readiness report that a quorum of the new membership, not counting the host
    being retired, has learned that record. Only then stop the host or destroy its store.
 
+**Replacing a member's store is a retirement and an admission, and not one change.** A store carries its
+incarnation for as long as its contents survive, so a rebuilt or wiped store is a different store and the
+configuration naming the old one refuses it. `With` refuses an addition naming a listed replica under
+another incarnation for that reason: retire the member, then admit the replacement, whether or not the
+replica id is reused.
+
 The gate is safety and not hygiene. If the host is stopped first and the remaining holders of that record
 then crash, no live host serves the next instance and none can prove what the record was; there is no
 documented recovery. A change to a membership disjoint from the current one is the extreme case, every holder
@@ -174,10 +199,12 @@ all rather than reporting that it has learned nothing, and `QuorumHasLearned` as
 report rather than leaving it to be inferred. A report is separate answers and not a consistent cut, which is
 what a gate needs: a host that has learned a version does not unlearn it.
 
-Each answer is a `MemberVersionReport` naming the host that produced it, and the register refuses one naming
-a member other than the one it asked: that is a wiring error in the endpoint map — two routes landing on one
-host would let one replica fill two slots and clear a decommission gate on fewer distinct replicas than it
-claims — and never a fault of the member. The identity is the host's own claim rather than authentication.
+Each answer is a `MemberVersionReport` naming the host that produced it, and the register refuses one that
+is not the admitted host. Two refusals, because two situations: an answer from another replica is a wiring
+error in the endpoint map — two routes landing on one host would let one replica fill two slots and clear a
+decommission gate on fewer distinct replicas than it claims — and an answer under the right replica from
+another store is the store that replaced the one being measured, reporting on the gate that would retire it.
+Neither is a fault of the member. The identity is the host's own claim rather than authentication.
 
 `ReadReadinessAsync` takes a per-member deadline, and so does the catch-up `ReadAsync`. It is a required
 argument rather than a setting, because an operator's sweep and an automated gate want different patience and
@@ -270,7 +297,7 @@ width plus checksum width per symbol, times the symbol count the sender chose fo
 
 | act | consequence |
 |---|---|
-| reuse a replica id across a wipe | undetectable by any host: the machine answers below the step its identity already answered from. An empty store means a new identity, and ids carry no address, so re-addressing is free |
+| reuse a replica id across a wipe | refused rather than undetectable: the wiped store is a new store and cannot present the incarnation the membership admits, so it declines every request and no writer counts its answers. Reusing the id is free; presenting the old store's incarnation from a store that lost it is the lie nothing here can catch |
 | decommission before a quorum of the new membership holds the installing record | the register can be wedged, with no documented recovery |
 | start two hosts from different genesis lists | different chain identities, declining each other forever; the chain never commits its first version |
 | express a change as an absolute set instead of a delta | a change re-applied after losing its instance reinstates whatever the concurrent winner removed. `With` and `Without` are idempotent so that the retry is safe |

@@ -429,7 +429,7 @@ internal sealed class SocketClusterTests
             QuePaxaMessageJson.CreateVersionedReplyDeserializer(QuePaxaMessageJson.CreateVersionedValueReader<string>(element => element.GetString()!));
 
         ReplicaId second = VersionedReplica(2);
-        QuePaxaVersionedNode<string> host = new(VersionedMembership, second, new VersionedValue<string>(new RegisterVersion(4UL), second, VersionedMembership, "committed"));
+        QuePaxaVersionedNode<string> host = new(VersionedMembership, Membership.Member(second), new VersionedValue<string>(new RegisterVersion(4UL), second, VersionedMembership, "committed"));
         QuePaxaVersionedRunner<string> runner = new(host);
         Task run = runner.RunAsync(cancellationToken: TestContext.CancellationToken);
 
@@ -573,7 +573,7 @@ internal sealed class SocketClusterTests
     /// under.
     /// </summary>
     private static QuePaxaConfiguration VersionedMembership { get; } =
-        QuePaxaConfiguration.CreateGenesis([VersionedReplica(1), VersionedReplica(2), VersionedReplica(3)]);
+        QuePaxaConfiguration.CreateGenesis(Membership.Of(VersionedReplica(1), VersionedReplica(2), VersionedReplica(3)));
 
 
     private static ReplicaId VersionedReplica(byte id)

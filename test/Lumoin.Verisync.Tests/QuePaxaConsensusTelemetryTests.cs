@@ -157,7 +157,7 @@ internal sealed class QuePaxaConsensusTelemetryTests
 
             if(!member.Equals(Third))
             {
-                return new ValueTask<MemberVersionReport>(new MemberVersionReport(member, RegisterVersion.First));
+                return new ValueTask<MemberVersionReport>(new MemberVersionReport(Membership.Member(member), RegisterVersion.First));
             }
 
             _ = asked.TrySetResult();
@@ -180,7 +180,7 @@ internal sealed class QuePaxaConsensusTelemetryTests
         Assert.AreEqual(VerisyncTelemetry.ProbeFaulted, Outcome(probes, cluster, Second));
         Assert.AreEqual(VerisyncTelemetry.ProbeTimedOut, Outcome(probes, cluster, Third));
 
-        _ = silent.TrySetResult(new MemberVersionReport(Third, RegisterVersion.First));
+        _ = silent.TrySetResult(new MemberVersionReport(Membership.Member(Third), RegisterVersion.First));
     }
 
 
@@ -244,7 +244,7 @@ internal sealed class QuePaxaConsensusTelemetryTests
 
         QuePaxaVersionedRegister<string> register = Register(cluster, First, observeMember: (member, token) => member.Equals(Third)
             ? throw new IOException("This member's transport is down.")
-            : new ValueTask<MemberVersionReport>(new MemberVersionReport(member, RegisterVersion.First)));
+            : new ValueTask<MemberVersionReport>(new MemberVersionReport(Membership.Member(member), RegisterVersion.First)));
 
         _ = await register.ReadReadinessAsync(Timeout.InfiniteTimeSpan, TestContext.CancellationToken).ConfigureAwait(false);
 

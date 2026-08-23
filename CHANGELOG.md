@@ -14,6 +14,34 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Security
 -->
 
+## [Unreleased]
+
+### Added
+
+- `StoreIncarnation` and `HostId`. A replica id names a role and does not name the store answering for it, so a store wiped and restarted under one identity, or one identity provisioned onto two hosts, both answer as that member while holding divergent state, and a quorum counted over distinct replicas counts them once. An incarnation is minted with a store and carried for as long as that store's contents survive, and a host is the pair. A configuration lists at most one host per replica, `IncarnationOf` reports the store admitted for one, and `With` refuses an addition naming a listed replica under another incarnation, because replacing a member's store is a retirement and an admission rather than an addition.
+
+- `ConsensusRefusal.StoreNotAdmittedForMember`, which a host raises when its replica is a member and the store it holds is not the admitted one, and `ConsensusRefusal.ProbeAnsweredByAnotherStore`, which a readiness report raises for an answer carrying the right replica from another store. Both stand beside the existing refusals for a replica no membership lists and a probe answered by another member, because a mis-wired endpoint map and a replaced store are different situations and only one of them is a wiring error.
+
+### Changed
+
+- **Breaking.** `VersionedRecordReply<TValue>.Recorder` and `MemberVersionReport.Recorder` are a `HostId` rather than a `ReplicaId`, and the register compares an answer against the whole admitted host. An answer carrying the admitted replica under another incarnation came from a store the membership never admitted, and counting it would put two stores that have agreed on nothing into one slot of a quorum.
+
+- **Breaking.** `QuePaxaVersionedNode<TValue>.Self` is a `HostId`, and the constructor takes one. The membership filter then refuses a host whose store the active membership does not admit, which is the same rule as the one that refuses a host no membership lists, one dimension over.
+
+- **Breaking.** `QuePaxaVersionedNodeState<TValue>` carries the host that wrote it, and `QuePaxaVersionedNode<TValue>.FromState` takes a `HostId` and refuses a snapshot written by another host with `StateRestoreRefusal.HostIdentityMismatch`. That refuses a store attached to the wrong machine, a store restored under a replica it never served, and a deployment restating its store's incarnation as the value the membership admits rather than the one its store holds — which is the claim the membership filter would otherwise be testing instead of a fact. A store that came back empty reaches the constructor and not the restore, because there is no snapshot to restore from, so the constructor is the one path on which a deployment's word about its own store is taken.
+
+- **Breaking.** `StateRestoreRefusal` gains `HostIdentityMismatch`, and the acceptor and Raft members that followed it move up by one so the host family stays contiguous.
+
+- **Breaking.** The chain identity's digest covers each genesis member's store incarnation as well as its replica, so a genesis over the same replicas under different stores is a different chain.
+
+- **Breaking.** A host is encoded as an object carrying `replica` and `incarnation` wherever one appears: a configuration member, a reply's recorder, and a durable node state's `host`.
+
+- Provisioning a host is two-phase, and `docs/quepaxa.md` states it: create the store, read the incarnation it minted, form the genesis list from the pairs, then start the hosts under that list.
+
+### Fixed
+
+- A JSON payload whose member is written as a bare identity, or any required field read off an element that is not an object, is refused as malformed input rather than surfacing the accessor's wrong-kind exception.
+
 ## [0.0.9] - 2026-08-15
 
 ### Added

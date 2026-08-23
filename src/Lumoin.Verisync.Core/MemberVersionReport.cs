@@ -8,6 +8,7 @@ namespace Lumoin.Verisync.Core;
 /// <param name="Version">The highest committed version that host reports, or
 /// <see cref="RegisterVersion.Unwritten"/> when it has learned none.</param>
 /// <remarks>
+/// <para>
 /// The identity is here for the reason <see cref="VersionedRecordReply{TValue}"/> carries its recorder: a
 /// readiness report counts distinct members of the membership it measures, reached through an endpoint map a
 /// deployment wires by hand, and two entries of that map pointing at one host would let one replica answer
@@ -15,5 +16,12 @@ namespace Lumoin.Verisync.Core;
 /// report naming a member other than the one it asked. Like the reply's field, this is not authentication:
 /// the answering host asserts its own name, which is exact under crash faults and worthless against a host
 /// that lies.
+/// </para>
+/// <para>
+/// It is a <see cref="HostId"/> and not a <see cref="ReplicaId"/> for the reason the reply's is. A readiness
+/// report is what clears a decommission gate, which is the moment a configuration change retires a member, so
+/// an answer from a store other than the one admitted for that member would measure a replica the change is
+/// not about.
+/// </para>
 /// </remarks>
-public readonly record struct MemberVersionReport(ReplicaId Recorder, RegisterVersion Version);
+public readonly record struct MemberVersionReport(HostId Recorder, RegisterVersion Version);

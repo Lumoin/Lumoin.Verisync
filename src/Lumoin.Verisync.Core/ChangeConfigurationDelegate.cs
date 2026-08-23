@@ -15,7 +15,7 @@ namespace Lumoin.Verisync.Core;
 /// is a defect rather than a supported use.
 /// </para>
 /// <para>
-/// <see cref="QuePaxaConfiguration.With(ReplicaId)"/> and
+/// <see cref="QuePaxaConfiguration.With(HostId)"/> and
 /// <see cref="QuePaxaConfiguration.Without(ReplicaId)"/> are idempotent for exactly this reason: re-applying
 /// a change against a membership that already carries it returns that membership, so the re-application
 /// after a superseded attempt is a no-op rather than a second edit.

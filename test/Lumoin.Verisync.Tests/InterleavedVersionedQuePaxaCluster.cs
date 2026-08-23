@@ -112,7 +112,7 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
         RecordRequestCounts = new int[replicas.Length];
         for(int index = 0; index < replicas.Length; index++)
         {
-            Hosts[index] = new QuePaxaVersionedNode<TValue>(genesis, replicas[index], committed);
+            Hosts[index] = new QuePaxaVersionedNode<TValue>(genesis, Membership.Member(replicas[index]), committed);
             if(committed is not null)
             {
                 Adoptions.Add(new AdoptedRecord(replicas[index], committed));
@@ -473,7 +473,7 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     {
         for(int index = 0; index < Hosts.Length; index++)
         {
-            if(Hosts[index].Self.Equals(member))
+            if(Hosts[index].Self.Replica.Equals(member))
             {
                 return index;
             }
@@ -636,7 +636,7 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
                 if(Hosts[dissemination.Host].Learn(dissemination.Committed))
                 {
                     DisseminationsLearned++;
-                    Adoptions.Add(new AdoptedRecord(Hosts[dissemination.Host].Self, dissemination.Committed));
+                    Adoptions.Add(new AdoptedRecord(Hosts[dissemination.Host].Self.Replica, dissemination.Committed));
                 }
 
                 dissemination.Completion.SetResult(true);
@@ -738,7 +738,7 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
         TaskCompletionSource<RegisterVersion> completion = new();
         Enqueue(new ObserveCall(host, completion));
 
-        return AttributeAsync(member, completion.Task);
+        return AttributeAsync(Hosts[host].Self, completion.Task);
     }
 
 
@@ -746,7 +746,7 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     /// Labels a version answer with the identity of the host that produced it, which this bench resolved the
     /// probe to: the routing is the bench's own, so the assertion is honest by construction.
     /// </summary>
-    private static async ValueTask<MemberVersionReport> AttributeAsync(ReplicaId recorder, Task<RegisterVersion> answer)
+    private static async ValueTask<MemberVersionReport> AttributeAsync(HostId recorder, Task<RegisterVersion> answer)
     {
         return new MemberVersionReport(recorder, await answer.ConfigureAwait(false));
     }
@@ -823,7 +823,7 @@ internal sealed class InterleavedVersionedQuePaxaCluster<TValue>
     {
         ArgumentNullException.ThrowIfNull(schedule);
 
-        return QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
+        return QuePaxaConfiguration.CreateGenesis(Membership.Of([.. schedule.Schedule.Order]));
     }
 
 

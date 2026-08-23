@@ -3,12 +3,16 @@ using System;
 namespace Lumoin.Verisync.Core;
 
 /// <summary>
-/// The durable state of a <see cref="QuePaxaVersionedNode{TValue}"/>: the committed record the host has
-/// learned together with the recorder serving the instance that record implies. Obtain it with
+/// The durable state of a <see cref="QuePaxaVersionedNode{TValue}"/>: the host that wrote it, the committed
+/// record that host has learned, and the recorder serving the instance that record implies. Obtain it with
 /// <see cref="QuePaxaVersionedNode{TValue}.ToState"/> and reconstruct with
 /// <see cref="QuePaxaVersionedNode{TValue}.FromState"/>.
 /// </summary>
 /// <typeparam name="TValue">The application value type.</typeparam>
+/// <param name="Host">
+/// The host that wrote this state: the replica it served under, beside the incarnation minted when its store
+/// was created.
+/// </param>
 /// <param name="Committed">
 /// The committed record this host has learned, or <see langword="null"/> when it has learned none.
 /// </param>
@@ -27,14 +31,24 @@ namespace Lumoin.Verisync.Core;
 /// <param name="Recorder">The recorder's own durable state, which is the register serving <paramref name="RecorderVersion"/>.</param>
 /// <remarks>
 /// <para>
-/// Three of the five fields are derivable from <paramref name="Committed"/> and are stored anyway. That
+/// The host is the one field that is nobody's derivation. It is what the writing host says about itself, and
+/// it is stored so that <see cref="QuePaxaVersionedNode{TValue}.FromState"/> can compare the host being
+/// restored against the host that wrote the state it was handed. Both halves are stored and not just the
+/// store's own: a member's replica cannot move between stores while either survives, because replacing a
+/// member's store retires one member and admits another, so a store that came back under another replica is
+/// an operator act and not a configuration change. Storing the pair is also what <see cref="HostId"/>'s own
+/// rule asks for, since a state holding one half would let a restore pair one host's role with another's
+/// store.
+/// </para>
+/// <para>
+/// Three of the six fields are derivable from <paramref name="Committed"/> and are stored anyway. That
 /// redundancy is the point rather than an oversight: a restore that recomputed the leader, the version and the
 /// membership from the committed record would compare each with itself and could never fail, while a stored
 /// copy lets the restore compare what a host wrote against what its own record implies, which is how a snapshot
 /// torn across two writes announces itself instead of restoring as a second leader on one instance.
 /// </para>
 /// <para>
-/// The five fields are one durable write and not two. The recorder serves the version the committed record
+/// The fields are one durable write and not two. The recorder serves the version the committed record
 /// implies, so a host that wrote the record and the register separately and crashed between them comes back
 /// holding a register from one instance beside a record from another, and
 /// <see cref="QuePaxaVersionedNode{TValue}.FromState"/> refuses exactly that pairing. Making the record durable
@@ -50,13 +64,16 @@ namespace Lumoin.Verisync.Core;
 /// the host was handed.
 /// </para>
 /// <para>
-/// A durable store that came back empty is not detectable from these five fields, and no field could make it
-/// so. A wiped snapshot and a host that has genuinely learned nothing carry the same values, so a restore reads
-/// both as a bootstrap host. What separates them is a fact outside the snapshot, which is the deployment's to
-/// hold.
+/// A durable store that came back empty is still not detectable here, and it is not this record's job to
+/// detect it. A wiped store has no snapshot at all, so nothing reaches a restore and the host is constructed
+/// as a bootstrap one; what separates it from a store that has genuinely learned nothing is that it can no
+/// longer present the incarnation this record held, and a configuration admitting that incarnation refuses
+/// the store that replaced it. The constructor is therefore the one path on which a deployment's word about
+/// its own store is taken, and it is the path a store reaches exactly once, when it is created.
 /// </para>
 /// </remarks>
 public sealed record QuePaxaVersionedNodeState<TValue>(
+    HostId Host,
     VersionedValue<TValue>? Committed,
     RegisterVersion RecorderVersion,
     ProposerLane? ConfiguredLeader,

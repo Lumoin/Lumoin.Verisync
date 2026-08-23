@@ -55,3 +55,7 @@ MCMembershipCrossClusterQuorum.cfg	QuePaxaMembership.tla	red	NoCrossClusterDecis
 MCMembershipServesAWindow.cfg	QuePaxaMembership.tla	red	DecisionsCountOnlyCaughtUpHosts
 MCMembershipOutsiderCounted.cfg	QuePaxaMembership.tla	red	DecisionsCountOnlyMembers
 MCMembershipEagerDecommission.cfg	QuePaxaMembership.tla	red	LatestDecisionSurvives
+MCIncarnationGuarded.cfg	QuePaxaIncarnation.tla	green
+MCIncarnationShared.cfg	QuePaxaIncarnation.tla	red	Agreement
+MCIncarnationVolatile.cfg	QuePaxaIncarnation.tla	red	Agreement
+MCIncarnationWitness.cfg	QuePaxaIncarnation.tla	red	NothingDecided

@@ -29,13 +29,13 @@ internal sealed class VersionedQuePaxaCluster<TValue>
         ArgumentOutOfRangeException.ThrowIfGreaterThan(hostCount, schedule.Schedule.Order.Length);
 
         Schedule = schedule;
-        Genesis = QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
+        Genesis = QuePaxaConfiguration.CreateGenesis(Membership.Of([.. schedule.Schedule.Order]));
         Hosts = new QuePaxaVersionedNode<TValue>[hostCount];
         ServedCounts = new int[hostCount];
         Partitioned = new bool[hostCount];
         for(int index = 0; index < hostCount; index++)
         {
-            Hosts[index] = new QuePaxaVersionedNode<TValue>(Genesis, schedule.Schedule.Order[index], committed);
+            Hosts[index] = new QuePaxaVersionedNode<TValue>(Genesis, Genesis.Members[index], committed);
         }
     }
 
@@ -185,7 +185,7 @@ internal sealed class VersionedQuePaxaCluster<TValue>
     {
         for(int index = 0; index < Hosts.Length; index++)
         {
-            if(Hosts[index].Self.Equals(member))
+            if(Hosts[index].Self.Replica.Equals(member))
             {
                 return index;
             }

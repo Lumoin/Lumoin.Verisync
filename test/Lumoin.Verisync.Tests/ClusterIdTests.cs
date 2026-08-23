@@ -16,9 +16,10 @@ internal sealed class ClusterIdTests
 {
     /// <summary>
     /// The digest of the three-member genesis list below under the pinned canonical encoding: the domain
-    /// separator, the member count as four big-endian bytes, then every member's bytes in array order.
+    /// separator, the member count as four big-endian bytes, then every member's replica followed by its
+    /// store incarnation, in array order.
     /// </summary>
-    private const string PinnedGenesisDigest = "a8403cc0ad331152143610bca35b37125c0ec07895b99a241104cf3672412d56";
+    private const string PinnedGenesisDigest = "a736d4572e5d0f007bcd89173c522514f6f5ae1428f6e5146724bae666f1d49b";
 
 
     [TestMethod]
@@ -105,8 +106,8 @@ internal sealed class ClusterIdTests
         //The order is load-bearing, because the first member is the bootstrap leader. Two operators who wrote
         //the same replicas in different orders must mint DIFFERENT identities and block each other, rather
         //than agree on one identity while disagreeing on who bootstraps.
-        ImmutableArray<ReplicaId> forward = [Replica(1), Replica(2), Replica(3)];
-        ImmutableArray<ReplicaId> reordered = [Replica(2), Replica(1), Replica(3)];
+        ImmutableArray<HostId> forward = Membership.Of(Replica(1), Replica(2), Replica(3));
+        ImmutableArray<HostId> reordered = Membership.Of(Replica(2), Replica(1), Replica(3));
 
         Assert.AreNotEqual(ClusterId.FromGenesisMembers(forward), ClusterId.FromGenesisMembers(reordered));
     }
@@ -117,8 +118,8 @@ internal sealed class ClusterIdTests
     {
         //Two independently built member arrays holding the same bytes in the same order are the same genesis,
         //so every host that reads one genesis file mints one identity.
-        ImmutableArray<ReplicaId> first = [Replica(1), Replica(2), Replica(3)];
-        ImmutableArray<ReplicaId> second = [Replica(1), Replica(2), Replica(3)];
+        ImmutableArray<HostId> first = Membership.Of(Replica(1), Replica(2), Replica(3));
+        ImmutableArray<HostId> second = Membership.Of(Replica(1), Replica(2), Replica(3));
 
         Assert.AreEqual(ClusterId.FromGenesisMembers(first), ClusterId.FromGenesisMembers(second));
     }
@@ -131,7 +132,7 @@ internal sealed class ClusterIdTests
         //domain separator, the member count or the member order differently mints a different identity for an
         //existing chain, and every host on the changed build is declined by every host that was already
         //running. The pinned value is what makes such a change visible here instead of in a deployment.
-        ClusterId minted = ClusterId.FromGenesisMembers([Replica(1), Replica(2), Replica(3)]);
+        ClusterId minted = ClusterId.FromGenesisMembers(Membership.Of(Replica(1), Replica(2), Replica(3)));
 
         Assert.AreEqual(PinnedGenesisDigest, Convert.ToHexStringLower(minted.AsSpan()));
     }
@@ -141,7 +142,7 @@ internal sealed class ClusterIdTests
     public void AnEmptyGenesisMemberListIsRefused()
     {
         //A chain with no members has nothing to identify. Both shapes of "no members" fail closed.
-        Assert.ThrowsExactly<ArgumentException>(() => ClusterId.FromGenesisMembers([]));
+        Assert.ThrowsExactly<ArgumentException>(() => ClusterId.FromGenesisMembers(Membership.Of()));
         Assert.ThrowsExactly<ArgumentException>(() => ClusterId.FromGenesisMembers(default));
     }
 

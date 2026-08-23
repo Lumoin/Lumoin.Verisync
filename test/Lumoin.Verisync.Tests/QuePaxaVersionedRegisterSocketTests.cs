@@ -72,7 +72,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     /// <summary>
     /// The membership every record in this suite carries, minted from the agreed order the hosts run under.
     /// </summary>
-    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Third));
 
     private static TimeSpan BaseDelay { get; } = TimeSpan.FromMilliseconds(40);
 
@@ -255,9 +255,9 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
             //The healed host converges through the receive leg: the final record is offered over the wire
             //and the host then reports the final version through its own connection.
             VersionedValue<string>? final = await HighestHeldAsync(cluster, TestContext.CancellationToken).ConfigureAwait(false);
-            await cluster.PublishAsync(final!, cluster.Genesis.Members, TestContext.CancellationToken).ConfigureAwait(false);
+            await cluster.PublishAsync(final!, [.. cluster.Genesis.Members.Select(configured => configured.Replica)], TestContext.CancellationToken).ConfigureAwait(false);
 
-            VersionedValue<string>? healed = await cluster.ResolveReader(cluster.Genesis.Members[2])(TestContext.CancellationToken).ConfigureAwait(false);
+            VersionedValue<string>? healed = await cluster.ResolveReader(cluster.Genesis.Members[2].Replica)(TestContext.CancellationToken).ConfigureAwait(false);
 
             Assert.AreEqual(final!.Version, healed!.Version, "The healed host did not converge on the final record it was offered.");
         }
@@ -769,7 +769,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
 
             //The other half of the asymmetry, and the reason the reading above is taken over an ordinary
             //record: a record that installs a membership is written even where the sender required nothing.
-            VersionedValue<string> installing = new(record.Version.Next(), First, cluster.Genesis.With(Fourth), "b");
+            VersionedValue<string> installing = new(record.Version.Next(), First, cluster.Genesis.With(Membership.Member(Fourth)), "b");
             int writtenBeforeTheInstall = receiving.States.Count;
 
             Assert.IsTrue(await cluster.LearnInMemoryAtAsync(2, installing, TestContext.CancellationToken).ConfigureAwait(false));
@@ -810,7 +810,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
         SocketVersionedQuePaxaCluster<string> cluster = await ConnectAsync(new QuePaxaLeaderSchedule(HedgingSchedule.Create(order, BaseDelay))).ConfigureAwait(false);
         try
         {
-            Assert.AreSequenceEqual(order, cluster.Genesis.Members, "The chain was founded on a different list than the one this scenario rests on.");
+            Assert.AreSequenceEqual(order, cluster.Genesis.Members.Select(configured => configured.Replica), "The chain was founded on a different list than the one this scenario rests on.");
 
             QuePaxaVersionedRegister<string> register = Register(cluster, Third);
 
@@ -823,7 +823,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
             //register's own write as somebody else's.
             Assert.AreEqual(QuePaxaWriteStatus.Committed, committed.Status, "The register's own record did not come back equal to the one it proposed, so something between the two rewrote it.");
             Assert.IsTrue(committed.TookFastPath, "The bootstrap leader of a genesis in this order lost its reserved claim, so the hosts derive the leader from a list other than the one they were given.");
-            Assert.AreSequenceEqual(order, register.ActiveConfiguration.Members, "The membership that crossed the wire does not list the members in the order they were encoded.");
+            Assert.AreSequenceEqual(order, register.ActiveConfiguration.Members.Select(configured => configured.Replica), "The membership that crossed the wire does not list the members in the order they were encoded.");
             Assert.AreEqual(cluster.Genesis.Cluster, register.ActiveConfiguration.Cluster, "The membership that crossed the wire names another chain than the genesis it was minted on.");
 
             //And once more through a host: the record is handed to every host and read back over that host's
@@ -834,7 +834,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
 
             Assert.IsNotNull(readBack, "The host reported no record after it was handed one.");
             Assert.AreEqual(register.Committed, readBack, "The record read back off a host's connection is not the one that was handed to it.");
-            Assert.AreSequenceEqual(order, readBack.NextConfiguration.Members, "The membership read back off a host's connection lists the members in another order than the one encoded.");
+            Assert.AreSequenceEqual(order, readBack.NextConfiguration.Members.Select(configured => configured.Replica), "The membership read back off a host's connection lists the members in another order than the one encoded.");
 
             //Writing continues over the order the deployment named, which is what says the order that survived
             //is also the one the schedule and the quorum are taken over.
@@ -879,7 +879,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
         //Four hosts and three members: the fourth runs on the chain's genesis like the rest, because it
         //belongs to the chain from the moment its deployment starts it and only the membership is behind.
         ImmutableArray<ReplicaId> hosts = [First, Second, Third, Fourth];
-        QuePaxaConfiguration genesis = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+        QuePaxaConfiguration genesis = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Third));
         SocketVersionedQuePaxaCluster<string> cluster = await ConnectAsync(
             new QuePaxaLeaderSchedule(HedgingSchedule.Create(hosts, BaseDelay)),
             hostCount: hosts.Length,
@@ -894,15 +894,15 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
 
             //Dissemination is explicit here, as in a deployment: only the members of the membership that
             //decided the first record are told about it.
-            foreach(ReplicaId member in genesis.Members)
+            foreach(ReplicaId member in genesis.Members.Select(configured => configured.Replica))
             {
                 Assert.IsTrue(await cluster.LearnAtAsync(hosts.IndexOf(member), register.Committed!, TestContext.CancellationToken).ConfigureAwait(false));
             }
 
-            QuePaxaWriteOutcome<string> grown = await register.ReconfigureAsync(current => current.With(Fourth), maxAttempts: 2, TestContext.CancellationToken).ConfigureAwait(false);
+            QuePaxaWriteOutcome<string> grown = await register.ReconfigureAsync(current => current.With(Membership.Member(Fourth)), maxAttempts: 2, TestContext.CancellationToken).ConfigureAwait(false);
 
             Assert.AreEqual(QuePaxaWriteStatus.Committed, grown.Status);
-            Assert.AreSequenceEqual(new[] { First, Second, Third, Fourth }, register.ActiveConfiguration.Members, "The membership that crossed the wire does not list the members that were encoded, in that order.");
+            Assert.AreSequenceEqual(new[] { First, Second, Third, Fourth }, register.ActiveConfiguration.Members.Select(configured => configured.Replica), "The membership that crossed the wire does not list the members that were encoded, in that order.");
             Assert.AreEqual(3, register.ActiveConfiguration.Quorum, "A membership of four does not count a quorum of three, so the arithmetic the reading below rests on is not the one measured here.");
 
             //EVERY MEMBER CATCHES UP, THE JOINER INCLUDED. That is what makes the reading at the end a claim
@@ -936,7 +936,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
 
             ImmutableArray<ReplicaId> firstVersion = AnsweredAt(cluster, hosts, bootstrap.Version);
 
-            Assert.IsTrue(firstVersion.All(genesis.Members.Contains), "The first version was answered outside the membership it ran under.");
+            Assert.IsTrue(firstVersion.All(genesis.Contains), "The first version was answered outside the membership it ran under.");
             Assert.IsGreaterThanOrEqualTo(genesis.Quorum, firstVersion.Length, "The first version was answered by fewer members than the quorum it committed on.");
 
             //EVERY ANSWER IS REQUIRED BY NAME. The membership has four members and a quorum of three, and one
@@ -1006,7 +1006,8 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
 
             //Only the version is swapped: a payload short of its recorder would be refused by the codec and
             //the register's instance check would never be reached.
-            writer.WriteString("recorder", root.GetProperty("recorder").GetString());
+            writer.WritePropertyName("recorder");
+            root.GetProperty("recorder").WriteTo(writer);
             writer.WritePropertyName("reply");
             root.GetProperty("reply").WriteTo(writer);
             writer.WriteEndObject();
@@ -1154,7 +1155,7 @@ internal sealed class QuePaxaVersionedRegisterSocketTests
     private static async Task<VersionedValue<string>?> HighestHeldAsync(SocketVersionedQuePaxaCluster<string> cluster, CancellationToken cancellationToken)
     {
         VersionedValue<string>? highest = null;
-        foreach(ReplicaId member in cluster.Genesis.Members)
+        foreach(ReplicaId member in cluster.Genesis.Members.Select(configured => configured.Replica))
         {
             VersionedValue<string>? held = await cluster.ResolveReader(member)(cancellationToken).ConfigureAwait(false);
             if(held is not null && (highest is null || held.Version > highest.Version))

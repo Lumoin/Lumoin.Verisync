@@ -55,7 +55,7 @@ internal sealed class QuePaxaVersionedRegisterLinearizabilityTests
     /// <summary>
     /// The membership every record in this suite carries, minted from the agreed order the hosts run under.
     /// </summary>
-    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Third));
 
     private static TimeSpan BaseDelay { get; } = TimeSpan.FromMilliseconds(40);
 

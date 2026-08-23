@@ -80,7 +80,7 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
         int hostCount = listeners.Length;
 
         Schedule = schedule;
-        Genesis = genesis ?? QuePaxaConfiguration.CreateGenesis(schedule.Schedule.Order);
+        Genesis = genesis ?? QuePaxaConfiguration.CreateGenesis(Membership.Of([.. schedule.Schedule.Order]));
         TamperReplyPayload = tamperReplyPayload;
         Listeners = listeners;
         Clients = clients;
@@ -110,7 +110,7 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
 
         for(int index = 0; index < hostCount; index++)
         {
-            Runners[index] = new QuePaxaVersionedRunner<TValue>(new QuePaxaVersionedNode<TValue>(Genesis, schedule.Schedule.Order[index], committed));
+            Runners[index] = new QuePaxaVersionedRunner<TValue>(new QuePaxaVersionedNode<TValue>(Genesis, HostFor(schedule.Schedule.Order[index]), committed));
 
             //The assignment is the conversion the runner's contract names: LearnAsync is this host's
             //ReceiveCommittedRecordDelegate, and the serve loop offers every wire-borne record through it.
@@ -574,10 +574,13 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     {
         byte[] payload = await ExchangeAsync(IndexOf(member), VersionKind, JsonNull, cancellationToken).ConfigureAwait(false);
         using JsonDocument document = JsonDocument.Parse(payload);
-        ReplicaId recorder = ReplicaId.FromSpan(Convert.FromHexString(document.RootElement.GetProperty("recorder").GetString()!));
+        JsonElement recorder = document.RootElement.GetProperty("recorder");
+        HostId answered = new(
+            ReplicaId.FromSpan(Convert.FromHexString(recorder.GetProperty("replica").GetString()!)),
+            StoreIncarnation.FromSpan(Convert.FromHexString(recorder.GetProperty("incarnation").GetString()!)));
         var version = new RegisterVersion(document.RootElement.GetProperty("version").GetUInt64());
 
-        return new MemberVersionReport(recorder, version);
+        return new MemberVersionReport(answered, version);
     }
 
 
@@ -649,6 +652,19 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
     /// <param name="member">The member to look for.</param>
     /// <returns>That host's index.</returns>
     /// <exception cref="InvalidOperationException">Thrown when no host of this cluster is that member.</exception>
+    /// <summary>
+    /// The host this bench runs for <paramref name="replica"/>: the store the genesis admits for it where it
+    /// is a member, and the derived one otherwise. A bench with more hosts than members is how a joiner is
+    /// started, and a joiner holds a store before any membership lists it.
+    /// </summary>
+    /// <param name="replica">The replica the host serves under.</param>
+    /// <returns>The host identity.</returns>
+    private HostId HostFor(ReplicaId replica)
+    {
+        return Genesis.IncarnationOf(replica) is { } admitted ? new HostId(replica, admitted) : Membership.Member(replica);
+    }
+
+
     private int IndexOf(ReplicaId member)
     {
         for(int index = 0; index < HostCount; index++)
@@ -990,7 +1006,10 @@ internal sealed class SocketVersionedQuePaxaCluster<TValue>: IAsyncDisposable
             //The identity is the serve loop's own, never echoed off the request, so the probe's reply carries
             //a genuine claim the register's mis-wiring refusal can compare against.
             writer.WriteStartObject();
-            writer.WriteString("recorder", Convert.ToHexStringLower(Schedule.Schedule.Order[host].AsSpan()));
+            writer.WriteStartObject("recorder");
+            writer.WriteString("replica", Convert.ToHexStringLower(Runners[host].Node.Self.Replica.AsSpan()));
+            writer.WriteString("incarnation", Convert.ToHexStringLower(Runners[host].Node.Self.Incarnation.AsSpan()));
+            writer.WriteEndObject();
             writer.WriteNumber("version", record is null ? RegisterVersion.Unwritten.Value : record.Version.Value);
             writer.WriteEndObject();
         }
