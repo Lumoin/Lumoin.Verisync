@@ -50,7 +50,9 @@ public static class CborChannelSerialization
 
         return CborMessageGuard.FailClosed<TMessage>(payload =>
         {
-            var cborReader = new CborReader(payload.ToArray(), CborConformanceMode.Canonical);
+            //A payload that arrived whole is read where it lies. Only a fragmented one is copied, and then only
+            //because the reader needs one contiguous region.
+            var cborReader = new CborReader(payload.IsSingleSegment ? payload.First : payload.ToArray(), CborConformanceMode.Canonical);
             TMessage message = decode(cborReader);
 
             //Surplus bytes after the message are refused rather than ignored. Allowing them would let several
