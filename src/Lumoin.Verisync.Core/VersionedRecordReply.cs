@@ -8,7 +8,7 @@ namespace Lumoin.Verisync.Core;
 /// </summary>
 /// <typeparam name="TValue">The consensus value type, which a versioned register instantiates at <see cref="VersionedValue{TValue}"/>.</typeparam>
 /// <param name="Version">The register version of the instance that answered. Must not be <see cref="RegisterVersion.Unwritten"/>.</param>
-/// <param name="Recorder">The host that produced the reply, which is that host's own identity.</param>
+/// <param name="Recorder">The host that produced the reply, which is that host's own identity: the replica it serves under and the store answering for it.</param>
 /// <param name="Reply">The reply itself, unchanged. Must not be <see langword="null"/>.</param>
 /// <remarks>
 /// <para>
@@ -34,6 +34,16 @@ namespace Lumoin.Verisync.Core;
 /// and becomes a safety error.
 /// </para>
 /// <para>
+/// It names the host and not the replica, which is what makes the comparison reach the store as well as the
+/// role. A configuration admits one store per replica, so an answer carrying the admitted replica under
+/// another incarnation came from a store the membership never admitted — a replica reprovisioned onto a
+/// second host, or one whose store was wiped and restarted under the identity it used to hold. Counting it
+/// would put two stores that have agreed on nothing into one slot of a quorum, which is the majority
+/// intersection failing at a member rather than at an arithmetic. The pair is carried as one value for the
+/// reason <see cref="HostId"/> gives: a reply naming one host's role beside another's store would be
+/// constructible if these were two fields.
+/// </para>
+/// <para>
 /// THIS IS NOT AUTHENTICATION AND NOTHING HERE MAY BE READ AS SUCH. The field is a claim the answering host
 /// makes about itself, unsigned and unverifiable, so it is exact under the crash faults this protocol assumes
 /// — a host that has not failed states its own identity correctly, and a mis-wired map is caught because
@@ -42,7 +52,7 @@ namespace Lumoin.Verisync.Core;
 /// <see cref="ReplicaId"/>-level signing is a different protocol, not a stronger reading of this field.
 /// </para>
 /// </remarks>
-public sealed record VersionedRecordReply<TValue>(RegisterVersion Version, ReplicaId Recorder, RecordReply<TValue> Reply)
+public sealed record VersionedRecordReply<TValue>(RegisterVersion Version, HostId Recorder, RecordReply<TValue> Reply)
 {
     /// <summary>
     /// The register version of the instance that answered. It is validated on construction and on a

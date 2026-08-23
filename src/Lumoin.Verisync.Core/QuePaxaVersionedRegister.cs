@@ -332,8 +332,10 @@ public sealed class QuePaxaVersionedRegister<TValue>
             return Committed;
         }
 
-        foreach(ReplicaId member in ActiveConfiguration.Members)
+        foreach(HostId configured in ActiveConfiguration.Members)
         {
+            ReplicaId member = configured.Replica;
+
             cancellationToken.ThrowIfCancellationRequested();
 
             VersionedValue<TValue>? reported;
@@ -373,7 +375,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>One entry per member, in the membership's own order, beside the membership it was measured over.</returns>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="probeDeadline"/> is neither positive nor <see cref="Timeout.InfiniteTimeSpan"/>.</exception>
-    /// <exception cref="InvalidOperationException">Thrown if this register was built without a per-member version query, and if a member's probe was answered by a host asserting another member's identity.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown with <see cref="ConsensusRefusal.ReadinessWithoutMemberQuery"/> if this register was built without a per-member version query, with <see cref="ConsensusRefusal.ProbeAnsweredByAnotherMember"/> if a member's probe was answered by a host asserting another member's identity, and with <see cref="ConsensusRefusal.ProbeAnsweredByAnotherStore"/> if it was answered under that member's identity by a store other than the admitted one.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled, and if a member answers with a cancellation of its own.</exception>
     /// <remarks>
     /// The active-membership form of <see cref="ReadReadinessAsync(QuePaxaConfiguration, TimeSpan, CancellationToken)"/>,
@@ -398,7 +400,7 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="membership"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">Thrown if <paramref name="membership"/> names a chain other than this register's.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="probeDeadline"/> is neither positive nor <see cref="Timeout.InfiniteTimeSpan"/>.</exception>
-    /// <exception cref="InvalidOperationException">Thrown if this register was built without a per-member version query, and if a member's probe was answered by a host asserting another member's identity.</exception>
+    /// <exception cref="ConsensusRefusedException">Thrown with <see cref="ConsensusRefusal.ReadinessWithoutMemberQuery"/> if this register was built without a per-member version query, with <see cref="ConsensusRefusal.ProbeAnsweredByAnotherMember"/> if a member's probe was answered by a host asserting another member's identity, and with <see cref="ConsensusRefusal.ProbeAnsweredByAnotherStore"/> if it was answered under that member's identity by a store other than the admitted one.</exception>
     /// <exception cref="OperationCanceledException">Thrown if <paramref name="cancellationToken"/> is signalled, and if a member answers with a cancellation of its own.</exception>
     /// <remarks>
     /// <para>
@@ -442,12 +444,15 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// patience rather than about those members.
     /// </para>
     /// <para>
-    /// An answer naming another member fails the report loudly rather than being counted or reported
-    /// unreachable. The report is counted over distinct members of the membership it measures, reached
-    /// through an endpoint map a deployment wires by hand, and two probe routes landing on one host would let
-    /// one replica fill two slots and a decommission gate clear on fewer distinct replicas than it claims —
-    /// the wiring error the record path refuses at its quorum. The identity is the answering host's own claim
-    /// and is not authentication.
+    /// An answer from a host other than the admitted one fails the report loudly rather than being counted or
+    /// reported unreachable. The report is counted over distinct members of the membership it measures,
+    /// reached through an endpoint map a deployment wires by hand, and two probe routes landing on one host
+    /// would let one replica fill two slots and a decommission gate clear on fewer distinct replicas than it
+    /// claims — the wiring error the record path refuses at its quorum. An answer carrying the right replica
+    /// under another store is refused on the same comparison and reported as its own rule, because a gate
+    /// that retires a member on a report from the store that replaced it measures the wrong store at the one
+    /// moment the membership is being changed. The identity is the answering host's own claim and is not
+    /// authentication.
     /// </para>
     /// </remarks>
     public async Task<RegisterReadiness> ReadReadinessAsync(QuePaxaConfiguration membership, TimeSpan probeDeadline, CancellationToken cancellationToken)
@@ -468,8 +473,10 @@ public sealed class QuePaxaVersionedRegister<TValue>
         using Activity? activity = VerisyncActivitySource.Instance.StartActivity(VerisyncTelemetry.ActivityNameConsensusReadiness);
 
         ImmutableArray<MemberReadiness>.Builder reports = ImmutableArray.CreateBuilder<MemberReadiness>(membership.Members.Length);
-        foreach(ReplicaId member in membership.Members)
+        foreach(HostId configured in membership.Members)
         {
+            ReplicaId member = configured.Replica;
+
             cancellationToken.ThrowIfCancellationRequested();
 
             MemberVersionReport reported;
@@ -494,11 +501,16 @@ public sealed class QuePaxaVersionedRegister<TValue>
                 continue;
             }
 
-            //An answer from another member would let one host fill two slots of a report counted over
-            //distinct members, so it is a wiring defect surfaced loudly rather than a weaker reading.
-            if(!reported.Recorder.Equals(member))
+            //An answer from another host would let one host fill two slots of a report counted over distinct
+            //members, so it is surfaced loudly rather than as a weaker reading. The comparison is over the
+            //whole admitted host, and the two ways it can fail are different situations: a probe that reached
+            //the wrong member is a wiring defect, and one answered under the right member by another store is
+            //a store this membership never admitted reporting on a gate that would retire the one it did.
+            if(!reported.Recorder.Equals(configured))
             {
-                throw new ConsensusRefusedException(ConsensusRefusal.ProbeAnsweredByAnotherMember, $"The version probe for member {member} was answered by {reported.Recorder}, so this deployment's endpoint map does not reach the membership it names. A readiness report counting that answer would clear a decommission gate on fewer distinct replicas than it claims.");
+                throw reported.Recorder.Replica.Equals(member)
+                    ? new ConsensusRefusedException(ConsensusRefusal.ProbeAnsweredByAnotherStore, $"The version probe for member {member} was answered under {reported.Recorder.Incarnation} where the membership admits {configured.Incarnation}, so a store other than the admitted one is reporting for that member. A readiness report counting that answer would clear a decommission gate on a store the membership never admitted.")
+                    : new ConsensusRefusedException(ConsensusRefusal.ProbeAnsweredByAnotherMember, $"The version probe for member {member} was answered by {reported.Recorder.Replica}, so this deployment's endpoint map does not reach the membership it names. A readiness report counting that answer would clear a decommission gate on fewer distinct replicas than it claims.");
             }
 
             RecordProbe(member, VerisyncTelemetry.ProbeAnswered);
@@ -844,16 +856,20 @@ public sealed class QuePaxaVersionedRegister<TValue>
     {
         if(incoming.Equals(outgoing))
         {
-            return outgoing.Members;
+            return ImmutableArray.CreateRange(outgoing.Members, static member => member.Replica);
         }
 
         ImmutableArray<ReplicaId>.Builder audience = ImmutableArray.CreateBuilder<ReplicaId>(outgoing.Members.Length + incoming.Members.Length);
-        audience.AddRange(outgoing.Members);
-        foreach(ReplicaId joining in incoming.Members)
+        foreach(HostId outgoingMember in outgoing.Members)
         {
-            if(!outgoing.Contains(joining))
+            audience.Add(outgoingMember.Replica);
+        }
+
+        foreach(HostId joining in incoming.Members)
+        {
+            if(!outgoing.Contains(joining.Replica))
             {
-                audience.Add(joining);
+                audience.Add(joining.Replica);
             }
         }
 
@@ -1041,11 +1057,12 @@ public sealed class QuePaxaVersionedRegister<TValue>
     /// </remarks>
     private RecorderEndpointDelegate<VersionedValue<TValue>>[] EndpointsFor(RegisterInstance instance)
     {
-        ImmutableArray<ReplicaId> members = instance.Configuration.Members;
+        ImmutableArray<HostId> members = instance.Configuration.Members;
         var endpoints = new RecorderEndpointDelegate<VersionedValue<TValue>>[members.Length];
         for(int index = 0; index < members.Length; index++)
         {
-            ReplicaId member = members[index];
+            HostId admitted = members[index];
+            ReplicaId member = admitted.Replica;
             VersionedRecorderEndpointDelegate<VersionedValue<TValue>> host;
             try
             {
@@ -1069,11 +1086,16 @@ public sealed class QuePaxaVersionedRegister<TValue>
                     throw new InvalidOperationException($"A recorder answering version {instance.Version.Value} replied for version {reply.Version.Value}, so the transport correlated a reply to the wrong instance.");
                 }
 
-                //And a reply from another member would enter it twice, which is the same break one dimension
-                //over: two slots answered by one host count one replica as two.
-                if(!reply.Recorder.Equals(member))
+                //And a reply from another host would enter it twice, which is the same break one dimension
+                //over: two slots answered by one host count one replica as two. The comparison is over the
+                //whole admitted host, so an answer carrying the right replica under another store is refused
+                //here as well, and the two readings are told apart because only one of them is a wiring
+                //error.
+                if(!reply.Recorder.Equals(admitted))
                 {
-                    throw new InvalidOperationException($"The endpoint for member {member} was answered by {reply.Recorder}, so this deployment's endpoint map does not reach the membership it names. Counting that answer would let one host fill two slots of a quorum counted over distinct members.");
+                    throw new InvalidOperationException(reply.Recorder.Replica.Equals(member)
+                        ? $"The endpoint for member {member} was answered under {reply.Recorder.Incarnation} where the membership admits {admitted.Incarnation}, so a store other than the admitted one is answering for that member. Counting that answer would put a store this membership never admitted into a slot of a quorum counted over distinct members."
+                        : $"The endpoint for member {member} was answered by {reply.Recorder.Replica}, so this deployment's endpoint map does not reach the membership it names. Counting that answer would let one host fill two slots of a quorum counted over distinct members.");
                 }
 
                 return reply.Reply;

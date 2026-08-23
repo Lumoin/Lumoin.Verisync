@@ -71,27 +71,30 @@ public enum StateRestoreRefusal
     /// <summary>The host's recorder stands at step zero carrying a proposal, which is a proposal that was never recorded.</summary>
     HostUnwrittenRecorderCarriesProposal = 13,
 
+    /// <summary>The host restoring is not the host that wrote the state it was handed.</summary>
+    HostIdentityMismatch = 14,
+
     /// <summary>The acceptor's promise stands below the initial fast ballot it is pre-promised to.</summary>
-    AcceptorPromiseBelowInitialBallot = 14,
+    AcceptorPromiseBelowInitialBallot = 15,
 
     /// <summary>The acceptor's accepted ballot is neither the zero ballot nor at or above the initial fast ballot.</summary>
-    AcceptorAcceptedBallotBelowInitialBallot = 15,
+    AcceptorAcceptedBallotBelowInitialBallot = 16,
 
     /// <summary>The acceptor's promise trails its accepted ballot, which accepting raises it to.</summary>
-    AcceptorPromiseTrailsAcceptedBallot = 16,
+    AcceptorPromiseTrailsAcceptedBallot = 17,
 
     /// <summary>The acceptor carries an accepted value under the zero accepted ballot, which are written together.</summary>
-    AcceptorValueWithoutAcceptedBallot = 17,
+    AcceptorValueWithoutAcceptedBallot = 18,
 
     /// <summary>The Raft node's stored vote is neither empty nor one replica identity wide.</summary>
-    RaftVoteMalformed = 18,
+    RaftVoteMalformed = 19,
 
     /// <summary>The Raft node's stored vote names a replica the cluster does not contain.</summary>
-    RaftVoteOutsideMembership = 19,
+    RaftVoteOutsideMembership = 20,
 
     /// <summary>The Raft node's stored log carries a term below the one before it.</summary>
-    RaftLogTermsDecrease = 20,
+    RaftLogTermsDecrease = 21,
 
     /// <summary>The Raft node's stored last log term stands above its stored current term.</summary>
-    RaftLastLogTermAboveCurrentTerm = 21
+    RaftLastLogTermAboveCurrentTerm = 22
 }

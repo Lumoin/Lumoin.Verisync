@@ -49,10 +49,14 @@ internal sealed class QuePaxaEnvelopeJsonTests
     private static string WriterHex { get; } = Convert.ToHexStringLower(Replica(2).AsSpan());
 
     /// <summary>The membership the records in this suite carry.</summary>
-    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([Replica(1), Replica(2), Replica(3)]);
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(Replica(1), Replica(2), Replica(3)));
 
     /// <summary>The membership's payload, written the way the record codec writes it.</summary>
-    private static string ConfigurationJson { get; } = $$"""{"cluster":"{{Convert.ToHexStringLower(Configuration.Cluster.AsSpan())}}","members":["{{ReplicaHex}}","{{WriterHex}}","{{Convert.ToHexStringLower(Replica(3).AsSpan())}}"]}""";
+    private static string ConfigurationJson { get; } =
+        $$"""{"cluster":"{{Convert.ToHexStringLower(Configuration.Cluster.AsSpan())}}","members":[{{MemberJson(Replica(1))}},{{MemberJson(Replica(2))}},{{MemberJson(Replica(3))}}]}""";
+
+    /// <summary>The recorder identity a reply carries, written the way the reply codec writes it.</summary>
+    private static string RecorderJson { get; } = "\"recorder\":" + MemberJson(Replica(3)) + ",";
 
 
     [TestMethod]
@@ -69,7 +73,7 @@ internal sealed class QuePaxaEnvelopeJsonTests
     {
         VersionedRecordReply<string> reply = new(
             new RegisterVersion(7UL),
-            Replica(3),
+            Membership.Member(Replica(3)),
             new RecordReply<string>(Four, Proposal(ProposalPriority.Reserved, LaneA, "first"), Proposal(new ProposalPriority(3), LaneA, "prior")));
 
         VersionedRecordReply<string> decoded = RoundTripReply(reply);
@@ -78,7 +82,7 @@ internal sealed class QuePaxaEnvelopeJsonTests
 
         //The identity is what a writer counts a quorum over distinct members with, so it is asserted on its
         //own rather than left to the record's equality.
-        Assert.AreEqual(Replica(3), decoded.Recorder);
+        Assert.AreEqual(Membership.Member(Replica(3)), decoded.Recorder);
     }
 
 
@@ -101,8 +105,8 @@ internal sealed class QuePaxaEnvelopeJsonTests
         //The same payload with the slot present decodes, so the vector fails on the omission and on nothing
         //else it happens to be short of.
         Assert.AreEqual(
-            Replica(3),
-            DeserializeReply(FillReply($"\"recorder\":\"{Convert.ToHexStringLower(Replica(3).AsSpan())}\",")).Recorder);
+            Membership.Member(Replica(3)),
+            DeserializeReply(FillReply(RecorderJson)).Recorder);
     }
 
 
@@ -231,7 +235,7 @@ internal sealed class QuePaxaEnvelopeJsonTests
         //element-wise rather than an identity the encoder and decoder happen to share.
         Assert.AreNotSame(Configuration, decoded.Request.Proposal.Value.NextConfiguration);
         Assert.AreEqual(Configuration, decoded.Request.Proposal.Value.NextConfiguration);
-        Assert.AreSequenceEqual(Configuration.Members, decoded.Request.Proposal.Value.NextConfiguration.Members);
+        Assert.AreSequenceEqual(Configuration.Members.Select(configured => configured.Replica), decoded.Request.Proposal.Value.NextConfiguration.Members.Select(configured => configured.Replica));
         Assert.AreEqual(Configuration.Cluster, decoded.Request.Proposal.Value.NextConfiguration.Cluster);
     }
 
@@ -242,7 +246,8 @@ internal sealed class QuePaxaEnvelopeJsonTests
         //Each vector is a complete, otherwise-valid record differing from a good one in exactly the omitted
         //slot, so each draws one rejection and no other guard can answer for it. The configuration's own two
         //slots carry their own label, so a reader learns which object was short rather than only which field.
-        string members = $$"""["{{ReplicaHex}}","{{WriterHex}}"]""";
+        string members = $$"""[{{MemberJson(Replica(1))}},{{MemberJson(Replica(2))}}]""";
+        string incarnationHex = Convert.ToHexStringLower(Membership.Member(Replica(1)).Incarnation.AsSpan());
         string cluster = Convert.ToHexStringLower(Configuration.Cluster.AsSpan());
 
         (string Record, string Field, string Label)[] vectors =
@@ -252,7 +257,14 @@ internal sealed class QuePaxaEnvelopeJsonTests
             ($$"""{"version":3,"writer":"{{WriterHex}}","value":"v"}""", "configuration", RecordLabel),
             ($$"""{"version":3,"writer":"{{WriterHex}}","configuration":{{ConfigurationJson}}}""", "value", RecordLabel),
             ($$"""{"version":3,"writer":"{{WriterHex}}","configuration":{"members":{{members}}},"value":"v"}""", "cluster", ConfigurationLabel),
-            ($$"""{"version":3,"writer":"{{WriterHex}}","configuration":{"cluster":"{{cluster}}"},"value":"v"}""", "members", ConfigurationLabel)
+            ($$"""{"version":3,"writer":"{{WriterHex}}","configuration":{"cluster":"{{cluster}}"},"value":"v"}""", "members", ConfigurationLabel),
+            ($$"""{"version":3,"writer":"{{WriterHex}}","configuration":{"cluster":"{{cluster}}","members":[{"incarnation":"{{incarnationHex}}"}]},"value":"v"}""", "replica", ConfigurationLabel),
+            ($$"""{"version":3,"writer":"{{WriterHex}}","configuration":{"cluster":"{{cluster}}","members":[{"replica":"{{ReplicaHex}}"}]},"value":"v"}""", "incarnation", ConfigurationLabel),
+
+            //A member written as a bare identity is the shape this codec used to carry, and it is malformed
+            //input rather than a wrong-kind access: a member names a replica and the store admitted for it,
+            //and a payload that states only the first has left the second out.
+            ($$"""{"version":3,"writer":"{{WriterHex}}","configuration":{"cluster":"{{cluster}}","members":["{{ReplicaHex}}"]},"value":"v"}""", "replica", ConfigurationLabel)
         ];
 
         DeserializeMessageDelegate<VersionedRecordRequest<VersionedValue<string>>> deserialize =
@@ -270,6 +282,18 @@ internal sealed class QuePaxaEnvelopeJsonTests
             Assert.Contains(field, failure.InnerException!.Message);
             Assert.Contains(label, failure.InnerException.Message);
         }
+    }
+
+
+    /// <summary>
+    /// One member's payload, written the way the configuration and reply codecs both write a host: the replica
+    /// it serves under beside the store admitted to answer for it.
+    /// </summary>
+    /// <param name="replica">The replica the member is listed under.</param>
+    /// <returns>The member's payload.</returns>
+    private static string MemberJson(ReplicaId replica)
+    {
+        return $$"""{"replica":"{{Convert.ToHexStringLower(replica.AsSpan())}}","incarnation":"{{Convert.ToHexStringLower(Membership.Member(replica).Incarnation.AsSpan())}}"}""";
     }
 
 

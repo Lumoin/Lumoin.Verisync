@@ -20,6 +20,14 @@ namespace Lumoin.Verisync.Tests;
 /// weaker than the member bytes would wrongly refuse.
 /// </para>
 /// <para>
+/// THE DUPLICATE RULE IS OVER THE IDENTITY AND NOT THE WHOLE MEMBER. A member pairs a replica with the store
+/// incarnation admitted to answer for it, and two incarnations of one replica are still one member of a
+/// quorum, so a list holding both is refused exactly as a repeated replica is. The addition guard is the
+/// other side of the same rule: an addition naming a listed replica under another incarnation is a store
+/// replacement and is refused rather than answered with the receiver, because dropping it would lose the
+/// operator's request without a word.
+/// </para>
+/// <para>
 /// THE CODEC ROUND TRIP IS THE VECTOR THE SYNTHESIZED EQUALITY CANNOT SURVIVE. A record's synthesized equality
 /// would compare <see cref="ImmutableArray{T}"/> by the identity of its backing array, and the defect that
 /// causes is silent: whole-proposal comparison fails, phase two never decides, and a writer's own write comes
@@ -28,11 +36,12 @@ namespace Lumoin.Verisync.Tests;
 /// </para>
 /// <para>
 /// THE HASH-SET VECTOR REACHES <see cref="QuePaxaConfiguration.GetHashCode"/>'s COLLISION PATH.
-/// <see cref="ReplicaId.GetHashCode"/> reads only the leading four bytes, so two replicas differing later hash
-/// alike; two configurations built over them hash alike as well, and a hash-keyed collection therefore has to
-/// call <see cref="QuePaxaConfiguration.Equals(QuePaxaConfiguration)"/> to separate them. The same collection
-/// then rejects an equal configuration built over independent buffers, which a synthesized hash puts in
-/// another bucket entirely.
+/// <see cref="ReplicaId.GetHashCode"/> and <see cref="StoreIncarnation.GetHashCode"/> each read only the
+/// leading four bytes, so two members differing later hash alike; two configurations built over them hash
+/// alike as well, and a hash-keyed collection therefore has to call
+/// <see cref="QuePaxaConfiguration.Equals(QuePaxaConfiguration)"/> to separate them. The same collection then
+/// rejects an equal configuration built over independent buffers, which a synthesized hash puts in another
+/// bucket entirely.
 /// </para>
 /// </remarks>
 [TestClass]
@@ -49,8 +58,24 @@ internal sealed class QuePaxaConfigurationTests
     /// </summary>
     private static ReplicaId ATwin { get; } = Replica(1, 0, 0, 0, 9);
 
-    private static ClusterId Chain { get; } = ClusterId.FromGenesisMembers([A, B, C]);
-    private static ClusterId OtherChain { get; } = ClusterId.FromGenesisMembers([D, B, C]);
+    private static HostId MemberA { get; } = new(A, Incarnation(1));
+    private static HostId MemberB { get; } = new(B, Incarnation(2));
+    private static HostId MemberC { get; } = new(C, Incarnation(3));
+    private static HostId MemberD { get; } = new(D, Incarnation(4));
+
+    /// <summary>
+    /// Differs from <see cref="MemberA"/> in both halves only past the fourth byte, so it is a different
+    /// member that hashes exactly as that one does.
+    /// </summary>
+    private static HostId MemberATwin { get; } = new(ATwin, Incarnation(1, 0, 0, 0, 9));
+
+    /// <summary>
+    /// A's replica under another store: a different member that is still the same member of a quorum.
+    /// </summary>
+    private static HostId MemberARestored { get; } = new(A, Incarnation(11));
+
+    private static ClusterId Chain { get; } = ClusterId.FromGenesisMembers([MemberA, MemberB, MemberC]);
+    private static ClusterId OtherChain { get; } = ClusterId.FromGenesisMembers([MemberD, MemberB, MemberC]);
 
 
     public TestContext TestContext { get; set; } = null!;
@@ -67,13 +92,32 @@ internal sealed class QuePaxaConfigurationTests
     [TestMethod]
     public void TheMembershipDeltaNamesJoinersAndLeavers()
     {
-        QuePaxaConfiguration outgoing = QuePaxaConfiguration.Create(Chain, [A, B, C]);
-        QuePaxaConfiguration incoming = outgoing.Without(B).With(D);
+        QuePaxaConfiguration outgoing = QuePaxaConfiguration.Create(Chain, [MemberA, MemberB, MemberC]);
+        QuePaxaConfiguration incoming = outgoing.Without(B).With(MemberD);
 
-        Assert.AreSequenceEqual(new[] { D }, outgoing.Joining(incoming));
-        Assert.AreSequenceEqual(new[] { B }, outgoing.Leaving(incoming));
+        Assert.AreSequenceEqual(new[] { MemberD }, outgoing.Joining(incoming));
+        Assert.AreSequenceEqual(new[] { MemberB }, outgoing.Leaving(incoming));
         Assert.IsEmpty(outgoing.Joining(outgoing));
         Assert.IsEmpty(outgoing.Leaving(outgoing));
+    }
+
+
+    /// <summary>
+    /// A replaced store is one leaver and one joiner, because the incoming member is a different store than
+    /// the one the outgoing membership admitted.
+    /// </summary>
+    /// <remarks>
+    /// The delta is what an admission disseminates over and what a decommission gate counts, so a replacement
+    /// that reported neither would leave the new store undisseminated and the old one still counted.
+    /// </remarks>
+    [TestMethod]
+    public void TheMembershipDeltaReportsAReplacedStoreOnBothSides()
+    {
+        QuePaxaConfiguration outgoing = QuePaxaConfiguration.Create(Chain, [MemberA, MemberB, MemberC]);
+        QuePaxaConfiguration incoming = outgoing.Without(A).With(MemberARestored);
+
+        Assert.AreSequenceEqual(new[] { MemberARestored }, outgoing.Joining(incoming));
+        Assert.AreSequenceEqual(new[] { MemberA }, outgoing.Leaving(incoming));
     }
 
 
@@ -83,8 +127,8 @@ internal sealed class QuePaxaConfigurationTests
     [TestMethod]
     public void TheMembershipDeltaRefusesAnotherChain()
     {
-        QuePaxaConfiguration ours = QuePaxaConfiguration.Create(Chain, [A, B, C]);
-        QuePaxaConfiguration foreign = QuePaxaConfiguration.Create(OtherChain, [A, B, C]);
+        QuePaxaConfiguration ours = QuePaxaConfiguration.Create(Chain, [MemberA, MemberB, MemberC]);
+        QuePaxaConfiguration foreign = QuePaxaConfiguration.Create(OtherChain, [MemberA, MemberB, MemberC]);
 
         ArgumentException joining = Assert.ThrowsExactly<ArgumentException>(() => ours.Joining(foreign));
         ArgumentException leaving = Assert.ThrowsExactly<ArgumentException>(() => ours.Leaving(foreign));
@@ -109,10 +153,23 @@ internal sealed class QuePaxaConfigurationTests
         //A duplicate is refused because a quorum is a count of distinct members: a replica listed twice would
         //answer twice and be counted twice, and the decision would rest on fewer replicas than the arithmetic
         //claims. Both lists are non-empty, so the empty guard cannot answer for either.
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaConfiguration.Create(Chain, [A, A]));
+        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaConfiguration.Create(Chain, [MemberA, MemberA]));
 
         //Non-adjacent, so the scan has to span the whole tail rather than compare neighbours.
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaConfiguration.Create(Chain, [A, B, A]));
+        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaConfiguration.Create(Chain, [MemberA, MemberB, MemberA]));
+    }
+
+
+    [TestMethod]
+    public void TwoStoresOfOneReplicaAreRefused()
+    {
+        //THE RULE IS OVER THE IDENTITY, NOT THE WHOLE MEMBER. These two members are unequal, so a scan
+        //comparing whole members admits the list and the quorum arithmetic then counts one replica twice,
+        //which is the exact hazard an incarnation exists to close rather than to open by another door.
+        Assert.AreNotEqual(MemberA, MemberARestored);
+
+        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaConfiguration.Create(Chain, [MemberA, MemberARestored]));
+        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaConfiguration.CreateGenesis([MemberA, MemberB, MemberARestored]));
     }
 
 
@@ -123,10 +180,10 @@ internal sealed class QuePaxaConfigurationTests
         //duplicate scan would mint a chain identity for a configuration listing the same replica twice:
         //quorum injectivity broken at the one configuration an operator hand-writes. Both lists are non-empty
         //and neither is default, so neither emptiness guard on the path can answer for either refusal.
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaConfiguration.CreateGenesis([A, A]));
+        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaConfiguration.CreateGenesis([MemberA, MemberA]));
 
         //Non-adjacent, so the scan has to span the whole tail rather than compare neighbours.
-        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaConfiguration.CreateGenesis([A, B, A]));
+        Assert.ThrowsExactly<ArgumentException>(() => QuePaxaConfiguration.CreateGenesis([MemberA, MemberB, MemberA]));
     }
 
 
@@ -136,15 +193,35 @@ internal sealed class QuePaxaConfigurationTests
         //The positive arm of the duplicate scan, over a member pair that HASHES ALIKE and is not equal: a
         //scan comparing hashes, or comparing a member with itself, refuses this valid configuration.
         Assert.AreEqual(A.GetHashCode(), ATwin.GetHashCode());
+        Assert.AreEqual(MemberA.GetHashCode(), MemberATwin.GetHashCode());
         Assert.AreNotEqual(A, ATwin);
+        Assert.AreNotEqual(MemberA, MemberATwin);
 
-        QuePaxaConfiguration configuration = QuePaxaConfiguration.Create(Chain, [A, ATwin, B]);
+        QuePaxaConfiguration configuration = QuePaxaConfiguration.Create(Chain, [MemberA, MemberATwin, MemberB]);
 
-        Assert.AreSequenceEqual(new[] { A, ATwin, B }, configuration.Members);
+        Assert.AreSequenceEqual(new[] { MemberA, MemberATwin, MemberB }, configuration.Members);
         Assert.AreEqual(Chain, configuration.Cluster);
         Assert.AreEqual(2, configuration.Quorum);
         Assert.IsTrue(configuration.Contains(ATwin));
         Assert.IsFalse(configuration.Contains(Absent));
+    }
+
+
+    /// <summary>
+    /// A member's admitted store is readable by replica, which is what a counting site compares an answer
+    /// against, and a replica the membership does not list has no admitted store at all.
+    /// </summary>
+    [TestMethod]
+    public void TheAdmittedStoreIsReadableByReplica()
+    {
+        QuePaxaConfiguration configuration = Configuration(MemberA, MemberB, MemberC);
+
+        Assert.AreEqual(MemberA.Incarnation, configuration.IncarnationOf(A));
+        Assert.AreEqual(MemberC.Incarnation, configuration.IncarnationOf(C));
+        Assert.IsNull(configuration.IncarnationOf(Absent));
+
+        //The twin is a different replica, so the lookup is by the identity's bytes and not by its hash.
+        Assert.IsNull(configuration.IncarnationOf(ATwin));
     }
 
 
@@ -153,10 +230,10 @@ internal sealed class QuePaxaConfigurationTests
     {
         //No safety floor is imposed: majorities intersect at every size, so one and two members are legal
         //configurations with, respectively, no redundancy and no fault tolerance.
-        Assert.AreEqual(1, Configuration(A).Quorum);
-        Assert.AreEqual(2, Configuration(A, B).Quorum);
-        Assert.AreEqual(2, Configuration(A, B, C).Quorum);
-        Assert.AreEqual(3, Configuration(A, B, C, D).Quorum);
+        Assert.AreEqual(1, Configuration(MemberA).Quorum);
+        Assert.AreEqual(2, Configuration(MemberA, MemberB).Quorum);
+        Assert.AreEqual(2, Configuration(MemberA, MemberB, MemberC).Quorum);
+        Assert.AreEqual(3, Configuration(MemberA, MemberB, MemberC, MemberD).Quorum);
     }
 
 
@@ -165,13 +242,32 @@ internal sealed class QuePaxaConfigurationTests
     {
         //A change is re-applied against the winning configuration when a reconfiguring write is superseded,
         //so adding a member that is already listed must be the identity rather than an error or a duplicate.
-        QuePaxaConfiguration three = Configuration(A, B, C);
+        QuePaxaConfiguration three = Configuration(MemberA, MemberB, MemberC);
 
-        QuePaxaConfiguration grown = three.With(D);
-        Assert.AreSequenceEqual(new[] { A, B, C, D }, grown.Members);
+        QuePaxaConfiguration grown = three.With(MemberD);
+        Assert.AreSequenceEqual(new[] { MemberA, MemberB, MemberC, MemberD }, grown.Members);
 
-        Assert.AreSame(grown, grown.With(D));
-        Assert.AreSame(three, three.With(A));
+        Assert.AreSame(grown, grown.With(MemberD));
+        Assert.AreSame(three, three.With(MemberA));
+    }
+
+
+    [TestMethod]
+    public void AddingAListedReplicaUnderAnotherStoreIsRefused()
+    {
+        //The idempotence above is over the WHOLE member. This addition names a listed replica under another
+        //incarnation, which is a store replacement rather than an addition, and answering it with the
+        //receiver would drop the operator's request in silence. The refusal is its own rule: the construction
+        //guard cannot answer for it, because no list holding two of one replica is ever built.
+        QuePaxaConfiguration three = Configuration(MemberA, MemberB, MemberC);
+
+        InvalidOperationException refusal = Assert.ThrowsExactly<InvalidOperationException>(() => three.With(MemberARestored));
+        Assert.Contains("retire the member", refusal.Message);
+
+        //Retiring and admitting is how a replacement is expressed, and it leaves one member of that replica.
+        QuePaxaConfiguration replaced = three.Without(A).With(MemberARestored);
+        Assert.AreSequenceEqual(new[] { MemberB, MemberC, MemberARestored }, replaced.Members);
+        Assert.AreEqual(MemberARestored.Incarnation, replaced.IncarnationOf(A));
     }
 
 
@@ -180,10 +276,10 @@ internal sealed class QuePaxaConfigurationTests
     {
         //The same re-application rule from the other side: removing a member that is not listed is the
         //identity, and the survivors keep their order so the bootstrap position does not shift underneath.
-        QuePaxaConfiguration three = Configuration(A, B, C);
+        QuePaxaConfiguration three = Configuration(MemberA, MemberB, MemberC);
 
         QuePaxaConfiguration shrunk = three.Without(B);
-        Assert.AreSequenceEqual(new[] { A, C }, shrunk.Members);
+        Assert.AreSequenceEqual(new[] { MemberA, MemberC }, shrunk.Members);
 
         Assert.AreSame(shrunk, shrunk.Without(B));
         Assert.AreSame(three, three.Without(Absent));
@@ -196,7 +292,7 @@ internal sealed class QuePaxaConfigurationTests
         //A register with no members can neither decide nor be reconfigured back into existence. The refusal
         //is its own rule and not the construction guard reached indirectly, and the same one-member
         //configuration still answers a removal of a replica it does not list with the identity.
-        QuePaxaConfiguration single = Configuration(A);
+        QuePaxaConfiguration single = Configuration(MemberA);
 
         Assert.ThrowsExactly<InvalidOperationException>(() => single.Without(A));
         Assert.AreSame(single, single.Without(Absent));
@@ -208,9 +304,9 @@ internal sealed class QuePaxaConfigurationTests
     {
         //A membership change stays on the chain it changes. Re-minting the identity from the changed member
         //list would make every reconfiguration a fork that every unchanged host declines.
-        QuePaxaConfiguration genesis = QuePaxaConfiguration.CreateGenesis([A, B, C]);
+        QuePaxaConfiguration genesis = QuePaxaConfiguration.CreateGenesis([MemberA, MemberB, MemberC]);
 
-        QuePaxaConfiguration grown = genesis.With(D);
+        QuePaxaConfiguration grown = genesis.With(MemberD);
         QuePaxaConfiguration shrunk = genesis.Without(C);
 
         Assert.AreEqual(genesis.Cluster, grown.Cluster);
@@ -222,13 +318,36 @@ internal sealed class QuePaxaConfigurationTests
     [TestMethod]
     public void GenesisMintsTheChainIdentityFromItsOwnMemberList()
     {
-        QuePaxaConfiguration genesis = QuePaxaConfiguration.CreateGenesis([A, B, C]);
+        QuePaxaConfiguration genesis = QuePaxaConfiguration.CreateGenesis([MemberA, MemberB, MemberC]);
 
-        Assert.AreEqual(ClusterId.FromGenesisMembers([A, B, C]), genesis.Cluster);
-        Assert.AreSequenceEqual(new[] { A, B, C }, genesis.Members);
+        Assert.AreEqual(ClusterId.FromGenesisMembers([MemberA, MemberB, MemberC]), genesis.Cluster);
+        Assert.AreSequenceEqual(new[] { MemberA, MemberB, MemberC }, genesis.Members);
 
         //An operator who wrote the same replicas in another order bootstrapped another chain.
-        Assert.AreNotEqual(genesis.Cluster, QuePaxaConfiguration.CreateGenesis([B, A, C]).Cluster);
+        Assert.AreNotEqual(genesis.Cluster, QuePaxaConfiguration.CreateGenesis([MemberB, MemberA, MemberC]).Cluster);
+    }
+
+
+    /// <summary>
+    /// Genesis mints over the stores as well as the replicas, so one replica list provisioned onto two sets
+    /// of stores bootstraps two chains that decline each other.
+    /// </summary>
+    /// <remarks>
+    /// This is the genesis case of the hazard the incarnation exists for. The replicas are identical and only
+    /// the stores differ, so an identity minted over the replicas alone would let two independently
+    /// bootstrapped fleets believe they are one.
+    /// </remarks>
+    [TestMethod]
+    public void GenesisMintsOverTheStoresAndNotTheReplicasAlone()
+    {
+        QuePaxaConfiguration here = QuePaxaConfiguration.CreateGenesis([MemberA, MemberB, MemberC]);
+        QuePaxaConfiguration elsewhere = QuePaxaConfiguration.CreateGenesis([MemberARestored, MemberB, MemberC]);
+
+        Assert.AreSequenceEqual(
+            new[] { MemberA.Replica, MemberB.Replica, MemberC.Replica },
+            elsewhere.Members.Select(member => member.Replica).ToArray());
+
+        Assert.AreNotEqual(here.Cluster, elsewhere.Cluster);
     }
 
 
@@ -238,20 +357,39 @@ internal sealed class QuePaxaConfigurationTests
         //The deliberate contrast with the order-INDEPENDENT equality of a reconciliation drop: here the order
         //is the hedging order and the first position is the bootstrap leader, so a reorder is a different
         //configuration and not a different spelling of one.
-        QuePaxaConfiguration forward = Configuration(A, B, C);
-        QuePaxaConfiguration reordered = Configuration(B, A, C);
+        QuePaxaConfiguration forward = Configuration(MemberA, MemberB, MemberC);
+        QuePaxaConfiguration reordered = Configuration(MemberB, MemberA, MemberC);
 
-        Assert.AreEqual(forward, Configuration(A, B, C));
+        Assert.AreEqual(forward, Configuration(MemberA, MemberB, MemberC));
         Assert.AreNotEqual(forward, reordered);
-        Assert.AreNotEqual(forward, Configuration(A, B));
+        Assert.AreNotEqual(forward, Configuration(MemberA, MemberB));
+    }
+
+
+    /// <summary>
+    /// Two memberships listing the same replicas in the same order under different stores are different
+    /// memberships.
+    /// </summary>
+    /// <remarks>
+    /// Equality is what a host compares a disseminated configuration against, so a comparison reading the
+    /// replicas alone would accept a membership admitting a store this one never admitted.
+    /// </remarks>
+    [TestMethod]
+    public void MembershipsDifferingOnlyInAStoreAreUnequal()
+    {
+        QuePaxaConfiguration admitted = Configuration(MemberA, MemberB, MemberC);
+        QuePaxaConfiguration restored = Configuration(MemberARestored, MemberB, MemberC);
+
+        Assert.AreNotEqual(admitted, restored);
+        Assert.IsFalse(admitted.Equals(restored));
     }
 
 
     [TestMethod]
     public void ConfigurationsOnDifferentChainsAreUnequal()
     {
-        QuePaxaConfiguration here = QuePaxaConfiguration.Create(Chain, [A, B, C]);
-        QuePaxaConfiguration elsewhere = QuePaxaConfiguration.Create(OtherChain, [A, B, C]);
+        QuePaxaConfiguration here = QuePaxaConfiguration.Create(Chain, [MemberA, MemberB, MemberC]);
+        QuePaxaConfiguration elsewhere = QuePaxaConfiguration.Create(OtherChain, [MemberA, MemberB, MemberC]);
 
         Assert.AreNotEqual(here, elsewhere);
 
@@ -275,7 +413,7 @@ internal sealed class QuePaxaConfigurationTests
         //guaranteed killer if those helpers ever change. The defect it pins is silent rather than thrown:
         //nothing fails to encode, the bytes are byte-perfect, and whole-proposal comparison simply never
         //matches again.
-        QuePaxaConfiguration original = QuePaxaConfiguration.CreateGenesis([A, B, C]);
+        QuePaxaConfiguration original = QuePaxaConfiguration.CreateGenesis([MemberA, MemberB, MemberC]);
 
         string encoded = Encode(original);
         TestContext.WriteLine(encoded);
@@ -286,6 +424,7 @@ internal sealed class QuePaxaConfigurationTests
         Assert.AreEqual(original, decoded);
         Assert.AreEqual(original.GetHashCode(), decoded.GetHashCode());
         Assert.AreEqual(original.Cluster, decoded.Cluster);
+        Assert.AreEqual(MemberA.Incarnation, decoded.IncarnationOf(A));
     }
 
 
@@ -293,10 +432,11 @@ internal sealed class QuePaxaConfigurationTests
     public void AHashKeyedCollectionSeparatesCollidingConfigurationsAndCollapsesEqualOnes()
     {
         //Two configurations differing only in a member's bytes past the fourth hash identically, because a
-        //replica's hash reads only the leading four bytes. A hash-keyed collection therefore has to call
-        //Equals to keep them apart, which is the collision path a synthesized hash never reaches.
-        QuePaxaConfiguration left = QuePaxaConfiguration.Create(Chain, [A, B, C]);
-        QuePaxaConfiguration right = QuePaxaConfiguration.Create(Chain, [ATwin, B, C]);
+        //replica's hash and an incarnation's hash each read only the leading four bytes. A hash-keyed
+        //collection therefore has to call Equals to keep them apart, which is the collision path a
+        //synthesized hash never reaches.
+        QuePaxaConfiguration left = QuePaxaConfiguration.Create(Chain, [MemberA, MemberB, MemberC]);
+        QuePaxaConfiguration right = QuePaxaConfiguration.Create(Chain, [MemberATwin, MemberB, MemberC]);
 
         Assert.AreEqual(left.GetHashCode(), right.GetHashCode());
         Assert.AreNotEqual(left, right);
@@ -306,7 +446,13 @@ internal sealed class QuePaxaConfigurationTests
 
         //An equal configuration built over independently allocated buffers finds the stored one, which is
         //what a hash over the backing array's identity cannot do.
-        QuePaxaConfiguration equalToLeft = QuePaxaConfiguration.Create(Chain, [Replica(1), Replica(2), Replica(3)]);
+        QuePaxaConfiguration equalToLeft = QuePaxaConfiguration.Create(
+            Chain,
+            [
+                new HostId(Replica(1), Incarnation(1)),
+                new HostId(Replica(2), Incarnation(2)),
+                new HostId(Replica(3), Incarnation(3))
+            ]);
 
         Assert.IsFalse(configurations.Add(equalToLeft));
         Assert.HasCount(2, configurations);
@@ -317,8 +463,9 @@ internal sealed class QuePaxaConfigurationTests
     public void TheScheduleTakesTheMemberOrderAndALocalDelay()
     {
         //The base delay is local tuning and not part of the agreed configuration: it orders sending and
-        //settles no protocol rule.
-        QuePaxaConfiguration configuration = Configuration(A, B, C);
+        //settles no protocol rule. A lane belongs to a replica, because the schedule decides who writes first
+        //and never which store answers.
+        QuePaxaConfiguration configuration = Configuration(MemberA, MemberB, MemberC);
 
         HedgingSchedule schedule = configuration.ScheduleWith(TimeSpan.FromMilliseconds(40));
 
@@ -328,7 +475,7 @@ internal sealed class QuePaxaConfigurationTests
     }
 
 
-    private static QuePaxaConfiguration Configuration(params ReplicaId[] members)
+    private static QuePaxaConfiguration Configuration(params HostId[] members)
     {
         return QuePaxaConfiguration.Create(Chain, [.. members]);
     }
@@ -336,17 +483,20 @@ internal sealed class QuePaxaConfigurationTests
 
     private static string Encode(QuePaxaConfiguration configuration)
     {
-        //The encoding the record codec carries a configuration in: the chain identity and every member as
-        //lower-case hex, the members in their configured order.
+        //The encoding the record codec carries a configuration in: the chain identity and every member as a
+        //replica and an incarnation in lower-case hex, the members in their configured order.
         var buffer = new ArrayBufferWriter<byte>();
         using(var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartObject();
             writer.WriteString("cluster", Convert.ToHexStringLower(configuration.Cluster.AsSpan()));
             writer.WriteStartArray("members");
-            foreach(ReplicaId member in configuration.Members)
+            foreach(HostId member in configuration.Members)
             {
-                writer.WriteStringValue(Convert.ToHexStringLower(member.AsSpan()));
+                writer.WriteStartObject();
+                writer.WriteString("replica", Convert.ToHexStringLower(member.Replica.AsSpan()));
+                writer.WriteString("incarnation", Convert.ToHexStringLower(member.Incarnation.AsSpan()));
+                writer.WriteEndObject();
             }
 
             writer.WriteEndArray();
@@ -364,10 +514,12 @@ internal sealed class QuePaxaConfigurationTests
 
         ClusterId cluster = ClusterId.FromSpan(Convert.FromHexString(root.GetProperty("cluster").GetString()!));
 
-        ImmutableArray<ReplicaId>.Builder members = ImmutableArray.CreateBuilder<ReplicaId>();
+        ImmutableArray<HostId>.Builder members = ImmutableArray.CreateBuilder<HostId>();
         foreach(JsonElement member in root.GetProperty("members").EnumerateArray())
         {
-            members.Add(ReplicaId.FromSpan(Convert.FromHexString(member.GetString()!)));
+            ReplicaId replica = ReplicaId.FromSpan(Convert.FromHexString(member.GetProperty("replica").GetString()!));
+            StoreIncarnation incarnation = StoreIncarnation.FromSpan(Convert.FromHexString(member.GetProperty("incarnation").GetString()!));
+            members.Add(new HostId(replica, incarnation));
         }
 
         return QuePaxaConfiguration.Create(cluster, members.ToImmutable());
@@ -380,5 +532,14 @@ internal sealed class QuePaxaConfigurationTests
         prefix.AsSpan().CopyTo(buffer);
 
         return ReplicaId.FromSpan(buffer);
+    }
+
+
+    private static StoreIncarnation Incarnation(params byte[] prefix)
+    {
+        Span<byte> buffer = stackalloc byte[StoreIncarnation.Size];
+        prefix.AsSpan().CopyTo(buffer);
+
+        return StoreIncarnation.FromSpan(buffer);
     }
 }

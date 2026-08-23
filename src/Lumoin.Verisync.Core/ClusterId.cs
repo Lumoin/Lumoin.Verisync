@@ -83,11 +83,11 @@ public struct ClusterId: IEquatable<ClusterId>, IComparable<ClusterId>
     /// <remarks>
     /// The digest covers a domain separator, the member count, and every member's bytes in array order, so a
     /// reordered list yields a different identity and a list of a different length can never encode as another
-    /// list's bytes. Only genesis mints an identity; <see cref="QuePaxaConfiguration.With(ReplicaId)"/> and
+    /// list's bytes. Only genesis mints an identity; <see cref="QuePaxaConfiguration.With(HostId)"/> and
     /// <see cref="QuePaxaConfiguration.Without(ReplicaId)"/> carry the minted one forward unchanged, because a
     /// membership change stays on the chain it changes.
     /// </remarks>
-    public static ClusterId FromGenesisMembers(ImmutableArray<ReplicaId> genesisMembers)
+    public static ClusterId FromGenesisMembers(ImmutableArray<HostId> genesisMembers)
     {
         if(genesisMembers.IsDefaultOrEmpty)
         {
@@ -101,9 +101,10 @@ public struct ClusterId: IEquatable<ClusterId>, IComparable<ClusterId>
         BinaryPrimitives.WriteInt32BigEndian(memberCount, genesisMembers.Length);
         hash.AppendData(memberCount);
 
-        foreach(ReplicaId member in genesisMembers)
+        foreach(HostId member in genesisMembers)
         {
-            hash.AppendData(member.AsSpan());
+            hash.AppendData(member.Replica.AsSpan());
+            hash.AppendData(member.Incarnation.AsSpan());
         }
 
         Span<byte> digest = stackalloc byte[Size];

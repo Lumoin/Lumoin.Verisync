@@ -237,7 +237,7 @@ public static class QuePaxaMessageJson
             using var writer = new Utf8JsonWriter(output);
             writer.WriteStartObject();
             writer.WriteNumber("version", reply.Version.Value);
-            writer.WriteString("recorder", Convert.ToHexStringLower(reply.Recorder.AsSpan()));
+            WriteHost(writer, "recorder", reply.Recorder);
             writer.WritePropertyName("reply");
             WriteReply(writer, reply.Reply, writeValue);
             writer.WriteEndObject();
@@ -259,10 +259,10 @@ public static class QuePaxaMessageJson
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
             ulong version = RequireProperty(root, "version", VersionedReplyLabel).GetUInt64();
-            string recorder = RequireProperty(root, "recorder", VersionedReplyLabel).GetString()!;
+            JsonElement recorder = RequireProperty(root, "recorder", VersionedReplyLabel);
             RecordReply<TValue> reply = ReadReply(RequireProperty(root, "reply", VersionedReplyLabel), readValue);
 
-            return Construct(() => new VersionedRecordReply<TValue>(new RegisterVersion(version), ReplicaId.FromSpan(Convert.FromHexString(recorder)), reply));
+            return Construct(() => new VersionedRecordReply<TValue>(new RegisterVersion(version), ReadHost(recorder, VersionedReplyLabel), reply));
         });
     }
 
@@ -333,6 +333,7 @@ public static class QuePaxaMessageJson
         {
             using var writer = new Utf8JsonWriter(output);
             writer.WriteStartObject();
+            WriteHost(writer, "host", state.Host);
             WriteRecordOrNull(writer, "committed", state.Committed, writeValue);
             writer.WriteNumber("recorderVersion", state.RecorderVersion.Value);
             WriteLaneOrNull(writer, "configuredLeader", state.ConfiguredLeader);
@@ -365,13 +366,14 @@ public static class QuePaxaMessageJson
         {
             using JsonDocument document = JsonDocument.Parse(payload);
             JsonElement root = document.RootElement;
+            JsonElement host = RequireProperty(root, "host", VersionedNodeStateLabel);
             VersionedValue<TValue>? committed = ReadRecordOrNull(root, "committed", VersionedNodeStateLabel, readValue);
             ulong recorderVersion = RequireProperty(root, "recorderVersion", VersionedNodeStateLabel).GetUInt64();
             ProposerLane? configuredLeader = ReadLaneOrNull(root, "configuredLeader", VersionedNodeStateLabel);
             QuePaxaConfiguration activeConfiguration = ReadConfiguration(RequireProperty(root, "activeConfiguration", VersionedNodeStateLabel));
             QuePaxaRecorderState<VersionedValue<TValue>> recorder = ReadRecorderState(RequireProperty(root, "recorder", VersionedNodeStateLabel), readRecord);
 
-            return Construct(() => new QuePaxaVersionedNodeState<TValue>(committed, new RegisterVersion(recorderVersion), configuredLeader, activeConfiguration, recorder));
+            return Construct(() => new QuePaxaVersionedNodeState<TValue>(ReadHost(host, VersionedNodeStateLabel), committed, new RegisterVersion(recorderVersion), configuredLeader, activeConfiguration, recorder));
         });
     }
 
@@ -434,15 +436,42 @@ public static class QuePaxaMessageJson
     }
 
 
+    private static void WriteHost(Utf8JsonWriter writer, string name, HostId host)
+    {
+        writer.WritePropertyName(name);
+        WriteHostBody(writer, host);
+    }
+
+
+    //One host is written as one object wherever it appears, so a member of a configuration and the recorder of
+    //a reply are the same two fields in the same order and a reader of either is a reader of both.
+    private static void WriteHostBody(Utf8JsonWriter writer, HostId host)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("replica", Convert.ToHexStringLower(host.Replica.AsSpan()));
+        writer.WriteString("incarnation", Convert.ToHexStringLower(host.Incarnation.AsSpan()));
+        writer.WriteEndObject();
+    }
+
+
+    private static HostId ReadHost(JsonElement element, string label)
+    {
+        string replica = RequireProperty(element, "replica", label).GetString()!;
+        string incarnation = RequireProperty(element, "incarnation", label).GetString()!;
+
+        return new HostId(ReplicaId.FromSpan(Convert.FromHexString(replica)), StoreIncarnation.FromSpan(Convert.FromHexString(incarnation)));
+    }
+
+
     private static void WriteConfiguration(Utf8JsonWriter writer, string name, QuePaxaConfiguration configuration)
     {
         writer.WritePropertyName(name);
         writer.WriteStartObject();
         writer.WriteString("cluster", Convert.ToHexStringLower(configuration.Cluster.AsSpan()));
         writer.WriteStartArray("members");
-        foreach(ReplicaId member in configuration.Members)
+        foreach(HostId member in configuration.Members)
         {
-            writer.WriteStringValue(Convert.ToHexStringLower(member.AsSpan()));
+            WriteHostBody(writer, member);
         }
 
         writer.WriteEndArray();
@@ -459,10 +488,10 @@ public static class QuePaxaMessageJson
         //factories, so one construction carries every one of them and the codec adds none.
         return Construct(() =>
         {
-            ImmutableArray<ReplicaId>.Builder listed = ImmutableArray.CreateBuilder<ReplicaId>();
+            ImmutableArray<HostId>.Builder listed = ImmutableArray.CreateBuilder<HostId>();
             foreach(JsonElement member in members.EnumerateArray())
             {
-                listed.Add(ReplicaId.FromSpan(Convert.FromHexString(member.GetString()!)));
+                listed.Add(ReadHost(member, ConfigurationLabel));
             }
 
             return QuePaxaConfiguration.Create(ClusterId.FromSpan(Convert.FromHexString(cluster.GetString()!)), listed.ToImmutable());
@@ -558,8 +587,16 @@ public static class QuePaxaMessageJson
     private static JsonElement RequireProperty(JsonElement element, string name, string label)
     {
         //A required field absent from an object is malformed input, so it fails closed as JsonException rather
-        //than the KeyNotFoundException the raw GetProperty accessor throws. A non-object element still
-        //surfaces InvalidOperationException exactly as GetProperty did.
+        //than the KeyNotFoundException the raw GetProperty accessor throws. An element that is not an object
+        //carries no field at all and is refused by the same rule, rather than surfacing the accessor's
+        //InvalidOperationException: a payload writing a member as a bare string is malformed input like any
+        //other, and reporting it as a wrong-kind access names the reader's step instead of the payload's
+        //defect.
+        if(element.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException($"{label} must be an object carrying a '{name}' field, and it is {element.ValueKind}.");
+        }
+
         if(!element.TryGetProperty(name, out JsonElement property))
         {
             throw new JsonException($"{label} must carry a '{name}' field.");

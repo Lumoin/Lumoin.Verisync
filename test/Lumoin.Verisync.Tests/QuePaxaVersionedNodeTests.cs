@@ -19,17 +19,26 @@ internal sealed class QuePaxaVersionedNodeTests
     private static ReplicaId Fourth { get; } = Replica(4);
     private static ReplicaId Stranger { get; } = Replica(9);
 
+    /// <summary>The host the membership admits for <see cref="First"/>, which is the replica most hosts here serve under.</summary>
+    private static HostId FirstHost { get; } = Membership.Member(First);
+
+    /// <summary>The host a growing change admits for <see cref="Fourth"/>.</summary>
+    private static HostId FourthHost { get; } = Membership.Member(Fourth);
+
+    /// <summary>The host for <see cref="Stranger"/>, which no membership under test lists.</summary>
+    private static HostId StrangerHost { get; } = Membership.Member(Stranger);
+
     /// <summary>
     /// The genesis membership every host in this suite runs under, and the membership every record it holds
     /// carries forward unchanged.
     /// </summary>
-    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Third]);
+    private static QuePaxaConfiguration Configuration { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Third));
 
     /// <summary>
     /// A membership over the same replicas in the same order on a different chain, which is what an
     /// independently bootstrapped cluster mints.
     /// </summary>
-    private static QuePaxaConfiguration ForeignChain { get; } = QuePaxaConfiguration.CreateGenesis([First, Second, Stranger]).Without(Stranger).With(Third);
+    private static QuePaxaConfiguration ForeignChain { get; } = QuePaxaConfiguration.CreateGenesis(Membership.Of(First, Second, Stranger)).Without(Stranger).With(Membership.Member(Third));
 
     private static RecorderStep Four { get; } = RecorderStep.RoundOnePhaseZero;
 
@@ -37,7 +46,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void AHostThatHasLearnedNothingServesTheFirstVersionUnderTheBootstrapLeader()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First);
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost);
 
         Assert.AreEqual(RegisterVersion.First, host.LiveVersion);
         Assert.AreEqual(ProposerLane.For(First), host.Recorder.ConfiguredLeader);
@@ -45,7 +54,7 @@ internal sealed class QuePaxaVersionedNodeTests
         //A host that has learned no record runs the genesis membership, which is the induction's base case.
         Assert.AreEqual(Configuration, host.ActiveConfiguration);
         Assert.AreEqual(Configuration, host.Genesis);
-        Assert.AreEqual(First, host.Self);
+        Assert.AreEqual(FirstHost, host.Self);
     }
 
 
@@ -56,7 +65,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void TheLiveInstanceFollowsTheCommittedRecordAndCarriesItsWritersLane()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
 
         Assert.AreEqual(new RegisterVersion(5UL), host.LiveVersion);
         Assert.AreEqual(host.LeaderSchedule.LeaderFor(Second), host.Recorder.ConfiguredLeader);
@@ -77,11 +86,11 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void TheInstanceTripleDerivesFromOneCaptureOfTheCommittedRecord()
     {
-        QuePaxaVersionedNode<string> fresh = new(Configuration, First);
+        QuePaxaVersionedNode<string> fresh = new(Configuration, FirstHost);
 
         Assert.AreEqual(new RegisterInstance(RegisterVersion.First, Configuration, null), fresh.Instance);
 
-        QuePaxaVersionedNode<string> caughtUp = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> caughtUp = new(Configuration, FirstHost, Record(4UL, Second));
 
         Assert.AreEqual(new RegisterInstance(new RegisterVersion(5UL), Configuration, Second), caughtUp.Instance);
     }
@@ -90,7 +99,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void TwoRequestsAtTheLiveVersionReachOneInstance()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
 
         VersionedRecordReply<VersionedValue<string>> first = host.Handle(Request(5UL, ProposalPriority.Lowest, Second, "a"));
         VersionedRecordReply<VersionedValue<string>> second = host.Handle(Request(5UL, new ProposalPriority(7), Second, "b"));
@@ -113,7 +122,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void ARequestForAnyOtherVersionIsRefusedAtBothBounds()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         VersionedValue<string>? committed = host.Committed;
         QuePaxaRecorder<VersionedValue<string>> before = host.Recorder;
 
@@ -131,7 +140,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void LearningAdvancesTheLiveInstanceAndIgnoresARecordThatDoesNot()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
 
         Assert.IsTrue(host.Learn(Record(5UL, Third)));
         Assert.AreEqual(new RegisterVersion(6UL), host.LiveVersion);
@@ -150,7 +159,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void LearningBuildsANewInstanceAndLeavesTheRunningOnesLeaderAlone()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
 
         _ = host.Handle(Request(5UL, ProposalPriority.Reserved, Second, "a"));
 
@@ -176,7 +185,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void AWriterOutsideTheOrderMakesTheNextInstanceLeaderlessRatherThanUnservable()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Stranger));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Stranger));
 
         Assert.AreEqual(new RegisterVersion(5UL), host.LiveVersion);
         Assert.IsNull(host.Recorder.ConfiguredLeader);
@@ -190,9 +199,9 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void TheHostRefusesANullGenesisANullRequestAndANullRecord()
     {
-        Assert.ThrowsExactly<ArgumentNullException>(() => _ = new QuePaxaVersionedNode<string>(null!, First));
+        Assert.ThrowsExactly<ArgumentNullException>(() => _ = new QuePaxaVersionedNode<string>(null!, FirstHost));
 
-        QuePaxaVersionedNode<string> host = new(Configuration, First);
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost);
 
         Assert.ThrowsExactly<ArgumentNullException>(() => _ = host.Handle(null!));
         Assert.ThrowsExactly<ArgumentNullException>(() => _ = host.Learn(null!));
@@ -205,7 +214,7 @@ internal sealed class QuePaxaVersionedNodeTests
     {
         //Constructed WITHOUT serving, deliberately: a served request would advance the recorder off the
         //shared leaderless singleton and silently invert the premise the identity assertion below pins.
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Stranger));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Stranger));
         QuePaxaRecorder<VersionedValue<string>> before = host.Recorder;
 
         VersionedValue<string> learned = Record(5UL, Stranger);
@@ -239,7 +248,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public async Task ACheckpointOnAHostThatServesNoVersionIsANoOpRatherThanAThrow()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, new VersionedValue<string>(RegisterVersion.MaxValue, Second, Configuration, "spent"));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, new VersionedValue<string>(RegisterVersion.MaxValue, Second, Configuration, "spent"));
 
         //The gate short-circuits before the snapshot, whose LiveVersion read throws on a spent host, so a
         //checkpoint hoisting the snapshot above the gate fails here.
@@ -255,7 +264,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public async Task AConstructedHostTreatsTheRecordItWasGivenAsDurable()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
 
         int writes = 0;
         await host.MakeDurableAsync((state, cancellationToken) =>
@@ -274,7 +283,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void ServesAgreesWithHandleAtBothBoundsAndNeverThrows()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
 
         Assert.IsFalse(host.Serves(new RegisterVersion(4UL)));
         Assert.IsTrue(host.Serves(new RegisterVersion(5UL)));
@@ -282,7 +291,7 @@ internal sealed class QuePaxaVersionedNodeTests
 
         //A spent host serves nothing, and the classifier reports that without evaluating the live-version
         //throw, which is what lets a runner's decline filter read it inside an exception filter.
-        QuePaxaVersionedNode<string> spent = new(Configuration, First, new VersionedValue<string>(RegisterVersion.MaxValue, Second, Configuration, "spent"));
+        QuePaxaVersionedNode<string> spent = new(Configuration, FirstHost, new VersionedValue<string>(RegisterVersion.MaxValue, Second, Configuration, "spent"));
 
         Assert.IsFalse(spent.Serves(new RegisterVersion(1UL)));
         Assert.IsFalse(spent.Serves(RegisterVersion.MaxValue));
@@ -292,7 +301,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void ALearnInstallsAnUnwrittenRegisterTheFirstReplyMustReplace()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
 
         _ = host.Handle(Request(5UL, ProposalPriority.Lowest, Second, "a"));
 
@@ -312,7 +321,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public async Task AnUnownedHostServesDirectCallsAsBefore()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
 
         VersionedRecordReply<VersionedValue<string>> reply = host.Handle(Request(5UL, ProposalPriority.Lowest, Second, "a"));
 
@@ -343,7 +352,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void ARequestCarryingAnotherChainsMembershipIsDeclinedAndRecordsNothing()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaRecorder<VersionedValue<string>> before = host.Recorder;
 
         //Same replicas in the same order, minted at a different genesis: only the chain identity differs, so
@@ -382,7 +391,7 @@ internal sealed class QuePaxaVersionedNodeTests
     public void ARecordOfAnotherChainIsRefusedAtTheLearnAndMovesNothing()
     {
         VersionedValue<string> held = Record(4UL, Second);
-        QuePaxaVersionedNode<string> host = new(Configuration, First, held);
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, held);
         QuePaxaRecorder<VersionedValue<string>> before = host.Recorder;
         QuePaxaLeaderSchedule schedule = host.LeaderSchedule;
 
@@ -444,7 +453,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void ARecordRemovingTheHostIsLearnedAndSoIsTheNextOneWhileItStandsOutside()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaConfiguration without = Configuration.Without(First);
         VersionedValue<string> removing = Installing(5UL, Second, without);
 
@@ -493,7 +502,7 @@ internal sealed class QuePaxaVersionedNodeTests
 
         VersionedValue<string> foreign = Installing(4UL, Second, ForeignChain);
 
-        StateRestoreException refused = Assert.ThrowsExactly<StateRestoreException>(() => _ = new QuePaxaVersionedNode<string>(Configuration, First, foreign));
+        StateRestoreException refused = Assert.ThrowsExactly<StateRestoreException>(() => _ = new QuePaxaVersionedNode<string>(Configuration, FirstHost, foreign));
 
         //One rule, two doors: the constructor names the record it was handed and the restore names the
         //snapshot it decoded, and the refusal a caller switches on is the same either way.
@@ -502,29 +511,29 @@ internal sealed class QuePaxaVersionedNodeTests
 
         //The chain identity is the only difference the refusal can have read: the same record under this host's
         //own chain constructs, and the host it builds serves the version after it under its writer's lane.
-        QuePaxaVersionedNode<string> own = new(Configuration, First, Installing(4UL, Second, Configuration));
+        QuePaxaVersionedNode<string> own = new(Configuration, FirstHost, Installing(4UL, Second, Configuration));
 
         Assert.AreEqual(new RegisterVersion(5UL), own.LiveVersion);
         Assert.AreEqual(ProposerLane.For(Second), own.Recorder.ConfiguredLeader);
 
         //A host handed no record at all compares its genesis with itself, which is the derivation's base case
         //rather than a second rule, so bootstrapping is untouched.
-        QuePaxaVersionedNode<string> bootstrap = new(Configuration, First);
+        QuePaxaVersionedNode<string> bootstrap = new(Configuration, FirstHost);
 
         Assert.AreEqual(Configuration, bootstrap.ActiveConfiguration);
         Assert.AreEqual(RegisterVersion.First, bootstrap.LiveVersion);
 
         //The restore refuses the same divergence over a snapshot of that same record, taken from the host whose
         //own genesis is the foreign chain, so what separates the two calls is the genesis each was handed.
-        QuePaxaVersionedNodeState<string> state = new QuePaxaVersionedNode<string>(ForeignChain, First, foreign).ToState();
+        QuePaxaVersionedNodeState<string> state = new QuePaxaVersionedNode<string>(ForeignChain, FirstHost, foreign).ToState();
 
-        StateRestoreException restored = Assert.ThrowsExactly<StateRestoreException>(() => _ = QuePaxaVersionedNode<string>.FromState(Configuration, First, state));
+        StateRestoreException restored = Assert.ThrowsExactly<StateRestoreException>(() => _ = QuePaxaVersionedNode<string>.FromState(Configuration, FirstHost, state));
 
         Assert.AreEqual(StateRestoreRefusal.HostForeignChain, restored.Refusal);
         Assert.AreEqual("state", restored.ParamName);
 
         //Each entry point accepts under the chain it was handed, so neither refusal is the record's own shape.
-        Assert.AreEqual(new RegisterVersion(5UL), QuePaxaVersionedNode<string>.FromState(ForeignChain, First, state).LiveVersion);
+        Assert.AreEqual(new RegisterVersion(5UL), QuePaxaVersionedNode<string>.FromState(ForeignChain, FirstHost, state).LiveVersion);
     }
 
 
@@ -545,7 +554,7 @@ internal sealed class QuePaxaVersionedNodeTests
     {
         //A replica the record removed: the membership moved off the genesis and no longer lists this host.
         QuePaxaConfiguration without = Configuration.Without(First);
-        QuePaxaVersionedNode<string> removed = new(Configuration, First, Installing(4UL, Second, without));
+        QuePaxaVersionedNode<string> removed = new(Configuration, FirstHost, Installing(4UL, Second, without));
 
         Assert.AreEqual(Configuration.Cluster, removed.ActiveConfiguration.Cluster);
         Assert.AreEqual(without, removed.ActiveConfiguration);
@@ -555,8 +564,8 @@ internal sealed class QuePaxaVersionedNodeTests
 
         //A joiner: outside the genesis this deployment handed it, inside the membership its record installs,
         //and serving from the first version that membership runs.
-        QuePaxaConfiguration grown = Configuration.With(Fourth);
-        QuePaxaVersionedNode<string> joiner = new(Configuration, Fourth, Installing(4UL, Second, grown));
+        QuePaxaConfiguration grown = Configuration.With(Membership.Member(Fourth));
+        QuePaxaVersionedNode<string> joiner = new(Configuration, FourthHost, Installing(4UL, Second, grown));
 
         Assert.IsFalse(Configuration.Contains(Fourth));
         Assert.AreEqual(grown, joiner.ActiveConfiguration);
@@ -564,7 +573,7 @@ internal sealed class QuePaxaVersionedNodeTests
 
         //A host no membership on this chain lists at any version, which the request filter refuses and
         //construction does not.
-        QuePaxaVersionedNode<string> stranger = new(Configuration, Stranger, Record(4UL, Second));
+        QuePaxaVersionedNode<string> stranger = new(Configuration, StrangerHost, Record(4UL, Second));
 
         Assert.IsFalse(stranger.ActiveConfiguration.Contains(Stranger));
         Assert.IsTrue(stranger.Declines(Request(5UL, ProposalPriority.Lowest, Second, "a")));
@@ -580,7 +589,7 @@ internal sealed class QuePaxaVersionedNodeTests
     public void AHostOutsideTheActiveMembershipDeclinesAndTheSameRequestIsServedByAMember()
     {
         VersionedValue<string> record = Record(4UL, Second);
-        QuePaxaVersionedNode<string> outsider = new(Configuration, Stranger, record);
+        QuePaxaVersionedNode<string> outsider = new(Configuration, StrangerHost, record);
         VersionedRecordRequest<VersionedValue<string>> request = Request(5UL, ProposalPriority.Lowest, Second, "a");
 
         Assert.IsFalse(outsider.ActiveConfiguration.Contains(Stranger));
@@ -593,7 +602,7 @@ internal sealed class QuePaxaVersionedNodeTests
 
         //The identical request at a member host is served, so the identity is what refused it and not the
         //request's own shape.
-        QuePaxaVersionedNode<string> member = new(Configuration, First, record);
+        QuePaxaVersionedNode<string> member = new(Configuration, FirstHost, record);
 
         Assert.IsFalse(member.Declines(request));
         Assert.AreEqual(new RegisterVersion(5UL), member.Handle(request).Version);
@@ -610,6 +619,77 @@ internal sealed class QuePaxaVersionedNodeTests
 
 
     /// <summary>
+    /// The store filter, which is the membership filter one dimension over. A host whose replica the
+    /// configuration lists under another store is a second store answering for one member, and a quorum
+    /// counted over distinct replicas would count it as that member.
+    /// </summary>
+    /// <remarks>
+    /// The replica is asserted to be a member before the refusal, so the removed-replica arm provably cannot
+    /// be what fires: the two arms are told apart by their own refusals rather than by both being absent from
+    /// the configuration. Nothing else about the request differs from one this host serves, and the identical
+    /// request at the admitted store is served.
+    /// </remarks>
+    [TestMethod]
+    public void AHostHoldingAStoreTheMembershipDoesNotAdmitDeclinesAndTheAdmittedStoreServes()
+    {
+        VersionedValue<string> record = Record(4UL, Second);
+        QuePaxaVersionedNode<string> replaced = new(Configuration, Membership.Restored(First), record);
+        VersionedRecordRequest<VersionedValue<string>> request = Request(5UL, ProposalPriority.Lowest, Second, "a");
+
+        //The replica is listed and the store is not the listed one, so only the store rule can refuse this.
+        Assert.IsTrue(replaced.ActiveConfiguration.Contains(First));
+        Assert.AreEqual(FirstHost.Incarnation, replaced.ActiveConfiguration.IncarnationOf(First));
+        Assert.AreNotEqual(FirstHost.Incarnation, replaced.Self.Incarnation);
+        Assert.IsTrue(replaced.Declines(request));
+
+        ConsensusRefusedException refused = Assert.ThrowsExactly<ConsensusRefusedException>(() => _ = replaced.Handle(request));
+
+        Assert.AreEqual(ConsensusRefusal.StoreNotAdmittedForMember, refused.Refusal);
+
+        //The identical request at the admitted store is served, so the store is what refused it and not the
+        //request's own shape.
+        QuePaxaVersionedNode<string> admitted = new(Configuration, FirstHost, record);
+
+        Assert.IsFalse(admitted.Declines(request));
+        Assert.AreEqual(new RegisterVersion(5UL), admitted.Handle(request).Version);
+
+        //And the refusal precedes every mutation, so the declined host is exactly what it was.
+        Assert.AreEqual(record, replaced.Committed);
+        Assert.AreEqual(RecorderStep.Zero, replaced.Recorder.Step);
+    }
+
+
+    /// <summary>
+    /// A change that replaces a member's store is retire-then-admit, so the store the change admits serves the
+    /// instance the change installs and the store it retires refuses it. Both hosts learn the same record, so
+    /// what separates them is which store the record's membership names.
+    /// </summary>
+    [TestMethod]
+    public void AStoreReplacementTakesEffectAtTheLearnThatInstallsIt()
+    {
+        QuePaxaConfiguration replacing = Configuration.Without(First).With(Membership.Restored(First));
+        QuePaxaVersionedNode<string> retired = new(Configuration, FirstHost, Record(4UL, Second));
+        QuePaxaVersionedNode<string> admitted = new(Configuration, Membership.Restored(First), Record(4UL, Second));
+
+        //Before the change both hosts hold the genesis membership, so the admitted-to-be store is the one
+        //refused there. The change is what swaps which of the two serves.
+        Assert.IsFalse(retired.Declines(Request(5UL, ProposalPriority.Lowest, Second, "a")));
+        Assert.IsTrue(admitted.Declines(Request(5UL, ProposalPriority.Lowest, Second, "a")));
+
+        Assert.IsTrue(retired.Learn(Installing(5UL, Second, replacing)));
+        Assert.IsTrue(admitted.Learn(Installing(5UL, Second, replacing)));
+
+        VersionedRecordRequest<VersionedValue<string>> next = Carrying(6UL, 6UL, replacing, ProposalPriority.Lowest, Second, "b");
+
+        Assert.IsTrue(retired.Declines(next));
+        Assert.AreEqual(ConsensusRefusal.StoreNotAdmittedForMember, Assert.ThrowsExactly<ConsensusRefusedException>(() => _ = retired.Handle(next)).Refusal);
+
+        Assert.IsFalse(admitted.Declines(next));
+        Assert.AreEqual(new RegisterVersion(6UL), admitted.Handle(next).Version);
+    }
+
+
+    /// <summary>
     /// The inner-version check. A defective proposer whose carried record names a version other than the one
     /// it addressed would wedge the instance if it decided: every host that learned the decision would refuse
     /// the mismatch before adopting the record, and no later version could be written. The comparison is one
@@ -618,7 +698,7 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void ARequestWhoseRecordDisagreesWithItsEnvelopeIsDeclined()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
         QuePaxaRecorder<VersionedValue<string>> before = host.Recorder;
 
         //Both directions of disagreement, so a comparison written as a one-sided bound is caught here.
@@ -658,9 +738,10 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void DeclinesAndHandleRefuseExactlyTheSameRequests()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First, Record(4UL, Second));
-        QuePaxaVersionedNode<string> outsider = new(Configuration, Stranger, Record(4UL, Second));
-        QuePaxaVersionedNode<string> spent = new(Configuration, First, new VersionedValue<string>(RegisterVersion.MaxValue, Second, Configuration, "spent"));
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
+        QuePaxaVersionedNode<string> outsider = new(Configuration, StrangerHost, Record(4UL, Second));
+        QuePaxaVersionedNode<string> spent = new(Configuration, FirstHost, new VersionedValue<string>(RegisterVersion.MaxValue, Second, Configuration, "spent"));
+        QuePaxaVersionedNode<string> replaced = new(Configuration, Membership.Restored(First), Record(4UL, Second));
 
         (QuePaxaVersionedNode<string> Host, VersionedRecordRequest<VersionedValue<string>> Request, string Rule)[] refused =
         [
@@ -668,6 +749,7 @@ internal sealed class QuePaxaVersionedNodeTests
             (host, Request(4UL, ProposalPriority.Lowest, Second, "below"), "an instance below the live one"),
             (host, Carrying(5UL, 5UL, ForeignChain, ProposalPriority.Lowest, Second, "foreign"), "another chain"),
             (outsider, Request(5UL, ProposalPriority.Lowest, Second, "outside"), "a host outside the membership"),
+            (replaced, Request(5UL, ProposalPriority.Lowest, Second, "replaced"), "a host holding a store the membership does not admit"),
             (host, Carrying(5UL, 4UL, Configuration, ProposalPriority.Lowest, Second, "torn"), "a record disagreeing with its envelope"),
             (spent, Request(5UL, ProposalPriority.Lowest, Second, "spent"), "a host whose version range is spent")
         ];
@@ -702,30 +784,30 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void AChangeRetainingTheWriterKeepsTheInstanceLedAndOnlyRemovingTheWriterLeavesItLeaderless()
     {
-        QuePaxaVersionedNode<string> grown = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> grown = new(Configuration, FirstHost, Record(4UL, Second));
 
-        Assert.IsTrue(grown.Learn(Installing(5UL, Second, Configuration.With(Fourth))));
+        Assert.IsTrue(grown.Learn(Installing(5UL, Second, Configuration.With(Membership.Member(Fourth)))));
 
-        Assert.AreEqual(Configuration.With(Fourth), grown.ActiveConfiguration);
+        Assert.AreEqual(Configuration.With(Membership.Member(Fourth)), grown.ActiveConfiguration);
         Assert.HasCount(4, grown.ActiveConfiguration.Members);
         Assert.AreEqual(ProposerLane.For(Second), grown.Recorder.ConfiguredLeader);
 
         //The reserved claim is the fast path itself: honoured, it stands at the round's first step under the
         //reserved priority, and a demoted instance would record it at the lowest ordinary one.
-        VersionedRecordReply<VersionedValue<string>> led = grown.Handle(Carrying(6UL, 6UL, Configuration.With(Fourth), ProposalPriority.Reserved, Second, "fast"));
+        VersionedRecordReply<VersionedValue<string>> led = grown.Handle(Carrying(6UL, 6UL, Configuration.With(Membership.Member(Fourth)), ProposalPriority.Reserved, Second, "fast"));
 
         Assert.AreEqual(ProposalPriority.Reserved, led.Reply.First.Key.Priority);
 
         //A change that removes a member other than the writer is the same claim from the other side of the
         //arithmetic: the set shrank and the writer still leads.
-        QuePaxaVersionedNode<string> shrunk = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> shrunk = new(Configuration, FirstHost, Record(4UL, Second));
 
         Assert.IsTrue(shrunk.Learn(Installing(5UL, Second, Configuration.Without(Third))));
         Assert.AreEqual(ProposerLane.For(Second), shrunk.Recorder.ConfiguredLeader);
 
         //Only a change that removes the writer itself leaves the instance leaderless, and it does so at every
         //host holding the record, because both inputs are agreed.
-        QuePaxaVersionedNode<string> leaderless = new(Configuration, First, Record(4UL, Second));
+        QuePaxaVersionedNode<string> leaderless = new(Configuration, FirstHost, Record(4UL, Second));
 
         Assert.IsTrue(leaderless.Learn(Installing(5UL, Second, Configuration.Without(Second))));
         Assert.IsNull(leaderless.Recorder.ConfiguredLeader);
@@ -744,16 +826,16 @@ internal sealed class QuePaxaVersionedNodeTests
     [TestMethod]
     public void TheActiveMembershipTracksTheCommittedRecordAndFallsBackToGenesis()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, First);
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost);
 
         Assert.AreEqual(Configuration, host.ActiveConfiguration);
-        Assert.IsTrue(Configuration.Members.SequenceEqual(host.LeaderSchedule.Schedule.Order));
+        Assert.IsTrue(Configuration.Members.Select(configured => configured.Replica).SequenceEqual(host.LeaderSchedule.Schedule.Order));
 
-        QuePaxaConfiguration grown = Configuration.With(Fourth);
+        QuePaxaConfiguration grown = Configuration.With(Membership.Member(Fourth));
 
         Assert.IsTrue(host.Learn(Installing(1UL, First, grown)));
         Assert.AreEqual(grown, host.ActiveConfiguration);
-        Assert.IsTrue(grown.Members.SequenceEqual(host.LeaderSchedule.Schedule.Order));
+        Assert.IsTrue(grown.Members.Select(configured => configured.Replica).SequenceEqual(host.LeaderSchedule.Schedule.Order));
 
         //A record that does not advance the host is ignored, membership included: a stale dissemination
         //carrying an older configuration cannot walk the membership backwards.
