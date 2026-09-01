@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Security
 -->
 
+## [0.0.11] - 2026-09-02
+
+### Changed
+
+- Dependency refresh; no library code or wire-format changes. The packages now depend on `Lumoin.Base` 0.0.10 (from 0.0.9), which adds the process-wide shared UTF-8 interner. `SIL.ReleaseTasks` moves to 3.2.1, which no longer depends on `System.Security.Cryptography.Xml` at all, so the transitive override pin for its formerly vulnerable reference is removed rather than bumped. The CI `step-security/harden-runner` pin moves to v2.21.1. Everything else was already current: .NET SDK 10.0.400, MSTest.Sdk 4.3.3, the analyzer and testing packages, and the remaining action pins.
+
 ## [0.0.10] - 2026-08-24
 
 ### Added
