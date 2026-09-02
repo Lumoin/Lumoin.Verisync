@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Security
 -->
 
+## [0.0.12] - 2026-09-02
+
+### Changed
+
+- The packages now depend on `Lumoin.Base` 0.0.11.
+
 ## [0.0.11] - 2026-09-02
 
 ### Changed
