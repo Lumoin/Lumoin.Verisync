@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Security
 -->
 
+## [0.0.13] - 2026-09-02
+
+### Changed
+
+- The packages now depend on `Lumoin.Base` 0.0.12.
+
+### Fixed
+
+- Every member raising `StateRestoreException` or `ConsensusRefusedException` documents that type and the refusal member a caller switches on, in place of the base type it named before, so the typed refusal surface is readable from the shipped API documentation. A test fails when a file raises a library exception no tag in it names, which the compiler cannot check because it proves only that a cref resolves.
+
 ## [0.0.12] - 2026-09-02
 
 ### Changed
