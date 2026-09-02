@@ -4,7 +4,7 @@
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
   </PropertyGroup>
   <ItemGroup Label="Library">
-    <PackageVersion Include="Lumoin.Base" Version="0.0.10" />
+    <PackageVersion Include="Lumoin.Base" Version="0.0.11" />
     <PackageVersion Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="5.6.0" />
     <PackageVersion Include="Microsoft.Sbom.Targets" Version="4.1.5" />
     <PackageVersion Include="System.Formats.Cbor" Version="10.0.11" />

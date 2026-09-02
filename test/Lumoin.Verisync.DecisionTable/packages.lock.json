@@ -123,14 +123,14 @@
       "lumoin.verisync.core": {
         "type": "Project",
         "dependencies": {
-          "Lumoin.Base": "[0.0.10, )"
+          "Lumoin.Base": "[0.0.11, )"
         }
       },
       "Lumoin.Base": {
         "type": "CentralTransitive",
-        "requested": "[0.0.10, )",
-        "resolved": "0.0.10",
-        "contentHash": "VVbu2kcXsnW9Ia0CWpiJ/P5gUJfzwDhUgdIeVNiDbpNdasJeA/z5IHbOtxq+iAYoIra8IhEkYANi/FL7ZWSUFw=="
+        "requested": "[0.0.11, )",
+        "resolved": "0.0.11",
+        "contentHash": "HpPGIHk9JHq4alJVbWiUJBTFluH85/U6QmB2DQlYXegiqJLCujJS84x0caXiUZwUfi8x8IjKI6nUF9D55HimuA=="
       }
     }
   }
