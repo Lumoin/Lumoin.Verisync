@@ -291,6 +291,150 @@ internal sealed class TaggedMemoryTests
     }
 
 
+    ///<summary>Pins that <see cref="TaggedMemory.GetHashCode"/> is computed from the live byte content rather than being a content-independent constant.</summary>
+    [TestMethod]
+    public void HashCodeDiffersForDifferentBytes()
+    {
+        byte[] zeros = new byte[64];
+        byte[] ones = new byte[64];
+        Array.Fill(ones, (byte)0xFF);
+
+        using TestTaggedMemory left = CreateInstance(zeros, VerisyncTags.ReplicaId);
+        using TestTaggedMemory right = CreateInstance(ones, VerisyncTags.ReplicaId);
+
+        Assert.AreNotEqual(left.GetHashCode(), right.GetHashCode());
+    }
+
+
+    ///<summary>Pins that disposal sets the lifetime-duration tag on the activity when a listener is attached.</summary>
+    [TestMethod]
+    public void LifetimeActivityCarriesLifetimeTagAfterDisposal()
+    {
+        Activity? captured = null;
+        using ActivityListener listener = new()
+        {
+            ShouldListenTo = source => source.Name == VerisyncActivitySource.Name,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStarted = activity => captured = activity
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        TestTaggedMemory instance = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        instance.Dispose();
+
+        Assert.IsNotNull(captured);
+        Assert.IsNotNull(captured.GetTagItem(VerisyncTelemetry.ActivityLifetimeMs));
+    }
+
+
+    ///<summary>Pins that disposing a <see cref="TaggedMemory"/> disposes the memory owner whose ownership it took at construction.</summary>
+    [TestMethod]
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Ownership of the owner transfers to the TaggedMemory instance, which is disposed explicitly.")]
+    public void DisposeDisposesTheMemoryOwner()
+    {
+        TrackingOwner owner = new(4);
+        TestTaggedMemory instance = new(owner, VerisyncTags.ReplicaId);
+
+        instance.Dispose();
+
+        Assert.AreEqual(1, owner.DisposeCallCount);
+    }
+
+
+    ///<summary>Pins that <see cref="TaggedMemory.AsReadOnlyMemory"/>'s own disposal guard fires and names this instance, distinguishing it from an incidental exception thrown by the released memory owner.</summary>
+    [TestMethod]
+    public void AsReadOnlyMemoryThrowsNamingThisInstanceAfterDispose()
+    {
+        TestTaggedMemory instance = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        instance.Dispose();
+
+        ObjectDisposedException exception = Assert.ThrowsExactly<ObjectDisposedException>(() => instance.AsReadOnlyMemory());
+
+        Assert.AreEqual(typeof(TestTaggedMemory).FullName, exception.ObjectName);
+    }
+
+
+    ///<summary>Pins that <see cref="TaggedMemory.Equals(TaggedMemory)"/>'s own disposal guard for the other instance fires and names it, distinguishing it from an incidental exception thrown by the released memory owner.</summary>
+    [TestMethod]
+    public void EqualsThrowsNamingOtherInstanceWhenOtherIsDisposed()
+    {
+        using TestTaggedMemory left = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        TestTaggedMemory disposedRight = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        disposedRight.Dispose();
+
+        ObjectDisposedException exception = Assert.ThrowsExactly<ObjectDisposedException>(() => left.Equals(disposedRight));
+
+        Assert.AreEqual(typeof(TestTaggedMemory).FullName, exception.ObjectName);
+    }
+
+
+    ///<summary>Pins that <see cref="TaggedMemory.GetHashCode"/>'s own disposal guard fires and names this instance, distinguishing it from an incidental exception thrown by the released memory owner.</summary>
+    [TestMethod]
+    public void GetHashCodeThrowsNamingThisInstanceAfterDispose()
+    {
+        TestTaggedMemory instance = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        instance.Dispose();
+
+        ObjectDisposedException exception = Assert.ThrowsExactly<ObjectDisposedException>(() => instance.GetHashCode());
+
+        Assert.AreEqual(typeof(TestTaggedMemory).FullName, exception.ObjectName);
+    }
+
+
+    ///<summary>Pins that <see cref="TaggedMemory.AsReadOnlySpan"/>'s own disposal guard fires and names this instance, distinguishing it from an incidental exception thrown by the released memory owner.</summary>
+    [TestMethod]
+    public void AsReadOnlySpanThrowsNamingThisInstanceAfterDispose()
+    {
+        TestTaggedMemory instance = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        instance.Dispose();
+
+        ObjectDisposedException exception = Assert.ThrowsExactly<ObjectDisposedException>(() => instance.AsReadOnlySpan());
+
+        Assert.AreEqual(typeof(TestTaggedMemory).FullName, exception.ObjectName);
+    }
+
+
+    ///<summary>Pins that <see cref="TaggedMemory.Equals(TaggedMemory)"/>'s own disposal guard for this instance fires and names it, distinguishing it from an incidental exception thrown by the released memory owner.</summary>
+    [TestMethod]
+    public void EqualsThrowsNamingThisInstanceWhenThisIsDisposed()
+    {
+        using TestTaggedMemory other = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        TestTaggedMemory disposedLeft = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        disposedLeft.Dispose();
+
+        ObjectDisposedException exception = Assert.ThrowsExactly<ObjectDisposedException>(() => disposedLeft.Equals(other));
+
+        Assert.AreEqual(typeof(TestTaggedMemory).FullName, exception.ObjectName);
+    }
+
+
+    /// <summary>
+    /// Pins that the lifetime-duration tag is set before the lifetime activity is stopped, so an
+    /// <see cref="ActivityListener.ActivityStopped"/> listener, which every exporter is, observes the tag, and
+    /// that its value is strictly positive because an end time is fixed before the duration is read, not
+    /// because any measurable time elapsed.
+    /// </summary>
+    [TestMethod]
+    public void LifetimeTagIsVisibleToAStoppedActivityListener()
+    {
+        object? tagAtStop = null;
+        using ActivityListener listener = new()
+        {
+            ShouldListenTo = source => source.Name == VerisyncActivitySource.Name,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = activity => tagAtStop = activity.GetTagItem(VerisyncTelemetry.ActivityLifetimeMs)
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        TestTaggedMemory instance = CreateInstance([1, 2, 3], VerisyncTags.ReplicaId);
+        instance.Dispose();
+
+        Assert.IsNotNull(tagAtStop);
+        Assert.IsInstanceOfType<double>(tagAtStop);
+        Assert.IsGreaterThan(0d, (double)tagAtStop);
+    }
+
+
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Ownership of the rented owner transfers to the returned TestTaggedMemory, which disposes it on Dispose.")]
     private static TestTaggedMemory CreateInstance(ReadOnlySpan<byte> bytes, Tag tag)
     {
@@ -331,6 +475,30 @@ internal sealed class TaggedMemoryTests
         public void Dispose()
         {
             Inner.Dispose();
+        }
+    }
+
+
+    /// <summary>An owner over a fresh array that counts how many times it is disposed, so a disposal that must reach the owner exactly once is observable.</summary>
+    private sealed class TrackingOwner: IMemoryOwner<byte>
+    {
+        /// <summary>The owned memory over a fresh array of the requested length.</summary>
+        public Memory<byte> Memory { get; }
+
+        /// <summary>The number of times <see cref="Dispose"/> has been called on this owner.</summary>
+        public int DisposeCallCount { get; private set; }
+
+        /// <summary>Initializes an owner over a fresh array of <paramref name="length"/> bytes.</summary>
+        /// <param name="length">The array length.</param>
+        public TrackingOwner(int length)
+        {
+            Memory = new byte[length];
+        }
+
+        /// <inheritdoc/>
+        public void Dispose()
+        {
+            DisposeCallCount++;
         }
     }
 }

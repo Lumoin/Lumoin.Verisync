@@ -186,6 +186,62 @@ internal sealed class DottedVersionVectorTests
     }
 
 
+    /// <summary>
+    /// Pins that <see cref="DottedVersionVector.Equals(DottedVersionVector?)"/> takes its reference-equality
+    /// fast path and returns true when compared against the very same instance.
+    /// </summary>
+    [TestMethod]
+    public void EqualityHoldsForSameReference()
+    {
+        DottedVersionVector a = DottedVersionVector.Empty.AdvanceDot(R1);
+
+        Assert.IsTrue(a.Equals(a));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="DottedVersionVector.Equals(DottedVersionVector?)"/> returns false when the
+    /// operand is null, per the <see cref="IEquatable{T}"/> contract.
+    /// </summary>
+    [TestMethod]
+    public void EqualityIsFalseAgainstNull()
+    {
+        DottedVersionVector a = DottedVersionVector.Empty.AdvanceDot(R1);
+
+        Assert.IsFalse(a.Equals(NullDottedVersionVector()));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="DottedVersionVector.Compare(DottedVersionVector)"/> rejects a null operand with
+    /// <see cref="ArgumentNullException"/> rather than deferring to a later null dereference.
+    /// </summary>
+    [TestMethod]
+    public void CompareThrowsArgumentNullExceptionForNullOther()
+    {
+        DottedVersionVector a = DottedVersionVector.Empty.AdvanceDot(R1);
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => a.Compare(null!));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="DottedVersionVector.Merge(DottedVersionVector)"/> rejects a null operand with
+    /// <see cref="ArgumentNullException"/> rather than deferring to a later null dereference.
+    /// </summary>
+    [TestMethod]
+    public void MergeThrowsArgumentNullExceptionForNullOther()
+    {
+        DottedVersionVector a = DottedVersionVector.Empty.AdvanceDot(R1);
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => a.Merge(null!));
+    }
+
+
+    /// <summary>Returns a null DottedVersionVector for the equality vector.</summary>
+    private static DottedVersionVector? NullDottedVersionVector() => null;
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

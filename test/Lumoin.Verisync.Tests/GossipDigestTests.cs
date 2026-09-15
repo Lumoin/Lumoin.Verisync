@@ -106,6 +106,46 @@ internal sealed class GossipDigestTests
     }
 
 
+    /// <summary>
+    /// Pins that <see cref="GossipDigest.Compare(GossipDigest)"/> rejects a null peer digest with
+    /// <see cref="ArgumentNullException"/> rather than deferring to a field access on it.
+    /// </summary>
+    [TestMethod]
+    public void CompareRejectsNullOther()
+    {
+        GossipDigest digest = new(R1, VectorClock.Empty.Increment(R1));
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => digest.Compare(null!));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="GossipDigest.Equals(GossipDigest)"/> reports inequality against a null peer
+    /// instead of short-circuiting to equal.
+    /// </summary>
+    [TestMethod]
+    public void EqualsReturnsFalseForNullOther()
+    {
+        GossipDigest digest = new(R1, VectorClock.Empty.Increment(R1));
+
+        Assert.IsFalse(digest.Equals(NullDigest()));
+    }
+
+
+    /// <summary>Pins that a digest equals the same instance through the reference-identity path, ahead of any field comparison.</summary>
+    [TestMethod]
+    public void EqualsIsTrueForTheSameInstance()
+    {
+        GossipDigest digest = new(R1, VectorClock.Empty.Increment(R1));
+
+        Assert.IsTrue(digest.Equals(digest));
+    }
+
+
+    /// <summary>Returns a null digest from an opaque helper so the null comparison is not folded at compile time.</summary>
+    private static GossipDigest? NullDigest() => null;
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

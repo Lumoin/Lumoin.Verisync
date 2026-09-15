@@ -14,7 +14,7 @@ internal sealed class OrSetTests
     [TestMethod]
     public void EmptyHasNoElements()
     {
-        Assert.HasCount(0, OrSet<string>.Empty.Elements);
+        Assert.IsEmpty(OrSet<string>.Empty.Elements);
         Assert.IsFalse(OrSet<string>.Empty.Contains("x"));
     }
 
@@ -35,7 +35,7 @@ internal sealed class OrSetTests
         OrSet<string> set = OrSet<string>.Empty.Add("x", R1).Remove("x");
 
         Assert.IsFalse(set.Contains("x"));
-        Assert.HasCount(0, set.Elements);
+        Assert.IsEmpty(set.Elements);
     }
 
 
@@ -45,7 +45,7 @@ internal sealed class OrSetTests
         OrSet<string> set = OrSet<string>.Empty.Remove("x");
 
         Assert.IsFalse(set.Contains("x"));
-        Assert.HasCount(0, set.Elements);
+        Assert.IsEmpty(set.Elements);
     }
 
 
@@ -128,6 +128,51 @@ internal sealed class OrSetTests
 
         Assert.AreEqual(a, b);
     }
+
+
+    /// <summary>Pins that <see cref="OrSet{T}.Equals(OrSet{T}?)"/> returns false for two distinct, non-reference-equal sets holding different elements.</summary>
+    [TestMethod]
+    public void EqualsReturnsFalseForDifferentContent()
+    {
+        OrSet<string> a = OrSet<string>.Empty.Add("x", R1);
+        OrSet<string> b = OrSet<string>.Empty.Add("y", R1);
+
+        Assert.IsFalse(a.Equals(b));
+    }
+
+
+    /// <summary>Pins that <see cref="OrSet{T}.Merge(OrSet{T})"/> rejects a null <c>other</c> with <see cref="ArgumentNullException"/>.</summary>
+    [TestMethod]
+    public void MergeRejectsNullOther()
+    {
+        OrSet<string> set = OrSet<string>.Empty.Add("x", R1);
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => set.Merge(null!));
+    }
+
+
+    /// <summary>Pins that <see cref="OrSet{T}.Equals(OrSet{T}?)"/> returns true when compared against the same reference.</summary>
+    [TestMethod]
+    public void EqualsIsReflexiveForSameReference()
+    {
+        OrSet<string> set = OrSet<string>.Empty.Add("x", R1);
+
+        Assert.IsTrue(set.Equals(set));
+    }
+
+
+    /// <summary>Pins that <see cref="OrSet{T}.Equals(OrSet{T}?)"/> returns false when compared against null.</summary>
+    [TestMethod]
+    public void EqualsReturnsFalseForNull()
+    {
+        OrSet<string> set = OrSet<string>.Empty.Add("x", R1);
+
+        Assert.IsFalse(set.Equals(NullOrSet()));
+    }
+
+
+    /// <summary>Returns a null OrSet for the equality vector.</summary>
+    private static OrSet<string>? NullOrSet() => null;
 
 
     private static ReplicaId Replica(byte id)

@@ -2,6 +2,7 @@ using CsCheck;
 using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Collections.Immutable;
+using System.Linq;
 
 namespace Lumoin.Verisync.Tests;
 
@@ -616,7 +617,7 @@ internal sealed class OffsetAnchoredSequenceTests
         Assert.HasCount(1, marking.RemoveDots);
         Assert.AreEqual(3, marking.RemoveDots[0].Counter);
         Assert.AreEqual(1, marking.RemoveDots[0].Replica[0]);
-        Assert.HasCount(0, m2Compacted.ToState().RemovedBaseOffsets);
+        Assert.IsEmpty(m2Compacted.ToState().RemovedBaseOffsets);
     }
 
 
@@ -786,5 +787,744 @@ internal sealed class OffsetAnchoredSequenceTests
         buffer[0] = id;
 
         return ReplicaId.FromSpan(buffer);
+    }
+
+
+    /// <summary>
+    /// Merging two operands that concurrently tombstoned the same live target unions both remove-dots
+    /// rather than keeping only one, per Merge's remarks on genuinely concurrent removes.
+    /// </summary>
+    [TestMethod]
+    public void MergeUnionsTombstoneRemoveDotsForAConcurrentlyRemovedTarget()
+    {
+        OffsetAnchoredSequence<string> shared = OffsetAnchoredSequence<string>.WithBase(Base);
+        (shared, OffsetAddress x) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
+
+        OffsetAnchoredSequence<string> removedByFirst = shared.Remove(x, R1);
+        OffsetAnchoredSequence<string> removedBySecond = shared.Remove(x, R2);
+
+        OffsetAnchoredSequence<string> merged = removedByFirst.Merge(removedBySecond);
+
+        ImmutableArray<OffsetTombstoneEntry> tombstones = merged.ToState().Tombstones;
+        Assert.HasCount(1, tombstones);
+        Assert.HasCount(2, tombstones[0].RemoveDots);
+    }
+
+
+    /// <summary>
+    /// The compacted-base-offsets map hash must be the exclusive-or of each previous offset's combine,
+    /// for two distinct offsets translated to the head sentinel.
+    /// </summary>
+    [TestMethod]
+    public void GetHashCodeFoldsTheCompactedBaseOffsetsMapByExclusiveOr()
+    {
+        VectorClockState emptyClock = new([]);
+        OffsetAnchorState headState = new(-1, null);
+
+        var state = new OffsetAnchoredSequenceState<string>(
+            Base: ImmutableArray<string>.Empty,
+            BaseFrontier: emptyClock,
+            BaseGeneration: 0,
+            RemovedBaseOffsets: [],
+            Context: emptyClock,
+            Vertices: [],
+            Tombstones: [],
+            CompactedDotAnchors: [],
+            CompactedBaseOffsets: [new OffsetBaseAnchorEntry(0, headState), new OffsetBaseAnchorEntry(1, headState)]);
+
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.FromState(state);
+
+        int expectedBaseOffsetsHash = HashCode.Combine(0, OffsetAnchor.Head) ^ HashCode.Combine(1, OffsetAnchor.Head);
+        int expected = HashCode.Combine(HashCode.Combine(0, VectorClock.Empty, 0), VectorClock.Empty, 0, 0, 0, 0, expectedBaseOffsetsHash);
+        Assert.AreEqual(expected, sequence.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// <see cref="OffsetAnchoredSequence{TValue}.CertifiedProjection"/> rejects a null frontier with
+    /// <see cref="ArgumentNullException"/> before the core walk would dereference it.
+    /// </summary>
+    [TestMethod]
+    public void CertifiedProjectionValidatesTheFrontierIsNotNull()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        sequence = sequence.Remove(new OffsetAddress(OffsetAnchor.AtBase(0), 0), R1);
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => sequence.CertifiedProjection(null!));
+    }
+
+
+    /// <summary>
+    /// Merge sizes the merged base-offset translation dictionary from BOTH operands' counts and unions both
+    /// operands' entries, even when "other" carries more entries than "this".
+    /// </summary>
+    [TestMethod]
+    public void MergeUnionsBothOperandsBaseOffsetTranslationEntries()
+    {
+        VectorClockState frontierState = VectorClock.Empty.Increment(R1).ToState();
+        OffsetAnchorState head = new(-1, null);
+        OffsetAnchoredSequenceState<string> smaller = new(["v"], frontierState, 1, [], frontierState, [], [], [], [new OffsetBaseAnchorEntry(5, head)]);
+        OffsetAnchoredSequenceState<string> larger = new(["v"], frontierState, 1, [], frontierState, [], [], [], [new OffsetBaseAnchorEntry(9, head), new OffsetBaseAnchorEntry(10, head), new OffsetBaseAnchorEntry(11, head)]);
+        OffsetAnchoredSequence<string> a = OffsetAnchoredSequence<string>.FromState(smaller);
+        OffsetAnchoredSequence<string> b = OffsetAnchoredSequence<string>.FromState(larger);
+
+        OffsetAnchoredSequence<string> merged = a.Merge(b);
+
+        ImmutableArray<OffsetBaseAnchorEntry> mergedOffsets = merged.ToState().CompactedBaseOffsets;
+        Assert.HasCount(4, mergedOffsets);
+        bool hasFromA = false;
+        bool hasFromB = false;
+        foreach (OffsetBaseAnchorEntry entry in mergedOffsets)
+        {
+            hasFromA |= entry.PreviousOffset == 5;
+            hasFromB |= entry.PreviousOffset == 9;
+        }
+
+        Assert.IsTrue(hasFromA);
+        Assert.IsTrue(hasFromB);
+    }
+
+
+    /// <summary>
+    /// The BaseEqual integrity assertion must compare every element, not merely the lengths: two
+    /// same-length bases differing at one position must still fail the generation fence.
+    /// </summary>
+    [TestMethod]
+    public void MergingSameLengthDifferentContentBasesFailsClosed()
+    {
+        OffsetAnchoredSequence<string> first = OffsetAnchoredSequence<string>.WithBase(Base);
+        OffsetAnchoredSequence<string> second = OffsetAnchoredSequence<string>.WithBase(["b0", "b1", "zz"]);
+
+        InvalidOperationException refusal = Assert.ThrowsExactly<InvalidOperationException>(() => first.Merge(second));
+
+        Assert.Contains("over different base generations", refusal.Message);
+    }
+
+
+    /// <summary>
+    /// After a real compaction, TranslateAnchor still serves the head identically and still serves a live
+    /// vertex minted after that compaction as its own address.
+    /// </summary>
+    [TestMethod]
+    public void TranslateAnchorServesHeadAndCurrentLiveVerticesAfterCompaction()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
+        OffsetAnchoredSequence<string> compacted = sequence.Compact(frontier, sequence.CertifiedProjection(frontier));
+
+        (OffsetAnchoredSequence<string> withY, OffsetAddress y) = compacted.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 1), "y", R2);
+
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.Head, 0), withY.TranslateAnchor(new OffsetAddress(OffsetAnchor.Head, 0)));
+        Assert.AreEqual(y, withY.TranslateAnchor(y));
+    }
+
+
+    /// <summary>
+    /// ToState serializes removed base offsets in ascending order even when there are enough sparse offsets
+    /// to force the frozen dictionary off its small sorted representation onto the hashing path, whose key
+    /// enumeration follows bucket order rather than value order.
+    /// </summary>
+    /// <remarks>
+    /// A FrozenDictionary of int keys sorts its keys only in the small comparable representation used at ten
+    /// keys or fewer; above that a hash table backs it and widely spaced keys enumerate scrambled, so the
+    /// explicit sort in ToState is what restores the ascending contract the serialized form promises.
+    /// </remarks>
+    [TestMethod]
+    public void ToStateOrdersManySparseRemovedOffsetsAscending()
+    {
+        //A base large enough to hold widely spaced offsets, so each removal is in range.
+        ImmutableArray<string>.Builder baseBuilder = ImmutableArray.CreateBuilder<string>(256);
+        for(int i = 0; i < 256; i++)
+        {
+            baseBuilder.Add("b" + i.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        //More than ten sparse removed offsets, so the frozen dictionary uses its hashing (non-ascending)
+        //enumeration path rather than the small sorted one.
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(baseBuilder.ToImmutable());
+        int[] offsets = [1, 20, 47, 66, 93, 118, 145, 164, 189, 208, 227, 236, 241, 250];
+        foreach(int offset in offsets)
+        {
+            sequence = sequence.Remove(new OffsetAddress(OffsetAnchor.AtBase(offset), 0), R1);
+        }
+
+        int[] serialized = sequence.ToState().RemovedBaseOffsets.Select(static entry => entry.Offset).ToArray();
+
+        //offsets is already ascending, so this asserts the serialized order is the sorted order the contract
+        //promises rather than the frozen dictionary's bucket order.
+        Assert.AreSequenceEqual(offsets, serialized);
+    }
+
+
+    /// <summary>
+    /// ToState serializes compacted base-offset translations in ascending previous-offset order even when there
+    /// are enough sparse offsets to force the frozen dictionary off its small sorted representation onto the
+    /// hashing path, whose key enumeration follows bucket order rather than value order.
+    /// </summary>
+    /// <remarks>
+    /// FromState and Merge admit a sparse compacted-base-offset map with any non-negative previous offsets, so
+    /// the map is the same FrozenDictionary of int keys as the removed-offsets map: above ten keys a hash table
+    /// backs it and widely spaced keys enumerate scrambled, and the explicit sort in ToState is what restores the
+    /// previous-offset order the serialized form promises.
+    /// </remarks>
+    [TestMethod]
+    public void ToStateOrdersManySparseCompactedBaseOffsetsAscending()
+    {
+        VectorClockState emptyClock = new([]);
+        OffsetAnchorState headState = new(-1, null);
+
+        //The same fourteen widely spaced keys the removed-offsets sibling uses, so the frozen dictionary takes
+        //its hashing path and enumerates them off ascending order; they are supplied scrambled to underline that
+        //neither insertion order nor bucket order is the ascending order the contract promises.
+        int[] ascendingOffsets = [1, 20, 47, 66, 93, 118, 145, 164, 189, 208, 227, 236, 241, 250];
+        int[] scrambledOffsets = [145, 1, 250, 47, 208, 20, 189, 93, 236, 66, 227, 118, 241, 164];
+
+        ImmutableArray<OffsetBaseAnchorEntry>.Builder baseOffsetsBuilder = ImmutableArray.CreateBuilder<OffsetBaseAnchorEntry>(scrambledOffsets.Length);
+        foreach(int offset in scrambledOffsets)
+        {
+            baseOffsetsBuilder.Add(new OffsetBaseAnchorEntry(offset, headState));
+        }
+
+        var state = new OffsetAnchoredSequenceState<string>(
+            Base: ImmutableArray<string>.Empty,
+            BaseFrontier: emptyClock,
+            BaseGeneration: 0,
+            RemovedBaseOffsets: [],
+            Context: emptyClock,
+            Vertices: [],
+            Tombstones: [],
+            CompactedDotAnchors: [],
+            CompactedBaseOffsets: baseOffsetsBuilder.ToImmutable());
+
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.FromState(state);
+
+        int[] serialized = sequence.ToState().CompactedBaseOffsets.Select(static entry => entry.PreviousOffset).ToArray();
+
+        Assert.AreSequenceEqual(ascendingOffsets, serialized);
+    }
+
+
+    /// <summary>
+    /// The removed-base-offsets map hash must be the exclusive-or of each offset's combine, for two
+    /// distinct legacy (empty remove-dot set) offsets.
+    /// </summary>
+    [TestMethod]
+    public void GetHashCodeFoldsTheRemovedBaseOffsetsMapByExclusiveOr()
+    {
+        VectorClockState emptyClock = new([]);
+        var state = new OffsetAnchoredSequenceState<string>(
+            Base: ["b0", "b1"],
+            BaseFrontier: emptyClock,
+            BaseGeneration: 0,
+            RemovedBaseOffsets: [new OffsetBaseRemovalEntry(0, []), new OffsetBaseRemovalEntry(1, [])],
+            Context: emptyClock,
+            Vertices: [],
+            Tombstones: [],
+            CompactedDotAnchors: [],
+            CompactedBaseOffsets: []);
+
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.FromState(state);
+
+        int expectedRemovedHash = HashCode.Combine(0, 0) ^ HashCode.Combine(1, 0);
+        int expected = HashCode.Combine(HashCode.Combine(2, VectorClock.Empty, 0), VectorClock.Empty, 0, 0, expectedRemovedHash, 0, 0);
+        Assert.AreEqual(expected, sequence.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// Compact carries an orphan tombstone (a remove whose target is not a vertex) forward unchanged rather
+    /// than dropping it.
+    /// </summary>
+    [TestMethod]
+    public void CompactCarriesAnOrphanTombstoneForward()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
+        Dot orphanTarget = new(R2, 99);
+        sequence = sequence.Remove(new OffsetAddress(OffsetAnchor.AtLive(orphanTarget), 0), R2);
+
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
+        OffsetAnchoredSequence<string> compacted = sequence.Compact(frontier, sequence.CertifiedProjection(frontier));
+
+        bool found = false;
+        foreach (OffsetTombstoneEntry entry in compacted.ToState().Tombstones)
+        {
+            if (entry.Target.Counter == orphanTarget.Counter && entry.Target.Replica.AsSpan().SequenceEqual(orphanTarget.Replica.AsSpan()))
+            {
+                found = true;
+            }
+        }
+
+        Assert.IsTrue(found);
+    }
+
+
+    /// <summary>
+    /// The per-target remove-dot fold inside the tombstone map hash must be the exclusive-or of each
+    /// remove-dot's hash code, for a target certified by two concurrent removes.
+    /// </summary>
+    [TestMethod]
+    public void GetHashCodeFoldsATombstonesRemoveDotsByExclusiveOr()
+    {
+        Dot removeDotA = new(R1, 1);
+        Dot removeDotB = new(R2, 1);
+        Dot target = new(Replica(3), 1);
+        VectorClockState context = new([new ReplicaCounterEntry(ImmutableArray.Create(R1.AsSpan()), 1), new ReplicaCounterEntry(ImmutableArray.Create(R2.AsSpan()), 1)]);
+        VectorClockState emptyClock = new([]);
+
+        var state = new OffsetAnchoredSequenceState<string>(
+            Base: ImmutableArray<string>.Empty,
+            BaseFrontier: emptyClock,
+            BaseGeneration: 0,
+            RemovedBaseOffsets: [],
+            Context: context,
+            Vertices: [],
+            Tombstones:
+            [
+                new OffsetTombstoneEntry(
+                    new DotState(ImmutableArray.Create(target.Replica.AsSpan()), target.Counter),
+                    [new DotState(ImmutableArray.Create(R1.AsSpan()), 1), new DotState(ImmutableArray.Create(R2.AsSpan()), 1)])
+            ],
+            CompactedDotAnchors: [],
+            CompactedBaseOffsets: []);
+
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.FromState(state);
+
+        int expectedRemoveDotsFold = removeDotA.GetHashCode() ^ removeDotB.GetHashCode();
+        int expectedTombstonesHash = HashCode.Combine(target, expectedRemoveDotsFold);
+        int expected = HashCode.Combine(HashCode.Combine(0, VectorClock.Empty, 0), VectorClock.FromState(context), 0, expectedTombstonesHash, 0, 0, 0);
+        Assert.AreEqual(expected, sequence.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// Compact fails closed when the supplied checkpoint is longer than the certified projection, even when
+    /// every projected entry it does share matches.
+    /// </summary>
+    [TestMethod]
+    public void CompactRejectsACheckpointLongerThanTheCertifiedProjection()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
+        VectorClock frontier = FrontierCovering(x.Anchor.LiveId!);
+        ImmutableArray<SequenceCheckpointEntry<string>> proper = sequence.CertifiedProjection(frontier);
+        SequenceCheckpointEntry<string>[] longer = [.. proper, new SequenceCheckpointEntry<string>(DotStateOf(new Dot(R2, 99)), "extra")];
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => sequence.Compact(frontier, ImmutableArray.Create(longer)));
+    }
+
+
+    /// <summary>
+    /// The head translates to itself even on a sequence whose translation maps are empty at a non-genesis
+    /// generation, per TranslateAnchor's promise that the head is the same virtual position in every
+    /// generation.
+    /// </summary>
+    [TestMethod]
+    public void TranslateAnchorServesHeadOnAnUncompactedSequenceAtANonGenesisGeneration()
+    {
+        VectorClockState frontierState = VectorClock.Empty.Increment(R1).ToState();
+        OffsetAnchoredSequenceState<string> state = new(ImmutableArray<string>.Empty, frontierState, 3, [], frontierState, [], [], [], []);
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.FromState(state);
+
+        OffsetAddress? translated = sequence.TranslateAnchor(new OffsetAddress(OffsetAnchor.Head, 0));
+
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.Head, 0), translated);
+    }
+
+
+    /// <summary>
+    /// Composing a dropped dot's translation through a second compaction must still resolve the head
+    /// sentinel, never fall through to an offset lookup that has no entry for it.
+    /// </summary>
+    [TestMethod]
+    public void TranslateAnchorComposesAHeadTargetAcrossTwoCompactions()
+    {
+        OffsetAnchoredSequence<string> seq0 = OffsetAnchoredSequence<string>.Empty;
+        (OffsetAnchoredSequence<string> seq1, OffsetAddress x) = seq0.InsertAtHead("x", R1);
+        OffsetAnchoredSequence<string> removed = seq1.Remove(x, R1);
+
+        VectorClock frontier1 = removed.CausalContext;
+        OffsetAnchoredSequence<string> compacted1 = removed.Compact(frontier1, removed.CertifiedProjection(frontier1));
+
+        (OffsetAnchoredSequence<string> seq2, _) = compacted1.InsertAtHead("y", R1);
+        VectorClock frontier2 = seq2.CausalContext;
+        OffsetAnchoredSequence<string> compacted2 = seq2.Compact(frontier2, seq2.CertifiedProjection(frontier2));
+
+        //x's certified drop composed to the head sentinel in the first compaction (it was the only, and
+        //therefore first, processed vertex over an empty base) must still compose to Head after the second.
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.Head, 0), compacted2.TranslateAnchor(x));
+    }
+
+
+    /// <summary>
+    /// The compacted-dot-anchors map hash must be the exclusive-or of each dropped dot's combine, for
+    /// two distinct dots translated to the head sentinel.
+    /// </summary>
+    [TestMethod]
+    public void GetHashCodeFoldsTheCompactedDotAnchorsMapByExclusiveOr()
+    {
+        Dot dropped1 = new(R1, 1);
+        Dot dropped2 = new(R2, 1);
+        VectorClockState emptyClock = new([]);
+        OffsetAnchorState headState = new(-1, null);
+
+        var state = new OffsetAnchoredSequenceState<string>(
+            Base: ImmutableArray<string>.Empty,
+            BaseFrontier: emptyClock,
+            BaseGeneration: 0,
+            RemovedBaseOffsets: [],
+            Context: emptyClock,
+            Vertices: [],
+            Tombstones: [],
+            CompactedDotAnchors:
+            [
+                new OffsetTranslationEntry(new DotState(ImmutableArray.Create(R1.AsSpan()), 1), headState),
+                new OffsetTranslationEntry(new DotState(ImmutableArray.Create(R2.AsSpan()), 1), headState)
+            ],
+            CompactedBaseOffsets: []);
+
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.FromState(state);
+
+        int expectedDotAnchorsHash = HashCode.Combine(dropped1, OffsetAnchor.Head) ^ HashCode.Combine(dropped2, OffsetAnchor.Head);
+        int expected = HashCode.Combine(HashCode.Combine(0, VectorClock.Empty, 0), VectorClock.Empty, 0, 0, 0, expectedDotAnchorsHash, 0);
+        Assert.AreEqual(expected, sequence.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// The per-offset remove-dot fold inside the removed-base-offsets map hash must be the exclusive-or
+    /// of each remove-dot's hash code, for an offset certified by two concurrent removes.
+    /// </summary>
+    [TestMethod]
+    public void GetHashCodeFoldsARemovedBaseOffsetsRemoveDotsByExclusiveOr()
+    {
+        Dot removeDotA = new(R1, 1);
+        Dot removeDotB = new(R2, 1);
+        VectorClockState context = new([new ReplicaCounterEntry(ImmutableArray.Create(R1.AsSpan()), 1), new ReplicaCounterEntry(ImmutableArray.Create(R2.AsSpan()), 1)]);
+        VectorClockState emptyClock = new([]);
+
+        var state = new OffsetAnchoredSequenceState<string>(
+            Base: ["b0", "b1"],
+            BaseFrontier: emptyClock,
+            BaseGeneration: 0,
+            RemovedBaseOffsets:
+            [
+                new OffsetBaseRemovalEntry(0, [new DotState(ImmutableArray.Create(R1.AsSpan()), 1), new DotState(ImmutableArray.Create(R2.AsSpan()), 1)])
+            ],
+            Context: context,
+            Vertices: [],
+            Tombstones: [],
+            CompactedDotAnchors: [],
+            CompactedBaseOffsets: []);
+
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.FromState(state);
+
+        int expectedRemoveDotsFold = removeDotA.GetHashCode() ^ removeDotB.GetHashCode();
+        int expectedRemovedHash = HashCode.Combine(0, expectedRemoveDotsFold);
+        int expected = HashCode.Combine(HashCode.Combine(2, VectorClock.Empty, 0), VectorClock.FromState(context), 0, 0, expectedRemovedHash, 0, 0);
+        Assert.AreEqual(expected, sequence.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// Composing a dropped dot's translation through a second compaction must resolve a positive prior
+    /// base offset via the offset-to-offset map, never treat it as the head sentinel.
+    /// </summary>
+    [TestMethod]
+    public void TranslateAnchorComposesAPositiveBaseOffsetAcrossTwoCompactions()
+    {
+        OffsetAnchoredSequence<string> seq0 = OffsetAnchoredSequence<string>.WithBase(["base0"]);
+        (OffsetAnchoredSequence<string> seq1, OffsetAddress x1) = seq0.InsertAtHead("x1val", R1);
+        (OffsetAnchoredSequence<string> seq2, _) = seq1.InsertAtHead("x2val", R2);
+
+        VectorClock frontier1 = seq2.CausalContext;
+        OffsetAnchoredSequence<string> compacted1 = seq2.Compact(frontier1, seq2.CertifiedProjection(frontier1));
+
+        (OffsetAnchoredSequence<string> seq3, _) = compacted1.InsertAtHead("x3val", R1);
+        VectorClock frontier2 = seq3.CausalContext;
+        OffsetAnchoredSequence<string> compacted2 = seq3.Compact(frontier2, seq3.CertifiedProjection(frontier2));
+
+        //x1 converted to base offset 1 in the first compaction; that positive offset must compose through
+        //the second compaction's offset map, landing at base offset 2 of the new generation.
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(2), 2), compacted2.TranslateAnchor(x1));
+    }
+
+
+    /// <summary>
+    /// ToState orders the dot-translation map by the dropped dot's (replica, counter), so every R1 entry
+    /// precedes every R2 entry regardless of mint or drop order.
+    /// </summary>
+    [TestMethod]
+    public void ToStateOrdersCompactedDotAnchorsByReplicaThenCounter()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        (sequence, OffsetAddress p) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "p", R2);
+        (sequence, OffsetAddress q) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(1), 0), "q", R1);
+        (sequence, OffsetAddress r) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(2), 0), "r", R2);
+        (sequence, OffsetAddress s) = sequence.InsertAfter(p, "s", R1);
+
+        VectorClock frontier = FrontierCovering(p.Anchor.LiveId!, q.Anchor.LiveId!, r.Anchor.LiveId!, s.Anchor.LiveId!);
+        OffsetAnchoredSequence<string> compacted = sequence.Compact(frontier, sequence.CertifiedProjection(frontier));
+
+        ImmutableArray<OffsetTranslationEntry> dotAnchors = compacted.ToState().CompactedDotAnchors;
+        Assert.HasCount(4, dotAnchors);
+
+        int lastR1Index = -1;
+        int firstR2Index = int.MaxValue;
+        for (int i = 0; i < dotAnchors.Length; i++)
+        {
+            byte replicaByte = dotAnchors[i].Dropped.Replica[0];
+            if (replicaByte == 1)
+            {
+                lastR1Index = i;
+            }
+            else if (replicaByte == 2 && i < firstR2Index)
+            {
+                firstR2Index = i;
+            }
+        }
+
+        Assert.IsLessThan(firstR2Index, lastR1Index);
+    }
+
+
+    /// <summary>
+    /// A CompactedDotAnchors target admitted by FromState that names a still-live tombstoned vertex composes
+    /// through a following compaction to that vertex's collapsed base anchor, never the stale live anchor.
+    /// </summary>
+    /// <remarks>
+    /// FromState admits a live translation target whose dot is a tombstoned vertex: ValidateTargetAnchor
+    /// requires only that the dot be a vertex, and the W-shape guard bars only a live untombstoned dropped
+    /// dot. V is stable and certified-removed at the frontier, so it drops and the composition seam takes the
+    /// retained-false arm, resolving the dropped dot D to the anchor the walk recorded for V.
+    /// </remarks>
+    [TestMethod]
+    public void ComposeThroughCompactionResolvesALiveTargetOfADroppedVertexToItsBaseAnchor()
+    {
+        //A tombstoned live vertex V anchored at base offset 0, its remove certified by the state's context.
+        OffsetAnchoredSequence<string> seed = OffsetAnchoredSequence<string>.WithBase(Base);
+        (seed, OffsetAddress v) = seed.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "v", R1);
+        seed = seed.Remove(v, R1);
+
+        //A dropped dot D that is not a vertex, translating to AtLive(V). FromState accepts this shape at the
+        //deserialization boundary, so a following compaction must resolve it rather than carry it stale.
+        Dot droppedD = new(R2, 1);
+        OffsetAnchoredSequenceState<string> forged = seed.ToState() with
+        {
+            CompactedDotAnchors = [new OffsetTranslationEntry(DotStateOf(droppedD), new OffsetAnchorState(-1, DotStateOf(v.Anchor.LiveId!)))]
+        };
+        OffsetAnchoredSequence<string> loaded = OffsetAnchoredSequence<string>.FromState(forged);
+
+        //The frontier covers V's insert and certifies its remove, so V drops to the gap anchor of base offset 0.
+        VectorClock frontier = loaded.CausalContext;
+        OffsetAnchoredSequence<string> compacted = loaded.Compact(frontier, loaded.CertifiedProjection(frontier));
+
+        //D must translate to V's collapsed base anchor, never to the stale live anchor.
+        OffsetAddress? translated = compacted.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtLive(droppedD), 0));
+        Assert.AreEqual(new OffsetAddress(OffsetAnchor.AtBase(0), 0), translated);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="OffsetAnchoredSequence{TValue}.InsertAfter"/> rejects a null address with
+    /// <see cref="ArgumentNullException"/> before dereferencing it.
+    /// </summary>
+    [TestMethod]
+    public void InsertAfterValidatesTheAddressIsNotNull()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => sequence.InsertAfter(null!, "x", R1));
+    }
+
+
+    /// <summary>
+    /// Merge fences on the base-frontier generation identity even when the base values and the
+    /// base-generation ordinal agree, per the generation fence in <see cref="OffsetAnchoredSequence{TValue}.Merge"/>.
+    /// </summary>
+    [TestMethod]
+    public void MergingSequencesWithDifferentBaseFrontiersFailsClosed()
+    {
+        VectorClock frontierA = VectorClock.Empty.Increment(R1);
+        VectorClock frontierB = frontierA.Increment(R2);
+        OffsetAnchoredSequenceState<string> stateA = new(["v"], frontierA.ToState(), 1, [], frontierA.ToState(), [], [], [], []);
+        OffsetAnchoredSequenceState<string> stateB = new(["v"], frontierB.ToState(), 1, [], frontierB.ToState(), [], [], [], []);
+        OffsetAnchoredSequence<string> a = OffsetAnchoredSequence<string>.FromState(stateA);
+        OffsetAnchoredSequence<string> b = OffsetAnchoredSequence<string>.FromState(stateB);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => a.Merge(b));
+    }
+
+
+    /// <summary>
+    /// ToState orders vertices by (replica, counter), so every R1 vertex precedes every R2 vertex
+    /// regardless of the order they were minted in.
+    /// </summary>
+    [TestMethod]
+    public void ToStateOrdersVerticesByReplicaThenCounter()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        (OffsetAnchoredSequence<string> withA, OffsetAddress a) = sequence.InsertAtHead("a", R2);
+        (OffsetAnchoredSequence<string> withB, OffsetAddress b) = withA.InsertAfter(a, "b", R1);
+        (OffsetAnchoredSequence<string> withC, OffsetAddress c) = withB.InsertAfter(b, "c", R2);
+        (OffsetAnchoredSequence<string> withD, _) = withC.InsertAfter(c, "d", R1);
+
+        ImmutableArray<OffsetVertexEntry<string>> vertices = withD.ToState().Vertices;
+        Assert.HasCount(4, vertices);
+
+        int lastR1Index = -1;
+        int firstR2Index = int.MaxValue;
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            byte replicaByte = vertices[i].Id.Replica[0];
+            if (replicaByte == 1)
+            {
+                lastR1Index = i;
+            }
+            else if (replicaByte == 2 && i < firstR2Index)
+            {
+                firstR2Index = i;
+            }
+        }
+
+        Assert.IsLessThan(firstR2Index, lastR1Index);
+    }
+
+
+    /// <summary>
+    /// Re-removing an already-removed base offset mints no new remove-dot and returns this sequence
+    /// unchanged.
+    /// </summary>
+    [TestMethod]
+    public void RemovingAnAlreadyRemovedBaseOffsetIsIdempotent()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        OffsetAnchoredSequence<string> onceRemoved = sequence.Remove(new OffsetAddress(OffsetAnchor.AtBase(1), 0), R1);
+
+        OffsetAnchoredSequence<string> againRemoved = onceRemoved.Remove(new OffsetAddress(OffsetAnchor.AtBase(1), 0), R2);
+
+        Assert.IsTrue(ReferenceEquals(onceRemoved, againRemoved));
+    }
+
+
+    /// <summary>
+    /// Re-removing an already-tombstoned live element mints no new remove-dot and returns this sequence
+    /// unchanged, per <see cref="OffsetAnchoredSequence{TValue}.Remove"/>'s idempotency contract.
+    /// </summary>
+    [TestMethod]
+    public void RemovingAnAlreadyTombstonedLiveElementIsIdempotent()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        (sequence, OffsetAddress x) = sequence.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), "x", R1);
+        OffsetAnchoredSequence<string> onceRemoved = sequence.Remove(x, R1);
+
+        OffsetAnchoredSequence<string> againRemoved = onceRemoved.Remove(x, R2);
+
+        Assert.IsTrue(ReferenceEquals(onceRemoved, againRemoved));
+    }
+
+
+    /// <summary>
+    /// GetHashCode's per-entry vertex fold must be sensitive to which vertex changed: two sequences built
+    /// from the identical replica/anchor history but differing in one inserted value must hash differently.
+    /// </summary>
+    [TestMethod]
+    public void GetHashCodeDistinguishesDifferingVertexContent()
+    {
+        (OffsetAnchoredSequence<string> a, _) = OffsetAnchoredSequence<string>.WithBase(Base).InsertAtHead("p", R1);
+        (a, _) = a.InsertAtHead("q", R2);
+
+        (OffsetAnchoredSequence<string> b, _) = OffsetAnchoredSequence<string>.WithBase(Base).InsertAtHead("p", R1);
+        (b, _) = b.InsertAtHead("r", R2);
+
+        Assert.AreNotEqual(a.GetHashCode(), b.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// A current-generation base offset exactly at Base.Length is out of range and TranslateAnchor must
+    /// refuse it rather than treat it as servable.
+    /// </summary>
+    [TestMethod]
+    public void ResolveBaseAddressRejectsAnOffsetAtTheEndOfTheCurrentBase()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        OffsetAddress outOfRange = new(OffsetAnchor.AtBase(Base.Length), 0);
+
+        Assert.IsNull(sequence.TranslateAnchor(outOfRange));
+    }
+
+
+    /// <summary>
+    /// ToState orders tombstones by the target's (replica, counter), so every R1-targeted tombstone
+    /// precedes every R2-targeted tombstone regardless of removal order.
+    /// </summary>
+    [TestMethod]
+    public void ToStateOrdersTombstonesByReplicaThenCounter()
+    {
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.WithBase(Base);
+        (sequence, OffsetAddress a) = sequence.InsertAtHead("a", R2);
+        (sequence, OffsetAddress b) = sequence.InsertAfter(a, "b", R1);
+        (sequence, OffsetAddress c) = sequence.InsertAfter(b, "c", R2);
+        (sequence, OffsetAddress d) = sequence.InsertAfter(c, "d", R1);
+        sequence = sequence.Remove(a, R1);
+        sequence = sequence.Remove(b, R2);
+        sequence = sequence.Remove(c, R1);
+        sequence = sequence.Remove(d, R2);
+
+        ImmutableArray<OffsetTombstoneEntry> tombstones = sequence.ToState().Tombstones;
+        Assert.HasCount(4, tombstones);
+
+        int lastR1Index = -1;
+        int firstR2Index = int.MaxValue;
+        for (int i = 0; i < tombstones.Length; i++)
+        {
+            byte replicaByte = tombstones[i].Target.Replica[0];
+            if (replicaByte == 1)
+            {
+                lastR1Index = i;
+            }
+            else if (replicaByte == 2 && i < firstR2Index)
+            {
+                firstR2Index = i;
+            }
+        }
+
+        Assert.IsLessThan(firstR2Index, lastR1Index);
+    }
+
+
+    /// <summary>
+    /// The tombstone-map hash must be the exclusive-or of each target's combine, for two distinct
+    /// legacy (empty remove-dot set) targets.
+    /// </summary>
+    [TestMethod]
+    public void GetHashCodeFoldsTheTombstoneMapByExclusiveOr()
+    {
+        VectorClockState emptyClock = new([]);
+        Dot target1 = new(R1, 1);
+        Dot target2 = new(Replica(3), 1);
+
+        var state = new OffsetAnchoredSequenceState<string>(
+            Base: ImmutableArray<string>.Empty,
+            BaseFrontier: emptyClock,
+            BaseGeneration: 0,
+            RemovedBaseOffsets: [],
+            Context: emptyClock,
+            Vertices: [],
+            Tombstones:
+            [
+                new OffsetTombstoneEntry(new DotState(ImmutableArray.Create(target1.Replica.AsSpan()), target1.Counter), []),
+                new OffsetTombstoneEntry(new DotState(ImmutableArray.Create(target2.Replica.AsSpan()), target2.Counter), [])
+            ],
+            CompactedDotAnchors: [],
+            CompactedBaseOffsets: []);
+
+        OffsetAnchoredSequence<string> sequence = OffsetAnchoredSequence<string>.FromState(state);
+
+        int expectedTombstonesHash = HashCode.Combine(target1, 0) ^ HashCode.Combine(target2, 0);
+        int expected = HashCode.Combine(HashCode.Combine(0, VectorClock.Empty, 0), VectorClock.Empty, 0, expectedTombstonesHash, 0, 0, 0);
+        Assert.AreEqual(expected, sequence.GetHashCode());
     }
 }

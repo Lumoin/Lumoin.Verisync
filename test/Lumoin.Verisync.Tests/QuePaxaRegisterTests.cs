@@ -152,6 +152,61 @@ internal sealed class QuePaxaRegisterTests
     }
 
 
+    /// <summary>
+    /// Pins the first recorder's proposal instance when phase zero gathers equal proposals with the same key.
+    /// </summary>
+    [TestMethod]
+    public void PhaseZeroKeepsTheFirstProposalInstanceWhenRecorderKeysTie()
+    {
+        QuePaxaRegister<string> register = QuePaxaRegister<string>.WithRecorders(2);
+        QuePaxaRound<string> round = QuePaxaRound<string>.Begin(LaneA, null, "a");
+
+        (QuePaxaRegister<string> after, QuePaxaStepOutcome<string> outcome) =
+            register.Step(round, [0, 1], () => ProposalPriority.Lowest);
+
+        PrioritizedProposal<string>? first = after.Recorders[0].Register.First;
+        PrioritizedProposal<string>? second = after.Recorders[1].Register.First;
+        Assert.IsNotNull(first);
+        Assert.IsNotNull(second);
+        Assert.AreEqual(first, second);
+        Assert.AreNotSame(first, second);
+        Assert.AreEqual(QuePaxaStepKind.Advanced, outcome.Kind);
+        Assert.IsNotNull(outcome.Next);
+        Assert.AreSame(first, outcome.Next.Proposal);
+    }
+
+
+    /// <summary>
+    /// Pins the first prior aggregate instance carried into the next round when phase three gathers equal proposals.
+    /// </summary>
+    [TestMethod]
+    public void PhaseThreeKeepsTheFirstPriorAggregateInstanceWhenRecorderKeysTie()
+    {
+        var key = new ProposalKey(ProposalPriority.Lowest, LaneA);
+        var first = new PrioritizedProposal<string>(key, "a");
+        var second = new PrioritizedProposal<string>(key, "a");
+        var template = new PrioritizedProposal<string>(new ProposalKey(ProposalPriority.Lowest, LaneB), "b");
+        RecorderStep priorStep = RecorderStep.FromRoundAndPhase(1, 2);
+        RecorderStep step = priorStep.Next();
+        (QuePaxaRecorder<string> firstRecorder, _) = QuePaxaRecorder<string>.Leaderless.Record(priorStep, first);
+        (QuePaxaRecorder<string> secondRecorder, _) = QuePaxaRecorder<string>.Leaderless.Record(priorStep, second);
+        (_, RecordSummary<string> firstSummary) = firstRecorder.Record(step, template);
+        (_, RecordSummary<string> secondSummary) = secondRecorder.Record(step, template);
+        var round = new QuePaxaRound<string>(LaneB, null, step, template);
+
+        QuePaxaStepOutcome<string> outcome = round.Conclude(
+            [new RecorderAnswer<string>(0, firstSummary), new RecorderAnswer<string>(1, secondSummary)],
+            2);
+
+        Assert.AreSame(first, firstSummary.PriorAggregate);
+        Assert.AreSame(second, secondSummary.PriorAggregate);
+        Assert.AreEqual(firstSummary.PriorAggregate, secondSummary.PriorAggregate);
+        Assert.AreNotSame(firstSummary.PriorAggregate, secondSummary.PriorAggregate);
+        Assert.AreEqual(QuePaxaStepKind.Advanced, outcome.Kind);
+        Assert.IsNotNull(outcome.Next);
+        Assert.AreSame(first, outcome.Next.Proposal);
+    }
+
     [TestMethod]
     public void AProposerThatClaimsLeadershipWithoutBeingTheConfiguredLeaderNeverDecidesAtStepFour()
     {
@@ -171,6 +226,15 @@ internal sealed class QuePaxaRegisterTests
     }
 
 
+    /// <summary>
+    /// A duplicate recorder index is refused before the step sends anything: the refusal names the index array,
+    /// and the priority source is never drawn.
+    /// </summary>
+    /// <remarks>
+    /// The conclusion refuses a duplicate answer too, so the exception type cannot tell the two checks apart.
+    /// Only the request-side check runs before the sends, and a refused step that had already drawn would leave
+    /// a seeded source out of step with every run that replays it.
+    /// </remarks>
     [TestMethod]
     public void ADuplicateRecorderIndexThrows()
     {
@@ -180,8 +244,12 @@ internal sealed class QuePaxaRegisterTests
         QuePaxaRound<string> round = QuePaxaRound<string>.Begin(LaneA, null, "a");
         var source = new SeededPrioritySource(14);
 
-        Assert.ThrowsExactly<ArgumentException>(() => _ = register.Step(round, [0, 0], source.Next));
-        Assert.ThrowsExactly<ArgumentException>(() => _ = register.Step(round, [0, 1, 0], source.Next));
+        ArgumentException adjacentDuplicate = Assert.ThrowsExactly<ArgumentException>(() => _ = register.Step(round, [0, 0], source.Next));
+        ArgumentException separatedDuplicate = Assert.ThrowsExactly<ArgumentException>(() => _ = register.Step(round, [0, 1, 0], source.Next));
+
+        Assert.AreEqual("recorderIndices", adjacentDuplicate.ParamName);
+        Assert.AreEqual("recorderIndices", separatedDuplicate.ParamName);
+        Assert.AreEqual(0, source.DrawCount);
     }
 
 
@@ -242,7 +310,13 @@ internal sealed class QuePaxaRegisterTests
         var source = new SeededPrioritySource(18);
 
         Assert.ThrowsExactly<ArgumentNullException>(() => _ = register.Step(null!, AllThree, source.Next));
-        Assert.ThrowsExactly<ArgumentNullException>(() => _ = register.Step(round, AllThree, null!));
+
+        //A send refuses a null source on its own, so a step over any non-empty index array throws the same
+        //exception whichever of the two checks runs. An empty array reaches no recorder, and without the
+        //step's own check it falls through to a quorum miss.
+        ArgumentNullException refused = Assert.ThrowsExactly<ArgumentNullException>(() => _ = register.Step(round, [], null!));
+
+        Assert.AreEqual("drawPriority", refused.ParamName);
         Assert.ThrowsExactly<ArgumentNullException>(() => _ = register.Propose(LaneA, null, "a", null!));
     }
 
@@ -302,6 +376,37 @@ internal sealed class QuePaxaRegisterTests
         QuePaxaStepKind fromZero = (QuePaxaStepKind)Enum.ToObject(typeof(QuePaxaStepKind), 0);
 
         Assert.AreEqual(QuePaxaStepKind.QuorumMissed, fromZero);
+    }
+
+
+    /// <summary>
+    /// A proposal against recorders already standing at the last representable step catches up to that step,
+    /// finds it has no successor, and ends undecided after two steps.
+    /// </summary>
+    /// <remarks>
+    /// Propose reaches every recorder, so a quorum miss never ends it; a spent step budget is the only way it
+    /// returns without a decision.
+    /// </remarks>
+    [TestMethod]
+    public void AProposalThatCatchesUpToTheLastStepEndsUndecided()
+    {
+        QuePaxaRegister<string> register = QuePaxaRegister<string>.WithRecorders(3);
+        var source = new SeededPrioritySource(21);
+        var held = new PrioritizedProposal<string>(new ProposalKey(new ProposalPriority(100), LaneA), "a");
+        QuePaxaRound<string> atTheTop = QuePaxaRound<string>.Begin(LaneA, null, "a") with { Step = RecorderStep.MaxValue, Proposal = held };
+
+        //Every recorder is first driven to the top of the budget holding an ordinary first proposal, so the
+        //proposal below catches up there on its first step and is exhausted on its second.
+        (QuePaxaRegister<string> spent, QuePaxaStepOutcome<string> topped) = register.Step(atTheTop, AllThree, source.Next);
+        Assert.AreEqual(QuePaxaStepKind.Exhausted, topped.Kind);
+
+        (_, QuePaxaOutcome<string> outcome) = spent.Propose(LaneB, null, "b", source.Next);
+
+        Assert.IsFalse(outcome.IsDecided);
+        Assert.IsNull(outcome.Value);
+        Assert.IsNull(outcome.DecidedBy);
+        Assert.AreEqual(RecorderStep.Zero, outcome.DecidedAt);
+        Assert.AreEqual(2, outcome.Steps);
     }
 
 

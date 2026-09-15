@@ -222,7 +222,7 @@ internal sealed class RaftNodeTests
 
         //The safety property: never two distinct leaders in one term, across the whole run. The contested
         //term contributed zero leaders; the resolving term contributed exactly one.
-        Assert.HasCount(0, leadersSeen.Where(p => p.Term == contestedTerm).ToList());
+        Assert.IsEmpty(leadersSeen.Where(p => p.Term == contestedTerm).ToList());
         IEnumerable<IGrouping<Term, ReplicaId>> byTerm = leadersSeen.GroupBy(p => p.Term, p => p.Leader);
         foreach(IGrouping<Term, ReplicaId> term in byTerm)
         {
@@ -539,6 +539,405 @@ internal sealed class RaftNodeTests
         Assert.AreEqual(RaftRole.Candidate, candidate.Role);
         Assert.ThrowsExactly<InvalidOperationException>(() => candidate.Propose("x"));
         Assert.ThrowsExactly<InvalidOperationException>(() => candidate.CreateAppendEntries(N2));
+    }
+
+
+    /// <summary>
+    /// Pins that the leader-role guard in <see cref="RaftNode{TCommand}.CreateAppendEntries(ReplicaId)"/> is
+    /// what refuses a non-leader, not a downstream accident: a demoted leader still carries the follower
+    /// progress its leadership initialized, so without the guard the call would build and return a heartbeat
+    /// instead of throwing. A freshly constructed follower cannot pin this, because its default progress makes
+    /// the downstream index arithmetic throw the same exception type the guard uses.
+    /// </summary>
+    [TestMethod]
+    public void CreateAppendEntriesThrowsAfterALeaderStepsDown()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> demoted = new(N1, members);
+        RaftNode<string> challenger = new(N2, members);
+        RaftNode<string> third = new(N3, members);
+
+        //The node first wins an election, which initializes its per-follower progress.
+        ElectLeader(demoted, challenger, third);
+        Assert.AreEqual(RaftRole.Leader, demoted.Role);
+
+        //A higher-term vote request demotes it, and stepping down preserves the initialized progress.
+        RequestVoteRequest challenge = challenger.StartElection();
+        demoted.HandleRequestVote(challenge);
+        Assert.AreEqual(RaftRole.Follower, demoted.Role);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => demoted.CreateAppendEntries(N2));
+    }
+
+
+    /// <summary>LeaderCommit caps how far a follower may advance its own commit index, even when the request
+    /// delivers entries beyond that point — the leader itself has not committed them yet.</summary>
+    [TestMethod]
+    public void CommitIndexNeverAdvancesPastWhatLeaderCommitAllows()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> follower = new(N2, members);
+
+        AppendEntriesReply reply = follower.HandleAppendEntries(new AppendEntriesRequest<string>(
+            Term.First, N1, LogIndex.BeforeFirst, Term.Zero,
+            [new RaftLogEntry<string>(Term.First, "a"), new RaftLogEntry<string>(Term.First, "b"), new RaftLogEntry<string>(Term.First, "c")],
+            LogIndex.First));
+
+        Assert.IsTrue(reply.Success);
+        Assert.HasCount(3, follower.Log);
+        Assert.AreEqual(LogIndex.First, follower.CommitIndex, "The commit index advanced past what LeaderCommit allowed.");
+    }
+
+
+    /// <summary>Once the higher-term branch above has been passed, only a reply whose term matches
+    /// CurrentTerm may update the leader's per-follower bookkeeping; a lower-term reply is stale wire data and
+    /// must be ignored no matter the leader's current role.</summary>
+    [TestMethod]
+    public void AStaleTermReplyDoesNotAdvanceFollowerProgressEvenWhileStillLeader()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> leader = new(N1, members);
+        RaftNode<string> follower2 = new(N2, members);
+
+        ElectLeader(leader, follower2);
+        Assert.AreEqual(RaftRole.Leader, leader.Role);
+
+        //The stale reply claims a MatchIndex that nothing in the current term ever sent.
+        leader.ReceiveAppendEntriesReply(N2, new AppendEntriesReply(Term.Zero, true, new LogIndex(5)));
+
+        //If the stale reply had been (wrongly) applied, the next request to N2 would probe from index 5; the
+        //untouched initial progress instead probes from the empty prefix.
+        AppendEntriesRequest<string> request = leader.CreateAppendEntries(N2);
+        Assert.AreEqual(LogIndex.BeforeFirst, request.PrevLogIndex, "A stale reply advanced the follower's progress.");
+    }
+
+
+    /// <summary>The universal "greater term seen" rule applies to vote replies too: even though a
+    /// higher-term reply grants nothing, the candidate must adopt the higher term and revert to follower.</summary>
+    [TestMethod]
+    public void AHigherTermVoteReplyForcesAStepDownEvenWhenNotCounted()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> candidate = new(N1, members);
+
+        RequestVoteRequest request = candidate.StartElection();
+        Term higher = new(request.Term.Value + 5);
+
+        bool won = candidate.ReceiveVote(N2, new RequestVoteReply(higher, false));
+
+        Assert.IsFalse(won);
+        Assert.AreEqual(RaftRole.Follower, candidate.Role, "A higher-term reply did not step the candidate down.");
+        Assert.AreEqual(higher, candidate.CurrentTerm, "A higher-term reply was not adopted.");
+        Assert.IsNull(candidate.VotedFor, "Stepping down did not clear the prior vote.");
+    }
+
+
+    /// <summary>The term guard only rejects a strictly lower (stale) term; an equal-term request must still
+    /// reach the up-to-date/already-voted evaluation below it.</summary>
+    [TestMethod]
+    public void AVoteRequestAtTheReceiversExactCurrentTermIsStillEvaluated()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> voter = new(N1, members);
+
+        //Bring the voter to term 3 via a heartbeat that never asks for a vote, leaving VotedFor null.
+        AppendEntriesReply heartbeat = voter.HandleAppendEntries(new AppendEntriesRequest<string>(new Term(3), N2, LogIndex.BeforeFirst, Term.Zero, [], LogIndex.BeforeFirst));
+        Assert.IsTrue(heartbeat.Success);
+        Assert.AreEqual(new Term(3), voter.CurrentTerm);
+        Assert.IsNull(voter.VotedFor);
+
+        //A candidate campaigns at that SAME term with an equally up-to-date (empty) log.
+        RequestVoteReply reply = voter.HandleRequestVote(new RequestVoteRequest(new Term(3), N3, LogIndex.BeforeFirst, Term.Zero));
+
+        Assert.IsTrue(reply.VoteGranted, "An equal-term request was refused as though it were stale.");
+        Assert.AreEqual(N3, voter.VotedFor);
+    }
+
+
+    /// <summary>IndexOf returns 0 for the first membership entry — a valid position, not the "not found"
+    /// sentinel — so a reply from that member must be tallied like any other.</summary>
+    [TestMethod]
+    public void AVoteFromTheFirstMemberInTheMembershipArrayCounts()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> candidate = new(N2, members);
+
+        RequestVoteRequest request = candidate.StartElection();
+
+        Assert.IsTrue(candidate.ReceiveVote(N1, new RequestVoteReply(request.Term, true)));
+        Assert.AreEqual(RaftRole.Leader, candidate.Role);
+    }
+
+
+    /// <summary>A successful append must advance the follower's NextIndex to just past the matched entry;
+    /// falling through to the failure path's retreat afterward would resend the same, already-confirmed
+    /// entry.</summary>
+    [TestMethod]
+    public void ASuccessfulReplyAdvancesNextIndexPastTheMatchedEntryWithoutRetreatingIt()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> leader = new(N1, members);
+        RaftNode<string> follower2 = new(N2, members);
+
+        ElectLeader(leader, follower2);
+        leader.Propose("a");
+        leader.Propose("b");
+
+        AppendEntriesRequest<string> first = leader.CreateAppendEntries(N2);
+        AppendEntriesReply reply = follower2.HandleAppendEntries(first);
+        Assert.IsTrue(reply.Success);
+
+        leader.ReceiveAppendEntriesReply(N2, reply);
+
+        AppendEntriesRequest<string> second = leader.CreateAppendEntries(N2);
+        Assert.AreEqual(new LogIndex(2), second.PrevLogIndex, "A successful reply retreated NextIndex instead of advancing past the matched entry.");
+        Assert.IsEmpty(second.Entries, "A successful reply caused the already-matched entry to be resent.");
+    }
+
+
+    /// <summary>A PrevLogIndex/PrevLogTerm mismatch must be reported as a failed append; nothing was appended
+    /// or changed, so claiming success would tell the leader a prefix matched that never did.</summary>
+    [TestMethod]
+    public void AConsistencyCheckFailureReportsUnsuccessful()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> follower = new(N2, members);
+
+        AppendEntriesReply seed = follower.HandleAppendEntries(new AppendEntriesRequest<string>(
+            Term.First, N1, LogIndex.BeforeFirst, Term.Zero, [new RaftLogEntry<string>(Term.First, "a")], LogIndex.BeforeFirst));
+        Assert.IsTrue(seed.Success);
+
+        //The request names the same index with a different PrevLogTerm, which is the mismatch the consistency check exists to catch.
+        AppendEntriesReply mismatched = follower.HandleAppendEntries(new AppendEntriesRequest<string>(
+            new Term(2), N1, LogIndex.First, new Term(2), [], LogIndex.BeforeFirst));
+
+        Assert.IsFalse(mismatched.Success, "A PrevLogTerm mismatch was reported as a successful append.");
+        Assert.AreEqual(LogIndex.BeforeFirst, mismatched.MatchIndex);
+        Assert.HasCount(1, follower.Log, "The follower's log changed even though the consistency check failed.");
+    }
+
+
+    /// <summary>Only a request addressed to an actual member is meaningful; a stranger has no per-follower
+    /// progress slot to build one from.</summary>
+    [TestMethod]
+    public void CreateAppendEntriesRejectsATargetOutsideTheMembership()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> leader = new(N1, members);
+        RaftNode<string> follower2 = new(N2, members);
+
+        ElectLeader(leader, follower2);
+        Assert.AreEqual(RaftRole.Leader, leader.Role);
+
+        ArgumentException thrown = Assert.ThrowsExactly<ArgumentException>(() => leader.CreateAppendEntries(Stranger));
+        Assert.AreEqual("follower", thrown.ParamName);
+    }
+
+
+    /// <summary>Only a strictly higher term forces a step-down on RequestVote; an equal-term request is
+    /// evaluated in place. A leader has already voted for itself this term, so a same-term request from a
+    /// different candidate must be denied without demoting the leader or clearing its self-vote.</summary>
+    [TestMethod]
+    public void ARequestVoteAtTheLeadersOwnTermDoesNotForceAStepDown()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> leader = new(N1, members);
+        RaftNode<string> follower2 = new(N2, members);
+        RaftNode<string> follower3 = new(N3, members);
+
+        ElectLeader(leader, follower2, follower3);
+        Assert.AreEqual(RaftRole.Leader, leader.Role);
+        Term term = leader.CurrentTerm;
+
+        RequestVoteReply reply = leader.HandleRequestVote(new RequestVoteRequest(term, N3, LogIndex.BeforeFirst, Term.Zero));
+
+        Assert.IsFalse(reply.VoteGranted, "The leader granted a vote away at its own term.");
+        Assert.AreEqual(RaftRole.Leader, leader.Role, "An equal-term vote request demoted the leader.");
+        Assert.AreEqual(N1, leader.VotedFor, "An equal-term vote request cleared the leader's self-vote.");
+    }
+
+
+    /// <summary>ReceiveVote's return value is a strict "this exact call completed the majority" signal; a
+    /// legitimate denial at the matching term must return false.</summary>
+    [TestMethod]
+    public void ADeniedVoteReplyReturnsFalseWithoutBecomingLeader()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> candidate = new(N1, members);
+
+        RequestVoteRequest request = candidate.StartElection();
+
+        bool result = candidate.ReceiveVote(N2, new RequestVoteReply(request.Term, false));
+
+        Assert.IsFalse(result, "A denied vote reply was reported as completing the election.");
+        Assert.AreEqual(RaftRole.Candidate, candidate.Role);
+    }
+
+
+    /// <summary>IndexOf returns 0 for the first membership entry — a valid position — so a leader elsewhere
+    /// in the membership must still be able to build a request addressed to it.</summary>
+    [TestMethod]
+    public void CreateAppendEntriesTargetsTheFirstMemberInTheMembershipArray()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> leader = new(N2, members);
+        RaftNode<string> follower3 = new(N3, members);
+
+        ElectLeader(leader, follower3);
+        Assert.AreEqual(RaftRole.Leader, leader.Role);
+
+        AppendEntriesRequest<string> request = leader.CreateAppendEntries(N1);
+
+        Assert.AreEqual(leader.CurrentTerm, request.Term);
+    }
+
+
+    /// <summary>Starting a fresh campaign must reset the tally: a peer's grant from the first campaign must
+    /// not still count once a second campaign (a re-election after a timeout) begins.</summary>
+    [TestMethod]
+    public void ReCampaigningClearsStaleVotesFromThePriorTerm()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3, N4, N5];
+        RaftNode<string> candidate = new(N1, members);
+
+        RequestVoteRequest firstCampaign = candidate.StartElection();
+        Assert.IsFalse(candidate.ReceiveVote(N2, new RequestVoteReply(firstCampaign.Term, true)));
+        Assert.AreEqual(RaftRole.Candidate, candidate.Role);
+
+        RequestVoteRequest secondCampaign = candidate.StartElection();
+        Assert.AreNotEqual(firstCampaign.Term, secondCampaign.Term);
+
+        //A single further grant in the new term must NOT be enough: self plus exactly one new grant (two of
+        //five) stays a minority. Only a stale, uncleared vote from the first campaign could complete this.
+        Assert.IsFalse(candidate.ReceiveVote(N3, new RequestVoteReply(secondCampaign.Term, true)));
+        Assert.AreEqual(RaftRole.Candidate, candidate.Role);
+    }
+
+
+    /// <summary>LeaderCommit may only ever raise the commit index; a stale re-delivery that repeats the same
+    /// LeaderCommit value but whose own range ends before it must never pull the commit index backward.</summary>
+    [TestMethod]
+    public void ALeaderCommitEqualToTheCurrentCommitIndexNeverLowersIt()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> follower = new(N2, members);
+
+        AppendEntriesReply initial = follower.HandleAppendEntries(new AppendEntriesRequest<string>(
+            Term.First, N1, LogIndex.BeforeFirst, Term.Zero,
+            [new RaftLogEntry<string>(Term.First, "a"), new RaftLogEntry<string>(Term.First, "b"), new RaftLogEntry<string>(Term.First, "c")],
+            new LogIndex(3)));
+        Assert.IsTrue(initial.Success);
+        Assert.AreEqual(new LogIndex(3), follower.CommitIndex);
+
+        //A stale re-delivery carries only the FIRST (already matching) entry and repeats the SAME LeaderCommit.
+        AppendEntriesReply stale = follower.HandleAppendEntries(new AppendEntriesRequest<string>(
+            Term.First, N1, LogIndex.BeforeFirst, Term.Zero, [new RaftLogEntry<string>(Term.First, "a")], new LogIndex(3)));
+
+        Assert.IsTrue(stale.Success);
+        Assert.AreEqual(new LogIndex(3), follower.CommitIndex, "An equal LeaderCommit pulled the commit index backward.");
+    }
+
+
+    /// <summary>
+    /// A default (never-initialized) membership array must be refused by this guard specifically, not merely
+    /// reach the "doesn't contain id" guard by coincidence: Contains on a default ImmutableArray throws
+    /// NullReferenceException rather than the documented ArgumentException.
+    /// </summary>
+    [TestMethod]
+    public void ConstructorRejectsDefaultMembershipArray()
+    {
+        ImmutableArray<ReplicaId> defaultMembers = default;
+
+        ArgumentException thrown = Assert.ThrowsExactly<ArgumentException>(() => new RaftNode<string>(N1, defaultMembers));
+        Assert.AreEqual("members", thrown.ParamName);
+    }
+
+
+    /// <summary>A reply's term is checked once the higher-term branch has already passed; a granted reply
+    /// left over from an earlier (now stale) term must still be rejected, not tallied just because the
+    /// candidate role happens to still hold.</summary>
+    [TestMethod]
+    public void AStaleTermGrantedReplyIsNotTalliedTowardTheCurrentTermsQuorum()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3, N4, N5];
+        RaftNode<string> candidate = new(N1, members);
+
+        RequestVoteRequest firstCampaign = candidate.StartElection();
+        RequestVoteReply staleGrantedReply = new(firstCampaign.Term, true);
+
+        RequestVoteRequest secondCampaign = candidate.StartElection();
+        Assert.AreEqual(RaftRole.Candidate, candidate.Role);
+
+        //One genuine grant in the new term brings the tally to two of five (self + N2) — still a minority.
+        Assert.IsFalse(candidate.ReceiveVote(N2, new RequestVoteReply(secondCampaign.Term, true)));
+
+        //Replaying the FIRST campaign's granted reply must be ignored: its term no longer matches, so it must
+        //not complete the quorum that a genuine third vote would.
+        Assert.IsFalse(candidate.ReceiveVote(N3, staleGrantedReply), "A stale-term granted reply completed the election quorum.");
+        Assert.AreEqual(RaftRole.Candidate, candidate.Role, "A stale-term granted reply was tallied.");
+    }
+
+
+    /// <summary>IndexOf returns 0 for the first membership entry — a valid position — so a leader elsewhere
+    /// in the membership must still record that follower's reply.</summary>
+    [TestMethod]
+    public void AReplyFromTheFirstMemberInTheMembershipArrayAdvancesItsProgress()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> leader = new(N2, members);
+        RaftNode<string> follower3 = new(N3, members);
+
+        ElectLeader(leader, follower3);
+        Assert.AreEqual(RaftRole.Leader, leader.Role);
+
+        leader.Propose("solo");
+
+        //N1 sits at membership position 0. A successful reply from it must count toward the majority just
+        //like any other follower's — two of three (the leader plus N1) is already a quorum.
+        leader.ReceiveAppendEntriesReply(N1, new AppendEntriesReply(leader.CurrentTerm, true, LogIndex.First));
+
+        Assert.AreEqual(LogIndex.First, leader.CommitIndex, "A reply from the first membership entry was silently dropped.");
+    }
+
+
+    /// <summary>In a one-node cluster the leader is already its own majority, so proposing an entry must
+    /// commit it immediately — there is no peer reply to wait for that could otherwise advance the commit
+    /// index.</summary>
+    [TestMethod]
+    public void ProposeAdvancesCommitIndexImmediatelyInASingleNodeCluster()
+    {
+        ImmutableArray<ReplicaId> members = [N1];
+        RaftNode<string> leader = new(N1, members);
+
+        leader.StartElection();
+        Assert.AreEqual(RaftRole.Leader, leader.Role, "A lone node did not become its own leader.");
+
+        LogIndex index = leader.Propose("solo");
+
+        Assert.AreEqual(index, leader.CommitIndex, "Proposing on a single-node leader did not advance the commit index.");
+    }
+
+
+    /// <summary>
+    /// Every RPC entry point rejects a null request/reply with ArgumentNullException before touching any of
+    /// its members, so a malformed transport layer fails fast with the documented exception type rather than
+    /// an incidental NullReferenceException from the first field access.
+    /// </summary>
+    [TestMethod]
+    public void NullRequestsAndRepliesAreRejectedAcrossEveryRpcSurface()
+    {
+        ImmutableArray<ReplicaId> members = [N1, N2, N3];
+        RaftNode<string> node = new(N1, members);
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => node.HandleRequestVote(null!));
+
+        //A member id is used so the null check is what fires, not the earlier membership filter returning
+        //before ever touching the reply.
+        Assert.ThrowsExactly<ArgumentNullException>(() => node.ReceiveVote(N2, null!));
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => node.HandleAppendEntries(null!));
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => node.ReceiveAppendEntriesReply(N2, null!));
     }
 
 

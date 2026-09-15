@@ -80,6 +80,19 @@ internal sealed class AcceptorTests
     }
 
 
+    /// <summary>Pins that <see cref="Acceptor{TValue}.Prepare"/> rejects a ballot equal to the currently promised ballot: only a strictly higher ballot may promise.</summary>
+    [TestMethod]
+    public void PrepareEqualBallotIsRejected()
+    {
+        (Acceptor<string> promised, _) = Acceptor<string>.Initial.Prepare(new Ballot(2, R1));
+
+        (Acceptor<string> after, PrepareResponse<string> response) = promised.Prepare(new Ballot(2, R1));
+
+        Assert.IsFalse(response.Promised);
+        Assert.AreEqual(new Ballot(2, R1), after.Promise);
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

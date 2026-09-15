@@ -93,6 +93,74 @@ internal sealed class ReconciliationDropTests
 
 
     /// <summary>
+    /// Pins that the typed <see cref="ReconciliationDrop.Equals(ReconciliationDrop)"/> returns false for a null
+    /// other, as its <see cref="System.Diagnostics.CodeAnalysis.NotNullWhenAttribute"/> contract promises, rather
+    /// than treating null as equal.
+    /// </summary>
+    [TestMethod]
+    public void EqualsReturnsFalseForNullOther()
+    {
+        ReconciliationDrop drop = new([new DotState(ReplicaBytes(1), 1)]);
+
+        Assert.IsFalse(drop.Equals(NullDrop()));
+    }
+
+
+    /// <summary>
+    /// Pins that duplicate-dot detection requires an exact (replica, counter) match: dots sharing only the
+    /// counter, or only the replica, are distinct dots and must not be rejected as duplicates.
+    /// </summary>
+    [TestMethod]
+    public void ConstructionAcceptsDotsSharingOnlyOneOfReplicaOrCounter()
+    {
+        //A shared counter across different replicas is not a duplicate dot.
+        ReconciliationDrop sameCounter = new(
+        [
+            new DotState(ReplicaBytes(1), 3),
+            new DotState(ReplicaBytes(2), 3)
+        ]);
+
+        Assert.HasCount(2, sameCounter.Dots);
+
+        //A shared replica across different counters is not a duplicate dot either.
+        ReconciliationDrop sameReplica = new(
+        [
+            new DotState(ReplicaBytes(4), 1),
+            new DotState(ReplicaBytes(4), 2)
+        ]);
+
+        Assert.HasCount(2, sameReplica.Dots);
+    }
+
+
+    /// <summary>
+    /// Pins the exact hash algorithm the XML doc promises: each dot's hash combines its replica bytes and its
+    /// counter via <see cref="HashCode"/>, and the per-dot hashes combine order-independently via XOR, mirroring
+    /// <see cref="DottedVersionVectorSet{T}.GetHashCode"/>'s style.
+    /// </summary>
+    [TestMethod]
+    public void HashCombinesReplicaBytesCounterAndDotsByXor()
+    {
+        DotState first = new(ReplicaBytes(1), 3);
+        DotState second = new(ReplicaBytes(2), 7);
+
+        ReconciliationDrop drop = new([first, second]);
+
+        HashCode firstHash = new();
+        firstHash.AddBytes(first.Replica.AsSpan());
+        firstHash.Add(first.Counter);
+
+        HashCode secondHash = new();
+        secondHash.AddBytes(second.Replica.AsSpan());
+        secondHash.Add(second.Counter);
+
+        int expected = firstHash.ToHashCode() ^ secondHash.ToHashCode();
+
+        Assert.AreEqual(expected, drop.GetHashCode());
+    }
+
+
+    /// <summary>
     /// Builds the fixed 32-byte (ReplicaId.Size) replica bytes for a deterministic id, without System.Random
     /// (CA5394): the seed byte sits at position zero so distinct seeds yield distinct replicas.
     /// </summary>
@@ -112,4 +180,8 @@ internal sealed class ReconciliationDropTests
 
         return ImmutableArray.Create(bytes);
     }
+
+
+    /// <summary>Returns null from an opaque helper so the compiler cannot fold the comparison away (CA1508).</summary>
+    private static ReconciliationDrop? NullDrop() => null;
 }

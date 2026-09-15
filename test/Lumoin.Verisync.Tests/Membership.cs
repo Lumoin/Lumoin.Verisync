@@ -72,6 +72,18 @@ internal static class Membership
     }
 
 
+    /// <summary>An incarnation whose leading bytes are <paramref name="prefix"/> and whose remaining bytes are zero.</summary>
+    /// <param name="prefix">The leading bytes.</param>
+    /// <returns>The incarnation.</returns>
+    internal static StoreIncarnation Incarnation(params byte[] prefix)
+    {
+        Span<byte> buffer = stackalloc byte[StoreIncarnation.Size];
+        prefix.AsSpan().CopyTo(buffer);
+
+        return StoreIncarnation.FromSpan(buffer);
+    }
+
+
     private static StoreIncarnation IncarnationFor(ReplicaId replica)
     {
         return StoreIncarnation.FromSpan(replica.AsSpan()[..StoreIncarnation.Size]);

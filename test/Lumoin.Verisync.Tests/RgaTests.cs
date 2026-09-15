@@ -15,7 +15,7 @@ internal sealed class RgaTests
     [TestMethod]
     public void EmptyHasNoValues()
     {
-        Assert.HasCount(0, Rga<string>.Empty.Values);
+        Assert.IsEmpty(Rga<string>.Empty.Values);
         Assert.AreEqual(0, Rga<string>.Empty.Count);
     }
 
@@ -56,7 +56,7 @@ internal sealed class RgaTests
         (Rga<string> withA, Dot idA) = Rga<string>.Empty.InsertAtHead("A", R1);
         Rga<string> removed = withA.Remove(idA, R1);
 
-        Assert.HasCount(0, removed.Values);
+        Assert.IsEmpty(removed.Values);
         Assert.AreEqual(0, removed.Count);
 
         //The remove is a dotted event: it ticks R1's axis, so the context advances by one and the
@@ -78,7 +78,7 @@ internal sealed class RgaTests
         Rga<string> original = Rga<string>.Empty;
         _ = original.InsertAtHead("A", R1);
 
-        Assert.HasCount(0, original.Values);
+        Assert.IsEmpty(original.Values);
     }
 
 
@@ -189,7 +189,7 @@ internal sealed class RgaTests
     [TestMethod]
     public void FromStateAcceptsUnknownTombstoneHarmlessly()
     {
-        //A remove can be serialized separately from its vertex, so a tombstone whose TARGET is absent is
+        //A remove can be serialized separately from its vertex, so a tombstone whose target is absent is
         //accepted (the orphan target is exempt from context-covers) as long as its remove-dot is covered by
         //the context. It affects neither Values nor Count.
         var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1), new ReplicaCounterEntry(Bytes(R2), 9)]);
@@ -327,7 +327,7 @@ internal sealed class RgaTests
     {
         //A deserializer that leaves an unset member default (the source-generated System.Text.Json path)
         //hands FromState default arrays for absent fields. An absent array is not the same statement as an
-        //explicitly empty one — a legacy tombstone declares an EMPTY remove-dot list — so each fails closed
+        //explicitly empty one — a legacy tombstone declares an empty remove-dot list — so each fails closed
         //instead of being reinterpreted or crashing on a Length read.
         var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 2)]);
         var vertex = new RgaVertexEntry<string>(Dot(R1, 1), null, "A");
@@ -341,6 +341,149 @@ internal sealed class RgaTests
 
         var defaultVerticesState = new RgaState<string>(context, default, []);
         Assert.ThrowsExactly<ArgumentException>(() => Rga<string>.FromState(defaultVerticesState));
+    }
+
+
+    /// <summary>Equals must return false when only Vertices.Count differs; the per-entry loop only checks this instance's keys against the other, so it can never see the other's extra vertex on its own.</summary>
+    [TestMethod]
+    public void EqualsReturnsFalseWhenOnlyTheVertexCountDiffers()
+    {
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 2)]);
+        var vertexOne = new RgaVertexEntry<int>(Dot(R1, 1), null, 1);
+        var vertexTwo = new RgaVertexEntry<int>(Dot(R1, 2), Dot(R1, 1), 2);
+        Rga<int> withOneVertex = Rga<int>.FromState(new RgaState<int>(context, [vertexOne], []));
+        Rga<int> withTwoVertices = Rga<int>.FromState(new RgaState<int>(context, [vertexOne, vertexTwo], []));
+
+        Assert.IsFalse(withOneVertex.Equals(withTwoVertices));
+    }
+
+
+    /// <summary>Removing an already-tombstoned element mints no new remove-dot and leaves the array unchanged.</summary>
+    [TestMethod]
+    public void RemoveIsIdempotentForAnAlreadyTombstonedElement()
+    {
+        (Rga<string> withA, Dot idA) = Rga<string>.Empty.InsertAtHead("A", R1);
+        Rga<string> removedOnce = withA.Remove(idA, R1);
+        Rga<string> removedTwice = removedOnce.Remove(idA, R1);
+
+        Assert.AreEqual(removedOnce, removedTwice);
+        Assert.AreEqual(removedOnce.CausalContext[R1], removedTwice.CausalContext[R1]);
+    }
+
+
+    /// <summary>Equals must return false when a shared tombstone target's remove-dot set differs, even though the tombstone count and every other vertex/context aggregate matches.</summary>
+    [TestMethod]
+    public void EqualsReturnsFalseWhenASharedTombstonesRemoveDotSetDiffers()
+    {
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 3)]);
+        var vertex = new RgaVertexEntry<int>(Dot(R1, 1), null, 1);
+        var tombstoneA = new RgaTombstoneEntry(Dot(R1, 1), [Dot(R1, 2)]);
+        var tombstoneB = new RgaTombstoneEntry(Dot(R1, 1), [Dot(R1, 3)]);
+        Rga<int> left = Rga<int>.FromState(new RgaState<int>(context, [vertex], [tombstoneA]));
+        Rga<int> right = Rga<int>.FromState(new RgaState<int>(context, [vertex], [tombstoneB]));
+
+        Assert.IsFalse(left.Equals(right));
+        Assert.AreNotEqual(left.GetHashCode(), right.GetHashCode());
+    }
+
+
+    /// <summary>Equals(null) must return false per IEquatable's contract.</summary>
+    [TestMethod]
+    public void EqualsReturnsFalseForNullOther()
+    {
+        Assert.IsFalse(Rga<string>.Empty.Equals(NullOfT()));
+    }
+
+
+    /// <summary>Returns a typed null so the strongly typed Equals overload is chosen over Equals(object).</summary>
+    private static Rga<string>? NullOfT() => null;
+
+
+    /// <summary>A tombstone target counter exactly at the positivity boundary (1) still loads successfully.</summary>
+    [TestMethod]
+    public void FromStateAcceptsATombstoneTargetCounterAtTheBoundary()
+    {
+        (Rga<string> withA, Dot idA) = Rga<string>.Empty.InsertAtHead("A", R1);
+        Rga<string> removed = withA.Remove(idA, R1);
+
+        Assert.AreEqual(1, idA.Counter);
+        Rga<string> back = Rga<string>.FromState(removed.ToState());
+        Assert.AreEqual(removed, back);
+    }
+
+
+    /// <summary>Equals must return false when only Tombstones.Count differs, with Vertices and CompactedPredecessors counts equal.</summary>
+    [TestMethod]
+    public void EqualsReturnsFalseWhenOnlyTheTombstoneCountDiffers()
+    {
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 2)]);
+        var vertex = new RgaVertexEntry<int>(Dot(R1, 1), null, 1);
+        var tombstone = new RgaTombstoneEntry(Dot(R1, 1), [Dot(R1, 2)]);
+        Rga<int> withoutTombstone = Rga<int>.FromState(new RgaState<int>(context, [vertex], []));
+        Rga<int> withTombstone = Rga<int>.FromState(new RgaState<int>(context, [vertex], [tombstone]));
+
+        Assert.IsFalse(withoutTombstone.Equals(withTombstone));
+    }
+
+
+    /// <summary>Equals must return false the moment a shared-key vertex's value differs, even when the vertex, tombstone, and translation counts and the context all match.</summary>
+    [TestMethod]
+    public void EqualsReturnsFalseWhenASharedVertexValueDiffers()
+    {
+        var context = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        var vertexOne = new RgaVertexEntry<int>(Dot(R1, 1), null, 1);
+        var vertexTwo = new RgaVertexEntry<int>(Dot(R1, 1), null, 2);
+        Rga<int> left = Rga<int>.FromState(new RgaState<int>(context, [vertexOne], []));
+        Rga<int> right = Rga<int>.FromState(new RgaState<int>(context, [vertexTwo], []));
+
+        Assert.IsFalse(left.Equals(right));
+    }
+
+
+    /// <summary>Remove's null-id guard reports ParamName "id", not the FrozenDictionary lookup's own key parameter.</summary>
+    [TestMethod]
+    public void RemoveRejectsNullIdWithTheCorrectParamName()
+    {
+        ArgumentNullException exception = Assert.ThrowsExactly<ArgumentNullException>(() => Rga<string>.Empty.Remove(null!, R1));
+        Assert.AreEqual("id", exception.ParamName);
+    }
+
+
+    /// <summary>
+    /// Pins that InsertAfter's own null guard fires (ParamName "after"), not the downstream
+    /// FrozenDictionary lookup's guard (which would report ParamName "key" instead).
+    /// </summary>
+    [TestMethod]
+    public void InsertAfterRejectsNullPredecessorByParamName()
+    {
+        ArgumentNullException thrown = Assert.ThrowsExactly<ArgumentNullException>(() => Rga<string>.Empty.InsertAfter(null!, "X", R1));
+
+        Assert.AreEqual("after", thrown.ParamName);
+    }
+
+
+    /// <summary>Merge rejects a null other operand with ArgumentNullException("other"), not the NullReferenceException the stale-replay check would throw if the guard were missing.</summary>
+    [TestMethod]
+    public void MergeRejectsNullOther()
+    {
+        (Rga<string> withA, _) = Rga<string>.Empty.InsertAtHead("A", R1);
+
+        ArgumentNullException exception = Assert.ThrowsExactly<ArgumentNullException>(() => withA.Merge(null!));
+        Assert.AreEqual("other", exception.ParamName);
+    }
+
+
+    /// <summary>Equals must return false when only the causal Context differs, with Vertices/Tombstones/CompactedPredecessors counts all equal.</summary>
+    [TestMethod]
+    public void EqualsReturnsFalseWhenOnlyTheContextDiffers()
+    {
+        var vertex = new RgaVertexEntry<int>(Dot(R1, 1), null, 1);
+        var smallContext = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        var largeContext = new VectorClockState([new ReplicaCounterEntry(Bytes(R1), 5)]);
+        Rga<int> withSmallContext = Rga<int>.FromState(new RgaState<int>(smallContext, [vertex], []));
+        Rga<int> withLargeContext = Rga<int>.FromState(new RgaState<int>(largeContext, [vertex], []));
+
+        Assert.IsFalse(withSmallContext.Equals(withLargeContext));
     }
 
 

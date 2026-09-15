@@ -108,7 +108,7 @@ internal sealed class CompactionStateJsonTests
         OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(reloaded);
 
         Assert.AreEqual(reclaimed, back);
-        Assert.HasCount(0, back.Values);
+        Assert.IsEmpty(back.Values);
         Assert.AreEqual(new OffsetAddress(OffsetAnchor.Head, 0), back.TranslateAnchor(new OffsetAddress(OffsetAnchor.AtBase(0), 0)));
     }
 

@@ -83,8 +83,8 @@ internal sealed class OffsetRemoveCertificationLawTests
         OffsetAnchoredSequence<string> forward = m1Compacted.Merge(m2Compacted);
         OffsetAnchoredSequence<string> backward = m2Compacted.Merge(m1Compacted);
         Assert.AreEqual(forward, backward);
-        Assert.HasCount(0, forward.Values);
-        Assert.HasCount(0, backward.Values);
+        Assert.IsEmpty(forward.Values);
+        Assert.IsEmpty(backward.Values);
     }
 
 
@@ -563,7 +563,7 @@ internal sealed class OffsetRemoveCertificationLawTests
         VectorClock frontier = FrontierOf(seq.CausalContext, seq.CausalContext);
         OffsetAnchoredSequence<string> compacted = seq.Compact(frontier, seq.CertifiedProjection(frontier));
 
-        Assert.HasCount(0, compacted.ToState().Vertices);
+        Assert.IsEmpty(compacted.ToState().Vertices);
     }
 
 

@@ -110,7 +110,7 @@ internal sealed class ItemStreamChannelTests
 
         List<byte[]> received = await ReadAllItems(reader).ConfigureAwait(false);
 
-        Assert.HasCount(0, received);
+        Assert.IsEmpty(received);
     }
 
 
@@ -369,6 +369,110 @@ internal sealed class ItemStreamChannelTests
         string[] expected = [.. items.Select(Convert.ToHexString)];
         string[] actual = [.. received.Select(Convert.ToHexString)];
         Assert.AreSequenceEqual(expected, actual, "The cancel dropped an item of the frame already in hand.");
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ItemStreamChannelReader{TItem}.ReadAllAsync"/> completes the underlying
+    /// <see cref="PipeReader"/> in its finally block even when a protocol violation makes the read throw, so the
+    /// writer side always observes the reader ending rather than waiting on an abandoned pipe.
+    /// </summary>
+    [TestMethod]
+    public async Task ReadAllAsyncCompletesTheReaderWhenAProtocolViolationThrows()
+    {
+        using BaseMemoryPool pool = new();
+
+        Pipe pipe = new();
+        ItemStreamChannelReader<Blob> reader = new(pipe.Reader, DecodeBlob, pool, MinimumItemByteLength);
+
+        //A hostile count that cannot fit the remaining bytes makes ReadAllAsync throw before decoding
+        //anything; the writer is deliberately never completed by this test, so any completion the writer
+        //observes afterward must have come from the reader's own finally block.
+        await WriteRawFrame(pipe.Writer, [0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]).ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => ReadAllItems(reader)).ConfigureAwait(false);
+
+        FlushResult flushResult = await pipe.Writer.WriteAsync(new byte[] { 0x00 }, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.IsTrue(flushResult.IsCompleted, "The reader must be completed once ReadAllAsync ends, even on the throwing path.");
+    }
+
+
+    /// <summary>
+    /// Pins that a frame payload shorter than the four-byte item-count header is rejected before any count is
+    /// read, distinct from the count-vs-remaining-bytes bound checked once a count has been read.
+    /// </summary>
+    [TestMethod]
+    public async Task FrameShorterThanItemCountHeaderIsRejected()
+    {
+        using BaseMemoryPool pool = new();
+
+        Pipe pipe = new();
+        ItemStreamChannelReader<Blob> reader = new(pipe.Reader, DecodeBlob, pool, MinimumItemByteLength);
+
+        //A two-byte real payload cannot even hold the four-byte item-count header.
+        await WriteRawFrame(pipe.Writer, [0x00, 0x00]).ConfigureAwait(false);
+        await pipe.Writer.CompleteAsync().ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => ReadAllItems(reader)).ConfigureAwait(false);
+    }
+
+
+    /// <summary>
+    /// Pins the up-front bound in the item-count check: a declared count that cannot fit the frame's remaining
+    /// bytes under the reader's configured minimum item length is rejected before any item is decoded, even when
+    /// the bytes actually present would otherwise decode cleanly as a smaller, coincidental minimum.
+    /// </summary>
+    [TestMethod]
+    public async Task HostileItemCountAgainstAStricterMinimumIsRejectedBeforeDecoding()
+    {
+        //The reader is configured with a 20-byte minimum item length. Count declares one item, but only four
+        //bytes remain after the count header (a zero-length item's own length prefix) — 1 * 20 = 20 exceeds
+        //those 4 bytes, so the real bound must reject, even though those same 4 bytes alone would decode
+        //cleanly as one empty item under integer division (1 / 20 = 0, which does not exceed 4).
+        const int strictMinimumItemByteLength = 20;
+
+        using BaseMemoryPool pool = new();
+
+        Pipe pipe = new();
+        ItemStreamChannelReader<Blob> reader = new(pipe.Reader, DecodeBlob, pool, strictMinimumItemByteLength);
+
+        await WriteRawFrame(pipe.Writer, [0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]).ConfigureAwait(false);
+        await pipe.Writer.CompleteAsync().ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => ReadAllItems(reader)).ConfigureAwait(false);
+    }
+
+
+    /// <summary>
+    /// Pins that a read genuinely parked mid-flight resumes off the thread pool instead of the caller's captured
+    /// context, matching the reader's ConfigureAwait(false) on the pipe read and the guarantee its two sibling
+    /// readers already carry, so a host that blocks the starting thread on ReadAllAsync cannot deadlock it.
+    /// </summary>
+    [TestMethod]
+    public async Task ReadAllAsyncDoesNotResumeOnTheCallersContextAfterAPendingRead()
+    {
+        using BaseMemoryPool pool = new();
+
+        Pipe pipe = new();
+        MessageChannelWriter<IReadOnlyList<byte[]>> writer = new(pipe.Writer, SerializeBlobs);
+        ItemStreamChannelReader<Blob> reader = new(pipe.Reader, DecodeBlob, pool, MinimumItemByteLength);
+
+        PostCountingSynchronizationContext context = new();
+        var received = new List<byte[]>();
+
+        Task read = context.Start(() => reader.ReadAllAsync((in Blob item) => received.Add(item.Bytes.ToArray()), TestContext.CancellationToken).AsTask());
+
+        //Nothing is written yet, so the read parked genuinely instead of completing synchronously.
+        Assert.IsFalse(read.IsCompleted, "The read completed synchronously, so a captured continuation could not be observed.");
+
+        byte[][] items = [[0x01, 0x02, 0x03]];
+        await writer.WriteAsync(items, TestContext.CancellationToken).ConfigureAwait(false);
+        await writer.CompleteAsync().ConfigureAwait(false);
+
+        await read.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, received);
+        Assert.AreEqual(0, context.Posts);
     }
 
 

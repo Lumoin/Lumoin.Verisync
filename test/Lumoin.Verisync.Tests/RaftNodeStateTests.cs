@@ -146,6 +146,29 @@ internal sealed class RaftNodeStateTests
     }
 
 
+    /// <summary>A default (not merely zero-length) Log array — a real possibility since the record field is
+    /// unvalidated — must restore as an empty log, not crash.</summary>
+    [TestMethod]
+    public void FromStateTreatsADefaultLogArrayAsEmpty()
+    {
+        RaftNodeState<string> state = new(Term.First, [], default);
+
+        RaftNode<string> restored = RaftNode<string>.FromState(N1, Members, state);
+
+        Assert.IsEmpty(restored.Log);
+        Assert.AreEqual(Term.First, restored.CurrentTerm);
+    }
+
+
+    /// <summary>Pins the documented ArgumentNullException for a null durable state, distinct from the
+    /// NullReferenceException an unguarded first field access would produce.</summary>
+    [TestMethod]
+    public void FromStateRejectsANullState()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() => RaftNode<string>.FromState(N1, Members, null!));
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

@@ -199,4 +199,270 @@ internal sealed class ReconciliationWireRecordTests
         Assert.IsNull(elementsEnvelope.Done);
         Assert.IsNull(elementsEnvelope.Fetch);
     }
+
+
+    /// <summary>Pins that GetHashCode folds in StartIndex, not only the symbol content.</summary>
+    [TestMethod]
+    public void BatchHashCodeIncorporatesStartIndex()
+    {
+        ReconciliationSymbol symbol = new(SumEight, ChecksumEight);
+        ReconciliationSymbolBatch batch = new(4, [symbol]);
+        ReconciliationSymbolBatch differentIndex = new(9, [new ReconciliationSymbol(SumEight.ToArray(), ChecksumEight.ToArray())]);
+
+        Assert.AreNotEqual(batch.GetHashCode(), differentIndex.GetHashCode());
+    }
+
+
+    /// <summary>Pins that a null first symbol is rejected before its width fields are read.</summary>
+    [TestMethod]
+    public void BatchValidationRejectsNullFirstSymbol()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() => new ReconciliationSymbolBatch(0, [null!]));
+    }
+
+
+    /// <summary>Pins that GetHashCode folds in each symbol's content, not only StartIndex.</summary>
+    [TestMethod]
+    public void BatchHashCodeIncorporatesSymbolContent()
+    {
+        ReconciliationSymbol symbol = new(SumEight, ChecksumEight);
+        ReconciliationSymbolBatch batch = new(4, [symbol]);
+
+        byte[] differentSum = [0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48];
+        ReconciliationSymbolBatch differentSymbol = new(4, [new ReconciliationSymbol(differentSum, ChecksumEight)]);
+
+        Assert.AreNotEqual(batch.GetHashCode(), differentSymbol.GetHashCode());
+    }
+
+
+    /// <summary>Returns a null batch through an opaque call so the null comparison in <see cref="BatchEqualsReturnsFalseForNullOther"/> is not folded away by the analyzer.</summary>
+    private static ReconciliationSymbolBatch? NullBatch() => null;
+
+
+    /// <summary>Pins that a batch compares unequal to a null batch rather than defaulting to true.</summary>
+    [TestMethod]
+    public void BatchEqualsReturnsFalseForNullOther()
+    {
+        ReconciliationSymbol symbol = new(SumEight, ChecksumEight);
+        ReconciliationSymbolBatch batch = new(4, [symbol]);
+
+        Assert.IsFalse(batch.Equals(NullBatch()));
+    }
+
+
+    /// <summary>Pins that batch equality compares symbols element-wise, not just start index and count.</summary>
+    [TestMethod]
+    public void BatchEqualityDistinguishesDifferingSymbolContentAtSameIndex()
+    {
+        ReconciliationSymbol symbol = new(SumEight, ChecksumEight);
+        ReconciliationSymbolBatch batch = new(4, [symbol]);
+
+        byte[] differentSum = [0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48];
+        ReconciliationSymbolBatch differentContent = new(4, [new ReconciliationSymbol(differentSum, ChecksumEight)]);
+
+        Assert.AreNotEqual(batch, differentContent);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationOffer.FromContract"/> and <see cref="ReconciliationOffer.Matches"/> both
+    /// throw <see cref="ArgumentNullException"/> for a null contract, as their XML docs contract.
+    /// </summary>
+    [TestMethod]
+    public void OfferFromContractAndMatchesRejectNullContract()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() => ReconciliationOffer.FromContract(null!));
+
+        ReconciliationOffer offer = ReconciliationOffer.FromContract(WellKnownContract);
+        Assert.ThrowsExactly<ArgumentNullException>(() => offer.Matches(null!));
+    }
+
+
+    /// <summary>Pins that <see cref="ReconciliationFetch.Equals(ReconciliationFetch?)"/> returns false, never true, when compared against a null fetch.</summary>
+    [TestMethod]
+    public void FetchEqualsReturnsFalseAgainstNullFetch()
+    {
+        ReconciliationFetch fetch = new([new byte[] { 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18 }]);
+
+        Assert.IsFalse(fetch.Equals(NullOfReconciliationFetch()));
+    }
+
+
+    /// <summary>Returns a null fetch from an opaque helper so the null comparison is not folded at compile time.</summary>
+    private static ReconciliationFetch? NullOfReconciliationFetch() => null;
+
+
+    /// <summary>Pins that two fetches whose single item shares its length but differs in content are unequal.</summary>
+    [TestMethod]
+    public void FetchEqualsIsFalseWhenSameLengthItemsDifferInContent()
+    {
+        byte[] one = [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18];
+        byte[] two = [0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28];
+
+        ReconciliationFetch left = new([one]);
+        ReconciliationFetch right = new([two]);
+
+        Assert.AreNotEqual(left, right);
+    }
+
+
+    /// <summary>Pins that the hash code reflects every entry's content, not just the run's shape.</summary>
+    [TestMethod]
+    public void ElementsHashCodeReflectsEveryEntry()
+    {
+        byte[] itemOne = [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18];
+        byte[] itemTwo = [0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28];
+
+        ReconciliationElements<string> first = new([new ReconciliationElementEntry<string>(itemOne, "alpha"), new ReconciliationElementEntry<string>(itemTwo, "beta")]);
+        ReconciliationElements<string> differsAtSecondEntry = new([new ReconciliationElementEntry<string>(itemOne, "alpha"), new ReconciliationElementEntry<string>(itemTwo, "gamma")]);
+
+        Assert.AreNotEqual(first.GetHashCode(), differsAtSecondEntry.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationOffer.GetHashCode"/> mixes every field: an offer that differs from a
+    /// baseline in exactly one field must not collide with it.
+    /// </summary>
+    [TestMethod]
+    public void OfferHashCodeMixesEveryField()
+    {
+        ReconciliationOffer baseline = new(ReconciliationItemDomain.ContentHash, 32, 8, WellKnownKeyCheck);
+
+        ReconciliationOffer differentDomain = new(ReconciliationItemDomain.Structural, 32, 8, WellKnownKeyCheck);
+        Assert.AreNotEqual(baseline.GetHashCode(), differentDomain.GetHashCode());
+
+        ReconciliationOffer differentItemWidth = new(ReconciliationItemDomain.ContentHash, 64, 8, WellKnownKeyCheck);
+        Assert.AreNotEqual(baseline.GetHashCode(), differentItemWidth.GetHashCode());
+
+        ReconciliationOffer differentChecksumWidth = new(ReconciliationItemDomain.ContentHash, 32, 4, WellKnownKeyCheck);
+        Assert.AreNotEqual(baseline.GetHashCode(), differentChecksumWidth.GetHashCode());
+
+        ReconciliationOffer differentKeyCheck = new(ReconciliationItemDomain.ContentHash, 32, 8, Convert.FromHexString("0011223344556677"));
+        Assert.AreNotEqual(baseline.GetHashCode(), differentKeyCheck.GetHashCode());
+    }
+
+
+    /// <summary>Pins that <see cref="ReconciliationFetch.GetHashCode"/> mixes each item's bytes, so fetches with differing item content hash differently.</summary>
+    [TestMethod]
+    public void FetchGetHashCodeDiffersWhenItemContentDiffers()
+    {
+        byte[] one = [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18];
+        byte[] two = [0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28];
+
+        ReconciliationFetch left = new([one]);
+        ReconciliationFetch right = new([two]);
+
+        Assert.AreNotEqual(left.GetHashCode(), right.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// Pins that item width validation is inclusive at both ends of one through 1024, and that checksum width
+    /// validation is inclusive at its lower end of one, by constructing successfully at each boundary.
+    /// </summary>
+    [TestMethod]
+    public void OfferConstructionAcceptsInclusiveBoundaryWidths()
+    {
+        ReconciliationOffer minItemWidth = new(ReconciliationItemDomain.ContentHash, 1, 8, WellKnownKeyCheck);
+        Assert.AreEqual(1, minItemWidth.ItemWidth);
+
+        ReconciliationOffer maxItemWidth = new(ReconciliationItemDomain.ContentHash, 1024, 8, WellKnownKeyCheck);
+        Assert.AreEqual(1024, maxItemWidth.ItemWidth);
+
+        ReconciliationOffer minChecksumWidth = new(ReconciliationItemDomain.ContentHash, 32, 1, WellKnownKeyCheck);
+        Assert.AreEqual(1, minChecksumWidth.ChecksumWidth);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationOffer.Equals(ReconciliationOffer?)"/> compares by field content for
+    /// distinct instances rather than short-circuiting to true on anything but reference identity.
+    /// </summary>
+    [TestMethod]
+    public void OfferEqualsComparesFieldsForDistinctInstances()
+    {
+        ReconciliationOffer first = new(ReconciliationItemDomain.ContentHash, 32, 8, WellKnownKeyCheck);
+        ReconciliationOffer second = new(ReconciliationItemDomain.ContentHash, 16, 8, WellKnownKeyCheck);
+
+        Assert.AreNotEqual(first, second);
+    }
+
+
+    /// <summary>Pins that equality is false whenever entry counts differ or any entry's content differs, even
+    /// though the compared instances are always different references.</summary>
+    [TestMethod]
+    public void ElementsInequalityIsDetectedByLengthAndByEntryContent()
+    {
+        byte[] itemOne = [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18];
+        byte[] itemTwo = [0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28];
+
+        ReconciliationElementEntry<string> entryOne = new(itemOne, "alpha");
+
+        ReconciliationElements<string> baseline = new([entryOne, new ReconciliationElementEntry<string>(itemTwo, "beta")]);
+        ReconciliationElements<string> shorter = new([entryOne]);
+        ReconciliationElements<string> differentContent = new([entryOne, new ReconciliationElementEntry<string>(itemTwo, "gamma")]);
+
+        //Fewer entries must never compare equal, even before any entry is inspected.
+        Assert.AreNotEqual(baseline, shorter);
+
+        //The same entry count with one differing element must still compare unequal.
+        Assert.AreNotEqual(baseline, differentContent);
+    }
+
+
+    /// <summary>Pins that a resolution set with a null first entry is rejected before any other entry is examined.</summary>
+    [TestMethod]
+    public void ElementsRejectsANullFirstEntry()
+    {
+        ArgumentException exception = Assert.ThrowsExactly<ArgumentException>(() => new ReconciliationElements<string>([null!]));
+
+        Assert.AreEqual("entries", exception.ParamName);
+    }
+
+
+    /// <summary>Pins that a resolution set never reports equal to a null comparand.</summary>
+    [TestMethod]
+    public void ElementsIsNeverEqualToNull()
+    {
+        byte[] item = [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18];
+        ReconciliationElements<string> elements = new([new ReconciliationElementEntry<string>(item, "zeta")]);
+
+        Assert.IsFalse(elements.Equals(NullElements()));
+    }
+
+
+    /// <summary>Returns a null elements set from an opaque helper so the null comparison is not folded at compile time.</summary>
+    private static ReconciliationElements<string>? NullElements() => null;
+
+
+    /// <summary>Returns a null offer from an opaque helper so the null comparison is not folded at compile time.</summary>
+    private static ReconciliationOffer? NullOffer() => null;
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationOffer.Equals(ReconciliationOffer?)"/> reports false, never true, when
+    /// compared against a null instance.
+    /// </summary>
+    [TestMethod]
+    public void OfferEqualsReturnsFalseForNull()
+    {
+        ReconciliationOffer offer = ReconciliationOffer.FromContract(WellKnownContract);
+
+        Assert.IsFalse(offer.Equals(NullOffer()));
+    }
+
+
+    /// <summary>Pins that two fetches carrying a different number of items are unequal.</summary>
+    [TestMethod]
+    public void FetchEqualsIsFalseWhenItemCountsDiffer()
+    {
+        byte[] one = [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18];
+        byte[] two = [0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28];
+
+        ReconciliationFetch left = new([one]);
+        ReconciliationFetch right = new([one, two]);
+
+        Assert.AreNotEqual(left, right);
+    }
 }

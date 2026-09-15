@@ -370,8 +370,8 @@ internal sealed class RgaRemoveCertificationLawTests
         Rga<int> backward = insertHolder.Merge(orphanHolder);
 
         //The target is hidden the moment the insert arrives, in both orders, and the orders converge.
-        Assert.HasCount(0, forward.Values);
-        Assert.HasCount(0, backward.Values);
+        Assert.IsEmpty(forward.Values);
+        Assert.IsEmpty(backward.Values);
         Assert.AreEqual(0, forward.Count);
         Assert.AreEqual(forward, backward);
 
@@ -379,9 +379,9 @@ internal sealed class RgaRemoveCertificationLawTests
         //survives the compaction and keeps masking its target.
         VectorClock frontier = forward.CausalContext;
         ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = forward.CertifiedProjection(frontier);
-        Assert.HasCount(0, checkpoint);
+        Assert.IsEmpty(checkpoint);
         Rga<int> compacted = forward.Compact(frontier, checkpoint);
-        Assert.HasCount(0, compacted.Values);
+        Assert.IsEmpty(compacted.Values);
         Assert.AreEqual(idA, compacted.TranslateAnchor(idA));
     }
 
@@ -405,7 +405,7 @@ internal sealed class RgaRemoveCertificationLawTests
         //empty, its projection is empty, and the compaction drops nothing.
         VectorClock silentFrontier = FrontierOf(removed.CausalContext, VectorClock.Empty);
         ImmutableArray<SequenceCheckpointEntry<int>> silentCheckpoint = removed.CertifiedProjection(silentFrontier);
-        Assert.HasCount(0, silentCheckpoint);
+        Assert.IsEmpty(silentCheckpoint);
         Rga<int> underSilence = removed.Compact(silentFrontier, silentCheckpoint);
         Assert.AreEqual(removed, underSilence);
         Assert.AreEqual(idB, underSilence.TranslateAnchor(idB));

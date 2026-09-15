@@ -59,6 +59,21 @@ internal sealed class ReconciliationKernelTests
     }
 
 
+    /// <summary>
+    /// Pins the item-width bounds documented on the public constructor: one and 1024 bytes are the exact
+    /// inclusive extremes and must construct rather than throw, with the width flowing through unchanged.
+    /// </summary>
+    [TestMethod]
+    public void ContractConstructionAcceptsTheItemWidthBoundaryValues()
+    {
+        ReconciliationContract narrowest = new(ReconciliationItemDomain.ContentHash, 1, 8, 0, 0);
+        Assert.AreEqual(1, narrowest.ItemWidth);
+
+        ReconciliationContract widest = new(ReconciliationItemDomain.ContentHash, 1024, 8, 0, 0);
+        Assert.AreEqual(1024, widest.ItemWidth);
+    }
+
+
     [TestMethod]
     public void SymbolValidationAndEqualityHold()
     {
@@ -180,11 +195,41 @@ internal sealed class ReconciliationKernelTests
 
         decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
         Assert.IsTrue(decoder.IsComplete);
-        Assert.HasCount(0, decoder.DecodedItems);
+        Assert.IsEmpty(decoder.DecodedItems);
 
         decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
         Assert.IsTrue(decoder.IsComplete);
-        Assert.HasCount(0, decoder.DecodedItems);
+        Assert.IsEmpty(decoder.DecodedItems);
+    }
+
+
+    /// <summary>
+    /// A pure cell whose item is already decoded is dropped rather than decoded again. The same
+    /// (W2, checksum(W2)) cell is absorbed at index zero and index one; W2's index walk covers zero but not
+    /// one, so the first decode's peel never reaches the second cell, which stays pure with an already-seen
+    /// key. Exactly one item is decoded and a further absorb still returns, so the drop neither loses the item
+    /// nor spins the worklist.
+    /// </summary>
+    [TestMethod]
+    public void ADuplicatePureCellIsDroppedRatherThanRedecoded()
+    {
+        ReconciliationContract contract = ReconciliationContract.ContentHashDefault;
+        byte[] w2 = new byte[32];
+        Array.Fill(w2, (byte)0xFF);
+
+        ulong checksum = ReconciliationChecksum.Compute(contract.ChecksumKeyLow, contract.ChecksumKeyHigh, w2);
+        byte[] checksumBytes = new byte[contract.ChecksumWidth];
+        ReconciliationChecksum.Write(checksum, checksumBytes);
+
+        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared);
+        decoder.Absorb(new ReconciliationSymbol((byte[])w2.Clone(), (byte[])checksumBytes.Clone()));
+        decoder.Absorb(new ReconciliationSymbol((byte[])w2.Clone(), (byte[])checksumBytes.Clone()));
+
+        Assert.HasCount(1, decoder.DecodedItems);
+        Assert.IsTrue(decoder.IsComplete);
+
+        //The duplicate did not spin the worklist: a further absorb returns rather than hanging.
+        decoder.Absorb(new ReconciliationSymbol((byte[])w2.Clone(), (byte[])checksumBytes.Clone()));
     }
 
 
@@ -283,7 +328,7 @@ internal sealed class ReconciliationKernelTests
         decoder.Absorb(encoderLeft.ProduceNext().Combine(encoderRight.ProduceNext()));
 
         Assert.IsTrue(decoder.IsComplete);
-        Assert.HasCount(0, decoder.DecodedItems);
+        Assert.IsEmpty(decoder.DecodedItems);
     }
 
 
@@ -371,5 +416,240 @@ internal sealed class ReconciliationKernelTests
         buffer[0] = id;
 
         return ReplicaId.FromSpan(buffer);
+    }
+
+
+    /// <summary>
+    /// SymbolAt on a disposed encoder that never produced anything is refused for disposal, not for the index
+    /// being out of the (empty) produced range.
+    /// </summary>
+    [TestMethod]
+    public void DisposedEncoderSymbolAtReportsDisposalBeforeTheRangeCheck()
+    {
+        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        encoder.Dispose();
+
+        //ProducedCount is zero, so index 0 is also out of the produced range; disposal must be checked first,
+        //or this would surface as ArgumentOutOfRangeException instead.
+        ObjectDisposedException thrown = Assert.ThrowsExactly<ObjectDisposedException>(() => encoder.SymbolAt(0));
+        Assert.AreEqual(typeof(ReconciliationEncoder).FullName, thrown.ObjectName);
+    }
+
+
+    /// <summary>
+    /// Remove on a disposed encoder is refused as the encoder's own disposal, not silently deferred to the
+    /// item arena it owns internally.
+    /// </summary>
+    [TestMethod]
+    public void DisposedEncoderRemoveReportsItselfAsTheDisposedObject()
+    {
+        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        encoder.Dispose();
+
+        ObjectDisposedException thrown = Assert.ThrowsExactly<ObjectDisposedException>(() => encoder.Remove(A1));
+        Assert.AreEqual(typeof(ReconciliationEncoder).FullName, thrown.ObjectName);
+    }
+
+
+    /// <summary>Pins that <see cref="ReconciliationSymbol.Combine(ReconciliationSymbol)"/> rejects a null
+    /// <paramref name="other"/> with <see cref="ArgumentNullException"/> rather than surfacing a raw
+    /// null-reference failure from touching the argument's fields.</summary>
+    [TestMethod]
+    public void CombineRejectsNullOther()
+    {
+        ReconciliationSymbol symbol = new(new byte[8], new byte[8]);
+        Assert.ThrowsExactly<ArgumentNullException>(() => symbol.Combine(null!));
+    }
+
+
+    /// <summary>
+    /// An enforcement value outside the three defined members is rejected at construction, before any cell
+    /// or item storage is rented.
+    /// </summary>
+    [TestMethod]
+    public void ConstructorRejectsUndefinedEnforcementValue()
+    {
+        ArgumentOutOfRangeException thrown = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationEncoder(StructuralContract, (ReconciliationInjectivityEnforcement)99, BaseMemoryPool.Shared));
+        Assert.AreEqual("enforcement", thrown.ParamName);
+    }
+
+
+    /// <summary>
+    /// A null contract is refused with ArgumentNullException before any of its members are dereferenced; an
+    /// unguarded null contract would instead surface as a NullReferenceException from the ItemWidth access
+    /// used to size the cell store.
+    /// </summary>
+    [TestMethod]
+    public void ConstructorRejectsNullContract()
+    {
+        ArgumentNullException thrown = Assert.ThrowsExactly<ArgumentNullException>(() => new ReconciliationEncoder(null!, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared));
+        Assert.AreEqual("contract", thrown.ParamName);
+    }
+
+
+    /// <summary>
+    /// A null pool is refused with ArgumentNullException naming "pool" ahead of the enforcement guard, so an
+    /// out-of-range enforcement value cannot mask a missing pool guard by throwing the enforcement's own
+    /// ArgumentOutOfRangeException first.
+    /// </summary>
+    [TestMethod]
+    public void ConstructorRejectsNullPool()
+    {
+        ArgumentNullException thrown = Assert.ThrowsExactly<ArgumentNullException>(
+            () => new ReconciliationEncoder(StructuralContract, (ReconciliationInjectivityEnforcement)99, null!));
+        Assert.AreEqual("pool", thrown.ParamName);
+    }
+
+
+    /// <summary>
+    /// Add on a disposed encoder is refused as the encoder's own disposal, not silently deferred to the item
+    /// arena it owns internally.
+    /// </summary>
+    [TestMethod]
+    public void DisposedEncoderAddReportsItselfAsTheDisposedObject()
+    {
+        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        encoder.Dispose();
+
+        ObjectDisposedException thrown = Assert.ThrowsExactly<ObjectDisposedException>(() => encoder.Add(A1));
+        Assert.AreEqual(typeof(ReconciliationEncoder).FullName, thrown.ObjectName);
+    }
+
+
+    /// <summary>Pins that Absorb after Dispose reports the decoder itself as the disposed object, via the
+    /// decoder's own guard, rather than the ObjectDisposedException that would surface two calls deeper from
+    /// the already-disposed cell store once the decoder's own check is skipped or its flag never set.</summary>
+    [TestMethod]
+    public void AbsorbAfterDisposeThrowsTheDecodersOwnObjectDisposedException()
+    {
+        ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared);
+        decoder.Dispose();
+
+        ObjectDisposedException refusal = Assert.ThrowsExactly<ObjectDisposedException>(
+            () => decoder.Absorb(new ReconciliationSymbol(new byte[8], new byte[8])));
+
+        Assert.AreEqual(typeof(ReconciliationDecoder).ToString(), refusal.ObjectName);
+    }
+
+
+    /// <summary>Pins that <see cref="ReconciliationSymbol.Combine(ReconciliationSymbol)"/>'s own width guard —
+    /// not the XOR primitive's unrelated length check — is what rejects a mismatch, naming
+    /// <paramref name="other"/> even when only one of the two fields differs in width.</summary>
+    [TestMethod]
+    public void CombineNamesOtherWhenOnlyOneFieldWidthDiffers()
+    {
+        ReconciliationSymbol symbol = new(new byte[8], new byte[8]);
+        ReconciliationSymbol mismatchedSumOnly = new(new byte[4], new byte[8]);
+
+        ArgumentException exception = Assert.ThrowsExactly<ArgumentException>(() => symbol.Combine(mismatchedSumOnly));
+        Assert.AreEqual("other", exception.ParamName);
+    }
+
+
+    /// <summary>Pins that <see cref="ReconciliationSymbol.GetHashCode"/> folds in both fields: varying only the
+    /// sum, or only the checksum, changes the hash.</summary>
+    [TestMethod]
+    public void GetHashCodeIncorporatesBothFieldsIndependently()
+    {
+        byte[] sharedSum = [1, 1, 1, 1, 1, 1, 1, 1];
+        byte[] sharedChecksum = [2, 2, 2, 2, 2, 2, 2, 2];
+
+        ReconciliationSymbol baseline = new(sharedSum, sharedChecksum);
+        ReconciliationSymbol differentSum = new([9, 9, 9, 9, 9, 9, 9, 9], sharedChecksum);
+        ReconciliationSymbol differentChecksum = new(sharedSum, [9, 9, 9, 9, 9, 9, 9, 9]);
+
+        Assert.AreNotEqual(baseline.GetHashCode(), differentSum.GetHashCode());
+        Assert.AreNotEqual(baseline.GetHashCode(), differentChecksum.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// ProduceNext on a disposed encoder is refused as the encoder's own disposal, not silently deferred to
+    /// the cell store it owns internally.
+    /// </summary>
+    [TestMethod]
+    public void DisposedEncoderProduceNextReportsItselfAsTheDisposedObject()
+    {
+        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        encoder.Dispose();
+
+        ObjectDisposedException thrown = Assert.ThrowsExactly<ObjectDisposedException>(() => encoder.ProduceNext());
+        Assert.AreEqual(typeof(ReconciliationEncoder).FullName, thrown.ObjectName);
+    }
+
+
+    /// <summary>Pins that a null contract is rejected by the decoder's own constructor guard, not by a
+    /// NullReferenceException from the first line inside it that dereferences the contract.</summary>
+    [TestMethod]
+    public void DecoderConstructorRejectsNullContract()
+    {
+        ArgumentNullException refusal = Assert.ThrowsExactly<ArgumentNullException>(
+            () => new ReconciliationDecoder(null!, BaseMemoryPool.Shared));
+
+        Assert.AreEqual("contract", refusal.ParamName);
+    }
+
+
+    /// <summary>Pins <see cref="ReconciliationSymbol.Equals(ReconciliationSymbol?)"/>'s full contract: a null
+    /// other is never equal, a self-reference is always equal, and content equality requires both fields to
+    /// match — a match on only one field is not equality.</summary>
+    [TestMethod]
+    public void EqualsHonorsNullSelfReferenceAndBothFieldsContract()
+    {
+        ReconciliationSymbol symbol = new(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }, new byte[] { 0xA, 0xB, 0xC, 0xD, 0xE, 0xF, 0x10, 0x11 });
+
+        //A null other is never equal; obtained from an opaque helper so CA1508 cannot fold the comparison.
+        Assert.IsFalse(symbol.Equals(NullSymbol()));
+
+        //A symbol is equal to itself by reference.
+        Assert.IsTrue(symbol.Equals(symbol));
+
+        //Matching sum but a different checksum is not equality...
+        ReconciliationSymbol sameSumDifferentChecksum = new(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }, new byte[] { 1, 1, 1, 1, 1, 1, 1, 1 });
+        Assert.IsFalse(symbol.Equals(sameSumDifferentChecksum));
+
+        //...and matching checksum but a different sum is likewise not equality.
+        ReconciliationSymbol differentSumSameChecksum = new(new byte[] { 9, 9, 9, 9, 9, 9, 9, 9 }, new byte[] { 0xA, 0xB, 0xC, 0xD, 0xE, 0xF, 0x10, 0x11 });
+        Assert.IsFalse(symbol.Equals(differentSumSameChecksum));
+    }
+
+
+    /// <summary>Returns a null symbol through an opaque call so the null-argument comparison in <see cref="EqualsHonorsNullSelfReferenceAndBothFieldsContract"/> is not folded away by the analyzer.</summary>
+    private static ReconciliationSymbol? NullSymbol() => null;
+
+
+    /// <summary>Pins that the <see cref="ReadOnlyMemory{Byte}"/> constructor overload validates the checksum
+    /// field's length against the same one-through-eight inclusive range as the span overload: both boundaries
+    /// construct successfully, and one below or above the range throws.</summary>
+    [TestMethod]
+    public void MemoryConstructorValidatesChecksumLengthAcrossTheFullRange()
+    {
+        ReadOnlyMemory<byte> sum = A1;
+        ReadOnlyMemory<byte> lowerBound = new byte[1];
+        ReadOnlyMemory<byte> upperBound = new byte[8];
+
+        ReconciliationSymbol atLowerBound = new(sum, lowerBound);
+        ReconciliationSymbol atUpperBound = new(sum, upperBound);
+        Assert.HasCount(1, atLowerBound.Checksum.ToArray());
+        Assert.HasCount(8, atUpperBound.Checksum.ToArray());
+
+        ReadOnlyMemory<byte> belowRange = ReadOnlyMemory<byte>.Empty;
+        ReadOnlyMemory<byte> aboveRange = new byte[9];
+        Assert.ThrowsExactly<ArgumentException>(() => _ = new ReconciliationSymbol(sum, belowRange));
+        Assert.ThrowsExactly<ArgumentException>(() => _ = new ReconciliationSymbol(sum, aboveRange));
+    }
+
+
+    /// <summary>Pins that <see cref="ReconciliationSymbol.IsNeutral"/> requires both fields to be all zero, not
+    /// just one — a cell with a zero sum and a non-zero checksum (or vice versa) still carries net contribution
+    /// and must not read as neutral.</summary>
+    [TestMethod]
+    public void IsNeutralRequiresBothFieldsToBeZero()
+    {
+        ReconciliationSymbol zeroSumOnly = new(new byte[8], new byte[] { 1, 0, 0, 0, 0, 0, 0, 0 });
+        ReconciliationSymbol zeroChecksumOnly = new(new byte[] { 1, 0, 0, 0, 0, 0, 0, 0 }, new byte[8]);
+
+        Assert.IsFalse(zeroSumOnly.IsNeutral);
+        Assert.IsFalse(zeroChecksumOnly.IsNeutral);
     }
 }

@@ -146,6 +146,66 @@ internal sealed class LogHeadConsistencyTests
     }
 
 
+    /// <summary>
+    /// Pins that <c>computeDigest</c> is null-checked before the older/newer size comparison: a null
+    /// delegate must throw even when the older head already claims more leaves than the newer one, a
+    /// case where <see cref="MerkleConsistencyProof.Verify"/> (which has its own null guard) is never
+    /// reached, so this guard is the only thing that can catch the null argument.
+    /// </summary>
+    [TestMethod]
+    public void VerifyChecksComputeDigestBeforeComparingSizes()
+    {
+        LogHead larger = new(5, new byte[] { 1 });
+        LogHead smaller = new(3, new byte[] { 2 });
+        MerkleConsistencyProof proof = new(3, 5, ImmutableArray<ReadOnlyMemory<byte>>.Empty);
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => LogHeadConsistency.Verify(larger, smaller, proof, null!));
+    }
+
+
+    /// <summary>Pins that <see cref="LogHead.GetHashCode"/> reflects <see cref="LogHead.TreeSize"/>, not only the root bytes.</summary>
+    [TestMethod]
+    public void HashCodeReflectsTreeSize()
+    {
+        byte[] root = new byte[] { 1, 2 };
+        LogHead small = new(3, root);
+        LogHead large = new(4, root);
+
+        Assert.AreNotEqual(small.GetHashCode(), large.GetHashCode());
+    }
+
+
+    /// <summary>Pins that a head is never equal to a null head, per the <see cref="IEquatable{T}"/> contract.</summary>
+    [TestMethod]
+    public void HeadIsNeverEqualToNull()
+    {
+        LogHead head = new(3, new byte[] { 1, 2 });
+
+        Assert.IsFalse(head.Equals(NullHead()));
+    }
+
+
+    /// <summary>Pins that <see cref="LogHead.GetHashCode"/> reflects <see cref="LogHead.Root"/>, not only the tree size.</summary>
+    [TestMethod]
+    public void HashCodeReflectsRoot()
+    {
+        LogHead first = new(3, new byte[] { 1, 2 });
+        LogHead second = new(3, new byte[] { 9, 9 });
+
+        Assert.AreNotEqual(first.GetHashCode(), second.GetHashCode());
+    }
+
+
+    /// <summary>Pins that a head is equal to itself by reference, independent of the field-comparison fallback.</summary>
+    [TestMethod]
+    public void HeadIsEqualToItselfByReference()
+    {
+        LogHead head = new(3, new byte[] { 1, 2 });
+
+        Assert.IsTrue(head.Equals(head));
+    }
+
+
     private static MerkleLogTree Grow(MerkleLogTree tree, int firstLabel, int pastLastLabel)
     {
         for(int i = firstLabel; i < pastLastLabel; i++)
@@ -158,4 +218,9 @@ internal sealed class LogHeadConsistencyTests
 
 
     private static ReadOnlyMemory<byte> Sha256(ReadOnlyMemory<byte> canonicalBytes) => SHA256.HashData(canonicalBytes.Span);
+
+
+    /// <summary>Returns a null reference through an opaque call so the null-equality test cannot be
+    /// constant-folded by the compiler's nullable/impossible-condition analysis.</summary>
+    private static LogHead? NullHead() => null;
 }

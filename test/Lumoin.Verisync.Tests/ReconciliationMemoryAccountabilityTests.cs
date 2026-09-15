@@ -29,8 +29,6 @@ internal sealed class ReconciliationMemoryAccountabilityTests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
 
-    private const int TriggerCap = 100;
-
     private const int DefaultBatchSize = 4;
 
     private static ReconciliationContract StructuralContract { get; } =
@@ -275,7 +273,7 @@ internal sealed class ReconciliationMemoryAccountabilityTests
             Task initiatorRun = initiator.RunAsync(Forward(responder), resolve, null, applyToInitiator, cancellationToken: cancellationToken);
             Task responderRun = responder.RunAsync(Forward(initiator), null, serve, applyToResponder, cancellationToken: cancellationToken);
 
-            await PaceUntilInitiatorCompletesAsync(initiator, responder, cancellationToken).ConfigureAwait(false);
+            await DriveInitiatorToCompletionAsync(initiatorRun, responder, ContentHashContract, initiatorItems, responderItems, cancellationToken).ConfigureAwait(false);
 
             responder.Complete();
             await Task.WhenAll(initiatorRun, responderRun).ConfigureAwait(false);
@@ -295,16 +293,47 @@ internal sealed class ReconciliationMemoryAccountabilityTests
     }
 
 
-    private static async Task PaceUntilInitiatorCompletesAsync(AntiEntropySession<string> initiator, AntiEntropySession<string> responder, CancellationToken cancellationToken)
+    /// <summary>
+    /// Drives a two-session exchange to the initiator's completion without polling: a local mirror decoder over the
+    /// same items and coded symbols names the exact symbol count the initiator's decoder needs, so the responder is
+    /// triggered just enough batches to deliver them, and the ordered channel then carries the done, fetch, and
+    /// answer round-trip through to the initiator's completion with no further trigger.
+    /// </summary>
+    private static async Task DriveInitiatorToCompletionAsync(
+        Task initiatorRun,
+        AntiEntropySession<string> responder,
+        ReconciliationContract contract,
+        IReadOnlyList<ReadOnlyMemory<byte>> initiatorItems,
+        IReadOnlyList<ReadOnlyMemory<byte>> responderItems,
+        CancellationToken cancellationToken)
     {
-        int triggers = 0;
-        while(initiator.State != AntiEntropySessionState.Completed)
+        using ReconciliationEncoder local = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        foreach(ReadOnlyMemory<byte> item in initiatorItems)
+        {
+            local.Add(item.Span);
+        }
+
+        using ReconciliationEncoder remote = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        foreach(ReadOnlyMemory<byte> item in responderItems)
+        {
+            remote.Add(item.Span);
+        }
+
+        using ReconciliationDecoder mirror = new(contract, BaseMemoryPool.Shared);
+        int symbols = 0;
+        while(!mirror.IsComplete)
+        {
+            mirror.Absorb(local.ProduceNext().Combine(remote.ProduceNext()));
+            symbols++;
+        }
+
+        int batches = (symbols + responder.BatchSize - 1) / responder.BatchSize;
+        for(int batch = 0; batch < batches; batch++)
         {
             await responder.TriggerBatchAsync(cancellationToken).ConfigureAwait(false);
-            await Task.Delay(1, cancellationToken).ConfigureAwait(false);
-            triggers++;
-            Assert.IsLessThan(TriggerCap, triggers, "The initiator never completed within the trigger cap.");
         }
+
+        await initiatorRun.ConfigureAwait(false);
     }
 
 
@@ -391,4 +420,36 @@ internal sealed class ReconciliationMemoryAccountabilityTests
     }
 
 
+    /// <summary>A responder builds no decoder, so its construction rents strictly fewer buffers than an initiator's over the same contract and snapshot.</summary>
+    [TestMethod]
+    public void AResponderSessionRentsFewerBuffersThanAnInitiator()
+    {
+        //The decoder is documented as initiator-only (class remarks): an initiator builds one, a responder must
+        //not, so the difference between the two rental counts is the decoder's own rentals.
+        ReadOnlyMemory<byte>[] items = [A1, A2];
+
+        long initiatorRented;
+        using(RentalAccountant initiatorAccountant = new())
+        {
+            using BaseMemoryPool initiatorPool = new();
+            using(new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, items, initiatorPool))
+            {
+            }
+
+            initiatorRented = initiatorAccountant.Rented;
+        }
+
+        long responderRented;
+        using(RentalAccountant responderAccountant = new())
+        {
+            using BaseMemoryPool responderPool = new();
+            using(new AntiEntropySession<string>(AntiEntropyRole.Responder, StructuralContract, items, responderPool))
+            {
+            }
+
+            responderRented = responderAccountant.Rented;
+        }
+
+        Assert.IsLessThan(initiatorRented, responderRented, "A responder must rent fewer buffers than an initiator, which alone builds the decoder.");
+    }
 }

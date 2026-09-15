@@ -212,4 +212,18 @@ internal sealed class RecorderStepTests
         Assert.IsLessThan(0, four.CompareTo(five));
         Assert.AreEqual(0, four.CompareTo(alsoFour));
     }
+
+
+    /// <summary>
+    /// A negative round is refused on the round parameter before any arithmetic. A round of minus two to the
+    /// thirtieth multiplied by four is zero modulo two to the thirty-second, so an unguarded call would return
+    /// the legal step zero instead of throwing.
+    /// </summary>
+    [TestMethod]
+    public void AnUnderflowingRoundIsRejectedOnTheRoundRatherThanWrappingToALegalStep()
+    {
+        ArgumentOutOfRangeException thrown = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = RecorderStep.FromRoundAndPhase(-(1 << 30), 0));
+
+        Assert.AreEqual("round", thrown.ParamName);
+    }
 }

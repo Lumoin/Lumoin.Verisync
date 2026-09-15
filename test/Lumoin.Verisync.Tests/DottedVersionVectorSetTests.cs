@@ -16,7 +16,7 @@ internal sealed class DottedVersionVectorSetTests
     public void EmptyHasNoValues()
     {
         Assert.AreEqual(0, DottedVersionVectorSet<string>.Empty.Count);
-        Assert.HasCount(0, DottedVersionVectorSet<string>.Empty.Values);
+        Assert.IsEmpty(DottedVersionVectorSet<string>.Empty.Values);
     }
 
 
@@ -135,6 +135,127 @@ internal sealed class DottedVersionVectorSetTests
         DottedVersionVectorSet<string> back = DottedVersionVectorSet<string>.FromState(set.ToState());
 
         Assert.AreEqual(set, back);
+    }
+
+
+    /// <summary>
+    /// Pins that two sets sharing the same dot but holding different values are unequal.
+    /// </summary>
+    [TestMethod]
+    public void EqualityFailsForDifferentValues()
+    {
+        DottedVersionVectorSet<string> a = DottedVersionVectorSet<string>.Empty.Add(R1, "a");
+        DottedVersionVectorSet<string> b = DottedVersionVectorSet<string>.Empty.Add(R1, "b");
+
+        Assert.AreNotEqual(a, b);
+    }
+
+
+    /// <summary>
+    /// Pins that two sets with matching entry counts but different observed contexts are unequal.
+    /// </summary>
+    [TestMethod]
+    public void EqualityFailsWhenContextsDifferButEntryCountsMatch()
+    {
+        DottedVersionVectorSet<string> a = DottedVersionVectorSet<string>.Empty;
+        DottedVersionVectorSet<string> b = DottedVersionVectorSet<string>.Empty.Add(R1, "x").ClearValues();
+
+        Assert.AreNotEqual(a, b);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="DottedVersionVectorSet{T}.FromState"/> rejects a null state.
+    /// </summary>
+    [TestMethod]
+    public void FromStateRejectsNull()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() => DottedVersionVectorSet<string>.FromState(null!));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="DottedVersionVectorSet{T}.RemoveValue"/> retains entries whose value differs
+    /// from the one being removed.
+    /// </summary>
+    [TestMethod]
+    public void RemoveValueRetainsEntriesWithOtherValues()
+    {
+        DottedVersionVectorSet<string> set = DottedVersionVectorSet<string>.Empty.Add(R1, "a").Add(R2, "b");
+
+        DottedVersionVectorSet<string> result = set.RemoveValue("a");
+
+        Assert.AreEqual(1, result.Count);
+        Assert.Contains("b", result.Values);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="DottedVersionVectorSet{T}.RemoveValue"/> returns the same instance when no
+    /// entry holds the given value, matching <see cref="DottedVersionVectorSet{T}.ClearValues"/>'s fast path.
+    /// </summary>
+    [TestMethod]
+    public void RemoveValueOnAbsentValueReturnsSameInstance()
+    {
+        DottedVersionVectorSet<string> set = DottedVersionVectorSet<string>.Empty.Add(R1, "a");
+
+        Assert.AreSame(set, set.RemoveValue("missing"));
+    }
+
+
+    /// <summary>
+    /// Pins that two sets sharing a context but holding different values hash differently, so the entry fold
+    /// contributes to GetHashCode rather than collapsing to a constant.
+    /// </summary>
+    [TestMethod]
+    public void HashCodeReflectsEntryContent()
+    {
+        DottedVersionVectorSet<string> a = DottedVersionVectorSet<string>.Empty.Add(R1, "a");
+        DottedVersionVectorSet<string> b = DottedVersionVectorSet<string>.Empty.Add(R1, "b");
+
+        Assert.AreNotEqual(a.GetHashCode(), b.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="DottedVersionVectorSet{T}.Merge"/> rejects a null other operand.
+    /// </summary>
+    [TestMethod]
+    public void MergeRejectsNull()
+    {
+        DottedVersionVectorSet<string> set = DottedVersionVectorSet<string>.Empty.Add(R1, "a");
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => set.Merge(null!));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="DottedVersionVectorSet{T}.Equals(DottedVersionVectorSet{T})"/> returns false
+    /// for a null other operand.
+    /// </summary>
+    [TestMethod]
+    public void EqualsReturnsFalseForNullOther()
+    {
+        DottedVersionVectorSet<string> set = DottedVersionVectorSet<string>.Empty.Add(R1, "a");
+
+        Assert.IsFalse(set.Equals(NullSet()));
+    }
+
+
+    /// <summary>Returns a null DottedVersionVectorSet for the equality vector.</summary>
+    private static DottedVersionVectorSet<string>? NullSet() => null;
+
+
+    /// <summary>
+    /// Pins that two sets with the same observed context but different entry counts are unequal.
+    /// </summary>
+    [TestMethod]
+    public void EqualityFailsWhenEntryCountsDifferButContextsMatch()
+    {
+        DottedVersionVectorSet<string> a = DottedVersionVectorSet<string>.Empty.Add(R1, "a");
+        DottedVersionVectorSet<string> b = a.RemoveValue("a");
+
+        Assert.AreNotEqual(a, b);
     }
 
 

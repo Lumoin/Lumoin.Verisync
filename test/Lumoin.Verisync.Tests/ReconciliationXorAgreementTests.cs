@@ -317,4 +317,426 @@ internal sealed class ReconciliationXorAgreementTests
 
         return bytes;
     }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector512Backend.IsNeutral"/> checks
+    /// <see cref="ReconciliationXorVector512Backend.IsSupported"/> before scanning any bytes, mirroring the
+    /// guard already pinned for <c>Fold</c> by <see cref="Vector512ReGuardsUnsupportedHosts"/>.
+    /// </summary>
+    [TestMethod]
+    public void Vector512IsNeutralReGuardsUnsupportedHosts()
+    {
+        AssertPlatformReGuard(
+            ReconciliationXorVector512Backend.IsSupported,
+            static () => { _ = ReconciliationXorVector512Backend.IsNeutral(new byte[8]); });
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector256Backend.Fold"/> validates lengths before touching any
+    /// vector-width block: a mismatch large enough to enter the vectorized loop must still throw
+    /// <see cref="ArgumentException"/> without XORing any destination bytes, since skipping the guard would
+    /// let the loop write a full block into <c>destination</c> before the scalar fallback's own mismatch
+    /// check eventually throws the same exception type, masking the missing guard.
+    /// </summary>
+    [TestMethod]
+    public void Vector256FoldGuardsLengthBeforeWritingAnyBlock()
+    {
+        if(!ReconciliationXorVector256Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector256 is not hardware-accelerated on this host.");
+        }
+
+        byte[] destination = Fill(32, FillSeeds[0]);
+        byte[] destinationBeforeCall = (byte[])destination.Clone();
+        byte[] source = Fill(64, FillSeeds[1]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => ReconciliationXorVector256Backend.Fold(destination, source));
+        Assert.AreSequenceEqual(destinationBeforeCall, destination);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector512Backend.Fold"/> validates lengths before touching any
+    /// vector-width block, mirroring <see cref="Vector256FoldGuardsLengthBeforeWritingAnyBlock"/> one tier
+    /// up: a mismatch whose destination still fills a 64-byte block must throw
+    /// <see cref="ArgumentException"/> without XORing any destination bytes.
+    /// </summary>
+    [TestMethod]
+    public void Vector512FoldGuardsLengthBeforeWritingAnyBlock()
+    {
+        if(!ReconciliationXorVector512Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector512 is not hardware-accelerated on this host.");
+        }
+
+        byte[] destination = Fill(64, FillSeeds[0]);
+        byte[] destinationBeforeCall = (byte[])destination.Clone();
+        byte[] source = Fill(128, FillSeeds[1]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => ReconciliationXorVector512Backend.Fold(destination, source));
+        Assert.AreSequenceEqual(destinationBeforeCall, destination);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector512Backend.Combine"/> validates all three lengths before
+    /// writing any vector-width block, mirroring <see cref="Vector256CombineGuardFiresBeforeAnyBlockIsWritten"/>
+    /// one tier up: a mismatch that trips only the destination-length half of the guard must throw
+    /// <see cref="ArgumentException"/> before the first 64-byte block lands in <c>destination</c>.
+    /// </summary>
+    [TestMethod]
+    public void Vector512CombineGuardFiresBeforeAnyBlockIsWritten()
+    {
+        if(!ReconciliationXorVector512Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector512 is not hardware-accelerated on this host.");
+        }
+
+        byte[] left = Fill(128, FillSeeds[0]);
+        byte[] right = Fill(128, FillSeeds[1]);
+        byte[] destination = Fill(64, FillSeeds[0] ^ 0x0F0F0F0F0F0F0F0FUL);
+        byte[] destinationBeforeCall = (byte[])destination.Clone();
+
+        Assert.ThrowsExactly<ArgumentException>(() => ReconciliationXorVector512Backend.Combine(left, right, destination));
+        Assert.AreSequenceEqual(destinationBeforeCall, destination);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector512Backend.IsNeutral"/> accumulates blocks with a bitwise
+    /// OR, mirroring <see cref="Vector256IsNeutralOrsBlocksRatherThanCancellingThem"/> one tier up: two full
+    /// 64-byte blocks that each set the same single byte position to a nonzero value must still report
+    /// <see langword="false"/>, since an XOR-based accumulator would cancel them back to zero.
+    /// </summary>
+    [TestMethod]
+    public void Vector512IsNeutralOrsBlocksRatherThanCancellingThem()
+    {
+        if(!ReconciliationXorVector512Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector512 is not hardware-accelerated on this host.");
+        }
+
+        byte[] bytes = new byte[128];
+        bytes[5] = 0xFF;
+        bytes[5 + 64] = 0xFF;
+
+        Assert.IsFalse(ReconciliationXorVector512Backend.IsNeutral(bytes));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector256Backend.Combine"/> validates all three lengths
+    /// (via an OR of the two inequality checks) before writing any vector-width block into
+    /// <c>destination</c>: a mismatch that trips only the destination-length half of the guard
+    /// (<c>left.Length == right.Length</c> but <c>left.Length != destination.Length</c>) must still throw
+    /// <see cref="ArgumentException"/> before the first block is written. The vectorized loop must
+    /// not XOR a block into <c>destination</c> before the guard throws, because the scalar fallback's own
+    /// mismatch check eventually throws the same exception type, so the exception type alone does not prove
+    /// the guard fired ahead of any write.
+    /// </summary>
+    [TestMethod]
+    public void Vector256CombineGuardFiresBeforeAnyBlockIsWritten()
+    {
+        if(!ReconciliationXorVector256Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector256 is not hardware-accelerated on this host.");
+        }
+
+        byte[] left = Fill(64, FillSeeds[0]);
+        byte[] right = Fill(64, FillSeeds[1]);
+        byte[] destination = Fill(32, FillSeeds[0] ^ 0x0F0F0F0F0F0F0F0FUL);
+        byte[] destinationBeforeCall = (byte[])destination.Clone();
+
+        Assert.ThrowsExactly<ArgumentException>(() => ReconciliationXorVector256Backend.Combine(left, right, destination));
+        Assert.AreSequenceEqual(destinationBeforeCall, destination);
+    }
+
+
+    /// <summary>
+    /// Pins that Vector128Backend.Combine stops scanning at exactly <c>blockEnd</c>: slicing 16-byte operands out
+    /// of larger backing arrays whose immediately following bytes are non-zero must leave the destination's
+    /// backing bytes beyond the sliced length untouched, proving the accelerated loop never reads or writes one
+    /// block past the given spans.
+    /// </summary>
+    [TestMethod]
+    public void Vector128CombineStopsExactlyAtBlockEnd()
+    {
+        if(!ReconciliationXorVector128Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector128 is not hardware-accelerated on this host.");
+        }
+
+        const int width = 16;
+        byte[] leftBacking = new byte[width * 2];
+        byte[] rightBacking = new byte[width * 2];
+        byte[] destinationBacking = new byte[width * 2];
+        Array.Fill(leftBacking, (byte)0xAA, width, width);
+        Array.Fill(rightBacking, (byte)0x55, width, width);
+
+        ReconciliationXorVector128Backend.Combine(
+            leftBacking.AsSpan(0, width),
+            rightBacking.AsSpan(0, width),
+            destinationBacking.AsSpan(0, width));
+
+        byte[] untouchedTail = new byte[width];
+        Assert.AreSequenceEqual(untouchedTail, destinationBacking.AsSpan(width, width).ToArray());
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector256Backend.IsNeutral"/> accumulates blocks with a
+    /// bitwise OR: two full 32-byte blocks that each set the same single byte position to a nonzero value
+    /// must still report <see langword="false"/> (not neutral), since an XOR-based accumulator would cancel
+    /// the matching bytes back to zero across blocks and falsely report the span as neutral.
+    /// </summary>
+    [TestMethod]
+    public void Vector256IsNeutralOrsBlocksRatherThanCancellingThem()
+    {
+        if(!ReconciliationXorVector256Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector256 is not hardware-accelerated on this host.");
+        }
+
+        byte[] bytes = new byte[64];
+        bytes[5] = 0xFF;
+        bytes[5 + 32] = 0xFF;
+
+        Assert.IsFalse(ReconciliationXorVector256Backend.IsNeutral(bytes));
+    }
+
+
+    /// <summary>
+    /// Pins that Vector128Backend.IsNeutral stops scanning at exactly <c>blockEnd</c> (the loop boundary must be a
+    /// strict `&lt;`, not `&lt;=`): a 16-byte all-zero span sliced from a larger buffer whose immediately following
+    /// bytes are non-zero must still report neutral, proving the accelerated loop never reads one block past the
+    /// scanned span.
+    /// </summary>
+    [TestMethod]
+    public void Vector128IsNeutralStopsExactlyAtBlockEnd()
+    {
+        if(!ReconciliationXorVector128Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector128 is not hardware-accelerated on this host.");
+        }
+
+        const int width = 16;
+        byte[] backing = new byte[width * 2];
+        Array.Fill(backing, (byte)0xFF, width, width);
+        ReadOnlySpan<byte> zeroSlice = backing.AsSpan(0, width);
+
+        Assert.IsTrue(ReconciliationXorVector128Backend.IsNeutral(zeroSlice));
+    }
+
+
+    /// <summary>
+    /// Pins that Vector128Backend.IsNeutral accumulates full blocks with OR, not XOR: two full blocks that each
+    /// carry the same non-zero byte at the same intra-block position must not cancel each other out.
+    /// </summary>
+    [TestMethod]
+    public void Vector128IsNeutralOrsAcrossBlocksRatherThanXoring()
+    {
+        if(!ReconciliationXorVector128Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector128 is not hardware-accelerated on this host.");
+        }
+
+        const int width = 16;
+        byte[] bytes = new byte[width * 2];
+        bytes[5] = 0xFF;
+        bytes[width + 5] = 0xFF;
+
+        Assert.IsFalse(ReconciliationXorVector128Backend.IsNeutral(bytes));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector128Backend.Fold"/> validates lengths before touching any
+    /// vector-width block: a mismatch large enough to enter the vectorized loop must still throw
+    /// <see cref="ArgumentException"/> without XORing any destination bytes, since skipping the guard would
+    /// let the loop write a full block into <c>destination</c> before the scalar fallback's own mismatch
+    /// check eventually throws the same exception type, masking the missing guard.
+    /// </summary>
+    [TestMethod]
+    public void Vector128FoldGuardsLengthBeforeWritingAnyBlock()
+    {
+        if(!ReconciliationXorVector128Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector128 is not hardware-accelerated on this host.");
+        }
+
+        byte[] destination = Fill(16, FillSeeds[0]);
+        byte[] destinationBeforeCall = (byte[])destination.Clone();
+        byte[] source = Fill(32, FillSeeds[1]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => ReconciliationXorVector128Backend.Fold(destination, source));
+        Assert.AreSequenceEqual(destinationBeforeCall, destination);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector128Backend.Combine"/> validates all three lengths
+    /// (via an OR of the two inequality checks) before writing any vector-width block into
+    /// <c>destination</c>: a mismatch that trips only the destination-length half of the guard
+    /// (<c>left.Length == right.Length</c> but <c>left.Length != destination.Length</c>) must still throw
+    /// <see cref="ArgumentException"/> before the first block is written. The vectorized loop must
+    /// not XOR a block into <c>destination</c> before the guard throws, because the scalar fallback's own
+    /// mismatch check eventually throws the same exception type, so the exception type alone does not prove
+    /// the guard fired ahead of any write.
+    /// </summary>
+    [TestMethod]
+    public void Vector128CombineGuardFiresBeforeAnyBlockIsWritten()
+    {
+        if(!ReconciliationXorVector128Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector128 is not hardware-accelerated on this host.");
+        }
+
+        byte[] left = Fill(32, FillSeeds[0]);
+        byte[] right = Fill(32, FillSeeds[1]);
+        byte[] destination = Fill(16, FillSeeds[0] ^ 0x0F0F0F0F0F0F0F0FUL);
+        byte[] destinationBeforeCall = (byte[])destination.Clone();
+
+        Assert.ThrowsExactly<ArgumentException>(() => ReconciliationXorVector128Backend.Combine(left, right, destination));
+        Assert.AreSequenceEqual(destinationBeforeCall, destination);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector128Backend.Fold"/> stops at exactly <c>blockEnd</c> (the loop
+    /// boundary must be a strict <c>&lt;</c>, not <c>&lt;=</c>): folding a 16-byte source into a 16-byte
+    /// destination sliced from larger backing arrays whose following bytes are non-zero must leave the
+    /// destination's backing bytes beyond the sliced length untouched, proving the accelerated loop never reads
+    /// or writes one block past the given spans.
+    /// </summary>
+    [TestMethod]
+    public void Vector128FoldStopsExactlyAtBlockEnd()
+    {
+        if(!ReconciliationXorVector128Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector128 is not hardware-accelerated on this host.");
+        }
+
+        const int width = 16;
+        byte[] destinationBacking = new byte[width * 2];
+        byte[] sourceBacking = new byte[width * 2];
+        Array.Fill(destinationBacking, (byte)0xAA, width, width);
+        Array.Fill(sourceBacking, (byte)0x55, width, width);
+
+        ReconciliationXorVector128Backend.Fold(destinationBacking.AsSpan(0, width), sourceBacking.AsSpan(0, width));
+
+        byte[] expectedTail = new byte[width];
+        Array.Fill(expectedTail, (byte)0xAA);
+        Assert.AreSequenceEqual(expectedTail, destinationBacking.AsSpan(width, width).ToArray());
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector256Backend.Fold"/> stops at exactly <c>blockEnd</c> (the loop
+    /// boundary must be a strict <c>&lt;</c>, not <c>&lt;=</c>): folding a 32-byte source into a 32-byte
+    /// destination sliced from larger backing arrays whose following bytes are non-zero must leave the
+    /// destination's backing bytes beyond the sliced length untouched, proving the accelerated loop never reads
+    /// or writes one block past the given spans.
+    /// </summary>
+    [TestMethod]
+    public void Vector256FoldStopsExactlyAtBlockEnd()
+    {
+        if(!ReconciliationXorVector256Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector256 is not hardware-accelerated on this host.");
+        }
+
+        const int width = 32;
+        byte[] destinationBacking = new byte[width * 2];
+        byte[] sourceBacking = new byte[width * 2];
+        Array.Fill(destinationBacking, (byte)0xAA, width, width);
+        Array.Fill(sourceBacking, (byte)0x55, width, width);
+
+        ReconciliationXorVector256Backend.Fold(destinationBacking.AsSpan(0, width), sourceBacking.AsSpan(0, width));
+
+        byte[] expectedTail = new byte[width];
+        Array.Fill(expectedTail, (byte)0xAA);
+        Assert.AreSequenceEqual(expectedTail, destinationBacking.AsSpan(width, width).ToArray());
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector256Backend.Combine"/> stops scanning at exactly <c>blockEnd</c>:
+    /// slicing 32-byte operands out of larger backing arrays whose immediately following bytes are non-zero must
+    /// leave the destination's backing bytes beyond the sliced length untouched, proving the accelerated loop
+    /// never reads or writes one block past the given spans.
+    /// </summary>
+    [TestMethod]
+    public void Vector256CombineStopsExactlyAtBlockEnd()
+    {
+        if(!ReconciliationXorVector256Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector256 is not hardware-accelerated on this host.");
+        }
+
+        const int width = 32;
+        byte[] leftBacking = new byte[width * 2];
+        byte[] rightBacking = new byte[width * 2];
+        byte[] destinationBacking = new byte[width * 2];
+        Array.Fill(leftBacking, (byte)0xAA, width, width);
+        Array.Fill(rightBacking, (byte)0x55, width, width);
+
+        ReconciliationXorVector256Backend.Combine(
+            leftBacking.AsSpan(0, width),
+            rightBacking.AsSpan(0, width),
+            destinationBacking.AsSpan(0, width));
+
+        byte[] untouchedTail = new byte[width];
+        Assert.AreSequenceEqual(untouchedTail, destinationBacking.AsSpan(width, width).ToArray());
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector256Backend.IsNeutral"/> stops scanning at exactly <c>blockEnd</c>
+    /// (the loop boundary must be a strict <c>&lt;</c>, not <c>&lt;=</c>): a 32-byte all-zero span sliced from a
+    /// larger buffer whose immediately following bytes are non-zero must still report neutral, proving the
+    /// accelerated loop never reads one block past the scanned span.
+    /// </summary>
+    [TestMethod]
+    public void Vector256IsNeutralStopsExactlyAtBlockEnd()
+    {
+        if(!ReconciliationXorVector256Backend.IsSupported)
+        {
+            Assert.Inconclusive("Vector256 is not hardware-accelerated on this host.");
+        }
+
+        const int width = 32;
+        byte[] backing = new byte[width * 2];
+        Array.Fill(backing, (byte)0xFF, width, width);
+        ReadOnlySpan<byte> zeroSlice = backing.AsSpan(0, width);
+
+        Assert.IsTrue(ReconciliationXorVector256Backend.IsNeutral(zeroSlice));
+    }
+
+
+    /// <summary>
+    /// The scalar backend has no platform dependency, so <see cref="ReconciliationXorScalarBackend.IsSupported"/>
+    /// is always <see langword="true"/>, per the class remarks describing it as the arbiter every accelerated
+    /// tier is compared against.
+    /// </summary>
+    [TestMethod]
+    public void ScalarBackendIsAlwaysSupported()
+    {
+        Assert.IsTrue(ReconciliationXorScalarBackend.IsSupported);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationXorVector512Backend.Combine"/> checks
+    /// <see cref="ReconciliationXorVector512Backend.IsSupported"/> before any length validation or vector
+    /// work, mirroring the guard already pinned for <c>Fold</c> by <see cref="Vector512ReGuardsUnsupportedHosts"/>.
+    /// </summary>
+    [TestMethod]
+    public void Vector512CombineReGuardsUnsupportedHosts()
+    {
+        AssertPlatformReGuard(
+            ReconciliationXorVector512Backend.IsSupported,
+            static () => ReconciliationXorVector512Backend.Combine(new byte[8], new byte[8], new byte[8]));
+    }
 }

@@ -159,6 +159,18 @@ internal sealed class ClusterIdTests
     }
 
 
+    /// <summary>
+    /// Identifiers whose leading bytes differ hash differently, because the leading word of the digest is the
+    /// hash. A constant hash keeps equality exact while putting every identifier in a hash-keyed collection into
+    /// one bucket, which the equality vectors cannot see.
+    /// </summary>
+    [TestMethod]
+    public void IdentifiersWithDifferentLeadingBytesHashDifferently()
+    {
+        Assert.AreNotEqual(Cluster(1).GetHashCode(), Cluster(2).GetHashCode());
+    }
+
+
     private static ClusterId Cluster(params byte[] prefix)
     {
         Span<byte> buffer = stackalloc byte[ClusterId.Size];

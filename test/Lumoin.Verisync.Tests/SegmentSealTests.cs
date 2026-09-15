@@ -45,7 +45,7 @@ internal sealed class SegmentSealTests
         Assert.AreEqual(1UL, ReadUInt64(canonical, 1));
         Assert.AreEqual(3UL, ReadUInt64(canonical, 9));
         Assert.AreEqual(32, ReadInt32(canonical, 17));
-        Assert.AreSequenceEqual(first.Digest.ToArray(), canonical[21..53]);
+        Assert.AreSequenceEqual(first.Digest.ToArray(), (ReadOnlySpan<byte>)canonical.AsSpan(21..53));
         Assert.AreEqual(1, ReadInt32(canonical, 53));
         Assert.AreEqual(0x22, canonical[57]);
         Assert.HasCount(58, canonical);
@@ -269,4 +269,118 @@ internal sealed class SegmentSealTests
 
 
     private static int ReadInt32(byte[] buffer, int offset) => System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(buffer.AsSpan(offset));
+
+
+    /// <summary>
+    /// Pins that <see cref="SegmentSeal{TProof}.Create"/> carries a non-default, non-empty
+    /// <c>proofs</c> argument through to <see cref="SegmentSeal{TProof}.Proofs"/> unchanged — a seal may
+    /// be attested at creation time, not only via <see cref="SegmentSeal{TProof}.WithProofs"/>.
+    /// </summary>
+    [TestMethod]
+    public void CreateCarriesSuppliedProofsThrough()
+    {
+        SegmentSeal<string> seal = SegmentSeal<string>.Create(0, 2, null, new byte[] { 0x01 }, Proof, Sha256);
+
+        Assert.HasCount(1, seal.Proofs);
+        Assert.Contains("controller", seal.Proofs);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="SegmentSeal{TProof}.Create"/> normalizes a default (uninitialized)
+    /// <c>proofs</c> argument to <see cref="ImmutableArray{T}.Empty"/> rather than carrying the unusable
+    /// default array through to <see cref="SegmentSeal{TProof}.Proofs"/>.
+    /// </summary>
+    [TestMethod]
+    public void CreateNormalizesADefaultProofsArrayToEmpty()
+    {
+        SegmentSeal<string> seal = SegmentSeal<string>.Create(0, 0, null, new byte[] { 0x01 }, default, Sha256);
+
+        Assert.IsFalse(seal.Proofs.IsDefault);
+        Assert.IsEmpty(seal.Proofs);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="SegmentSeal{TProof}.WithProofs"/> normalizes a default (uninitialized)
+    /// <c>proofs</c> argument to <see cref="ImmutableArray{T}.Empty"/>, matching <see cref="SegmentSeal{TProof}.Create"/>'s
+    /// normalization of the same input.
+    /// </summary>
+    [TestMethod]
+    public void WithProofsNormalizesADefaultProofsArrayToEmpty()
+    {
+        SegmentSeal<string> unattested = SegmentSeal<string>.Create(0, 0, null, new byte[] { 0x01 }, [], Sha256);
+
+        SegmentSeal<string> reattested = unattested.WithProofs(default);
+
+        Assert.IsFalse(reattested.Proofs.IsDefault);
+        Assert.IsEmpty(reattested.Proofs);
+    }
+
+
+    /// <summary>
+    /// Pins that equality requires both the digest and the canonical bytes to match. Proofs are
+    /// deliberately outside the digested bytes, but the digest is the attested identity of the seal, so
+    /// two seals with identical encoded fields but a different attested digest must not compare equal.
+    /// </summary>
+    [TestMethod]
+    public void EqualityRequiresBothDigestAndCanonicalBytesToMatch()
+    {
+        SegmentSeal<string> a = SegmentSeal<string>.Create(0, 2, null, new byte[] { 0x01 }, [], Sha256);
+        SegmentSeal<string> tamperedDigest = SegmentSeal<string>.Create(0, 2, null, new byte[] { 0x01 }, [], TamperedSha256);
+
+        Assert.AreSequenceEqual(a.CanonicalBytes.ToArray(), tamperedDigest.CanonicalBytes.ToArray());
+        Assert.AreNotEqual(a, tamperedDigest);
+    }
+
+
+    /// <summary>Digests the canonical bytes with SHA-256 and flips the low bit of the first byte, yielding a well-formed digest that does not match the bytes.</summary>
+    private static ReadOnlyMemory<byte> TamperedSha256(ReadOnlyMemory<byte> canonicalBytes)
+    {
+        byte[] digest = SHA256.HashData(canonicalBytes.Span);
+        digest[0] ^= 0x01;
+
+        return digest;
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="SegmentSeal{TProof}.GetHashCode"/> is derived from <see cref="SegmentSeal{TProof}.Digest"/>,
+    /// so seals with different digests hash differently instead of colliding into one bucket.
+    /// </summary>
+    [TestMethod]
+    public void GetHashCodeVariesWithTheDigest()
+    {
+        SegmentSeal<string> a = SegmentSeal<string>.Create(0, 2, null, new byte[] { 0x01 }, [], Sha256);
+        SegmentSeal<string> b = SegmentSeal<string>.Create(0, 2, null, new byte[] { 0x02 }, [], Sha256);
+
+        Assert.AreNotEqual(a.GetHashCode(), b.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// Pins the <see cref="IEquatable{T}"/> contract: <see cref="SegmentSeal{TProof}.Equals(SegmentSeal{TProof}?)"/>
+    /// must return <see langword="false"/> for a <see langword="null"/> other, never <see langword="true"/>.
+    /// </summary>
+    [TestMethod]
+    public void EqualsReturnsFalseForNull()
+    {
+        SegmentSeal<string> seal = SegmentSeal<string>.Create(0, 0, null, new byte[] { 0x01 }, [], Sha256);
+
+        Assert.IsFalse(seal.Equals(NullSeal()));
+    }
+
+
+    /// <summary>Pins that a seal equals the same instance through the reference-identity path, ahead of any byte comparison.</summary>
+    [TestMethod]
+    public void EqualsIsTrueForTheSameInstance()
+    {
+        SegmentSeal<string> seal = SegmentSeal<string>.Create(0, 0, null, new byte[] { 0x01 }, [], Sha256);
+
+        Assert.IsTrue(seal.Equals(seal));
+    }
+
+
+    /// <summary>Returns a null reference typed so the call binds to the <see cref="IEquatable{T}"/> overload.</summary>
+    private static SegmentSeal<string>? NullSeal() => null;
 }

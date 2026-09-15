@@ -450,6 +450,179 @@ internal sealed class RaftRunnerTests
     }
 
 
+    /// <summary>Pins persist-before-send for the inbound-VoteRequest reply path specifically, distinct from the
+    /// campaign-broadcast path PersistIsObservedBeforeTheOutboundSend already covers.</summary>
+    [TestMethod]
+    public async Task RespondingToAnInboundVoteRequestPersistsBeforeTheReply()
+    {
+        Runner runner = new(new RaftNode<string>(N1, Members), TestContext.CancellationToken);
+        await using ConfiguredAsyncDisposable cleanup = runner.ConfigureAwait(false);
+
+        RequestVoteRequest request = new(Term.First, N2, LogIndex.BeforeFirst, Term.Zero);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteRequest(N2, request)).ConfigureAwait(false);
+        await runner.DrainAsync().ConfigureAwait(false);
+
+        Assert.AreSequenceEqual(["persist", "send"], runner.Events.ToArray());
+    }
+
+
+    /// <summary>Pins that the constructor rejects a null node with the documented ArgumentNullException.</summary>
+    [TestMethod]
+    public void ConstructorThrowsArgumentNullExceptionForANullNode()
+    {
+        ArgumentNullException exception = Assert.ThrowsExactly<ArgumentNullException>(() => new RaftRunner<string>(null!));
+        Assert.AreEqual("node", exception.ParamName);
+    }
+
+
+    /// <summary>On a lone node the leader is its own majority, so Propose's commit advance is visible without a
+    /// peer ack; the apply seam must observe it in the same dispatch, not merely after a later item.</summary>
+    [TestMethod]
+    public async Task ProposingOnASingleNodeClusterAppliesTheEntryImmediately()
+    {
+        Runner runner = new(new RaftNode<string>(N1, [N1]), TestContext.CancellationToken);
+        await using ConfiguredAsyncDisposable cleanup = runner.ConfigureAwait(false);
+
+        await runner.TriggerElectionAsync().ConfigureAwait(false);
+        Task<LogIndex> propose = runner.ProposeAsync("solo");
+        await runner.DrainAsync().ConfigureAwait(false);
+
+        Assert.AreEqual(LogIndex.First, await propose.ConfigureAwait(false));
+        Assert.AreSequenceEqual([(LogIndex.First, "solo")], runner.Applied.ToArray());
+    }
+
+
+    /// <summary>Pins that becoming leader on a vote reply persists before broadcasting to every peer — the second
+    /// persist/send round the first-index-only assertion in PersistIsObservedBeforeTheOutboundSend cannot see.</summary>
+    [TestMethod]
+    public async Task BecomingLeaderViaVoteReplyPersistsThenBroadcastsToEveryPeer()
+    {
+        Runner runner = new(new RaftNode<string>(N1, Members), TestContext.CancellationToken);
+        await using ConfiguredAsyncDisposable cleanup = runner.ConfigureAwait(false);
+
+        await runner.TriggerElectionAsync().ConfigureAwait(false);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteReply(N2, new RequestVoteReply(Term.First, true))).ConfigureAwait(false);
+        await runner.DrainAsync().ConfigureAwait(false);
+
+        Assert.AreSequenceEqual(["persist", "send", "send", "persist", "send", "send"], runner.Events.ToArray());
+    }
+
+
+    /// <summary>A successful propose must attempt replication immediately: two sends from the campaign, two more
+    /// from becoming leader, and two more from the propose account for the total once everything has drained.</summary>
+    [TestMethod]
+    public async Task ProposingOnTheLeaderBroadcastsAnAppendRequestToEveryPeer()
+    {
+        Runner runner = new(new RaftNode<string>(N1, Members), TestContext.CancellationToken);
+        await using ConfiguredAsyncDisposable cleanup = runner.ConfigureAwait(false);
+
+        await runner.TriggerElectionAsync().ConfigureAwait(false);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteReply(N2, new RequestVoteReply(Term.First, true))).ConfigureAwait(false);
+        Task<LogIndex> propose = runner.ProposeAsync("alpha");
+        await runner.DrainAsync().ConfigureAwait(false);
+
+        Assert.AreEqual(LogIndex.First, await propose.ConfigureAwait(false));
+        Assert.AreEqual(6L, runner.SendCount);
+    }
+
+
+    /// <summary>A null persistState hook is the documented in-memory behavior: PersistAsync must no-op rather than
+    /// dereference the null delegate, even though a work item was actually dispatched and persistence was due.</summary>
+    [TestMethod]
+    public async Task ElectionWithNoPersistHookCompletesWithoutThrowing()
+    {
+        RaftNode<string> node = new(N1, [N1]);
+        RaftRunner<string> runner = new(node);
+        Task run = runner.RunAsync(DiscardSend, null, null, TestContext.CancellationToken);
+
+        await runner.TriggerElectionAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        runner.Complete();
+
+        await run.ConfigureAwait(false);
+        Assert.AreEqual(RaftRole.Leader, node.Role);
+    }
+
+
+    /// <summary>Pins that SubmitAsync rejects an envelope violating the exactly-one-payload invariant, isolated
+    /// from the null-envelope guard by passing a non-null but empty envelope.</summary>
+    [TestMethod]
+    public async Task SubmitAsyncThrowsArgumentExceptionForAnEnvelopeCarryingNoPayload()
+    {
+        RaftRunner<string> runner = new(new RaftNode<string>(N1, Members));
+        RaftEnvelope<string> malformed = new(N1, null, null, null, null);
+
+        ArgumentException exception = await Assert.ThrowsExactlyAsync<ArgumentException>(
+            () => runner.SubmitAsync(malformed, TestContext.CancellationToken).AsTask()).ConfigureAwait(false);
+        Assert.AreEqual("envelope", exception.ParamName);
+    }
+
+
+    /// <summary>Pins the documented continuation rule: a same-term failure with nothing else to send still
+    /// persists before the immediate retry to the same follower, and the retry actually happens.</summary>
+    [TestMethod]
+    public async Task SameTermFailureReplyPersistsThenImmediatelyResendsToTheSameFollower()
+    {
+        Runner runner = new(new RaftNode<string>(N1, Members), TestContext.CancellationToken);
+        await using ConfiguredAsyncDisposable cleanup = runner.ConfigureAwait(false);
+
+        await runner.TriggerElectionAsync().ConfigureAwait(false);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteReply(N2, new RequestVoteReply(Term.First, true))).ConfigureAwait(false);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForAppendReply(N2, new AppendEntriesReply(Term.First, false, LogIndex.BeforeFirst))).ConfigureAwait(false);
+        await runner.DrainAsync().ConfigureAwait(false);
+
+        Assert.AreSequenceEqual(
+            ["persist", "send", "send", "persist", "send", "send", "persist", "send"],
+            runner.Events.ToArray());
+    }
+
+
+    /// <summary>Pins that SubmitAsync rejects a null envelope synchronously, before any enqueue.</summary>
+    [TestMethod]
+    public async Task SubmitAsyncThrowsArgumentNullExceptionForANullEnvelope()
+    {
+        RaftRunner<string> runner = new(new RaftNode<string>(N1, Members));
+
+        ArgumentNullException exception = await Assert.ThrowsExactlyAsync<ArgumentNullException>(
+            () => runner.SubmitAsync(null!, TestContext.CancellationToken).AsTask()).ConfigureAwait(false);
+        Assert.AreEqual("envelope", exception.ParamName);
+    }
+
+
+    /// <summary>Pins that a second RunAsync call on the same runner faults instead of starting a second consumer.</summary>
+    [TestMethod]
+    public async Task RunAsyncThrowsInvalidOperationExceptionWhenCalledASecondTime()
+    {
+        RaftNode<string> node = new(N1, [N1]);
+        RaftRunner<string> runner = new(node);
+        Task first = runner.RunAsync(DiscardSend, null, null, TestContext.CancellationToken);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => runner.RunAsync(DiscardSend, null, null, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        runner.Complete();
+        await first.ConfigureAwait(false);
+    }
+
+
+    /// <summary>A successful reply with nothing left to catch up persists but does not trigger the continuation
+    /// resend: neither a success nor an empty freshly built request is a reason to send.</summary>
+    [TestMethod]
+    public async Task SuccessfulReplyWithNothingLeftToSendPersistsButTriggersNoResend()
+    {
+        Runner runner = new(new RaftNode<string>(N1, Members), TestContext.CancellationToken);
+        await using ConfiguredAsyncDisposable cleanup = runner.ConfigureAwait(false);
+
+        await runner.TriggerElectionAsync().ConfigureAwait(false);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForVoteReply(N2, new RequestVoteReply(Term.First, true))).ConfigureAwait(false);
+        await runner.SubmitAsync(RaftEnvelope<string>.ForAppendReply(N2, new AppendEntriesReply(Term.First, true, LogIndex.BeforeFirst))).ConfigureAwait(false);
+        await runner.DrainAsync().ConfigureAwait(false);
+
+        Assert.AreSequenceEqual(
+            ["persist", "send", "send", "persist", "send", "send", "persist"],
+            runner.Events.ToArray());
+    }
+
+
     private static ValueTask DiscardSend(ReplicaId to, RaftEnvelope<string> envelope, CancellationToken cancellationToken)
     {
         return ValueTask.CompletedTask;

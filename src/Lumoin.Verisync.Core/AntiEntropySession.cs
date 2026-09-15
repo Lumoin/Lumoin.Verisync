@@ -265,7 +265,10 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// wire, this method throws and the initiator ends faulted and non-terminal — neither
     /// <see cref="AntiEntropySessionState.Completed"/> nor <see cref="AntiEntropySessionState.Interrupted"/>, a
     /// third terminal condition the host recovers as it does any faulted session, while a responder that
-    /// received the frame still folds soundly because every transfer preceded it.
+    /// received the frame still folds soundly because every transfer preceded it. The run yields to the thread
+    /// pool after the offer and context sends and before consuming its inbound channel, so the exchange loop
+    /// never resumes on the caller's synchronization context and a host that blocks its starting thread on the
+    /// returned task cannot deadlock it.
     /// </remarks>
     public async Task RunAsync(
         SendReconciliationEnvelopeDelegate<TElement> send,
@@ -324,6 +327,12 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         {
             await send(ReconciliationEnvelope<TElement>.ForContext(new ReconciliationContext(LocalContext.ToState())), cancellationToken).ConfigureAwait(false);
         }
+
+        //The run leaves the caller's thread here, before consuming: every await in the loop below then resumes
+        //on a pool thread with no synchronization context, whatever shape the host drove the session in — an
+        //envelope pre-queued before this call included — so a host that blocks its starting thread on the run
+        //cannot deadlock it.
+        await Task.CompletedTask.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
 
         await foreach(WorkItem item in work.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {

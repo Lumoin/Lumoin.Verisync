@@ -284,6 +284,26 @@ internal sealed class IntervalSummaryRegisterTests
     }
 
 
+    /// <summary>Pins that <see cref="IntervalSummaryRegister{TValue}.FromState"/> refuses a null state directly, independent of any caller's own guard.</summary>
+    [TestMethod]
+    public void FromStateRefusesANullState()
+    {
+        ArgumentNullException refusal = Assert.ThrowsExactly<ArgumentNullException>(() => IntervalSummaryRegister<string>.FromState(null!));
+
+        Assert.AreEqual("state", refusal.ParamName);
+    }
+
+
+    /// <summary>Pins that <see cref="IntervalSummaryRegister{TValue}.Record"/> refuses a null proposal before folding or advancing any field.</summary>
+    [TestMethod]
+    public void RecordRefusesANullProposal()
+    {
+        ArgumentNullException refusal = Assert.ThrowsExactly<ArgumentNullException>(() => IntervalSummaryRegister<string>.Initial.Record(Four, null!));
+
+        Assert.AreEqual("proposal", refusal.ParamName);
+    }
+
+
     private static PrioritizedProposal<string> Proposal(ulong priority, ProposerLane owner, string value)
     {
         return new PrioritizedProposal<string>(new ProposalKey(new ProposalPriority(priority), owner), value);

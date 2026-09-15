@@ -133,7 +133,7 @@ internal sealed class OffsetCheckpointSealTests
         //Pinned component-wise too: nothing was recorded and nothing compacted.
         Assert.IsNull(sealedB.Commitment);
         Assert.IsNull(sealedB.CheckpointBallot);
-        Assert.HasCount(0, sealedB.Checkpoint);
+        Assert.IsEmpty(sealedB.Checkpoint);
         Assert.AreEqual(bWithA.Live, sealedB.Live);
 
         //B applies the remaining edits after the abort and seals at F2 — its own grown full context —

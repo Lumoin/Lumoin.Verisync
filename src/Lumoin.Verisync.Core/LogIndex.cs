@@ -167,5 +167,16 @@ public readonly record struct LogIndex(long Value): IComparable<LogIndex>
     }
 
 
+    /// <summary>
+    /// Renders the index as its numeric value, for every value including the empty prefix.
+    /// </summary>
+    /// <remarks>
+    /// The rendering reads only <see cref="Value"/>, because <see cref="Position"/> throws for the empty prefix
+    /// and a guard renders the value while building its message.
+    /// </remarks>
+    /// <returns>The index rendered as its numeric value.</returns>
+    public override string ToString() => $"LogIndex {{ Value = {Value} }}";
+
+
     private string DebuggerDisplay => $"LogIndex: {Value}";
 }

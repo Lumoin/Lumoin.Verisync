@@ -119,7 +119,7 @@ internal sealed class ReconciliationLawTests
             if(d == 0)
             {
                 Assert.AreEqual(1, absorbed);
-                Assert.HasCount(0, decoder.DecodedItems);
+                Assert.IsEmpty(decoder.DecodedItems);
             }
 
             string[] expected = [.. HexSet([.. difference.LeftOnly, .. difference.RightOnly])];
@@ -142,7 +142,7 @@ internal sealed class ReconciliationLawTests
             decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
 
             Assert.IsTrue(decoder.IsComplete);
-            Assert.HasCount(0, decoder.DecodedItems);
+            Assert.IsEmpty(decoder.DecodedItems);
         });
     }
 

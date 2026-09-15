@@ -268,12 +268,8 @@ internal sealed class QuePaxaRecorderTests
 
 
     /// <summary>
-    /// Idempotence at the recorder, which is the re-send rule's unit form one layer up. A proposer may
-    /// deliver a request to a recorder any number of times provided every delivery is identical, and what
-    /// makes that safe is that a second identical record changes nothing: the aggregate already dominates the
-    /// duplicate's key, the first proposal is not touched by the same-step branch at all, and the recorder
-    /// therefore returns itself. The node above reads exactly this reference to decide whether anything needs
-    /// persisting.
+    /// An advancing record returns a different recorder instance, and an identical same-step record returns
+    /// that instance with the same summary. The node counts only the advancing record as a transition.
     /// </summary>
     [TestMethod]
     public void ARepeatedSameStepRecordReturnsTheSameRecorderInstance()
@@ -284,6 +280,7 @@ internal sealed class QuePaxaRecorderTests
         (QuePaxaRecorder<string> once, RecordSummary<string> firstSummary) = recorder.Record(Four, proposal);
         (QuePaxaRecorder<string> twice, RecordSummary<string> secondSummary) = once.Record(Four, proposal);
 
+        Assert.AreNotSame(recorder, once);
         Assert.AreSame(once, twice);
         Assert.AreEqual(firstSummary, secondSummary);
     }

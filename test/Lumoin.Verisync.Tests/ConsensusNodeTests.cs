@@ -388,6 +388,205 @@ internal sealed class ConsensusNodeTests
     }
 
 
+    /// <summary>A request kind the node does not know, used to reach Handle's fallthrough refusal.</summary>
+    private sealed record UnknownRequest : ConsensusRequest<string>;
+
+
+    /// <summary>Pins that <see cref="ConsensusNode{TValue}.RunAsync"/> validates the reply sink before
+    /// consuming any request, refusing a null sink with the "sendReply" parameter name.</summary>
+    [TestMethod]
+    public async Task RunAsyncRefusesANullReplySink()
+    {
+        ConsensusNode<string> node = new();
+        Channel<ConsensusRequest<string>> requests = Channel.CreateUnbounded<ConsensusRequest<string>>();
+        requests.Writer.Complete();
+
+        ArgumentNullException refusal = await Assert.ThrowsExactlyAsync<ArgumentNullException>(
+            async () => await node.RunAsync(requests.Reader.ReadAllAsync(TestContext.CancellationToken), null!, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual("sendReply", refusal.ParamName);
+    }
+
+
+    /// <summary>Pins that <see cref="ConsensusNode{TValue}.Handle"/> refuses any request that is neither
+    /// a <see cref="PrepareRequest{TValue}"/> nor an <see cref="AcceptRequest{TValue}"/>, naming the
+    /// "request" parameter.</summary>
+    [TestMethod]
+    public void HandleRejectsAnUnknownRequestKind()
+    {
+        ConsensusNode<string> node = new();
+        UnknownRequest request = new();
+
+        ArgumentException refusal = Assert.ThrowsExactly<ArgumentException>(() => node.Handle(request));
+
+        Assert.AreEqual("request", refusal.ParamName);
+    }
+
+
+    /// <summary>Pins that <see cref="ConsensusNode{TValue}.RunAsync"/> validates its request stream
+    /// before consuming it, refusing a null stream with the "requests" parameter name.</summary>
+    [TestMethod]
+    public async Task RunAsyncRefusesANullRequestStream()
+    {
+        ConsensusNode<string> node = new();
+
+        ValueTask SendReply(ConsensusReply<string> reply, CancellationToken token) => ValueTask.CompletedTask;
+
+        ArgumentNullException refusal = await Assert.ThrowsExactlyAsync<ArgumentNullException>(
+            async () => await node.RunAsync(null!, SendReply, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual("requests", refusal.ParamName);
+    }
+
+
+    /// <summary>Pins that <see cref="AcceptReply{TValue}.Ballot"/> carries the request's own ballot when
+    /// the accept succeeds, and the acceptor's current promise -- not the request's ballot -- when it is
+    /// rejected, exactly as the XML doc on <see cref="AcceptReply{TValue}.Ballot"/> specifies.</summary>
+    [TestMethod]
+    public void AcceptReplyReportsTheAcceptedBallotOnlyWhenAccepted()
+    {
+        ConsensusNode<string> node = new();
+
+        //A classic accept with a piggybacked next fast ballot succeeds and raises the promise past its own
+        //ballot, so an accepted reply that echoed the new promise instead of the request's ballot would be
+        //caught here.
+        AcceptRequest<string> succeeding = new(FastBallot.Classic(2, R1), "v", FastBallot.Fast(5));
+        AcceptReply<string> acceptedReply = (AcceptReply<string>)node.Handle(succeeding);
+
+        Assert.IsTrue(acceptedReply.Accepted);
+        Assert.AreEqual(FastBallot.Classic(2, R1), acceptedReply.Ballot);
+        Assert.AreEqual(FastBallot.Fast(5), node.Acceptor.Promised);
+
+        //A classic accept below the new promise is rejected outright, so a rejected reply that echoed the
+        //request's own ballot instead of the acceptor's promise would be caught here.
+        AcceptRequest<string> rejected = new(FastBallot.Classic(3, R1), "other");
+        AcceptReply<string> rejectedReply = (AcceptReply<string>)node.Handle(rejected);
+
+        Assert.IsFalse(rejectedReply.Accepted);
+        Assert.AreEqual(FastBallot.Fast(5), rejectedReply.Ballot);
+    }
+
+
+    /// <summary>
+    /// The loop does not resume on the synchronization context it was started on. The continuation after a
+    /// durable write that completes later, and the one after a reply that completes later, both run off that
+    /// context, so a host that blocks the starting thread on the loop cannot deadlock it.
+    /// </summary>
+    /// <remarks>
+    /// Each half parks the loop at exactly one await while the counting context is current. The first half parks
+    /// it on the persist, with a reply sink that completes at once; the second parks it on the reply, with no
+    /// durability hook. Both request streams are filled and completed before the loop starts, so reading them
+    /// never parks it.
+    /// </remarks>
+    [TestMethod]
+    public async Task TheLoopDoesNotResumeOnTheCallersContextAfterAPendingWriteOrAPendingReply()
+    {
+        ConsensusNode<string> persisting = new();
+        Channel<ConsensusRequest<string>> persistingRequests = Channel.CreateUnbounded<ConsensusRequest<string>>();
+        TaskCompletionSource writeGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        PostCountingSynchronizationContext writeContext = new();
+        List<ConsensusReply<string>> persistingReplies = [];
+        int writes = 0;
+
+        PersistAcceptorDelegate<string> persist = (_, _) =>
+        {
+            writes++;
+
+            return new ValueTask(writeGate.Task);
+        };
+
+        ValueTask SendAtOnce(ConsensusReply<string> reply, CancellationToken token)
+        {
+            persistingReplies.Add(reply);
+
+            return ValueTask.CompletedTask;
+        }
+
+        await persistingRequests.Writer.WriteAsync(new PrepareRequest<string>(FastBallot.Classic(2, R1)), TestContext.CancellationToken).ConfigureAwait(false);
+        persistingRequests.Writer.Complete();
+
+        Task persistingRun = writeContext.Start(() => persisting.RunAsync(persistingRequests.Reader.ReadAllAsync(TestContext.CancellationToken), SendAtOnce, persist, TestContext.CancellationToken));
+
+        //The loop is parked on the persist: the hook ran once and no reply has left yet.
+        Assert.AreEqual(1, writes);
+        Assert.IsEmpty(persistingReplies);
+        Assert.IsFalse(persistingRun.IsCompleted);
+
+        writeGate.SetResult();
+        await persistingRun.ConfigureAwait(false);
+
+        Assert.HasCount(1, persistingReplies);
+        Assert.AreEqual(0, writeContext.Posts);
+
+        ConsensusNode<string> replying = new();
+        Channel<ConsensusRequest<string>> replyingRequests = Channel.CreateUnbounded<ConsensusRequest<string>>();
+        TaskCompletionSource replyGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        PostCountingSynchronizationContext replyContext = new();
+        List<ConsensusReply<string>> replyingReplies = [];
+
+        ValueTask SendWhenReleased(ConsensusReply<string> reply, CancellationToken token)
+        {
+            replyingReplies.Add(reply);
+
+            return new ValueTask(replyGate.Task);
+        }
+
+        await replyingRequests.Writer.WriteAsync(new PrepareRequest<string>(FastBallot.Classic(2, R1)), TestContext.CancellationToken).ConfigureAwait(false);
+        replyingRequests.Writer.Complete();
+
+        Task replyingRun = replyContext.Start(() => replying.RunAsync(replyingRequests.Reader.ReadAllAsync(TestContext.CancellationToken), SendWhenReleased, cancellationToken: TestContext.CancellationToken));
+
+        //The loop is parked on the reply: the sink holds it and has not released it.
+        Assert.HasCount(1, replyingReplies);
+        Assert.IsFalse(replyingRun.IsCompleted);
+
+        replyGate.SetResult();
+        await replyingRun.ConfigureAwait(false);
+
+        Assert.AreEqual(0, replyContext.Posts);
+    }
+
+
+    /// <summary>
+    /// The loop does not resume on the synchronization context it was started on after a pending request read,
+    /// the third of its awaits. Nothing is written to the request channel before the loop starts, so the very
+    /// first request read is what parks it, and the loop must resume off the context rather than posting back.
+    /// </summary>
+    /// <remarks>
+    /// The persist hook is omitted and the reply sink completes at once, so the request read is the only await
+    /// in the loop that can park it here, and only a continuation captured there can post back to the context.
+    /// </remarks>
+    [TestMethod]
+    public async Task TheLoopDoesNotResumeOnTheCallersContextAfterAPendingRequestRead()
+    {
+        ConsensusNode<string> node = new();
+        Channel<ConsensusRequest<string>> requests = Channel.CreateUnbounded<ConsensusRequest<string>>();
+        PostCountingSynchronizationContext context = new();
+        List<ConsensusReply<string>> replies = [];
+
+        ValueTask SendReply(ConsensusReply<string> reply, CancellationToken token)
+        {
+            replies.Add(reply);
+
+            return ValueTask.CompletedTask;
+        }
+
+        //Nothing has been written yet, so the loop parks on the request read itself.
+        Task run = context.Start(() => node.RunAsync(requests.Reader.ReadAllAsync(TestContext.CancellationToken), SendReply, cancellationToken: TestContext.CancellationToken));
+
+        Assert.IsFalse(run.IsCompleted);
+        Assert.IsEmpty(replies);
+
+        await requests.Writer.WriteAsync(new PrepareRequest<string>(FastBallot.Classic(2, R1)), TestContext.CancellationToken).ConfigureAwait(false);
+        requests.Writer.Complete();
+
+        await run.ConfigureAwait(false);
+
+        Assert.HasCount(1, replies);
+        Assert.AreEqual(0, context.Posts);
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

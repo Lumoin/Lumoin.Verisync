@@ -55,6 +55,36 @@ internal sealed class FastBallotTests
     }
 
 
+    /// <summary>Pins that the <c>&gt;=</c> operator holds for two ballots that compare equal.</summary>
+    [TestMethod]
+    public void GreaterOrEqualHoldsForEqualBallots()
+    {
+        FastBallot a = FastBallot.Classic(1, R1);
+        FastBallot b = FastBallot.Classic(1, R1);
+
+        Assert.IsTrue(a >= b);
+    }
+
+
+    /// <summary>Pins that <see cref="FastBallot.Classic"/> rejects a non-positive round, matching the guard on <see cref="FastBallot.Fast"/>.</summary>
+    [TestMethod]
+    public void ClassicRejectsNonPositiveRound()
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => FastBallot.Classic(0, R1));
+    }
+
+
+    /// <summary>Pins that the <c>&lt;=</c> operator holds for two ballots that compare equal.</summary>
+    [TestMethod]
+    public void LessOrEqualHoldsForEqualBallots()
+    {
+        FastBallot a = FastBallot.Fast(1);
+        FastBallot b = FastBallot.Fast(1);
+
+        Assert.IsTrue(a <= b);
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

@@ -73,6 +73,39 @@ internal sealed class VerisyncMetricsTests
     }
 
 
+    ///<summary>Pins that <see cref="VerisyncMetrics.MemoryAllocatedBytes"/> is recorded on construction even when the tag carries no <see cref="VerisyncKind"/>.</summary>
+    [TestMethod]
+    public void AllocatedBytesRecordedOnConstructionWithoutKind()
+    {
+        using MetricCollector<long> collector = new(VerisyncMetrics.MemoryAllocatedBytes);
+
+        using(TestTaggedMemory instance = CreateInstance([1, 2, 3, 4], Tag.Empty))
+        {
+            IReadOnlyList<CollectedMeasurement<long>> measurements = collector.GetMeasurementSnapshot();
+
+            Assert.HasCount(1, measurements);
+            Assert.AreEqual(4L, measurements[0].Value);
+            Assert.IsFalse(measurements[0].Tags.ContainsKey(VerisyncTelemetry.TagKind));
+        }
+    }
+
+
+    ///<summary>Pins that <see cref="VerisyncMetrics.MemoryLifetimeMs"/> is recorded on disposal even when the tag carries no <see cref="VerisyncKind"/>.</summary>
+    [TestMethod]
+    public void LifetimeRecordedOnDisposalWithoutKind()
+    {
+        using MetricCollector<double> collector = new(VerisyncMetrics.MemoryLifetimeMs);
+
+        TestTaggedMemory instance = CreateInstance([1, 2, 3], Tag.Empty);
+        instance.Dispose();
+
+        IReadOnlyList<CollectedMeasurement<double>> measurements = collector.GetMeasurementSnapshot();
+
+        Assert.HasCount(1, measurements);
+        Assert.IsFalse(measurements[0].Tags.ContainsKey(VerisyncTelemetry.TagKind));
+    }
+
+
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Ownership of the rented owner transfers to the returned TestTaggedMemory, which disposes it on Dispose.")]
     private static TestTaggedMemory CreateInstance(ReadOnlySpan<byte> bytes, Tag tag)
     {

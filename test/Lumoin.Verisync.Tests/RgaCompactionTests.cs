@@ -198,7 +198,7 @@ internal sealed class RgaCompactionTests
 
 
     /// <summary>
-    /// Merging a compacted state with an uncompacted laggard that HOLDS the dotted tombstone resurrects the
+    /// Merging a compacted state with an uncompacted laggard that holds the dotted tombstone resurrects the
     /// ghost with its tombstone (the detector stays quiet), values converge, and a repeat compaction drops it.
     /// </summary>
     [TestMethod]
@@ -212,7 +212,7 @@ internal sealed class RgaCompactionTests
         ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = laggard.CertifiedProjection(frontier);
         Rga<int> compacted = laggard.Compact(frontier, checkpoint);
 
-        //The laggard still carries the dropped vertex AND its dotted tombstone, so the merge re-enters the
+        //The laggard still carries the dropped vertex and its dotted tombstone, so the merge re-enters the
         //ghost hidden (never live) and the stale-replay detector must not fire in either direction.
         Rga<int> merged = compacted.Merge(laggard);
         int[] expectedValues = [1];
@@ -252,7 +252,7 @@ internal sealed class RgaCompactionTests
         Assert.AreEqual(1, span.RemoveFrom);
         Assert.IsTrue(span.TargetReplica.AsSpan().SequenceEqual(R1.AsSpan()));
         Assert.IsTrue(span.RemoveReplica.AsSpan().SequenceEqual(R2.AsSpan()));
-        Assert.HasCount(0, runState.IrregularTombstones);
+        Assert.IsEmpty(runState.IrregularTombstones);
         Assert.AreEqual(removed, Rga<int>.FromRunState(runState));
     }
 
@@ -262,7 +262,7 @@ internal sealed class RgaCompactionTests
     /// pass asserted as one two-range span.
     /// </summary>
     /// <remarks>
-    /// T6: R1 inserts 1..5 chained; R2 removes 2,3,4 minting (R2,1),(R2,2),(R2,3), so ToRunState emits ONE span
+    /// T6: R1 inserts 1..5 chained; R2 removes 2,3,4 minting (R2,1),(R2,2),(R2,3), so ToRunState emits one span
     /// (TargetReplica R1, 2, 4, RemoveReplica R2, 1).
     /// </remarks>
     [TestMethod]
@@ -283,15 +283,15 @@ internal sealed class RgaCompactionTests
         Assert.AreEqual(1, span.RemoveFrom);
         Assert.IsTrue(span.TargetReplica.AsSpan().SequenceEqual(R1.AsSpan()));
         Assert.IsTrue(span.RemoveReplica.AsSpan().SequenceEqual(R2.AsSpan()));
-        Assert.HasCount(0, runState.IrregularTombstones);
-        Assert.HasCount(0, runState.Translations);
-        Assert.HasCount(0, runState.TranslationSpans);
+        Assert.IsEmpty(runState.IrregularTombstones);
+        Assert.IsEmpty(runState.Translations);
+        Assert.IsEmpty(runState.TranslationSpans);
         Assert.AreEqual(x, Rga<int>.FromRunState(runState));
     }
 
 
     /// <summary>
-    /// (b) A compacted state carrying a translation AND a retained dotted tombstone round-trips through the run
+    /// (b) A compacted state carrying a translation and a retained dotted tombstone round-trips through the run
     /// shape with its servability intact — the slice-1-deferred serialization half of the C-killer.
     /// </summary>
     /// <remarks>
@@ -309,9 +309,16 @@ internal sealed class RgaCompactionTests
         Rga<int> compacted = removed.Compact(frontier, checkpoint);
         Assert.AreEqual(idA, compacted.TranslateAnchor(idB));
 
+        //Both elements are removed, so nothing is visible; the retained head ghost's tombstone must survive the
+        //compaction, or the removed head would resurface. Its tombstone serializes as the sole span.
+        Assert.IsEmpty(compacted.Values);
+        Assert.AreEqual(0, compacted.Count);
+
         RgaRunState<int> runState = compacted.ToRunState();
         Assert.HasCount(1, runState.Translations);
-        Assert.HasCount(0, runState.TranslationSpans);
+        Assert.IsEmpty(runState.TranslationSpans);
+        Assert.HasCount(1, runState.TombstoneSpans);
+        Assert.AreEqual(idA.Counter, runState.TombstoneSpans[0].TargetFrom);
 
         Rga<int> back = Rga<int>.FromRunState(runState);
         Assert.AreEqual(compacted, back);
@@ -333,9 +340,9 @@ internal sealed class RgaCompactionTests
         Rga<int> x = Rga<int>.FromState(new RgaState<int>(context, [vertexA, vertexB], [legacyB]));
 
         RgaRunState<int> runState = x.ToRunState();
-        Assert.HasCount(0, runState.TombstoneSpans);
+        Assert.IsEmpty(runState.TombstoneSpans);
         Assert.HasCount(1, runState.IrregularTombstones);
-        Assert.HasCount(0, runState.IrregularTombstones[0].RemoveDots);
+        Assert.IsEmpty(runState.IrregularTombstones[0].RemoveDots);
         Assert.AreEqual(x, Rga<int>.FromRunState(runState));
     }
 
@@ -353,7 +360,7 @@ internal sealed class RgaCompactionTests
         Rga<int> x = byR2.Merge(byR3);
 
         RgaRunState<int> runState = x.ToRunState();
-        Assert.HasCount(0, runState.TombstoneSpans);
+        Assert.IsEmpty(runState.TombstoneSpans);
         Assert.HasCount(1, runState.IrregularTombstones);
         Assert.HasCount(2, runState.IrregularTombstones[0].RemoveDots);
         Assert.AreEqual(x, Rga<int>.FromRunState(runState));
@@ -362,7 +369,7 @@ internal sealed class RgaCompactionTests
 
     /// <summary>
     /// (e) A laggard merge resurrects a dropped tombstone while its translation entry remains: the dropped dot
-    /// is a current (tombstoned) vertex, so its witness serializes as a SINGLETON translation entry, never
+    /// is a current (tombstoned) vertex, so its witness serializes as a singleton translation entry, never
     /// inside a span, and the ghost-plus-witness shape round-trips.
     /// </summary>
     [TestMethod]
@@ -379,7 +386,7 @@ internal sealed class RgaCompactionTests
 
         RgaRunState<int> runState = resurrected.ToRunState();
         Assert.HasCount(1, runState.Translations);
-        Assert.HasCount(0, runState.TranslationSpans);
+        Assert.IsEmpty(runState.TranslationSpans);
         Assert.AreEqual(resurrected, Rga<int>.FromRunState(runState));
     }
 
@@ -419,7 +426,7 @@ internal sealed class RgaCompactionTests
         RgaRunState<int> translationSpanBounds = new(oneAxis, [chain], [], [], [], [invalidBounds]);
         Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(translationSpanBounds));
 
-        //A two-range span whose remove-dot arithmetic overflows int. The context COVERS the remove axis up
+        //A two-range span whose remove-dot arithmetic overflows int. The context covers the remove axis up
         //to int.MaxValue, so the coverage check cannot mask the overflow guard: without the guard the
         //wrapped negative counters would sail past coverage and be admitted.
         VectorClockState wideContext = new([new ReplicaCounterEntry(Bytes(R1), 3), new ReplicaCounterEntry(Bytes(R2), int.MaxValue)]);
@@ -473,10 +480,10 @@ internal sealed class RgaCompactionTests
         Assert.HasCount(Rounds, runState.Runs);
         Assert.HasCount(PerRound, runState.Runs[0].Values);
         Assert.HasCount(Rounds, runState.TombstoneSpans);
-        Assert.HasCount(0, runState.IrregularTombstones);
-        Assert.HasCount(0, runState.Translations);
+        Assert.IsEmpty(runState.IrregularTombstones);
+        Assert.IsEmpty(runState.Translations);
 
-        //The contrast: the same count of inserts with NO interleaved removes keeps the counter plane
+        //The contrast: the same count of inserts with no interleaved removes keeps the counter plane
         //contiguous, so every insert coalesces into a single run and no span is emitted.
         (Rga<int> contiguous, Dot tail) = Rga<int>.Empty.InsertAtHead(0, R1);
         for(int i = 1; i < PerRound * Rounds; i++)
@@ -487,7 +494,7 @@ internal sealed class RgaCompactionTests
         RgaRunState<int> contrastRunState = contiguous.ToRunState();
         Assert.HasCount(1, contrastRunState.Runs);
         Assert.HasCount(PerRound * Rounds, contrastRunState.Runs[0].Values);
-        Assert.HasCount(0, contrastRunState.TombstoneSpans);
+        Assert.IsEmpty(contrastRunState.TombstoneSpans);
     }
 
 
@@ -561,13 +568,846 @@ internal sealed class RgaCompactionTests
         RgaRunState<int> duplicateDots = new(context, [headRun, duplicateRun], [], [], [], []);
         Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(duplicateDots));
 
-        //A translation whose dropped dot is a live vertex (present and NOT a tombstone target) is a W-shape
+        //A translation whose dropped dot is a live vertex (present and not a tombstone target) is a W-shape
         //forgery — the tombstoned ghost-plus-witness shape remains legal, this one does not.
         VectorClockState twoContext = new([new ReplicaCounterEntry(Bytes(R1), 2)]);
         RgaRunEntry<int> twoRun = new(DotStateOf(new Dot(R1, 1)), null, [1, 2]);
         RgaTranslationEntry wShape = new(DotStateOf(new Dot(R1, 2)), DotStateOf(new Dot(R1, 1)));
         RgaRunState<int> wShapeState = new(twoContext, [twoRun], [], [], [wShape], []);
         Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(wShapeState));
+    }
+
+
+    /// <summary>
+    /// Pins that TranslateAnchor's own null guard fires (ParamName "anchor"), not the downstream vertex
+    /// lookup's guard, which would report ParamName "key" instead.
+    /// </summary>
+    [TestMethod]
+    public void TranslateAnchorRejectsNullAnchor()
+    {
+        ArgumentNullException thrown = Assert.ThrowsExactly<ArgumentNullException>(() => Rga<int>.Empty.TranslateAnchor(null!));
+
+        Assert.AreEqual("anchor", thrown.ParamName);
+    }
+
+
+    /// <summary>
+    /// Two same-replica dropped dots sharing one retained target, with contiguous counters, must coalesce
+    /// into a single RgaTranslationSpan rather than two bare RgaTranslationEntry records.
+    /// </summary>
+    [TestMethod]
+    public void ContiguousSameTargetDropsCoalesceIntoOneTranslationSpan()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
+        (Rga<int> withC, Dot idC) = withB.InsertAfter(idB, 3, R1);
+        Rga<int> removed = withC.Remove(idB, R2).Remove(idC, R2);
+
+        VectorClock frontier = removed.CausalContext;
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
+        Rga<int> compacted = removed.Compact(frontier, checkpoint);
+
+        RgaRunState<int> runState = compacted.ToRunState();
+
+        Assert.IsEmpty(runState.Translations);
+        Assert.HasCount(1, runState.TranslationSpans);
+        RgaTranslationSpan span = runState.TranslationSpans[0];
+        Assert.AreEqual(idB.Counter, span.FromCounter);
+        Assert.AreEqual(idC.Counter, span.ToCounter);
+        AssertDotStateEquals(DotStateOf(idA), span.Target);
+        Assert.AreEqual(idA, compacted.TranslateAnchor(idB));
+        Assert.AreEqual(idA, compacted.TranslateAnchor(idC));
+    }
+
+
+    /// <summary>
+    /// A tombstone target whose remove-dot shares the run's remove-replica but breaks counter continuity
+    /// must not be folded into the same span, even though the replica half of the check would pass.
+    /// </summary>
+    [TestMethod]
+    public void TombstoneSpansBreakWhenOnlyTheRemoveCounterContinuityFails()
+    {
+        VectorClockState context = new([
+            new ReplicaCounterEntry(Bytes(R1), 6),
+            new ReplicaCounterEntry(Bytes(R2), 999)]);
+        RgaRunEntry<int> vertex1 = new(DotStateOf(new Dot(R1, 5)), null, [1]);
+        RgaRunEntry<int> vertex2 = new(DotStateOf(new Dot(R1, 6)), null, [2]);
+        RgaTombstoneSpan span1 = new(Bytes(R1), 5, 5, Bytes(R2), 10);
+        RgaTombstoneSpan span2 = new(Bytes(R1), 6, 6, Bytes(R2), 999);
+
+        Rga<int> x = Rga<int>.FromRunState(new RgaRunState<int>(context, [vertex1, vertex2], [span1, span2], [], [], []));
+
+        RgaRunState<int> runState = x.ToRunState();
+
+        Assert.HasCount(2, runState.TombstoneSpans);
+        RgaTombstoneSpan first = runState.TombstoneSpans[0];
+        Assert.AreEqual(5, first.TargetTo);
+        Assert.AreEqual(10, first.RemoveFrom);
+    }
+
+
+    /// <summary>Every guard on an irregular tombstone's fields fails closed: a default remove-dot array, a non-positive target or remove-dot counter, a within-entry duplicate, a remove-dot colliding with a vertex, missing context coverage, and a cross-entry duplicate.</summary>
+    [TestMethod]
+    public void FromRunStateRejectsIrregularTombstoneViolations()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 1), new ReplicaCounterEntry(Bytes(R2), 1)]);
+
+        RgaConcurrentTombstone defaultRemoveDots = new(DotStateOf(new Dot(R1, 1)), default);
+        RgaRunState<int> defaultRemoveDotsState = new(context, [], [], [defaultRemoveDots], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(defaultRemoveDotsState));
+
+        RgaConcurrentTombstone zeroTarget = new(DotStateOf(new Dot(R1, 0)), [DotStateOf(new Dot(R2, 1))]);
+        RgaRunState<int> zeroTargetState = new(context, [], [], [zeroTarget], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(zeroTargetState));
+
+        RgaConcurrentTombstone zeroRemoveDot = new(DotStateOf(new Dot(R1, 1)), [DotStateOf(new Dot(R2, 0))]);
+        RgaRunState<int> zeroRemoveDotState = new(context, [], [], [zeroRemoveDot], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(zeroRemoveDotState));
+
+        RgaConcurrentTombstone withinDuplicate = new(DotStateOf(new Dot(R1, 1)), [DotStateOf(new Dot(R2, 1)), DotStateOf(new Dot(R2, 1))]);
+        RgaRunState<int> withinDuplicateState = new(context, [], [], [withinDuplicate], [], []);
+        //The within-entry guard is pinned by its own message: without it the duplicate is accepted or trips the
+        //cross-entry guard, whose message differs.
+        ArgumentException withinDuplicateFault = Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(withinDuplicateState));
+        Assert.Contains("appears more than once in a tombstone", withinDuplicateFault.Message);
+
+        RgaRunEntry<int> vertexRun = new(DotStateOf(new Dot(R2, 1)), null, [1]);
+        RgaConcurrentTombstone collidingRemoveDot = new(DotStateOf(new Dot(R1, 1)), [DotStateOf(new Dot(R2, 1))]);
+        RgaRunState<int> collidingState = new(context, [vertexRun], [], [collidingRemoveDot], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(collidingState));
+
+        VectorClockState uncoveredContext = new([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        RgaConcurrentTombstone uncoveredRemoveDot = new(DotStateOf(new Dot(R1, 1)), [DotStateOf(new Dot(R2, 1))]);
+        RgaRunState<int> uncoveredState = new(uncoveredContext, [], [], [uncoveredRemoveDot], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(uncoveredState));
+
+        RgaConcurrentTombstone crossFirst = new(DotStateOf(new Dot(R1, 1)), [DotStateOf(new Dot(R2, 1))]);
+        RgaConcurrentTombstone crossSecond = new(DotStateOf(new Dot(R1, 2)), [DotStateOf(new Dot(R2, 1))]);
+        VectorClockState crossContext = new([new ReplicaCounterEntry(Bytes(R1), 2), new ReplicaCounterEntry(Bytes(R2), 1)]);
+        RgaRunState<int> crossState = new(crossContext, [], [], [crossFirst, crossSecond], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(crossState));
+    }
+
+
+    /// <summary>
+    /// Two dropped dots on different replicas that happen to share the same retained target must not
+    /// coalesce into one translation span (a span can only describe one replica's counter range).
+    /// </summary>
+    [TestMethod]
+    public void TranslationsFromDifferentReplicasDoNotCoalesceIntoOneSpanEvenWithTheSameTarget()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R2);
+        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
+        (Rga<int> withC, Dot idC) = withB.InsertAfter(idA, 3, R3);
+        Rga<int> removed = withC.Remove(idB, R2).Remove(idC, R2);
+
+        VectorClock frontier = removed.CausalContext;
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
+        Rga<int> compacted = removed.Compact(frontier, checkpoint);
+
+        RgaRunState<int> runState = compacted.ToRunState();
+
+        Assert.HasCount(2, runState.Translations);
+        Assert.IsEmpty(runState.TranslationSpans);
+        Assert.AreEqual(idA, compacted.TranslateAnchor(idB));
+        Assert.AreEqual(idA, compacted.TranslateAnchor(idC));
+    }
+
+
+    /// <summary>
+    /// Two tombstoned targets on different replicas, whose remove-dots happen to satisfy the run's remove
+    /// continuity, must still not coalesce into one span: the target side's own continuity guard controls.
+    /// </summary>
+    [TestMethod]
+    public void TombstoneSpansDoNotCoalesceAcrossDifferentTargetReplicas()
+    {
+        VectorClockState context = new([
+            new ReplicaCounterEntry(Bytes(R1), 5),
+            new ReplicaCounterEntry(Bytes(R3), 6),
+            new ReplicaCounterEntry(Bytes(R2), 11)]);
+        RgaRunEntry<int> vertex1 = new(DotStateOf(new Dot(R1, 5)), null, [1]);
+        RgaRunEntry<int> vertex2 = new(DotStateOf(new Dot(R3, 6)), null, [2]);
+        RgaTombstoneSpan span1 = new(Bytes(R1), 5, 5, Bytes(R2), 10);
+        RgaTombstoneSpan span2 = new(Bytes(R3), 6, 6, Bytes(R2), 11);
+
+        Rga<int> x = Rga<int>.FromRunState(new RgaRunState<int>(context, [vertex1, vertex2], [span1, span2], [], [], []));
+
+        RgaRunState<int> runState = x.ToRunState();
+
+        Assert.HasCount(2, runState.TombstoneSpans);
+        Assert.IsEmpty(runState.IrregularTombstones);
+    }
+
+
+    /// <summary>A translation span's expanded dropped dots must be covered by the declared context.</summary>
+    [TestMethod]
+    public void FromRunStateRejectsATranslationSpanDroppedDotNotCoveredByTheContext()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        RgaRunEntry<int> vertexRun = new(DotStateOf(new Dot(R1, 1)), null, [1]);
+        RgaTranslationSpan uncoveredSpan = new(Bytes(R2), 1, 1, DotStateOf(new Dot(R1, 1)));
+        RgaRunState<int> state = new(context, [vertexRun], [], [], [], [uncoveredSpan]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(state));
+    }
+
+
+    /// <summary>Each of FromRunState's five required arrays fails closed independently when left default, even when every sibling array is a valid (non-default) value.</summary>
+    [TestMethod]
+    public void FromRunStateRejectsEachRequiredArrayDefaultIndependently()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        RgaRunEntry<int> headRun = new(DotStateOf(new Dot(R1, 1)), null, [1]);
+
+        RgaRunState<int> runsDefault = new(context, default, [], [], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(runsDefault));
+
+        RgaRunState<int> spansDefault = new(context, [headRun], default, [], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(spansDefault));
+
+        RgaRunState<int> irregularsDefault = new(context, [headRun], [], default, [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(irregularsDefault));
+
+        RgaRunState<int> translationsDefault = new(context, [headRun], [], [], default, []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(translationsDefault));
+
+        RgaRunState<int> translationSpansDefault = new(context, [headRun], [], [], [], default);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(translationSpansDefault));
+    }
+
+
+    /// <summary>ToState orders tombstone targets by replica first: a lower counter on a lexicographically higher replica must not sort ahead of a higher counter on a lower replica.</summary>
+    [TestMethod]
+    public void ToStateOrdersTombstoneTargetsByReplicaBeforeCounter()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withHigh, Dot idHigh) = withA.InsertAfter(idA, 2, R1);
+        (Rga<int> r2Side, Dot idLow) = Rga<int>.Empty.InsertAtHead(9, R2);
+        Rga<int> merged = withHigh.Merge(r2Side);
+        Rga<int> removed = merged.Remove(idHigh, R1).Remove(idLow, R1);
+
+        RgaState<int> state = removed.ToState();
+
+        Assert.HasCount(2, state.Tombstones);
+        AssertDotStateEquals(DotStateOf(idHigh), state.Tombstones[0].Target);
+        AssertDotStateEquals(DotStateOf(idLow), state.Tombstones[1].Target);
+    }
+
+
+    /// <summary>FromRunState rejects a null state with ArgumentNullException.</summary>
+    [TestMethod]
+    public void FromRunStateRejectsNullState()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() => Rga<int>.FromRunState(null!));
+    }
+
+
+    /// <summary>
+    /// Translation entries are ordered by (dropped replica, dropped counter), independent of the order the
+    /// underlying dictionary happens to enumerate.
+    /// </summary>
+    [TestMethod]
+    public void TranslationEntriesAreOrderedByDroppedReplicaThenCounterRegardlessOfInputOrder()
+    {
+        VectorClockState context = new([
+            new ReplicaCounterEntry(Bytes(R1), 2),
+            new ReplicaCounterEntry(Bytes(R3), 2)]);
+        RgaRunEntry<int> head1 = new(DotStateOf(new Dot(R1, 1)), null, [1]);
+        RgaRunEntry<int> head3 = new(DotStateOf(new Dot(R3, 1)), null, [2]);
+        RgaTranslationEntry dropOnR3 = new(DotStateOf(new Dot(R3, 2)), DotStateOf(new Dot(R3, 1)));
+        RgaTranslationEntry dropOnR1 = new(DotStateOf(new Dot(R1, 2)), DotStateOf(new Dot(R1, 1)));
+
+        Rga<int> x = Rga<int>.FromRunState(new RgaRunState<int>(context, [head1, head3], [], [], [dropOnR3, dropOnR1], []));
+
+        RgaRunState<int> runState = x.ToRunState();
+
+        Assert.HasCount(2, runState.Translations);
+        AssertDotStateEquals(DotStateOf(new Dot(R1, 2)), runState.Translations[0].Dropped);
+        AssertDotStateEquals(DotStateOf(new Dot(R3, 2)), runState.Translations[1].Dropped);
+    }
+
+
+    /// <summary>CertifiedProjection rejects a null frontier before touching the order.</summary>
+    [TestMethod]
+    public void CertifiedProjectionRejectsNullFrontier()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() => Rga<int>.Empty.CertifiedProjection(null!));
+    }
+
+
+    /// <summary>A run whose expanded counters land exactly at int.MaxValue (no arithmetic overflow) still loads.</summary>
+    [TestMethod]
+    public void FromRunStateAcceptsARunAtTheOverflowBoundary()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), int.MaxValue)]);
+        RgaRunEntry<int> boundaryRun = new(DotStateOf(new Dot(R1, int.MaxValue)), null, [1]);
+        RgaRunState<int> state = new(context, [boundaryRun], [], [], [], []);
+
+        Assert.AreEqual(1, Rga<int>.FromRunState(state).Count);
+    }
+
+
+    /// <summary>A tombstone span's expanded remove-dots are validated the same way FromState validates them: collision with a vertex, context coverage, and cross-tombstone uniqueness.</summary>
+    [TestMethod]
+    public void FromRunStateRejectsATombstoneSpansRemoveDotViolations()
+    {
+        VectorClockState collideContext = new([new ReplicaCounterEntry(Bytes(R1), 1), new ReplicaCounterEntry(Bytes(R2), 1)]);
+        RgaRunEntry<int> vertexRun = new(DotStateOf(new Dot(R2, 1)), null, [1]);
+        RgaTombstoneSpan collidingSpan = new(Bytes(R1), 1, 1, Bytes(R2), 1);
+        RgaRunState<int> collideState = new(collideContext, [vertexRun], [collidingSpan], [], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(collideState));
+
+        VectorClockState uncoveredContext = new([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        RgaTombstoneSpan uncoveredSpan = new(Bytes(R1), 1, 1, Bytes(R2), 1);
+        RgaRunState<int> uncoveredState = new(uncoveredContext, [], [uncoveredSpan], [], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(uncoveredState));
+
+        VectorClockState duplicateContext = new([new ReplicaCounterEntry(Bytes(R1), 2), new ReplicaCounterEntry(Bytes(R2), 1)]);
+        RgaTombstoneSpan spanOne = new(Bytes(R1), 1, 1, Bytes(R2), 1);
+        RgaTombstoneSpan spanTwo = new(Bytes(R1), 2, 2, Bytes(R2), 1);
+        RgaRunState<int> duplicateState = new(duplicateContext, [], [spanOne, spanTwo], [], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(duplicateState));
+    }
+
+
+    /// <summary>Composing a prior translation must never overwrite a fresh entry this round's own dropped-vertex pass already computed, even when the prior entry's own key gets re-dropped after a ghost resurrection.</summary>
+    [TestMethod]
+    public void ComposingPriorTranslationsNeverOverwritesAFreshEntryFromAResurrectedIntermediateAncestor()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withX, Dot idX) = withA.InsertAfter(idA, 2, R1);
+        (Rga<int> withB, Dot idB) = withX.InsertAfter(idX, 3, R1);
+        Rga<int> removedX = withB.Remove(idX, R2);
+        Rga<int> removedXB = removedX.Remove(idB, R1);
+
+        VectorClock frontier1 = removedXB.CausalContext;
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint1 = removedXB.CertifiedProjection(frontier1);
+        Rga<int> first = removedXB.Compact(frontier1, checkpoint1);
+
+        Rga<int> merged = first.Merge(removedXB);
+
+        VectorClock frontier2 = FrontierCovering(idA, idX, new Dot(R1, 4));
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint2 = merged.CertifiedProjection(frontier2);
+        Rga<int> second = merged.Compact(frontier2, checkpoint2);
+
+        Assert.AreEqual(idX, second.TranslateAnchor(idB));
+    }
+
+
+    /// <summary>ToState orders same-replica tombstone targets by ascending counter, the tie-break CompareDotsByReplica falls back to when the replica comparison is 0.</summary>
+    [TestMethod]
+    public void ToStateOrdersSameReplicaTombstoneTargetsByAscendingCounter()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
+        (Rga<int> withC, Dot idC) = withB.InsertAfter(idB, 3, R1);
+        Rga<int> removed = withC.Remove(idC, R1).Remove(idB, R1);
+
+        RgaState<int> state = removed.ToState();
+
+        Assert.HasCount(2, state.Tombstones);
+        AssertDotStateEquals(DotStateOf(idB), state.Tombstones[0].Target);
+        AssertDotStateEquals(DotStateOf(idC), state.Tombstones[1].Target);
+    }
+
+
+    /// <summary>A run's declared non-null predecessor is wired onto its first minted vertex, not discarded in favor of a head insert.</summary>
+    [TestMethod]
+    public void FromRunStateWiresARunsDeclaredPredecessorOntoItsFirstVertex()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 1), new ReplicaCounterEntry(Bytes(R2), 1)]);
+        RgaRunEntry<int> head = new(DotStateOf(new Dot(R1, 1)), null, [10]);
+        RgaRunEntry<int> child = new(DotStateOf(new Dot(R2, 1)), DotStateOf(new Dot(R1, 1)), [20]);
+        RgaRunState<int> state = new(context, [head, child], [], [], [], []);
+
+        int[] expected = [10, 20];
+        Assert.AreSequenceEqual(expected, Rga<int>.FromRunState(state).Values.ToArray());
+    }
+
+
+    /// <summary>
+    /// A run that starts after a shared-counter-plane gap (its Vertex.Predecessor is set, but the counter
+    /// isn't contiguous with a same-replica prior vertex) must serialize that real, non-null predecessor.
+    /// </summary>
+    [TestMethod]
+    public void ARunStartedAfterAPlaneGapRecordsItsActualPredecessor()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
+        Rga<int> removedB = withB.Remove(idB, R1);
+        (Rga<int> withC, _) = removedB.InsertAfter(idB, 3, R1);
+
+        RgaRunState<int> runState = withC.ToRunState();
+
+        Assert.HasCount(2, runState.Runs);
+        Assert.IsNull(runState.Runs[0].Predecessor);
+        Assert.IsNotNull(runState.Runs[1].Predecessor);
+        AssertDotStateEquals(DotStateOf(idB), runState.Runs[1].Predecessor);
+    }
+
+
+    /// <summary>A checkpoint of the correct length but wrong content at one index must still fail closed -- only the element-wise comparison, not the length gate, can catch this.</summary>
+    [TestMethod]
+    public void CompactRejectsAnEqualLengthCheckpointWithWrongContent()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withB, Dot idB) = withA.InsertAfter(idA, 2, R1);
+        VectorClock frontier = FrontierCovering(idA, idB);
+
+        ImmutableArray<SequenceCheckpointEntry<int>> wrongContent = [new SequenceCheckpointEntry<int>(DotStateOf(idA), 99), new SequenceCheckpointEntry<int>(DotStateOf(idB), 2)];
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => withB.Compact(frontier, wrongContent));
+    }
+
+
+    /// <summary>Two dropped dots that are counter-consecutive on one replica but resolve to different retained ancestors must serialize as two singleton translations, never one coalesced span.</summary>
+    [TestMethod]
+    public void ToRunStateNeverCoalescesConsecutiveDroppedDotsWithDifferentTargetsIntoOneSpan()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        (Rga<int> withQ, Dot idQ) = withA.InsertAfter(idA, 2, R2);
+        (Rga<int> withX, Dot idX) = withQ.InsertAfter(idA, 3, R1);
+        (Rga<int> withY, Dot idY) = withX.InsertAfter(idQ, 4, R1);
+        Rga<int> removed = withY.Remove(idX, R1).Remove(idY, R1);
+
+        VectorClock frontier = removed.CausalContext;
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
+        Rga<int> compacted = removed.Compact(frontier, checkpoint);
+
+        RgaRunState<int> runState = compacted.ToRunState();
+        Assert.IsEmpty(runState.TranslationSpans);
+        Assert.HasCount(2, runState.Translations);
+
+        Rga<int> roundTripped = Rga<int>.FromRunState(runState);
+        Assert.AreEqual(idA, roundTripped.TranslateAnchor(idX));
+        Assert.AreEqual(idQ, roundTripped.TranslateAnchor(idY));
+    }
+
+
+    /// <summary>
+    /// Two arrays with the same vertices but a tombstone on a different target (same tombstone count) must
+    /// not be Equal.
+    /// </summary>
+    [TestMethod]
+    public void DifferentTombstonedTargetsMakeTwoOtherwiseIdenticalArraysUnequal()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 2)]);
+        RgaVertexEntry<int> vertexA = new(DotStateOf(new Dot(R1, 1)), null, 1);
+        RgaVertexEntry<int> vertexB = new(DotStateOf(new Dot(R1, 2)), DotStateOf(new Dot(R1, 1)), 2);
+        RgaTombstoneEntry tombstoneA = new(DotStateOf(new Dot(R1, 1)), []);
+        RgaTombstoneEntry tombstoneB = new(DotStateOf(new Dot(R1, 2)), []);
+
+        Rga<int> tombstonedA = Rga<int>.FromState(new RgaState<int>(context, [vertexA, vertexB], [tombstoneA]));
+        Rga<int> tombstonedB = Rga<int>.FromState(new RgaState<int>(context, [vertexA, vertexB], [tombstoneB]));
+
+        Assert.AreNotEqual(tombstonedA, tombstonedB);
+    }
+
+
+    /// <summary>A run's vertex dot must be covered by the declared context, mirroring FromState's coverage guard.</summary>
+    [TestMethod]
+    public void FromRunStateRejectsAVertexDotNotCoveredByTheContext()
+    {
+        VectorClockState context = new([]);
+        RgaRunEntry<int> run = new(DotStateOf(new Dot(R1, 1)), null, [10]);
+        RgaRunState<int> state = new(context, [run], [], [], [], []);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(state));
+    }
+
+
+    /// <summary>A tombstone span's three bound clauses (TargetFrom>=1, TargetTo>=TargetFrom, RemoveFrom>=1) each independently reject.</summary>
+    [TestMethod]
+    public void FromRunStateRejectsATombstoneSpanViolatingAnyOneBoundClause()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 5), new ReplicaCounterEntry(Bytes(R2), 5)]);
+
+        RgaTombstoneSpan targetFromTooLow = new(Bytes(R1), 0, 0, Bytes(R2), 1);
+        RgaRunState<int> targetFromState = new(context, [], [targetFromTooLow], [], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(targetFromState));
+
+        RgaTombstoneSpan targetToBelowFrom = new(Bytes(R1), 2, 1, Bytes(R2), 1);
+        RgaRunState<int> targetToState = new(context, [], [targetToBelowFrom], [], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(targetToState));
+
+        RgaTombstoneSpan removeFromTooLow = new(Bytes(R1), 1, 1, Bytes(R2), 0);
+        RgaRunState<int> removeFromState = new(context, [], [removeFromTooLow], [], [], []);
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(removeFromState));
+    }
+
+
+    /// <summary>Compact rejects a null frontier before any retention or checkpoint work.</summary>
+    [TestMethod]
+    public void CompactRejectsNullFrontier()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() => Rga<int>.Empty.Compact(null!, ImmutableArray<SequenceCheckpointEntry<int>>.Empty));
+    }
+
+
+    /// <summary>A default Translations array must fail closed even when every other array (including TranslationSpans) is a valid, non-default array.</summary>
+    [TestMethod]
+    public void FromRunStateRejectsADefaultTranslationsArrayEvenWhenTranslationSpansIsPresent()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        RgaRunEntry<int> head = new(DotStateOf(new Dot(R1, 1)), null, [1]);
+        RgaRunState<int> onlyTranslationsDefault = new(context, [head], [], [], default, []);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(onlyTranslationsDefault));
+    }
+
+
+    /// <summary>FromRunState still runs the predecessor-cycle guard: two runs whose predecessors point at each other are rejected, not silently accepted as an inconsistent vertex graph.</summary>
+    [TestMethod]
+    public void FromRunStateRejectsACyclicPredecessorGraph()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 1), new ReplicaCounterEntry(Bytes(R2), 1)]);
+        RgaRunEntry<int> first = new(DotStateOf(new Dot(R1, 1)), DotStateOf(new Dot(R2, 1)), [10]);
+        RgaRunEntry<int> second = new(DotStateOf(new Dot(R2, 1)), DotStateOf(new Dot(R1, 1)), [20]);
+        RgaRunState<int> state = new(context, [first, second], [], [], [], []);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(state));
+    }
+
+
+    /// <summary>
+    /// Two arrays with the same vertices and the same CompactedPredecessors key but a different target dot
+    /// must not be Equal, even though their CompactedPredecessors counts match.
+    /// </summary>
+    [TestMethod]
+    public void UnequalCompactedPredecessorTargetsMakeTwoOtherwiseIdenticalArraysUnequal()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 3)]);
+        RgaRunEntry<int> runA = new(DotStateOf(new Dot(R1, 1)), null, [1]);
+        RgaRunEntry<int> runC = new(DotStateOf(new Dot(R1, 2)), null, [2]);
+        RgaTranslationEntry droppedToA = new(DotStateOf(new Dot(R1, 3)), DotStateOf(new Dot(R1, 1)));
+        RgaTranslationEntry droppedToC = new(DotStateOf(new Dot(R1, 3)), DotStateOf(new Dot(R1, 2)));
+
+        Rga<int> x = Rga<int>.FromRunState(new RgaRunState<int>(context, [runA, runC], [], [], [droppedToA], []));
+        Rga<int> y = Rga<int>.FromRunState(new RgaRunState<int>(context, [runA, runC], [], [], [droppedToC], []));
+
+        Assert.AreNotEqual(x, y);
+        Assert.AreNotEqual(x.GetHashCode(), y.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// A same-replica, counter-contiguous tombstone target whose remove-dot breaks both replica and counter
+    /// continuity from the run's remove-dot must not be folded into the same span.
+    /// </summary>
+    [TestMethod]
+    public void TombstoneSpansBreakWhenTheNextRemoveDotBreaksBothReplicaAndCounterContinuity()
+    {
+        VectorClockState context = new([
+            new ReplicaCounterEntry(Bytes(R1), 6),
+            new ReplicaCounterEntry(Bytes(R2), 10),
+            new ReplicaCounterEntry(Bytes(R3), 50)]);
+        RgaRunEntry<int> vertex1 = new(DotStateOf(new Dot(R1, 5)), null, [1]);
+        RgaRunEntry<int> vertex2 = new(DotStateOf(new Dot(R1, 6)), null, [2]);
+        RgaTombstoneSpan span1 = new(Bytes(R1), 5, 5, Bytes(R2), 10);
+        RgaTombstoneSpan span2 = new(Bytes(R1), 6, 6, Bytes(R3), 50);
+
+        Rga<int> x = Rga<int>.FromRunState(new RgaRunState<int>(context, [vertex1, vertex2], [span1, span2], [], [], []));
+
+        RgaRunState<int> runState = x.ToRunState();
+
+        Assert.HasCount(2, runState.TombstoneSpans);
+        RgaTombstoneSpan first = runState.TombstoneSpans[0];
+        Assert.AreEqual(5, first.TargetTo);
+        Assert.IsTrue(first.RemoveReplica.AsSpan().SequenceEqual(R2.AsSpan()));
+    }
+
+
+    /// <summary>
+    /// GetHashCode over many vertices must reflect a change to even one vertex's value, exercised with
+    /// enough vertices that a wrong fold operator's degeneracy would be observable.
+    /// </summary>
+    [TestMethod]
+    public void VerticesHashCodeReflectsAChangedValueAmongManyVertices()
+    {
+        const int Count = 20;
+        (Rga<int> baseline, Dot last) = Rga<int>.Empty.InsertAtHead(0, R1);
+        for (int i = 1; i < Count; i++)
+        {
+            (baseline, last) = baseline.InsertAfter(last, i, R1);
+        }
+
+        (Rga<int> altered, Dot alteredLast) = Rga<int>.Empty.InsertAtHead(0, R1);
+        for (int i = 1; i < Count; i++)
+        {
+            int value = i == Count - 1 ? -1 : i;
+            (altered, alteredLast) = altered.InsertAfter(alteredLast, value, R1);
+        }
+
+        Assert.AreNotEqual(baseline, altered);
+        Assert.AreNotEqual(baseline.GetHashCode(), altered.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// A dropped dot that is also a live (tombstoned) vertex — the ghost-plus-witness shape — must always
+    /// serialize as its own singleton translation entry, never absorbed into a span with contiguous,
+    /// purely-dropped siblings that share its target.
+    /// </summary>
+    [TestMethod]
+    public void AWitnessDropCannotBeCoalescedIntoASpanWithItsPurelyDroppedSiblings()
+    {
+        VectorClockState context = new([
+            new ReplicaCounterEntry(Bytes(R1), 4),
+            new ReplicaCounterEntry(Bytes(R3), 1)]);
+        RgaRunEntry<int> vertexA = new(DotStateOf(new Dot(R1, 1)), null, [1]);
+        RgaRunEntry<int> vertexB = new(DotStateOf(new Dot(R1, 2)), DotStateOf(new Dot(R1, 1)), [2]);
+        RgaTombstoneSpan tombstoneB = new(Bytes(R1), 2, 2, Bytes(R3), 1);
+        RgaTranslationEntry witnessBToA = new(DotStateOf(new Dot(R1, 2)), DotStateOf(new Dot(R1, 1)));
+        RgaTranslationEntry cToA = new(DotStateOf(new Dot(R1, 3)), DotStateOf(new Dot(R1, 1)));
+        RgaTranslationEntry dToA = new(DotStateOf(new Dot(R1, 4)), DotStateOf(new Dot(R1, 1)));
+
+        Rga<int> x = Rga<int>.FromRunState(new RgaRunState<int>(
+            context, [vertexA, vertexB], [tombstoneB], [], [witnessBToA, cToA, dToA], []));
+
+        RgaRunState<int> runState = x.ToRunState();
+
+        Assert.HasCount(1, runState.Translations);
+        AssertDotStateEquals(DotStateOf(new Dot(R1, 2)), runState.Translations[0].Dropped);
+        Assert.HasCount(1, runState.TranslationSpans);
+        RgaTranslationSpan span = runState.TranslationSpans[0];
+        Assert.AreEqual(3, span.FromCounter);
+        Assert.AreEqual(4, span.ToCounter);
+    }
+
+
+    /// <summary>
+    /// Tombstone spans are ordered by (target replica, target counter), independent of the order the
+    /// underlying dictionary happens to enumerate. The two spans carry distinct remove-dots so both survive
+    /// FromRunState's one-remove-dot-per-tombstone validation.
+    /// </summary>
+    [TestMethod]
+    public void TombstoneSpansAreOrderedByTargetReplicaThenCounterRegardlessOfInputOrder()
+    {
+        VectorClockState context = new([
+            new ReplicaCounterEntry(Bytes(R1), 1),
+            new ReplicaCounterEntry(Bytes(R3), 1),
+            new ReplicaCounterEntry(Bytes(R2), 2)]);
+        RgaRunEntry<int> vertex1 = new(DotStateOf(new Dot(R1, 1)), null, [1]);
+        RgaRunEntry<int> vertex3 = new(DotStateOf(new Dot(R3, 1)), null, [2]);
+        RgaTombstoneSpan spanR3 = new(Bytes(R3), 1, 1, Bytes(R2), 1);
+        RgaTombstoneSpan spanR1 = new(Bytes(R1), 1, 1, Bytes(R2), 2);
+
+        Rga<int> x = Rga<int>.FromRunState(new RgaRunState<int>(context, [vertex1, vertex3], [spanR3, spanR1], [], [], []));
+
+        RgaRunState<int> runState = x.ToRunState();
+
+        Assert.HasCount(2, runState.TombstoneSpans);
+        Assert.IsTrue(runState.TombstoneSpans[0].TargetReplica.AsSpan().SequenceEqual(R1.AsSpan()));
+        Assert.IsTrue(runState.TombstoneSpans[1].TargetReplica.AsSpan().SequenceEqual(R3.AsSpan()));
+    }
+
+
+    /// <summary>Two translation spans that both claim the same dropped dot for different (both valid) targets must fail closed.</summary>
+    [TestMethod]
+    public void FromRunStateRejectsATranslationSpanDroppedDotClaimedByTwoSpans()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 2), new ReplicaCounterEntry(Bytes(R2), 1)]);
+        RgaRunEntry<int> chain = new(DotStateOf(new Dot(R1, 1)), null, [1, 2]);
+        RgaTranslationSpan spanToFirst = new(Bytes(R2), 1, 1, DotStateOf(new Dot(R1, 1)));
+        RgaTranslationSpan spanToSecond = new(Bytes(R2), 1, 1, DotStateOf(new Dot(R1, 2)));
+        RgaRunState<int> state = new(context, [chain], [], [], [], [spanToFirst, spanToSecond]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(state));
+    }
+
+
+    /// <summary>
+    /// Two same-replica, counter-contiguous dropped dots that resolve to different retained targets must not
+    /// coalesce into one translation span, which can only carry a single target.
+    /// </summary>
+    [TestMethod]
+    public void TranslationsWithDifferentTargetsDoNotCoalesceEvenWhenCountersAreContiguous()
+    {
+        (Rga<int> withA1, Dot idA1) = Rga<int>.Empty.InsertAtHead(10, R2);
+        (Rga<int> withA2, Dot idA2) = withA1.InsertAtHead(20, R3);
+        (Rga<int> withB, Dot idB) = withA2.InsertAfter(idA1, 1, R1);
+        (Rga<int> withC, Dot idC) = withB.InsertAfter(idA2, 2, R1);
+        Rga<int> removed = withC.Remove(idB, R2).Remove(idC, R2);
+
+        VectorClock frontier = removed.CausalContext;
+        ImmutableArray<SequenceCheckpointEntry<int>> checkpoint = removed.CertifiedProjection(frontier);
+        Rga<int> compacted = removed.Compact(frontier, checkpoint);
+
+        RgaRunState<int> runState = compacted.ToRunState();
+
+        Assert.HasCount(2, runState.Translations);
+        Assert.IsEmpty(runState.TranslationSpans);
+        Assert.AreEqual(idA1, compacted.TranslateAnchor(idB));
+        Assert.AreEqual(idA2, compacted.TranslateAnchor(idC));
+    }
+
+
+    /// <summary>
+    /// An irregular (concurrent) tombstone's remove-dots serialize ordered by (replica, counter),
+    /// independent of the order the underlying FrozenSet happens to enumerate.
+    /// </summary>
+    [TestMethod]
+    public void IrregularTombstoneRemoveDotsAreOrderedByReplicaThenCounterRegardlessOfInputOrder()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        Rga<int> byR3 = withA.Remove(idA, R3);
+        Rga<int> byR1 = withA.Remove(idA, R1);
+        Rga<int> x = byR3.Merge(byR1);
+
+        RgaRunState<int> runState = x.ToRunState();
+
+        Assert.HasCount(1, runState.IrregularTombstones);
+        ImmutableArray<DotState> removeDots = runState.IrregularTombstones[0].RemoveDots;
+        Assert.HasCount(2, removeDots);
+        AssertDotStateEquals(DotStateOf(new Dot(R1, 2)), removeDots[0]);
+        AssertDotStateEquals(DotStateOf(new Dot(R3, 1)), removeDots[1]);
+    }
+
+
+    /// <summary>A run's first counter of exactly zero is rejected as non-positive.</summary>
+    [TestMethod]
+    public void FromRunStateRejectsARunWithAZeroFirstCounter()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 1)]);
+        RgaRunEntry<int> zeroCounterRun = new(DotStateOf(new Dot(R1, 0)), null, [1]);
+        RgaRunState<int> state = new(context, [zeroCounterRun], [], [], [], []);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(state));
+    }
+
+
+    /// <summary>ToState orders the remove-dots within one tombstone entry by replica before counter, matching CompareDotsByReplica.</summary>
+    [TestMethod]
+    public void ToStateOrdersRemoveDotsWithinATombstoneByReplicaBeforeCounter()
+    {
+        (Rga<int> withA, Dot idA) = Rga<int>.Empty.InsertAtHead(1, R1);
+        Rga<int> removedByR2 = withA.Remove(idA, R2);
+        Rga<int> removedByR1 = withA.Remove(idA, R1);
+        Rga<int> merged = removedByR2.Merge(removedByR1);
+
+        RgaState<int> state = merged.ToState();
+
+        Assert.HasCount(1, state.Tombstones);
+        ImmutableArray<DotState> removeDots = state.Tombstones[0].RemoveDots;
+        Assert.HasCount(2, removeDots);
+        Assert.AreEqual(R1, ReplicaId.FromSpan(removeDots[0].Replica.AsSpan()));
+        Assert.AreEqual(R2, ReplicaId.FromSpan(removeDots[1].Replica.AsSpan()));
+    }
+
+
+    /// <summary>Compact rejects a default checkpoint array as an absent field, distinct from an explicitly empty one.</summary>
+    [TestMethod]
+    public void CompactRejectsDefaultCheckpoint()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.Empty.Compact(VectorClock.Empty, default));
+    }
+
+
+    /// <summary>
+    /// A tombstone target with a concurrent (multi-dot) remove-dot set must never be silently folded into a
+    /// span using only one of its remove-dots; it must round-trip with all of its remove-dots intact.
+    /// </summary>
+    [TestMethod]
+    public void TombstoneSpansDoNotSilentlyDropAConcurrentSecondRemoveDot()
+    {
+        VectorClockState context = new([
+            new ReplicaCounterEntry(Bytes(R1), 6),
+            new ReplicaCounterEntry(Bytes(R2), 11),
+            new ReplicaCounterEntry(Bytes(R3), 99)]);
+        RgaRunEntry<int> vertex1 = new(DotStateOf(new Dot(R1, 5)), null, [1]);
+        RgaRunEntry<int> vertex2 = new(DotStateOf(new Dot(R1, 6)), null, [2]);
+        RgaTombstoneSpan span1 = new(Bytes(R1), 5, 5, Bytes(R2), 10);
+        RgaConcurrentTombstone concurrent2 = new(
+            DotStateOf(new Dot(R1, 6)),
+            [DotStateOf(new Dot(R2, 11)), DotStateOf(new Dot(R3, 99))]);
+
+        Rga<int> x = Rga<int>.FromRunState(new RgaRunState<int>(context, [vertex1, vertex2], [span1], [concurrent2], [], []));
+
+        RgaRunState<int> runState = x.ToRunState();
+        Rga<int> roundTripped = Rga<int>.FromRunState(runState);
+
+        Assert.AreEqual(x, roundTripped);
+    }
+
+
+    /// <summary>
+    /// GetHashCode over many different tombstoned targets must reflect which elements are removed, not just
+    /// how many — exercised with enough targets that a wrong fold operator's degeneracy would be observable.
+    /// </summary>
+    [TestMethod]
+    public void TombstonesHashCodeReflectsWhichElementsAreRemoved()
+    {
+        const int Count = 20;
+        (Rga<int> chain, Dot last) = Rga<int>.Empty.InsertAtHead(0, R1);
+        var dots = new List<Dot> { last };
+        for (int i = 1; i < Count; i++)
+        {
+            (chain, last) = chain.InsertAfter(last, i, R1);
+            dots.Add(last);
+        }
+
+        Rga<int> removedEven = chain;
+        Rga<int> removedOdd = chain;
+        for (int i = 0; i < Count; i++)
+        {
+            if (i % 2 == 0)
+            {
+                removedEven = removedEven.Remove(dots[i], R2);
+            }
+            else
+            {
+                removedOdd = removedOdd.Remove(dots[i], R2);
+            }
+        }
+
+        Assert.AreNotEqual(removedEven, removedOdd);
+        Assert.AreNotEqual(removedEven.GetHashCode(), removedOdd.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// Runs are ordered by (start replica, start counter), independent of the order vertices from
+    /// different replicas were inserted or the dictionary happens to enumerate them.
+    /// </summary>
+    [TestMethod]
+    public void RunsAreOrderedByReplicaThenCounterRegardlessOfInsertionOrder()
+    {
+        (Rga<int> withR2, Dot idR2) = Rga<int>.Empty.InsertAtHead(2, R2);
+        (Rga<int> withR3, Dot idR3) = withR2.InsertAtHead(3, R3);
+        (Rga<int> withR1, Dot idR1) = withR3.InsertAtHead(1, R1);
+
+        RgaRunState<int> runState = withR1.ToRunState();
+
+        Assert.HasCount(3, runState.Runs);
+        AssertDotStateEquals(DotStateOf(idR1), runState.Runs[0].First);
+        AssertDotStateEquals(DotStateOf(idR2), runState.Runs[1].First);
+        AssertDotStateEquals(DotStateOf(idR3), runState.Runs[2].First);
+    }
+
+
+    /// <summary>A translation span whose target names a dot that never arrived as a vertex must fail closed.</summary>
+    [TestMethod]
+    public void FromRunStateRejectsATranslationSpanTargetThatIsNotAVertex()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R2), 5)]);
+        RgaTranslationSpan danglingSpanTarget = new(Bytes(R2), 1, 1, DotStateOf(new Dot(R2, 5)));
+        RgaRunState<int> state = new(context, [], [], [], [], [danglingSpanTarget]);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Rga<int>.FromRunState(state));
+    }
+
+
+    /// <summary>A translation span at its bound boundaries (FromCounter == 1, ToCounter == FromCounter) still loads.</summary>
+    [TestMethod]
+    public void FromRunStateAcceptsATranslationSpanAtItsBoundaries()
+    {
+        VectorClockState context = new([new ReplicaCounterEntry(Bytes(R1), 1), new ReplicaCounterEntry(Bytes(R2), 1)]);
+        RgaRunEntry<int> vertexRun = new(DotStateOf(new Dot(R1, 1)), null, [1]);
+
+        RgaTranslationSpan singleElementAtBoundary = new(Bytes(R2), 1, 1, DotStateOf(new Dot(R1, 1)));
+        RgaRunState<int> state = new(context, [vertexRun], [], [], [], [singleElementAtBoundary]);
+
+        Assert.AreEqual(1, Rga<int>.FromRunState(state).Count);
     }
 
 
@@ -588,6 +1428,19 @@ internal sealed class RgaCompactionTests
 
 
     private static DotState DotStateOf(Dot dot) => new(Bytes(dot.Replica), dot.Counter);
+
+
+    /// <summary>
+    /// Compares two dot states by content. A <see cref="DotState"/> is a record over an
+    /// <see cref="ImmutableArray{T}"/>, whose default equality compares the underlying array by reference, so a
+    /// reconstructed state never equals an expected one under <c>AreEqual</c> even with identical bytes.
+    /// </summary>
+    private static void AssertDotStateEquals(DotState expected, DotState? actual)
+    {
+        Assert.IsNotNull(actual);
+        Assert.IsTrue(expected.Replica.AsSpan().SequenceEqual(actual.Replica.AsSpan()), "DotState replica bytes differ.");
+        Assert.AreEqual(expected.Counter, actual.Counter);
+    }
 
 
     private static ImmutableArray<byte> Bytes(ReplicaId replica) => ImmutableArray.Create(replica.AsSpan());

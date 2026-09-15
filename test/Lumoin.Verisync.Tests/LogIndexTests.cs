@@ -166,4 +166,19 @@ internal sealed class LogIndexTests
         Assert.AreEqual(higher, LogIndex.Max(lower, higher));
         Assert.AreEqual(higher, LogIndex.Max(higher, lower));
     }
+
+
+    /// <summary>
+    /// A with-expression is a second construction path and not a copy: NextIndex is refused there exactly as it
+    /// is on the primary constructor, because the init accessor is what runs for it.
+    /// </summary>
+    [TestMethod]
+    public void ANextIndexBelowFirstIsRefusedOnAWithExpression()
+    {
+        FollowerProgress progress = new(LogIndex.First, LogIndex.BeforeFirst);
+
+        ArgumentOutOfRangeException thrown = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => _ = progress with { NextIndex = LogIndex.BeforeFirst });
+
+        Assert.AreEqual("NextIndex", thrown.ParamName);
+    }
 }

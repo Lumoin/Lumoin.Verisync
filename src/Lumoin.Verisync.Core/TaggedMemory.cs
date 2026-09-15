@@ -151,9 +151,13 @@ public abstract class TaggedMemory: IDisposable, IEquatable<TaggedMemory>
             double durationMs = 0d;
             if(Lifetime is not null)
             {
-                Lifetime.Stop();
+                //The duration tag is set before the activity is stopped so an ActivityStopped listener (every
+                //exporter) observes it; stopping first would fix the end time and notify listeners while the tag
+                //is still absent.
+                Lifetime.SetEndTime(TimeProvider.System.GetUtcNow().UtcDateTime);
                 durationMs = Lifetime.Duration.TotalMilliseconds;
                 Lifetime.SetTag(VerisyncTelemetry.ActivityLifetimeMs, durationMs);
+                Lifetime.Stop();
                 Lifetime.Dispose();
             }
 

@@ -58,21 +58,21 @@ internal sealed class QuePaxaConfigurationTests
     /// </summary>
     private static ReplicaId ATwin { get; } = Replica(1, 0, 0, 0, 9);
 
-    private static HostId MemberA { get; } = new(A, Incarnation(1));
-    private static HostId MemberB { get; } = new(B, Incarnation(2));
-    private static HostId MemberC { get; } = new(C, Incarnation(3));
-    private static HostId MemberD { get; } = new(D, Incarnation(4));
+    private static HostId MemberA { get; } = new(A, Membership.Incarnation(1));
+    private static HostId MemberB { get; } = new(B, Membership.Incarnation(2));
+    private static HostId MemberC { get; } = new(C, Membership.Incarnation(3));
+    private static HostId MemberD { get; } = new(D, Membership.Incarnation(4));
 
     /// <summary>
     /// Differs from <see cref="MemberA"/> in both halves only past the fourth byte, so it is a different
     /// member that hashes exactly as that one does.
     /// </summary>
-    private static HostId MemberATwin { get; } = new(ATwin, Incarnation(1, 0, 0, 0, 9));
+    private static HostId MemberATwin { get; } = new(ATwin, Membership.Incarnation(1, 0, 0, 0, 9));
 
     /// <summary>
     /// A's replica under another store: a different member that is still the same member of a quorum.
     /// </summary>
-    private static HostId MemberARestored { get; } = new(A, Incarnation(11));
+    private static HostId MemberARestored { get; } = new(A, Membership.Incarnation(11));
 
     private static ClusterId Chain { get; } = ClusterId.FromGenesisMembers([MemberA, MemberB, MemberC]);
     private static ClusterId OtherChain { get; } = ClusterId.FromGenesisMembers([MemberD, MemberB, MemberC]);
@@ -449,9 +449,9 @@ internal sealed class QuePaxaConfigurationTests
         QuePaxaConfiguration equalToLeft = QuePaxaConfiguration.Create(
             Chain,
             [
-                new HostId(Replica(1), Incarnation(1)),
-                new HostId(Replica(2), Incarnation(2)),
-                new HostId(Replica(3), Incarnation(3))
+                new HostId(Replica(1), Membership.Incarnation(1)),
+                new HostId(Replica(2), Membership.Incarnation(2)),
+                new HostId(Replica(3), Membership.Incarnation(3))
             ]);
 
         Assert.IsFalse(configurations.Add(equalToLeft));
@@ -472,6 +472,52 @@ internal sealed class QuePaxaConfigurationTests
         Assert.AreSequenceEqual(new[] { A, B, C }, schedule.Order);
         Assert.AreEqual(A, schedule.Leader);
         Assert.AreEqual(TimeSpan.FromMilliseconds(80), schedule.DelayFor(C));
+    }
+
+
+    /// <summary>
+    /// Two configurations that differ in a single member, or only in the chain they belong to, hash apart.
+    /// </summary>
+    /// <remarks>
+    /// Equality separates both pairs whatever the hash does, so a hash that dropped the members would put every
+    /// membership of one chain in one bucket, and one that dropped the chain would do the same to one member list
+    /// across chains, without failing any equality vector. Each pair differs in exactly one hash input and the
+    /// preconditions pin that the two differing inputs hash apart themselves, so the assertions hold for every
+    /// seed the process draws.
+    /// </remarks>
+    [TestMethod]
+    public void ConfigurationsDifferingInOneMemberOrInTheirChainHashApart()
+    {
+        Assert.AreNotEqual(MemberC.GetHashCode(), MemberD.GetHashCode());
+        Assert.AreNotEqual(Chain.GetHashCode(), OtherChain.GetHashCode());
+
+        QuePaxaConfiguration three = QuePaxaConfiguration.Create(Chain, [MemberA, MemberB, MemberC]);
+        QuePaxaConfiguration anotherMember = QuePaxaConfiguration.Create(Chain, [MemberA, MemberB, MemberD]);
+        QuePaxaConfiguration anotherChain = QuePaxaConfiguration.Create(OtherChain, [MemberA, MemberB, MemberC]);
+
+        Assert.AreNotEqual(three.GetHashCode(), anotherMember.GetHashCode());
+        Assert.AreNotEqual(three.GetHashCode(), anotherChain.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// A delta against a null membership is refused on both sides with an argument-null exception naming the
+    /// incoming membership.
+    /// </summary>
+    /// <remarks>
+    /// Without the guard each side fails on its first read of the other membership's chain, with a
+    /// null-reference exception that names no argument.
+    /// </remarks>
+    [TestMethod]
+    public void TheMembershipDeltaRefusesANullMembership()
+    {
+        QuePaxaConfiguration ours = QuePaxaConfiguration.Create(Chain, [MemberA, MemberB, MemberC]);
+
+        ArgumentNullException joining = Assert.ThrowsExactly<ArgumentNullException>(() => ours.Joining(null!));
+        ArgumentNullException leaving = Assert.ThrowsExactly<ArgumentNullException>(() => ours.Leaving(null!));
+
+        Assert.AreEqual("incoming", joining.ParamName);
+        Assert.AreEqual("incoming", leaving.ParamName);
     }
 
 
@@ -532,14 +578,5 @@ internal sealed class QuePaxaConfigurationTests
         prefix.AsSpan().CopyTo(buffer);
 
         return ReplicaId.FromSpan(buffer);
-    }
-
-
-    private static StoreIncarnation Incarnation(params byte[] prefix)
-    {
-        Span<byte> buffer = stackalloc byte[StoreIncarnation.Size];
-        prefix.AsSpan().CopyTo(buffer);
-
-        return StoreIncarnation.FromSpan(buffer);
     }
 }

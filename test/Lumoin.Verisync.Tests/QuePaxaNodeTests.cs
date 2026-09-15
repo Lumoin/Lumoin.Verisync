@@ -61,6 +61,37 @@ internal sealed class QuePaxaNodeTests
 
 
     /// <summary>
+    /// Each recorder transition advances the node's generation by one, while identical and stale requests
+    /// leave the generation unchanged.
+    /// </summary>
+    [TestMethod]
+    public void HandleAdvancesItsGenerationOnlyWhenTheRecorderChanges()
+    {
+        QuePaxaNode<string> node = new(QuePaxaRecorder<string>.LedBy(LeaderLane));
+        RecordRequest<string> request = new(Four, Ordinary(5, LeaderLane, "a"));
+
+        Assert.AreEqual(0UL, node.Generation);
+
+        _ = node.Handle(request);
+
+        Assert.AreEqual(1UL, node.Generation);
+
+        _ = node.Handle(request);
+
+        Assert.AreEqual(1UL, node.Generation);
+
+        _ = node.Handle(new RecordRequest<string>(Four.Next(), Ordinary(9, OtherLane, "b")));
+
+        Assert.AreEqual(2UL, node.Generation);
+
+        _ = node.Handle(request);
+
+        Assert.AreEqual(2UL, node.Generation);
+        TestContext.WriteLine($"Two recorder transitions and two unchanged requests leave generation {node.Generation}.");
+    }
+
+
+    /// <summary>
     /// THE CONSTRUCTOR TAKES THE RECORDER RATHER THAN DEFAULTING, and the reason is the whole of the slice's
     /// safety.
     /// </summary>
@@ -145,10 +176,8 @@ internal sealed class QuePaxaNodeTests
 
 
     /// <summary>
-    /// A REQUEST THAT CHANGES NOTHING IS NOT PERSISTED, AND ITS REPLY IS STILL SENT. This is the payoff of the
-    /// register returning its own instance on an idempotent same-step fold: reference identity becomes an exact
-    /// "the state changed" predicate at all three layers, so a retransmission on a lossy link costs no fsync
-    /// that makes nothing durable.
+    /// An advancing request is persisted once, and its identical re-delivery leaves the generation unchanged
+    /// while still receiving a reply. A generation that is already durable requires no further write.
     /// </summary>
     /// <remarks>
     /// Under a re-send rule that permits identical re-delivery, this is the common case rather than a
@@ -191,12 +220,14 @@ internal sealed class QuePaxaNodeTests
         Assert.HasCount(1, persisted);
         Assert.AreSame(node.Recorder, persisted[0]);
         Assert.AreNotSame(beforeAnything, node.Recorder);
+        Assert.AreEqual(1UL, node.Generation);
+        TestContext.WriteLine($"Two identical deliveries produced {persisted.Count} write and generation {node.Generation}.");
     }
 
 
     /// <summary>
-    /// A stale request is the other case identity covers, and it must behave the same way: nothing is written,
-    /// so nothing is persisted, and the recorder still answers with its current summary rather than refusing.
+    /// A stale request leaves the generation unchanged, requires no further write, and receives the current
+    /// summary.
     /// </summary>
     [TestMethod]
     public async Task AStaleRequestIsNotPersistedAndIsStillAnswered()
@@ -230,6 +261,7 @@ internal sealed class QuePaxaNodeTests
         Assert.AreEqual(replies[0], replies[1]);
         Assert.HasCount(1, persisted);
         Assert.AreEqual(Four.Next(), node.Recorder.Step);
+        Assert.AreEqual(1UL, node.Generation);
     }
 
 
@@ -268,16 +300,14 @@ internal sealed class QuePaxaNodeTests
 
 
     /// <summary>
-    /// A RE-DELIVERY AFTER A FAILED WRITE RETRIES THE WRITE, and this is the one place where "did the state
-    /// change" and "is the state durable" come apart.
+    /// An identical re-delivery after a failed write retries the write before answering, without advancing
+    /// the generation again.
     /// </summary>
     /// <remarks>
-    /// A request advances the recorder, the write fails, and the reply is correctly withheld. The proposer
-    /// then re-delivers the identical request, which the re-send rule makes ordinary rather than exceptional.
-    /// That re-delivery changes nothing, so a gate that asked whether THIS request changed the state would
-    /// skip the write and send a reply carrying a first proposal that never reached the disk — the overwrite
-    /// of a step's first proposal that the durability hook exists to prevent, turned from fail-closed into
-    /// fail-open by the very same-instance return that makes retransmission cheap.
+    /// A failed persist leaves the node's generation ahead of its persisted generation and withholds the
+    /// reply. Restarting the loop on the same node preserves that debt, so the identical re-delivery retries
+    /// the write even though it changes nothing. Once the write succeeds, another identical delivery answers
+    /// without persisting again.
     /// </remarks>
     [TestMethod]
     public async Task ARedeliveryAfterAFailedPersistWritesAgainBeforeItAnswers()
@@ -319,6 +349,8 @@ internal sealed class QuePaxaNodeTests
 
         Assert.IsEmpty(replies);
         Assert.IsEmpty(persisted);
+        Assert.AreEqual(1, attempts);
+        Assert.AreEqual(1UL, node.Generation);
 
         //The host restarts the loop on the same node, which is its only option, and the proposer re-delivers
         //the identical request. The recorder is unchanged by it, and the write must still happen.
@@ -333,9 +365,10 @@ internal sealed class QuePaxaNodeTests
         Assert.HasCount(1, replies);
         Assert.AreSame(node.Recorder, persisted[0]);
         Assert.AreEqual(Four, replies[0].Step);
+        Assert.AreEqual(2, attempts);
+        Assert.AreEqual(1UL, node.Generation);
 
-        //A THIRD identical delivery is genuinely durable already, so it costs no further write and still
-        //answers: the gate is durability and not paranoia.
+        //A third identical delivery is already durable, so it answers without another write.
         Channel<RecordRequest<string>> again = Channel.CreateUnbounded<RecordRequest<string>>();
 
         await again.Writer.WriteAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
@@ -345,6 +378,9 @@ internal sealed class QuePaxaNodeTests
 
         Assert.HasCount(1, persisted);
         Assert.HasCount(2, replies);
+        Assert.AreEqual(2, attempts);
+        Assert.AreEqual(1UL, node.Generation);
+        TestContext.WriteLine($"Three identical deliveries produced {attempts} write attempts and {replies.Count} replies.");
     }
 
 
@@ -441,6 +477,126 @@ internal sealed class QuePaxaNodeTests
         //priority alone.
         Assert.AreEqual(honoured.First.Value, declined.First.Value);
         Assert.AreEqual(honoured.Step, declined.Step);
+    }
+
+
+    /// <summary>
+    /// The loop does not resume on the synchronization context it was started on. The continuation after a
+    /// durable write that completes later, and the one after a reply that completes later, both run off that
+    /// context, so a host that blocks the starting thread on the loop cannot deadlock it.
+    /// </summary>
+    /// <remarks>
+    /// Each half parks the loop at exactly one await while the counting context is current. The first half parks
+    /// it on the write, with a reply sink that completes at once; the second parks it on the reply, with no
+    /// durability hook. Both request streams are filled and completed before the loop starts, so reading them
+    /// never parks it.
+    /// </remarks>
+    [TestMethod]
+    public async Task TheLoopDoesNotResumeOnTheCallersContextAfterAPendingWriteOrAPendingReply()
+    {
+        QuePaxaNode<string> persisting = new(QuePaxaRecorder<string>.LedBy(LeaderLane));
+        Channel<RecordRequest<string>> persistingRequests = Channel.CreateUnbounded<RecordRequest<string>>();
+        TaskCompletionSource writeGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        PostCountingSynchronizationContext writeContext = new();
+        List<RecordReply<string>> persistingReplies = [];
+        int writes = 0;
+
+        PersistRecorderDelegate<string> persist = (_, _) =>
+        {
+            writes++;
+
+            return new ValueTask(writeGate.Task);
+        };
+
+        ValueTask SendAtOnce(RecordReply<string> reply, CancellationToken token)
+        {
+            persistingReplies.Add(reply);
+
+            return ValueTask.CompletedTask;
+        }
+
+        await persistingRequests.Writer.WriteAsync(new RecordRequest<string>(Four, Ordinary(5, LeaderLane, "a")), TestContext.CancellationToken).ConfigureAwait(false);
+        persistingRequests.Writer.Complete();
+
+        Task persistingRun = writeContext.Start(() => persisting.RunAsync(persistingRequests.Reader.ReadAllAsync(TestContext.CancellationToken), SendAtOnce, persist, TestContext.CancellationToken));
+
+        //The loop is parked on the write: the hook ran once and no reply has left yet.
+        Assert.AreEqual(1, writes);
+        Assert.IsEmpty(persistingReplies);
+        Assert.IsFalse(persistingRun.IsCompleted);
+
+        writeGate.SetResult();
+        await persistingRun.ConfigureAwait(false);
+
+        Assert.HasCount(1, persistingReplies);
+        Assert.AreEqual(0, writeContext.Posts);
+
+        QuePaxaNode<string> replying = new(QuePaxaRecorder<string>.LedBy(LeaderLane));
+        Channel<RecordRequest<string>> replyingRequests = Channel.CreateUnbounded<RecordRequest<string>>();
+        TaskCompletionSource replyGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        PostCountingSynchronizationContext replyContext = new();
+        List<RecordReply<string>> replyingReplies = [];
+
+        ValueTask SendWhenReleased(RecordReply<string> reply, CancellationToken token)
+        {
+            replyingReplies.Add(reply);
+
+            return new ValueTask(replyGate.Task);
+        }
+
+        await replyingRequests.Writer.WriteAsync(new RecordRequest<string>(Four, Ordinary(5, LeaderLane, "a")), TestContext.CancellationToken).ConfigureAwait(false);
+        replyingRequests.Writer.Complete();
+
+        Task replyingRun = replyContext.Start(() => replying.RunAsync(replyingRequests.Reader.ReadAllAsync(TestContext.CancellationToken), SendWhenReleased, cancellationToken: TestContext.CancellationToken));
+
+        //The loop is parked on the reply: the sink holds it and has not released it.
+        Assert.HasCount(1, replyingReplies);
+        Assert.IsFalse(replyingRun.IsCompleted);
+
+        replyGate.SetResult();
+        await replyingRun.ConfigureAwait(false);
+
+        Assert.AreEqual(0, replyContext.Posts);
+    }
+
+
+    /// <summary>
+    /// The loop does not resume on the synchronization context it was started on after a pending request read,
+    /// the third of its awaits. Nothing is written to the request channel before the loop starts, so the very
+    /// first request read is what parks it, and the loop must resume off the context rather than posting back.
+    /// </summary>
+    /// <remarks>
+    /// The persist hook is omitted and the reply sink completes at once, so the request read is the only await
+    /// that can park the loop, and only a continuation captured there can post back to the context.
+    /// </remarks>
+    [TestMethod]
+    public async Task TheLoopDoesNotResumeOnTheCallersContextAfterAPendingRequestRead()
+    {
+        QuePaxaNode<string> node = new(QuePaxaRecorder<string>.LedBy(LeaderLane));
+        Channel<RecordRequest<string>> requests = Channel.CreateUnbounded<RecordRequest<string>>();
+        PostCountingSynchronizationContext context = new();
+        List<RecordReply<string>> replies = [];
+
+        ValueTask SendReply(RecordReply<string> reply, CancellationToken token)
+        {
+            replies.Add(reply);
+
+            return ValueTask.CompletedTask;
+        }
+
+        //Nothing has been written yet, so the loop parks on the request read itself.
+        Task run = context.Start(() => node.RunAsync(requests.Reader.ReadAllAsync(TestContext.CancellationToken), SendReply, cancellationToken: TestContext.CancellationToken));
+
+        Assert.IsFalse(run.IsCompleted);
+        Assert.IsEmpty(replies);
+
+        await requests.Writer.WriteAsync(new RecordRequest<string>(Four, Ordinary(5, LeaderLane, "a")), TestContext.CancellationToken).ConfigureAwait(false);
+        requests.Writer.Complete();
+
+        await run.ConfigureAwait(false);
+
+        Assert.HasCount(1, replies);
+        Assert.AreEqual(0, context.Posts);
     }
 
 

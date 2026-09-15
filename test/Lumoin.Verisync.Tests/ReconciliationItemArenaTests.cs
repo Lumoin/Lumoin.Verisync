@@ -254,4 +254,135 @@ internal sealed class ReconciliationItemArenaTests
     }
 
 
+    /// <summary>Pins that only the very first grow sizes from the hint floor; every later grow doubles the running total capacity instead of repeating the small first-block size.</summary>
+    [TestMethod]
+    public void GrowthDoublesTheRunningCapacityAfterTheFirstBlock()
+    {
+        const int Stride = 8;
+        const int Items = 1000;
+
+        RentalAccountant accountant = new();
+        using(accountant)
+        {
+            using BaseMemoryPool pool = new();
+            ReconciliationItemArena arena = new(Stride, pool, itemCapacityHint: 0);
+
+            for(int n = 0; n < Items; n++)
+            {
+                _ = arena.Append(BuildItem(Stride, n));
+            }
+
+            Assert.AreEqual(Items, arena.Count);
+            arena.Dispose();
+        }
+
+        //A zero hint pins the first block at four items; doubling the running total thereafter (4, 8, 16, ..., 1024)
+        //reaches 1000 items in nine block rents. A broken grow that re-sized every later block from the hint floor
+        //instead of doubling the running total would need roughly Items / 4 rents to hold the same 1000 items.
+        Assert.IsLessThan(20L, accountant.Rented);
+    }
+
+
+    /// <summary>Pins that the zero-hint first block holds exactly the documented four-item floor, not one power of two further.</summary>
+    [TestMethod]
+    public void ZeroHintFirstBlockHoldsExactlyFourItemsBeforeGrowing()
+    {
+        const int Stride = 8;
+        const int FloorItems = 4;
+
+        RentalAccountant accountant = new();
+        using(accountant)
+        {
+            using BaseMemoryPool pool = new();
+            ReconciliationItemArena arena = new(Stride, pool, itemCapacityHint: 0);
+
+            for(int n = 0; n < FloorItems; n++)
+            {
+                _ = arena.Append(BuildItem(Stride, n));
+            }
+
+            Assert.AreEqual(1L, accountant.Rented);
+
+            //A fifth append overflows the four-item first block and forces a second rent; a first block rounded up
+            //to eight (the next power of two past four) would still have room and rent only once.
+            _ = arena.Append(BuildItem(Stride, FloorItems));
+
+            Assert.AreEqual(2L, accountant.Rented);
+
+            arena.Dispose();
+        }
+    }
+
+
+    /// <summary>Pins that Dispose clears each block's whole logical region in defence in depth, even when the injected pool's own rental does not clear on return.</summary>
+    [TestMethod]
+    public void DisposalClearsEachBlocksLogicalRegionEvenWhenThePoolDoesNot()
+    {
+        const int Stride = 8;
+        using DirtyMemoryPool pool = new();
+        ReconciliationItemArena arena = new(Stride, pool, itemCapacityHint: 0);
+
+        byte[] item = new byte[Stride];
+        for(int b = 0; b < Stride; b++)
+        {
+            item[b] = (byte)(b + 1);
+        }
+
+        ReadOnlyMemory<byte> slice = arena.Append(item);
+
+        //Sanity: the slice reads the written, non-zero bytes before disposal.
+        Assert.IsFalse(slice.Span.SequenceEqual(new byte[Stride]));
+
+        arena.Dispose();
+
+        //Disposal clears the block's logical region in defence in depth: the dirty pool's own owner does not clear
+        //on return, so only the arena's own explicit clear could zero these bytes.
+        Assert.IsTrue(slice.Span.SequenceEqual(new byte[Stride]));
+    }
+
+
+    /// <summary>Pins that the stride lower bound is inclusive: exactly one byte constructs without throwing.</summary>
+    [TestMethod]
+    public void ConstructionAcceptsTheMinimumStrideOfOneByte()
+    {
+        using ReconciliationItemArena arena = new(1, BaseMemoryPool.Shared);
+        Assert.AreEqual(0, arena.Count);
+    }
+
+
+    /// <summary>Pins that a hint above the block floor pre-sizes the first block to the hint, not the floor.</summary>
+    [TestMethod]
+    public void ConstructionPreSizesTheFirstBlockFromAHintAboveTheFloor()
+    {
+        const int Stride = 8;
+        const int Hint = 100;
+
+        RentalAccountant accountant = new();
+        using(accountant)
+        {
+            using BaseMemoryPool pool = new();
+            ReconciliationItemArena arena = new(Stride, pool, itemCapacityHint: Hint);
+
+            for(int n = 0; n < Hint; n++)
+            {
+                _ = arena.Append(BuildItem(Stride, n));
+            }
+
+            Assert.AreEqual(Hint, arena.Count);
+            arena.Dispose();
+        }
+
+        //The first block's capacity is the smallest power of two at or above the hint (128 for a hint of 100), so
+        //appending exactly the hinted count fits in the single rented first block with no grow.
+        Assert.AreEqual(1L, accountant.Rented);
+    }
+
+
+    /// <summary>Pins that a null pool is rejected by its own null guard at construction, not a later NullReferenceException from the first use of the unset pool.</summary>
+    [TestMethod]
+    public void ConstructionRejectsANullPool()
+    {
+        ArgumentNullException ex = Assert.ThrowsExactly<ArgumentNullException>(() => new ReconciliationItemArena(8, null!));
+        Assert.AreEqual("pool", ex.ParamName);
+    }
 }

@@ -47,7 +47,7 @@ internal sealed class MessageChannelTests
 
         List<string> received = await ReadAll(reader).ConfigureAwait(false);
 
-        Assert.HasCount(0, received);
+        Assert.IsEmpty(received);
     }
 
 
@@ -369,6 +369,303 @@ internal sealed class MessageChannelTests
     }
 
 
+    /// <summary>
+    /// A padded frame whose declared outer length holds only the four-byte inner length prefix, with a real
+    /// length of zero and no payload bytes, is a valid empty-payload frame, not one too short for the prefix.
+    /// </summary>
+    [TestMethod]
+    public async Task APaddedFrameExactlyFillingTheInnerLengthPrefixIsAccepted()
+    {
+        FramePadding padding = FramePadding.PowersOfTwo(64);
+
+        Pipe pipe = new();
+        MessageChannelReader<string> reader = new(pipe.Reader, DeserializeUtf8, padding: padding);
+
+        Memory<byte> frame = pipe.Writer.GetMemory(8)[..8];
+        frame.Span.Clear();
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(frame.Span, 4);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(frame.Span[4..], 0);
+        pipe.Writer.Advance(8);
+        await pipe.Writer.FlushAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        await pipe.Writer.CompleteAsync().ConfigureAwait(false);
+
+        List<string> received = await ReadAll(reader).ConfigureAwait(false);
+
+        Assert.HasCount(1, received);
+        Assert.AreEqual("", received[0]);
+    }
+
+
+    /// <summary>
+    /// Pins that a doubling policy rounds a requirement that lands on an exact but non-power-of-two multiple
+    /// of the minimum bucket up to the next power of two, rather than to that exact multiple.
+    /// </summary>
+    [TestMethod]
+    public void PowersOfTwoRoundsUpToTheNextPowerOfTwoNotTheExactMultiple()
+    {
+        FramePadding powers = FramePadding.PowersOfTwo(64);
+
+        //A 188-byte payload needs 192 bytes with the inner prefix: exactly three minimum buckets. The doubling
+        //ladder must still round that up to the next power of two, four buckets (256), not stop at three (192).
+        Assert.AreEqual(256, powers.PaddedLength(188));
+    }
+
+
+    /// <summary>
+    /// Pins that a fixed-step policy maps a requirement landing exactly on a bucket multiple to that same
+    /// multiple, not the next one up.
+    /// </summary>
+    [TestMethod]
+    public void FixedBucketsMapsAnExactMultipleToItselfNotTheNextOne()
+    {
+        FramePadding fixedBuckets = FramePadding.FixedBuckets(100);
+
+        //A 196-byte payload needs 200 bytes with the inner prefix: exactly two buckets, landing precisely on
+        //the multiple boundary the ceiling-division arithmetic must not overshoot.
+        Assert.AreEqual(200, fixedBuckets.PaddedLength(196));
+    }
+
+
+    /// <summary>
+    /// Pins that a serialized payload exactly at the configured maximum frame length is written and round-trips,
+    /// not rejected: the guard rejects payloads strictly above the maximum, not payloads at it.
+    /// </summary>
+    [TestMethod]
+    public async Task PayloadExactlyAtTheConfiguredMaximumIsAccepted()
+    {
+        Pipe pipe = new();
+        MessageChannelWriter<string> writer = new(pipe.Writer, SerializeUtf8, maxFrameLength: 5);
+
+        await writer.WriteAsync("alpha", TestContext.CancellationToken).ConfigureAwait(false);
+        await writer.CompleteAsync().ConfigureAwait(false);
+
+        MessageChannelReader<string> reader = new(pipe.Reader, DeserializeUtf8, maxFrameLength: 5);
+        List<string> received = await ReadAll(reader).ConfigureAwait(false);
+
+        Assert.HasCount(1, received);
+        Assert.AreEqual("alpha", received[0]);
+    }
+
+
+    /// <summary>
+    /// Pins that a fixed-step policy rounds a requirement up to the exact multiple of the bucket size, never
+    /// to the next power of two a doubling policy would use.
+    /// </summary>
+    [TestMethod]
+    public void FixedBucketsUsesTheExactMultipleNotTheNextPowerOfTwo()
+    {
+        FramePadding fixedBuckets = FramePadding.FixedBuckets(100);
+
+        //A 296-byte payload needs 300 bytes with the inner prefix: exactly three buckets. A doubling policy
+        //would round that up to four buckets (400) instead of stopping at the exact multiple (300).
+        Assert.AreEqual(300, fixedBuckets.PaddedLength(296));
+    }
+
+
+    /// <summary>
+    /// A frame declaring exactly the configured maximum payload length is accepted; the maximum is the
+    /// largest payload accepted, not an exclusive bound.
+    /// </summary>
+    [TestMethod]
+    public async Task AFrameExactlyAtTheConfiguredMaximumIsAccepted()
+    {
+        Pipe pipe = new();
+        MessageChannelWriter<string> writer = new(pipe.Writer, SerializeUtf8, maxFrameLength: 8);
+        MessageChannelReader<string> reader = new(pipe.Reader, DeserializeUtf8, maxFrameLength: 8);
+
+        await writer.WriteAsync("12345678", TestContext.CancellationToken).ConfigureAwait(false);
+        await writer.CompleteAsync().ConfigureAwait(false);
+
+        List<string> received = await ReadAll(reader).ConfigureAwait(false);
+
+        Assert.HasCount(1, received);
+        Assert.AreEqual("12345678", received[0]);
+    }
+
+
+    /// <summary>
+    /// A lone zero-length payload frame completes from exactly its four buffered header bytes; the reader
+    /// must not wait for further bytes that are never coming.
+    /// </summary>
+    [TestMethod]
+    public async Task AZeroLengthPayloadFrameCompletesFromExactlyItsHeaderBytes()
+    {
+        Pipe pipe = new();
+        MessageChannelWriter<string> writer = new(pipe.Writer, SerializeUtf8);
+        MessageChannelReader<string> reader = new(pipe.Reader, DeserializeUtf8);
+
+        await writer.WriteAsync("", TestContext.CancellationToken).ConfigureAwait(false);
+        await writer.CompleteAsync().ConfigureAwait(false);
+
+        //The frame is complete from its four header bytes alone. A reader that demanded a further byte before
+        //accepting the completed pipe would instead see the pipe completed with four bytes unconsumed and throw,
+        //so draining to exactly one empty message pins the boundary as an assertion rather than a deadline.
+        List<string> received = await ReadAll(reader).ConfigureAwait(false);
+
+        Assert.HasCount(1, received);
+        Assert.AreEqual("", received[0]);
+    }
+
+
+    /// <summary>
+    /// A padded frame shorter than the four-byte inner length prefix fails closed instead of reading out of
+    /// bounds.
+    /// </summary>
+    [TestMethod]
+    public async Task APaddedFrameShorterThanItsInnerLengthPrefixFailsClosed()
+    {
+        FramePadding padding = FramePadding.PowersOfTwo(64);
+
+        Pipe pipe = new();
+        MessageChannelReader<string> reader = new(pipe.Reader, DeserializeUtf8, padding: padding);
+
+        Memory<byte> frame = pipe.Writer.GetMemory(6)[..6];
+        frame.Span.Clear();
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(frame.Span, 2);
+        pipe.Writer.Advance(6);
+        await pipe.Writer.FlushAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        await pipe.Writer.CompleteAsync().ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => ReadAll(reader)).ConfigureAwait(false);
+    }
+
+
+    /// <summary>
+    /// Pins that a padded frame above the configured maximum throws InvalidOperationException: the writer fails
+    /// locally rather than emitting a bucket the reading peer's limit would reject.
+    /// </summary>
+    [TestMethod]
+    public async Task PaddedFrameAboveTheConfiguredMaximumIsRejected()
+    {
+        FramePadding padding = FramePadding.PowersOfTwo(64);
+        Pipe pipe = new();
+        MessageChannelWriter<string> writer = new(pipe.Writer, SerializeUtf8, maxFrameLength: 63, padding: padding);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            async () => await writer.WriteAsync("", TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+
+    /// <summary>
+    /// Pins that a padded frame exactly at the configured maximum is written, not rejected: the guard rejects
+    /// padded frames strictly above the maximum, not padded frames at it.
+    /// </summary>
+    [TestMethod]
+    public async Task PaddedFrameExactlyAtTheConfiguredMaximumIsAccepted()
+    {
+        FramePadding padding = FramePadding.PowersOfTwo(64);
+        Pipe pipe = new();
+        MessageChannelWriter<string> writer = new(pipe.Writer, SerializeUtf8, maxFrameLength: 64, padding: padding);
+
+        await writer.WriteAsync("", TestContext.CancellationToken).ConfigureAwait(false);
+        await writer.CompleteAsync().ConfigureAwait(false);
+
+        List<int> outerLengths = await ReadRawOuterFrameLengths(pipe.Reader).ConfigureAwait(false);
+
+        Assert.HasCount(1, outerLengths);
+        Assert.AreEqual(64, outerLengths[0]);
+    }
+
+
+    /// <summary>
+    /// A read that has to park (no frame buffered yet) resumes without posting back to the
+    /// synchronization context that was current when the read was awaited, so a host that blocks its own
+    /// thread on the enumeration cannot deadlock the loop.
+    /// </summary>
+    [TestMethod]
+    public async Task APendingReadResumesOffTheCallersSynchronizationContext()
+    {
+        Pipe pipe = new();
+        MessageChannelWriter<string> writer = new(pipe.Writer, SerializeUtf8);
+        MessageChannelReader<string> reader = new(pipe.Reader, DeserializeUtf8);
+        PostCountingSynchronizationContext context = new();
+
+        IAsyncEnumerator<string> messages = reader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+
+        Task<bool> moveNext = context.Start(() => messages.MoveNextAsync().AsTask());
+
+        Assert.IsFalse(moveNext.IsCompleted, "No frame was buffered yet, so the read should have parked instead of completing at once.");
+
+        await writer.WriteAsync("alpha", TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.IsTrue(
+            await moveNext.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false));
+        Assert.AreEqual("alpha", messages.Current);
+        Assert.AreEqual(0, context.Posts, "The resumed read posted its continuation back to the caller's synchronization context instead of completing off it.");
+
+        await writer.CompleteAsync().ConfigureAwait(false);
+        await messages.DisposeAsync().AsTask().WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+
+    /// <summary>
+    /// Pins that a flush parked on the pipe's pause threshold resumes off the thread pool instead of the
+    /// caller's captured context, matching the writer's ConfigureAwait(false) on the pipe flush, so a host that
+    /// blocks its own thread on a back-pressured write cannot deadlock it.
+    /// </summary>
+    [TestMethod]
+    public async Task APendingFlushResumesOffTheCallersSynchronizationContext()
+    {
+        Pipe pipe = new(new PipeOptions(pauseWriterThreshold: 16, resumeWriterThreshold: 8));
+        MessageChannelWriter<string> writer = new(pipe.Writer, SerializeUtf8);
+        PostCountingSynchronizationContext context = new();
+
+        Task write = context.Start(() => writer.WriteAsync(new string('x', 32), TestContext.CancellationToken).AsTask());
+
+        //The thirty-six-byte frame is above the sixteen-byte pause threshold, so the flush parked instead of completing at once.
+        Assert.IsFalse(write.IsCompleted, "The flush completed synchronously, so a captured continuation could not be observed.");
+
+        ReadResult result = await pipe.Reader.ReadAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        pipe.Reader.AdvanceTo(result.Buffer.End);
+
+        await write.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(0, context.Posts, "The resumed flush posted its continuation back to the caller's synchronization context instead of completing off it.");
+
+        await pipe.Reader.CompleteAsync().ConfigureAwait(false);
+    }
+
+
+    /// <summary>
+    /// Pins that the padding fill region is committed to the pipe, not merely written into an unadvanced span:
+    /// the total raw bytes on the wire for a padded frame equal the outer prefix plus the full padded length.
+    /// </summary>
+    [TestMethod]
+    public async Task PaddedFrameFillBytesAreCommittedToTheWire()
+    {
+        FramePadding padding = FramePadding.PowersOfTwo(64);
+        Pipe pipe = new();
+        MessageChannelWriter<string> writer = new(pipe.Writer, SerializeUtf8, padding: padding);
+
+        await writer.WriteAsync("alpha", TestContext.CancellationToken).ConfigureAwait(false);
+        await writer.CompleteAsync().ConfigureAwait(false);
+
+        var raw = new ArrayBufferWriter<byte>();
+        while(true)
+        {
+            ReadResult result = await pipe.Reader.ReadAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            foreach(ReadOnlyMemory<byte> segment in result.Buffer)
+            {
+                raw.Write(segment.Span);
+            }
+
+            pipe.Reader.AdvanceTo(result.Buffer.End);
+            if(result.IsCompleted)
+            {
+                break;
+            }
+        }
+
+        await pipe.Reader.CompleteAsync().ConfigureAwait(false);
+
+        int outerLength = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(raw.WrittenSpan[..4]);
+        int expectedPadded = padding.PaddedLength(Encoding.UTF8.GetByteCount("alpha"));
+
+        Assert.AreEqual(expectedPadded, outerLength);
+        Assert.AreEqual(4 + expectedPadded, raw.WrittenCount);
+    }
+
+
     private async Task<List<int>> ReadRawOuterFrameLengths(PipeReader reader)
     {
         var bytes = new ArrayBufferWriter<byte>();
@@ -403,6 +700,37 @@ internal sealed class MessageChannelTests
     }
 
 
+    /// <summary>
+    /// Pins that the padding fill is zeroed, not merely advanced over: a writer that hands back memory
+    /// pre-soiled with a non-zero pattern still ships an all-zero fill, so no uninitialized byte leaks into the
+    /// padding on the wire. A fresh pipe returns zeroed memory, so only a dirty buffer exposes the zeroing.
+    /// </summary>
+    [TestMethod]
+    public async Task PaddedFrameFillBytesAreZeroedEvenWhenTheUnderlyingBufferIsDirty()
+    {
+        FramePadding padding = FramePadding.PowersOfTwo(64);
+        DirtyingPipeWriter dirty = new();
+        MessageChannelWriter<string> writer = new(dirty, SerializeUtf8, padding: padding);
+
+        await writer.WriteAsync("alpha", TestContext.CancellationToken).ConfigureAwait(false);
+        await writer.CompleteAsync().ConfigureAwait(false);
+
+        int payloadLength = Encoding.UTF8.GetByteCount("alpha");
+        int paddedLength = padding.PaddedLength(payloadLength);
+
+        //The frame is the outer four-byte prefix, the inner four-byte prefix, the payload, then zero fill to the bucket boundary.
+        const int headerLength = 4;
+        int fillStart = headerLength + headerLength + payloadLength;
+        int frameEnd = headerLength + paddedLength;
+
+        ReadOnlySpan<byte> raw = dirty.WrittenSpan;
+        int rawLength = raw.Length;
+        Assert.AreEqual(frameEnd, rawLength);
+        Assert.IsGreaterThan(fillStart, frameEnd, "The chosen payload leaves no fill region to check.");
+        Assert.AreEqual(-1, raw[fillStart..frameEnd].IndexOfAnyExcept((byte)0), "A padding fill byte was left non-zero.");
+    }
+
+
     private async Task<List<string>> ReadAll(MessageChannelReader<string> reader)
     {
         var received = new List<string>();
@@ -412,5 +740,66 @@ internal sealed class MessageChannelTests
         }
 
         return received;
+    }
+
+
+    /// <summary>
+    /// A <see cref="PipeWriter"/> that accumulates into a single growing buffer and hands back every exposed
+    /// region pre-filled with <c>0xFF</c>, so any span the writer takes but does not explicitly zero is
+    /// observably dirty once committed. The committed bytes are exposed through <see cref="WrittenSpan"/>.
+    /// </summary>
+    private sealed class DirtyingPipeWriter: PipeWriter
+    {
+        private byte[] buffer = new byte[256];
+
+        private int committed;
+
+        /// <summary>The bytes committed so far.</summary>
+        public ReadOnlySpan<byte> WrittenSpan => buffer.AsSpan(0, committed);
+
+        /// <inheritdoc/>
+        public override void Advance(int bytes) => committed += bytes;
+
+        /// <inheritdoc/>
+        public override Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            EnsureAndDirty(sizeHint);
+
+            return buffer.AsMemory(committed);
+        }
+
+        /// <inheritdoc/>
+        public override Span<byte> GetSpan(int sizeHint = 0)
+        {
+            EnsureAndDirty(sizeHint);
+
+            return buffer.AsSpan(committed);
+        }
+
+        /// <inheritdoc/>
+        public override void CancelPendingFlush()
+        {
+        }
+
+        /// <inheritdoc/>
+        public override void Complete(Exception? exception = null)
+        {
+        }
+
+        /// <inheritdoc/>
+        public override ValueTask<FlushResult> FlushAsync(CancellationToken cancellationToken = default) =>
+            new(new FlushResult(isCanceled: false, isCompleted: false));
+
+        /// <summary>Grows the buffer to hold <paramref name="sizeHint"/> more bytes and fills every uncommitted byte with <c>0xFF</c>.</summary>
+        private void EnsureAndDirty(int sizeHint)
+        {
+            int required = committed + Math.Max(sizeHint, 1);
+            if(required > buffer.Length)
+            {
+                Array.Resize(ref buffer, Math.Max(required, buffer.Length * 2));
+            }
+
+            buffer.AsSpan(committed).Fill(0xFF);
+        }
     }
 }
