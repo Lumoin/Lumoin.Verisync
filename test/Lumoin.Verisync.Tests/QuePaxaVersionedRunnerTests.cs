@@ -793,6 +793,67 @@ internal sealed class QuePaxaVersionedRunnerTests
     }
 
 
+    /// <summary>
+    /// A queued record call exposes the completion task named by cancellation when the runner stops before dispatch.
+    /// </summary>
+    [TestMethod]
+    public async Task AQueuedRecordCallKeepsItsCompletionTaskWhenTheRunnerStopsBeforeDispatch()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
+        QuePaxaVersionedRunner<string> runner = new(host);
+        CancellationToken stop = new(canceled: true);
+        Task<VersionedRecordReply<VersionedValue<string>>> call = runner.RecordAsync(
+            Request(5UL, Four, ProposalPriority.Lowest, Second, "a"), CancellationToken.None).AsTask();
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(
+            () => runner.RunAsync(cancellationToken: stop)).ConfigureAwait(false);
+        TaskCanceledException cancelled = await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => call).ConfigureAwait(false);
+
+        Assert.AreSame(call, cancelled.Task);
+        Assert.AreEqual(stop, cancelled.CancellationToken);
+    }
+
+
+    /// <summary>
+    /// A queued catch-up read exposes the completion task named by cancellation when the runner stops before dispatch.
+    /// </summary>
+    [TestMethod]
+    public async Task AQueuedCatchUpReadKeepsItsCompletionTaskWhenTheRunnerStopsBeforeDispatch()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
+        QuePaxaVersionedRunner<string> runner = new(host);
+        CancellationToken stop = new(canceled: true);
+        Task<VersionedValue<string>?> call = runner.ReadCommittedAsync(CancellationToken.None).AsTask();
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(
+            () => runner.RunAsync(cancellationToken: stop)).ConfigureAwait(false);
+        TaskCanceledException cancelled = await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => call).ConfigureAwait(false);
+
+        Assert.AreSame(call, cancelled.Task);
+        Assert.AreEqual(stop, cancelled.CancellationToken);
+    }
+
+
+    /// <summary>
+    /// A queued checkpoint exposes the completion task named by cancellation when the runner stops before dispatch.
+    /// </summary>
+    [TestMethod]
+    public async Task AQueuedCheckpointKeepsItsCompletionTaskWhenTheRunnerStopsBeforeDispatch()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
+        QuePaxaVersionedRunner<string> runner = new(host);
+        CancellationToken stop = new(canceled: true);
+        Task call = runner.MakeDurableAsync(CancellationToken.None).AsTask();
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(
+            () => runner.RunAsync(cancellationToken: stop)).ConfigureAwait(false);
+        TaskCanceledException cancelled = await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => call).ConfigureAwait(false);
+
+        Assert.AreSame(call, cancelled.Task);
+        Assert.AreEqual(stop, cancelled.CancellationToken);
+    }
+
+
     [TestMethod]
     public async Task ADeclinedCallKeepsItsFaultWhenTheLoopLaterEnds()
     {
@@ -1639,6 +1700,144 @@ internal sealed class QuePaxaVersionedRunnerTests
         Assert.AreEqual(cancellation.Token, cancelled.CancellationToken);
         _ = await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => held.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
         _ = await Assert.ThrowsAsync<OperationCanceledException>(() => run.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+    }
+
+
+    /// <summary>
+    /// A checkpoint still queued when the loop ends is completed with the loop's own cause: faulted with the loop failure
+    /// when a failed write ended it, and cancelled under the runner's token when that token stopped it.
+    /// </summary>
+    /// <remarks>
+    /// Each checkpoint waits behind a request whose write fails or is held, so the loop ends with the checkpoint queued
+    /// rather than dispatched and the abandonment is the only code that can complete it. A caller's attempt budget acts
+    /// on the difference: a fault reads as a host that failed and a cancellation as a host that stopped.
+    /// </remarks>
+    [TestMethod]
+    public async Task ACheckpointPendingWhenTheLoopEndsIsFaultedByAFailedWriteAndCancelledByAStop()
+    {
+        QuePaxaVersionedNode<string> failedHost = new(Configuration, FirstHost, Record(4UL, Second));
+        QuePaxaVersionedRunner<string> failed = new(failedHost);
+        FailingStore failing = new();
+
+        //Both calls are queued before the loop starts, so the checkpoint is still queued when the request's write fails.
+        Task<VersionedRecordReply<VersionedValue<string>>> failedCall = failed.RecordAsync(Request(5UL, ProposalPriority.Lowest, Second, "a"), TestContext.CancellationToken).AsTask();
+        Task failedCheckpoint = failed.MakeDurableAsync(TestContext.CancellationToken).AsTask();
+        Task failedRun = failed.RunAsync(failing.PersistAsync, TestContext.CancellationToken);
+
+        InvalidOperationException fault = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => failedCheckpoint.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.IsInstanceOfType<IOException>(fault.InnerException);
+        _ = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => failedCall.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+        _ = await Assert.ThrowsExactlyAsync<IOException>(() => failedRun.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+        Assert.AreEqual(1, failing.Attempts);
+
+        //The loop is parked inside a held write when its token is signalled.
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
+        QuePaxaVersionedRunner<string> runner = new(host);
+        GatedStore store = new();
+        using CancellationTokenSource cancellation = new();
+        Task run = runner.RunAsync(store.PersistAsync, cancellation.Token);
+
+        Task<VersionedRecordReply<VersionedValue<string>>> held = runner.RecordAsync(Request(5UL, ProposalPriority.Lowest, Second, "a"), TestContext.CancellationToken).AsTask();
+        await store.Entered.WaitAsync(TestContext.CancellationToken).WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+        Task queued = runner.MakeDurableAsync(TestContext.CancellationToken).AsTask();
+
+        await cancellation.CancelAsync().ConfigureAwait(false);
+
+        TaskCanceledException cancelled = await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => queued.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(cancellation.Token, cancelled.CancellationToken);
+        _ = await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => held.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => run.WaitAsync(Bounded, TestContext.CancellationToken)).ConfigureAwait(false);
+    }
+
+
+    /// <summary>
+    /// The loop never resumes on the synchronization context of the thread that started it, whether it starts idle or
+    /// starts by dispatching work queued before it, and whichever arm that first dispatch takes.
+    /// </summary>
+    /// <remarks>
+    /// A host that starts its loop on a thread carrying a context, a UI thread among them, would otherwise have the
+    /// dispatch after the loop's first suspension posted back to that thread, where a host blocked on it stalls its own
+    /// consensus. Only the first suspension runs on the starting thread, so each runner reaches exactly one await there:
+    /// the idle runner the queue read, and each of the others the durability gate of one arm together with the dispatch
+    /// around it. The context counts what is posted to it and runs each posting on the thread pool, so a loop that
+    /// captured it still completes and the vector reddens on the count rather than on a hang. The count is read only
+    /// after each loop has drained, because a call's completion is no barrier for the dispatcher's own continuations.
+    /// </remarks>
+    [TestMethod]
+    public async Task TheLoopNeverResumesOnTheContextOfTheThreadThatStartedIt()
+    {
+        PostCountingSynchronizationContext context = new();
+
+        //Nothing is queued, so the loop's first suspension is the queue read.
+        QuePaxaVersionedRunner<string> idle = new(new QuePaxaVersionedNode<string>(Configuration, FirstHost, Record(4UL, Second)));
+        Task idleRun = context.Start(() => idle.RunAsync(null, TestContext.CancellationToken));
+        _ = await idle.RecordAsync(Request(5UL, ProposalPriority.Lowest, Second, "a"), TestContext.CancellationToken).AsTask().WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+        idle.Complete();
+        await idleRun.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(0, context.Posts, "The queue read resumed on the starting thread's context.");
+
+        //A request queued before the loop starts is dispatched on the starting thread, and its write holds there.
+        QuePaxaVersionedRunner<string> recording = new(new QuePaxaVersionedNode<string>(Configuration, FirstHost, Record(4UL, Second)));
+        GatedStore recordStore = new();
+        Task<VersionedRecordReply<VersionedValue<string>>> call = recording.RecordAsync(Request(5UL, ProposalPriority.Lowest, Second, "a"), TestContext.CancellationToken).AsTask();
+        Task recordingRun = context.Start(() => recording.RunAsync(recordStore.PersistAsync, TestContext.CancellationToken));
+        await recordStore.Entered.WaitAsync(TestContext.CancellationToken).WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+        recordStore.Release.Release();
+        _ = await call.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+        recording.Complete();
+        await recordingRun.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(0, context.Posts, "The record arm or the dispatch around it resumed on the starting thread's context.");
+
+        //A durable learn queued before the loop starts holds in its own write on the starting thread.
+        QuePaxaVersionedRunner<string> learning = new(new QuePaxaVersionedNode<string>(Configuration, FirstHost, Record(4UL, Second)));
+        GatedStore learnStore = new();
+        Task<bool> learn = learning.LearnAsync(Record(5UL, Third), LearnDurability.Durable, TestContext.CancellationToken).AsTask();
+        Task learningRun = context.Start(() => learning.RunAsync(learnStore.PersistAsync, TestContext.CancellationToken));
+        await learnStore.Entered.WaitAsync(TestContext.CancellationToken).WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+        learnStore.Release.Release();
+        Assert.IsTrue(await learn.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+        learning.Complete();
+        await learningRun.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(0, context.Posts, "The learn arm resumed on the starting thread's context.");
+
+        //An in-memory learn ahead of the checkpoint costs no write, so the checkpoint's write is the first to hold.
+        QuePaxaVersionedRunner<string> checkpointing = new(new QuePaxaVersionedNode<string>(Configuration, FirstHost, Record(4UL, Second)));
+        GatedStore checkpointStore = new();
+        Task<bool> owed = checkpointing.LearnAsync(Record(5UL, Third), LearnDurability.InMemory, TestContext.CancellationToken).AsTask();
+        Task checkpoint = checkpointing.MakeDurableAsync(TestContext.CancellationToken).AsTask();
+        Task checkpointingRun = context.Start(() => checkpointing.RunAsync(checkpointStore.PersistAsync, TestContext.CancellationToken));
+        await checkpointStore.Entered.WaitAsync(TestContext.CancellationToken).WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+        checkpointStore.Release.Release();
+        Assert.IsTrue(await owed.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+        await checkpoint.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+        checkpointing.Complete();
+        await checkpointingRun.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(0, context.Posts, "The checkpoint arm resumed on the starting thread's context.");
+
+        //A catch-up read queued behind an in-memory learn holds in its own write on the starting thread.
+        QuePaxaVersionedRunner<string> reading = new(new QuePaxaVersionedNode<string>(Configuration, FirstHost, Record(4UL, Second)));
+        GatedStore readStore = new();
+        Task<bool> unwritten = reading.LearnAsync(Record(5UL, Third), LearnDurability.InMemory, TestContext.CancellationToken).AsTask();
+        Task<VersionedValue<string>?> read = reading.ReadCommittedAsync(TestContext.CancellationToken).AsTask();
+        Task readingRun = context.Start(() => reading.RunAsync(readStore.PersistAsync, TestContext.CancellationToken));
+        await readStore.Entered.WaitAsync(TestContext.CancellationToken).WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+        readStore.Release.Release();
+        Assert.IsTrue(await unwritten.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false));
+        VersionedValue<string>? reported = await read.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(new RegisterVersion(5UL), reported!.Version);
+
+        reading.Complete();
+        await readingRun.WaitAsync(Bounded, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(0, context.Posts, "The read arm resumed on the starting thread's context.");
     }
 
 

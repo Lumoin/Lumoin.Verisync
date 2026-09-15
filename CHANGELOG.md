@@ -14,6 +14,24 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Security
 -->
 
+## [0.0.14] - 2026-09-15
+
+### Changed
+
+- **Breaking.** Every package targets `net11.0` in place of `net10.0`, so a consumer must build on .NET 11. The SDK is pinned to 11.0.100-rc.1.26425.128, a .NET 11 release candidate carrying a go-live licence.
+
+- The packages now depend on `Lumoin.Base` 0.0.14 (from 0.0.12), which itself targets `net11.0`. `MSTest.Sdk` moves to 4.4.0 (from 4.3.3), and the code coverage collector takes that SDK's own default, 18.11.0. The diagnostics tools move to 10.0.731102, and the repository gains a Stryker.NET mutation run over Core. No library code or wire-format change.
+
+- `AntiEntropySession<TElement>.RunAsync` yields to the thread pool after its offer and context sends and before consuming its inbound channel, so the exchange loop never resumes on the caller's synchronization context and a host that blocks its starting thread on the returned task cannot deadlock it, an envelope queued before the call included.
+
+- The QuePaxa durability gates in `QuePaxaNode<TValue>` and `QuePaxaVersionedNode<TValue>` track in-memory change with node-instance generation counters instead of reference identity, so pooled, interned, or otherwise shared state instances can never skip an owed durable write. `QuePaxaNode<TValue>` gains a read-only `Generation` property counting its installed recorder transitions. No wire-format or durable-state change.
+
+### Fixed
+
+- Constructing a follower-progress position with a next index below the first log index now reports the documented `ArgumentOutOfRangeException` naming the index. A log index rendered its empty-prefix value through a member that throws for that value, so building the guard's message raised an unrelated exception instead; a log index now renders every value as text, the empty prefix included.
+
+- Disposing a tagged-memory buffer set the lifetime-duration tag `verisync.lifetime_ms` after stopping its lifetime `Activity`, so an `ActivityStopped` listener, which every exporter is, never observed the tag. Disposal now sets the tag before stopping the activity, so the recorded lifetime is visible to a stopped-activity listener.
+
 ## [0.0.13] - 2026-09-02
 
 ### Changed

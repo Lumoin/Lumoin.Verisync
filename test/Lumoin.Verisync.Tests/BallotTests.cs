@@ -57,6 +57,39 @@ internal sealed class BallotTests
     }
 
 
+    /// <summary>Pins that <c>operator&lt;=</c> includes the equal case: a ballot must compare less-than-or-equal to itself.</summary>
+    [TestMethod]
+    public void OperatorLessOrEqualIncludesEqualBallots()
+    {
+        Ballot ballot = new(2, R1);
+        Ballot same = new(2, R1);
+
+        Assert.IsTrue(ballot <= same);
+    }
+
+
+    /// <summary>Pins that <c>operator&gt;</c> is strict: a ballot must never compare as greater-than itself.</summary>
+    [TestMethod]
+    public void StrictGreaterThanExcludesEqualBallots()
+    {
+        Ballot ballot = new(2, R1);
+        Ballot same = new(2, R1);
+
+        Assert.IsFalse(ballot > same);
+    }
+
+
+    /// <summary>Pins that <c>operator&lt;</c> is strict: a ballot must never compare as less-than itself.</summary>
+    [TestMethod]
+    public void StrictLessThanExcludesEqualBallots()
+    {
+        Ballot ballot = new(2, R1);
+        Ballot same = new(2, R1);
+
+        Assert.IsFalse(ballot < same);
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

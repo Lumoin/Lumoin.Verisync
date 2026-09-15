@@ -330,4 +330,82 @@ internal sealed class ReconciliationCellBufferTests
     }
 
 
+    /// <summary>
+    /// Pins that <see cref="ReconciliationCellBuffer.Dispose"/> clears the whole logical sum backing itself
+    /// before releasing it, rather than depending on the pool to clear on return: with a pool whose owner never
+    /// clears on its own disposal, any byte that is not zero afterward can only mean the buffer's own clear was
+    /// lost or under-ran its logical length.
+    /// </summary>
+    [TestMethod]
+    public void DisposalClearsTheSumBackingWhenThePoolDoesNotClearOnReturn()
+    {
+        using DirtyMemoryPool pool = new();
+        ReconciliationCellBuffer buffer = new(8, 4, pool, cellCapacityHint: 0);
+
+        int index = buffer.Append();
+        Span<byte> sum = buffer.SumAt(index);
+        sum.Fill(0xAA);
+
+        buffer.Dispose();
+
+        foreach(byte b in sum)
+        {
+            Assert.AreEqual((byte)0, b);
+        }
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationCellBuffer.Dispose"/> clears the whole logical checksum backing itself
+    /// before releasing it, rather than depending on the pool to clear on return: with a pool whose owner never
+    /// clears on its own disposal, any byte that is not zero afterward can only mean the buffer's own clear was
+    /// lost or under-ran its logical length.
+    /// </summary>
+    [TestMethod]
+    public void DisposalClearsTheChecksumBackingWhenThePoolDoesNotClearOnReturn()
+    {
+        using DirtyMemoryPool pool = new();
+        ReconciliationCellBuffer buffer = new(8, 4, pool, cellCapacityHint: 0);
+
+        int index = buffer.Append();
+        Span<byte> checksum = buffer.ChecksumAt(index);
+        checksum.Fill(0xAA);
+
+        buffer.Dispose();
+
+        foreach(byte b in checksum)
+        {
+            Assert.AreEqual((byte)0, b);
+        }
+    }
+
+
+    /// <summary>
+    /// Pins that a disposed <see cref="ReconciliationCellBuffer"/> reports <see cref="ObjectDisposedException"/>
+    /// from <see cref="ReconciliationCellBuffer.SumAt(int)"/> even for an out-of-range index, proving the
+    /// disposal check runs before the index-range check rather than letting the range guard fire first.
+    /// </summary>
+    [TestMethod]
+    public void SumAtReportsDisposalBeforeIndexRangeOnADisposedBuffer()
+    {
+        ReconciliationCellBuffer buffer = new(8, 4, BaseMemoryPool.Shared);
+        buffer.Dispose();
+
+        Assert.ThrowsExactly<ObjectDisposedException>(() => buffer.SumAt(-1));
+    }
+
+
+    /// <summary>
+    /// Pins that a disposed <see cref="ReconciliationCellBuffer"/> reports <see cref="ObjectDisposedException"/>
+    /// from <see cref="ReconciliationCellBuffer.ChecksumAt(int)"/> even for an out-of-range index, proving the
+    /// disposal check runs before the index-range check rather than letting the range guard fire first.
+    /// </summary>
+    [TestMethod]
+    public void ChecksumAtReportsDisposalBeforeIndexRangeOnADisposedBuffer()
+    {
+        ReconciliationCellBuffer buffer = new(8, 4, BaseMemoryPool.Shared);
+        buffer.Dispose();
+
+        Assert.ThrowsExactly<ObjectDisposedException>(() => buffer.ChecksumAt(-1));
+    }
 }

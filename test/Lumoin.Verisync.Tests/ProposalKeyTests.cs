@@ -180,6 +180,42 @@ internal sealed class ProposalKeyTests
     }
 
 
+    /// <summary>
+    /// Pins that <c>operator &gt;</c> is strict: a key must never compare greater than an equal key, even though
+    /// <see cref="ProposalKey.CompareTo"/> returns zero for the tie.
+    /// </summary>
+    [TestMethod]
+    public void AKeyIsNotGreaterThanAnEqualKey()
+    {
+        ProposalKey key = new(new ProposalPriority(10), ProposerLane.For(ReplicaA));
+        ProposalKey same = new(new ProposalPriority(10), ProposerLane.For(ReplicaA));
+
+        Assert.AreEqual(0, key.CompareTo(same));
+        Assert.IsFalse(key > same);
+    }
+
+
+    /// <summary>
+    /// Two proposer lanes with the same replica and the same lane number compare as equal under
+    /// <see cref="ProposerLane.CompareTo(ProposerLane)"/>, so neither strict relational operator (<c>&lt;</c>
+    /// or <c>&gt;</c>) may report either side as ordered before or after the other, and both inclusive
+    /// operators (<c>&lt;=</c> and <c>&gt;=</c>) must report true. Each assertion pins exactly one operator
+    /// at the equality boundary.
+    /// </summary>
+    [TestMethod]
+    public void EqualLanesSatisfyEveryOperatorAtTheComparisonBoundary()
+    {
+        ProposerLane first = new(ReplicaA, 3);
+        ProposerLane second = new(ReplicaA, 3);
+
+        Assert.AreEqual(0, first.CompareTo(second));
+        Assert.IsFalse(first < second);
+        Assert.IsTrue(first <= second);
+        Assert.IsFalse(first > second);
+        Assert.IsTrue(first >= second);
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

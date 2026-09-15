@@ -34,4 +34,37 @@ internal sealed class TimestampTests
         Assert.IsFalse(earlier >= later);
         Assert.IsTrue(later >= new Timestamp(2));
     }
+
+
+    /// <summary>Pins that the less-than operator is strict: two <see cref="Timestamp"/> values with equal ticks never compare as less-than.</summary>
+    [TestMethod]
+    public void LessThanIsFalseForEqualTimestamps()
+    {
+        Timestamp a = new(5);
+        Timestamp b = new(5);
+
+        Assert.IsFalse(a < b);
+    }
+
+
+    /// <summary>Pins that the greater-than operator is strict: two <see cref="Timestamp"/> values with equal ticks never compare as greater-than.</summary>
+    [TestMethod]
+    public void GreaterThanIsFalseForEqualTimestamps()
+    {
+        Timestamp a = new(5);
+        Timestamp b = new(5);
+
+        Assert.IsFalse(a > b);
+    }
+
+
+    /// <summary>Pins that the less-than-or-equal operator is inclusive: two <see cref="Timestamp"/> values with equal ticks compare as less-than-or-equal.</summary>
+    [TestMethod]
+    public void LessThanOrEqualIsTrueForEqualTimestamps()
+    {
+        Timestamp a = new(5);
+        Timestamp b = new(5);
+
+        Assert.IsTrue(a <= b);
+    }
 }

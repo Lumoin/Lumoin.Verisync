@@ -289,14 +289,25 @@ internal sealed class QuePaxaProposerTests
 
 
     /// <summary>
-    /// THE CALLER'S CANCELLATION PROPAGATES.
+    /// The caller's cancellation propagates out of the proposal, whose token is already signalled when it
+    /// starts, so it draws no priority, sends no request, and reports the cancellation rather than a quorum
+    /// miss.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The proposer cannot interrupt its own wait, because the wait is on a completion race that takes no
     /// token, so responsiveness is the endpoint delegate's contract: an implementation MUST complete — with a
     /// result, a fault, or a cancellation — when the supplied token is signalled. Given an endpoint that
     /// honours it, a cancelled proposal reports cancellation rather than a quorum miss, because a quorum miss
     /// is a protocol outcome a caller may act on and a cancellation is not.
+    /// </para>
+    /// <para>
+    /// Every recorder a step reaches records the proposal, and a recorded proposal can be carried by another
+    /// proposer and decided later, so a proposal cancelled before it began must reach no recorder. The
+    /// endpoints here answer whatever token they are handed, so the check after the gather would still report
+    /// the cancellation; the requests the endpoints received are what separate a proposal that never started
+    /// from one that ran its first step and was then cancelled.
+    /// </para>
     /// </remarks>
     [TestMethod]
     public async Task ACancelledTokenPropagatesOutOfTheProposal()
@@ -317,6 +328,12 @@ internal sealed class QuePaxaProposerTests
         Task<QuePaxaOutcome<string>> proposal = proposer.ProposeAsync(null, "a", cancelled.Token);
 
         await Assert.ThrowsAsync<OperationCanceledException>(() => proposal.WaitAsync(ProposalTimeout, TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(0, source.DrawCount);
+        foreach(ScriptedRecorder recorder in recorders)
+        {
+            Assert.IsEmpty(recorder.Received);
+        }
     }
 
 
@@ -825,6 +842,187 @@ internal sealed class QuePaxaProposerTests
         Assert.IsTrue(outcome.IsDecided);
         Assert.AreEqual("a", outcome.Value);
         Assert.AreEqual(Six, outcome.DecidedAt);
+    }
+
+
+    /// <summary>
+    /// A cancellation an endpoint reports on the caller's own token ends the step without asking any recorder
+    /// again, whether it arrives as a cancelled task or as a fault carrying the cancellation.
+    /// </summary>
+    /// <remarks>
+    /// The caller's token is signalled after every recorder has been sent its first request, so the check on
+    /// entering the step has passed and only the classification of the settled attempts can end it. Read as an
+    /// ordinary transport fault, either shape spends the rest of the attempt budget re-sending a proposal the
+    /// caller has abandoned, and the check after the gather still reports the cancellation, so the number of
+    /// requests each recorder received is what separates the two readings.
+    /// </remarks>
+    [TestMethod]
+    public async Task ACancellationReportedOnTheCallersTokenEndsTheStepWithoutAReSend()
+    {
+        //Every recorder hangs on its first attempt until the test settles it and reports the cancellation at
+        //once on any later attempt, so a re-send is counted rather than hung on.
+        ScriptedRecorder[] cancelledTask =
+        [
+            new(QuePaxaRecorder<string>.Leaderless, static (recorder, attempt, _, token) => attempt == 0 ? recorder.Hanging() : Cancelling(token)),
+            new(QuePaxaRecorder<string>.Leaderless, static (recorder, attempt, _, token) => attempt == 0 ? recorder.Hanging() : Cancelling(token)),
+            new(QuePaxaRecorder<string>.Leaderless, static (recorder, attempt, _, token) => attempt == 0 ? recorder.Hanging() : Cancelling(token))
+        ];
+
+        using CancellationTokenSource cancelledTaskCaller = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        QuePaxaProposer<string> cancelledTaskProposer = ProposerOver(cancelledTask, LaneA, new ScriptedPrioritySource(10, 11, 12).Next, attemptsPerRecorder: 2);
+        Task<QuePaxaOutcome<string>> cancelledTaskProposal = cancelledTaskProposer.ProposeAsync(null, "a", cancelledTaskCaller.Token);
+
+        await cancelledTaskCaller.CancelAsync().ConfigureAwait(false);
+        foreach(ScriptedRecorder recorder in cancelledTask)
+        {
+            recorder.Hung[0].SetCanceled(cancelledTaskCaller.Token);
+        }
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => cancelledTaskProposal.WaitAsync(ProposalTimeout, TestContext.CancellationToken)).ConfigureAwait(false);
+        foreach(ScriptedRecorder recorder in cancelledTask)
+        {
+            Assert.HasCount(1, recorder.Received);
+        }
+
+        //The same cancellation now arrives as a fault whose exception is the caller's cancellation.
+        ScriptedRecorder[] cancellationFault =
+        [
+            new(QuePaxaRecorder<string>.Leaderless, static (recorder, attempt, _, token) => attempt == 0 ? recorder.Hanging() : Cancelling(token)),
+            new(QuePaxaRecorder<string>.Leaderless, static (recorder, attempt, _, token) => attempt == 0 ? recorder.Hanging() : Cancelling(token)),
+            new(QuePaxaRecorder<string>.Leaderless, static (recorder, attempt, _, token) => attempt == 0 ? recorder.Hanging() : Cancelling(token))
+        ];
+
+        using CancellationTokenSource cancellationFaultCaller = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        QuePaxaProposer<string> cancellationFaultProposer = ProposerOver(cancellationFault, LaneA, new ScriptedPrioritySource(20, 21, 22).Next, attemptsPerRecorder: 2);
+        Task<QuePaxaOutcome<string>> cancellationFaultProposal = cancellationFaultProposer.ProposeAsync(null, "a", cancellationFaultCaller.Token);
+
+        await cancellationFaultCaller.CancelAsync().ConfigureAwait(false);
+        foreach(ScriptedRecorder recorder in cancellationFault)
+        {
+            recorder.Hung[0].SetException(new OperationCanceledException(cancellationFaultCaller.Token));
+        }
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => cancellationFaultProposal.WaitAsync(ProposalTimeout, TestContext.CancellationToken)).ConfigureAwait(false);
+        foreach(ScriptedRecorder recorder in cancellationFault)
+        {
+            Assert.HasCount(1, recorder.Received);
+        }
+    }
+
+
+    /// <summary>
+    /// A recorder that has answered counts toward the quorum once, as an answer, and never again as a recorder
+    /// still worth waiting for, so a step stops waiting as soon as the recorders that have not answered cannot
+    /// carry the count to a quorum.
+    /// </summary>
+    /// <remarks>
+    /// Five recorders need three answers. One answers at once with an attempt left in its budget, three refuse on
+    /// every attempt, and the fifth never completes: one answer and one outstanding endpoint cannot reach three,
+    /// so the step ends on a missed quorum. Counting the answered recorder again because it still has an attempt
+    /// it will never be sent makes the quorum look reachable and leaves the step waiting on the endpoint that
+    /// never completes.
+    /// </remarks>
+    [TestMethod]
+    public async Task AnAnsweredRecorderIsNotCountedAgainTowardAQuorumTheStepCanNoLongerReach()
+    {
+        ScriptedRecorder[] recorders =
+        [
+            new(QuePaxaRecorder<string>.Leaderless, static (recorder, _, request, _) => recorder.Answering(request)),
+            new(QuePaxaRecorder<string>.Leaderless, static (_, _, _, _) => Faulting()),
+            new(QuePaxaRecorder<string>.Leaderless, static (_, _, _, _) => Faulting()),
+            new(QuePaxaRecorder<string>.Leaderless, static (_, _, _, _) => Faulting()),
+            new(QuePaxaRecorder<string>.Leaderless, static (recorder, _, _, _) => recorder.Hanging())
+        ];
+
+        QuePaxaProposer<string> proposer = ProposerOver(recorders, LaneA, new ScriptedPrioritySource(10, 11, 12, 13, 14).Next, attemptsPerRecorder: 2);
+
+        Assert.AreEqual(3, proposer.Quorum);
+
+        QuePaxaOutcome<string> outcome = await AwaitProposalAsync(proposer.ProposeAsync(null, "a", TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.IsFalse(outcome.IsDecided);
+        Assert.AreEqual(1, outcome.Steps);
+
+        //The answering recorder was asked once and the refusing ones spent their whole budget, so the exit came
+        //from the arithmetic while the fifth endpoint was still outstanding.
+        Assert.HasCount(1, recorders[0].Received);
+        for(int index = 1; index < 4; index++)
+        {
+            Assert.HasCount(proposer.AttemptsPerRecorder, recorders[index].Received);
+        }
+
+        Assert.HasCount(1, recorders[4].Hung);
+        Assert.IsFalse(recorders[4].Hung[0].Task.IsCompleted);
+    }
+
+
+    /// <summary>
+    /// A proposal started from a caller's own scheduler never resumes on it: the steps after the first are sent
+    /// from wherever the step before them completed.
+    /// </summary>
+    /// <remarks>
+    /// A caller that blocks on a proposal from a single-threaded scheduler deadlocks if the proposal needs that
+    /// scheduler to continue. The proposal here starts on an exclusive scheduler, its first step waits on two
+    /// endpoints the test releases from the thread pool, and the endpoints record the scheduler each request was
+    /// sent from; a proposal that resumed on the scheduler it started on sends its later steps from it.
+    /// </remarks>
+    [TestMethod]
+    public async Task AProposalStartedFromACallersSchedulerNeverResumesOnIt()
+    {
+        ConcurrentExclusiveSchedulerPair caller = new();
+        bool firstStepSentFromTheCallersScheduler = false;
+        bool laterStepSentFromTheCallersScheduler = false;
+
+        ScriptedRecorder[] recorders = new ScriptedRecorder[3];
+        for(int index = 0; index < 2; index++)
+        {
+            recorders[index] = new ScriptedRecorder(QuePaxaRecorder<string>.Leaderless, (recorder, attempt, request, _) =>
+            {
+                bool onTheCallersScheduler = TaskScheduler.Current == caller.ExclusiveScheduler;
+                if(attempt == 0)
+                {
+                    firstStepSentFromTheCallersScheduler |= onTheCallersScheduler;
+
+                    return recorder.Hanging();
+                }
+
+                laterStepSentFromTheCallersScheduler |= onTheCallersScheduler;
+
+                return recorder.Answering(request);
+            });
+        }
+
+        recorders[2] = new ScriptedRecorder(QuePaxaRecorder<string>.Leaderless, static (recorder, _, _, _) => recorder.Hanging());
+
+        QuePaxaProposer<string> proposer = ProposerOver(recorders, LaneA, new SeededPrioritySource(53).Next, attemptsPerRecorder: 2);
+
+        Task<QuePaxaOutcome<string>> proposal = await Task.Factory.StartNew(
+            () => proposer.ProposeAsync(null, "a", TestContext.CancellationToken),
+            TestContext.CancellationToken,
+            TaskCreationOptions.None,
+            caller.ExclusiveScheduler).ConfigureAwait(false);
+
+        //Releasing the first step from the thread pool leaves a captured scheduler as the only way back to the
+        //caller's.
+        await Task.Run(
+            () =>
+            {
+                for(int index = 0; index < 2; index++)
+                {
+                    ScriptedRecorder recorder = recorders[index];
+                    recorder.Hung[0].SetResult(recorder.Node.Handle(recorder.Received[0]));
+                }
+            },
+            TestContext.CancellationToken).ConfigureAwait(false);
+
+        QuePaxaOutcome<string> outcome = await AwaitProposalAsync(proposal).ConfigureAwait(false);
+        caller.Complete();
+
+        Assert.IsTrue(firstStepSentFromTheCallersScheduler);
+        Assert.IsTrue(outcome.IsDecided);
+        Assert.AreEqual(3, outcome.Steps);
+        Assert.HasCount(1, recorders[0].ReceivedAt(Five));
+        Assert.IsFalse(laterStepSentFromTheCallersScheduler, "A step after the first was sent from the scheduler the caller started the proposal on.");
     }
 
 

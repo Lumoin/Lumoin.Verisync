@@ -153,11 +153,18 @@ public sealed class QuePaxaVersionedNode<TValue>
         ActiveConfiguration = active;
         LeaderSchedule = ScheduleFor(active);
         Serving = new QuePaxaNode<VersionedValue<TValue>>(LeaderSchedule.RecorderFor<VersionedValue<TValue>>(committed?.Writer));
-        PersistedCommitted = committed;
-        PersistedRecorder = Serving.Recorder;
+        PersistedGeneration = Generation;
+        PersistedServingGeneration = Serving.Generation;
     }
 
 
+    /// <summary>Initializes a host from its durable committed record and serving node.</summary>
+    /// <param name="genesis">The chain's genesis membership.</param>
+    /// <param name="self">This host's identity.</param>
+    /// <param name="committed">The durable committed record, or <see langword="null"/> when none has been learned.</param>
+    /// <param name="active">The membership derived from the committed record.</param>
+    /// <param name="schedule">The leader schedule derived from the active membership.</param>
+    /// <param name="node">The durable node serving the live instance.</param>
     private QuePaxaVersionedNode(
         QuePaxaConfiguration genesis,
         HostId self,
@@ -172,8 +179,8 @@ public sealed class QuePaxaVersionedNode<TValue>
         ActiveConfiguration = active;
         LeaderSchedule = schedule;
         Serving = node;
-        PersistedCommitted = committed;
-        PersistedRecorder = node.Recorder;
+        PersistedGeneration = Generation;
+        PersistedServingGeneration = Serving.Generation;
     }
 
 
@@ -222,7 +229,15 @@ public sealed class QuePaxaVersionedNode<TValue>
     public QuePaxaLeaderSchedule LeaderSchedule { get; private set; }
 
     /// <summary>The committed record this host has learned, or <see langword="null"/> when it has learned none.</summary>
-    public VersionedValue<TValue>? Committed { get; private set; }
+    public VersionedValue<TValue>? Committed
+    {
+        get;
+        private set
+        {
+            field = value;
+            Generation++;
+        }
+    }
 
     /// <summary>The one version this host serves, which is the one after the committed record's.</summary>
     /// <exception cref="ConsensusRefusedException">Thrown if the committed record is at <see cref="RegisterVersion.MaxValue"/>, so that no version follows it, carrying <see cref="ConsensusRefusal.VersionRangeSpent"/>.</exception>
@@ -261,32 +276,47 @@ public sealed class QuePaxaVersionedNode<TValue>
     public QuePaxaRecorder<VersionedValue<TValue>> Recorder => Serving.Recorder;
 
     /// <summary>The recorder node serving <see cref="LiveVersion"/>.</summary>
-    private QuePaxaNode<VersionedValue<TValue>> Serving { get; set; }
+    private QuePaxaNode<VersionedValue<TValue>> Serving
+    {
+        get;
+        set
+        {
+            field = value;
+            Generation++;
+        }
+    }
 
     /// <summary>
-    /// The committed record <see cref="MakeDurableAsync"/> last made durable, which its gate compares
-    /// against beside <see cref="PersistedRecorder"/>.
+    /// The in-memory count of this host's durable-state installs, advanced by the <see cref="Committed"/>
+    /// and <see cref="Serving"/> setters.
+    /// </summary>
+    /// <remarks>This count is meaningful only within this host's lifetime and is never part of its durable state.</remarks>
+    private ulong Generation { get; set; }
+
+    /// <summary>
+    /// The host generation <see cref="MakeDurableAsync"/> last made durable, which its gate compares
+    /// against beside <see cref="PersistedServingGeneration"/>.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// This is host state rather than loop state, because a host whose durable write failed restarts by
+    /// These baselines are host state rather than loop state, because a host whose durable write failed restarts by
     /// building a fresh runner over this same node and would otherwise begin by treating whatever the
-    /// failed attempt left in memory as already durable. Both baselines start at what the constructor or
-    /// <see cref="FromState"/> was handed, which is durable by construction: a restored host's state came
+    /// failed attempt left in memory as already durable. Both baselines start at the generations installed
+    /// by the constructor or <see cref="FromState"/>, which are durable by construction: a restored host's state came
     /// out of its own store, and a constructed host has learned nothing or was given a record its
     /// deployment already wrote, while the register it starts from is unwritten and records nothing.
     /// </para>
     /// <para>
-    /// Both baselines are compared and neither alone. The recorder of a leaderless instance is a shared
-    /// singleton, so a host that learns one leaderless-instance record after another holds the same
-    /// recorder reference across the learn while the record the leader is derived from has moved — the
-    /// one case where the committed record moves and the recorder does not.
+    /// Both generations are compared and neither alone. An advancing learn always bumps the host generation
+    /// because it installs the record and a fresh serving node. The serving generation restarts at zero with
+    /// that fresh node and first moves again with the first request after the learn. The shared leaderless
+    /// recorder singleton is an allocation detail with no meaning to the gate.
     /// </para>
     /// </remarks>
-    private VersionedValue<TValue>? PersistedCommitted { get; set; }
+    private ulong PersistedGeneration { get; set; }
 
-    /// <summary>The recorder half of the durable baseline documented at <see cref="PersistedCommitted"/>.</summary>
-    private QuePaxaRecorder<VersionedValue<TValue>> PersistedRecorder { get; set; }
+    /// <summary>The serving generation half of the durable baseline documented at <see cref="PersistedGeneration"/>.</summary>
+    private ulong PersistedServingGeneration { get; set; }
 
 
     /// <summary>
@@ -333,7 +363,7 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// </para>
     /// <para>
     /// The ownership refusal precedes all of them, because a request folded in beside a running loop's own
-    /// replaces the recorder the loop's durability gate compares by reference.
+    /// advances the serving generation the loop's durability gate compares.
     /// <see cref="QuePaxaVersionedRunner{TValue}.RecordAsync"/> is the sequenced path there.
     /// </para>
     /// </remarks>
@@ -509,7 +539,8 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// </para>
     /// <para>
     /// A learn beside a running loop is refused, because it replaces both the committed record and the
-    /// instance, which are the two references the loop's durability gate compares.
+    /// instance, which advances the host generation and resets the serving generation the loop's durability
+    /// gate compares.
     /// <see cref="QuePaxaVersionedRunner{TValue}.LearnAsync"/> is the sequenced path there.
     /// </para>
     /// <para>
@@ -526,8 +557,8 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// writer leaves the instance leaderless, uniformly at every host that holds the record.
     /// </para>
     /// <para>
-    /// A record that advances is always a strictly newer instance and no record is ever mutated in place,
-    /// which is what makes the durability gate's reference comparison on the committed record exact.
+    /// A record that advances is always a strictly newer instance, and installing it advances the host
+    /// generation the durability gate compares. A record that changes nothing leaves that generation unmoved.
     /// </para>
     /// </remarks>
     public bool Learn(VersionedValue<TValue> committed)
@@ -647,27 +678,27 @@ public sealed class QuePaxaVersionedNode<TValue>
     /// </exception>
     /// <remarks>
     /// <para>
-    /// The gate compares the current committed record and the current recorder, by reference, against what
-    /// this method last made durable, and skips both the snapshot and the write when neither has moved. The
+    /// The gate compares the host generation and the serving node's generation against what this method
+    /// last made durable, and skips both the snapshot and the write when both match their baselines. The
     /// two are captured before the write and the baselines advance only after it returns, so a throwing
     /// store leaves this host owing exactly the write it owed before, and <see cref="ToState"/> runs only
     /// inside the firing branch, so a host that owes no write allocates no snapshot.
     /// </para>
     /// <para>
     /// The rule is the or of the two arms and the arms are independent. A request that changes nothing
-    /// leaves the recorder reference-identical and costs no write once that state is durable, while one that
-    /// follows a failed write finds the recorder still past the baseline and retries it. A learn usually
-    /// moves both references, but a host learning one leaderless-instance record after another keeps the
-    /// shared leaderless recorder singleton across the learn, and there the committed arm is the only one
-    /// that fires. That arm alone never fires on a reply path — a request's step is floored above
-    /// <see cref="RecorderStep.Zero"/>, so the first request after any learn advances the recorder — which
-    /// is why it is reachable only through one of the four paths that await this with no reply behind
-    /// them: <see cref="QuePaxaVersionedRunner{TValue}.MakeDurableAsync"/>, a
+    /// leaves the serving generation unmoved and costs no write once that state is durable, while one that
+    /// follows a failed write finds a generation still past its baseline and retries it. A learn advances
+    /// the host generation and installs a fresh serving node whose generation starts at zero, including
+    /// when consecutive leaderless instances share a recorder singleton. The learned record becomes durable
+    /// through one of the four paths that await this with no reply behind them or with the next dependent
+    /// reply, whichever comes first. A request's step is floored above <see cref="RecorderStep.Zero"/>, so
+    /// the first request after any learn advances the serving generation. The four paths are
+    /// <see cref="QuePaxaVersionedRunner{TValue}.MakeDurableAsync"/>, a
     /// <see cref="LearnDurability.Durable"/> learn, a learn that moved
     /// <see cref="ActiveConfiguration"/>, and
     /// <see cref="QuePaxaVersionedRunner{TValue}.ReadCommittedAsync"/>. The last two meet in the routine
     /// case: a change that removes its own writer both installs a membership and leaves the instance after
-    /// it leaderless, which is where the recorder reference stands still while the record moves.
+    /// it leaderless, which advances the host generation before any request advances the serving generation.
     /// </para>
     /// <para>
     /// A host driving <see cref="Handle"/> and <see cref="Learn"/> itself calls this before it lets any
@@ -689,19 +720,23 @@ public sealed class QuePaxaVersionedNode<TValue>
     }
 
 
+    /// <summary>Makes the host state durable when either generation differs from its durable baseline.</summary>
+    /// <param name="persistNode">The durable store to write through.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A task that completes once the captured generations are durable or were already.</returns>
     internal async ValueTask MakeDurableForOwnerAsync(PersistVersionedNodeDelegate<TValue> persistNode, CancellationToken cancellationToken)
     {
-        VersionedValue<TValue>? committed = Committed;
-        QuePaxaRecorder<VersionedValue<TValue>> recorder = Recorder;
-        if(ReferenceEquals(committed, PersistedCommitted) && ReferenceEquals(recorder, PersistedRecorder))
+        ulong generation = Generation;
+        ulong serving = Serving.Generation;
+        if(generation == PersistedGeneration && serving == PersistedServingGeneration)
         {
             return;
         }
 
         await persistNode(ToStateForOwner(), cancellationToken).ConfigureAwait(false);
 
-        PersistedCommitted = committed;
-        PersistedRecorder = recorder;
+        PersistedGeneration = generation;
+        PersistedServingGeneration = serving;
     }
 
 

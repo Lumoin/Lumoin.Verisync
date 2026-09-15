@@ -82,7 +82,7 @@ internal sealed class RaftJsonTests
         RaftEnvelope<int> back = RoundTripEnvelope(envelope);
 
         Assert.IsNotNull(back.AppendRequest);
-        Assert.HasCount(0, back.AppendRequest.Entries);
+        Assert.IsEmpty(back.AppendRequest.Entries);
         Assert.AreEqual(heartbeat.Term, back.AppendRequest.Term);
         Assert.AreEqual(heartbeat.LeaderId, back.AppendRequest.LeaderId);
         Assert.AreEqual(heartbeat.PrevLogIndex, back.AppendRequest.PrevLogIndex);
@@ -127,8 +127,8 @@ internal sealed class RaftJsonTests
 
         RaftNodeState<int> back = RoundTripState(state);
 
-        Assert.HasCount(0, back.VotedFor);
-        Assert.HasCount(0, back.Log);
+        Assert.IsEmpty(back.VotedFor);
+        Assert.IsEmpty(back.Log);
         Assert.AreEqual(Term.Zero, back.CurrentTerm);
     }
 
@@ -293,6 +293,63 @@ internal sealed class RaftJsonTests
         Assert.Throws<MessageDeserializationException>(() => DeserializeState("""{"votedFor":null,"log":[]}"""));
         Assert.Throws<MessageDeserializationException>(() => DeserializeState("""{"currentTerm":0,"log":[]}"""));
         Assert.Throws<MessageDeserializationException>(() => DeserializeState("""{"currentTerm":0,"votedFor":null}"""));
+    }
+
+
+    /// <summary>Pins that <see cref="RaftEnvelope{TCommand}.EnsureSinglePayload"/> throws when an envelope carries no payload at all, attributing the exception to the caller-supplied parameter name.</summary>
+    [TestMethod]
+    public void EnsureSinglePayloadRejectsAnEnvelopeCarryingZeroPayloads()
+    {
+        RaftEnvelope<int> empty = new(N1, null, null, null, null);
+
+        ArgumentException refusal = Assert.ThrowsExactly<ArgumentException>(
+            () => empty.EnsureSinglePayload("envelope"));
+
+        Assert.AreEqual("envelope", refusal.ParamName);
+    }
+
+
+    /// <summary>Pins that <see cref="RaftEnvelope{TCommand}.ForVoteReply"/> refuses a null reply instead of silently building an envelope with no payload at all.</summary>
+    [TestMethod]
+    public void ForVoteReplyRejectsANullReply()
+    {
+        ArgumentNullException refusal = Assert.ThrowsExactly<ArgumentNullException>(
+            () => RaftEnvelope<int>.ForVoteReply(N1, null!));
+
+        Assert.AreEqual("reply", refusal.ParamName);
+    }
+
+
+    /// <summary>Pins that <see cref="RaftEnvelope{TCommand}.ForVoteRequest"/> refuses a null request instead of silently building an envelope with no payload at all.</summary>
+    [TestMethod]
+    public void ForVoteRequestRejectsANullRequest()
+    {
+        ArgumentNullException refusal = Assert.ThrowsExactly<ArgumentNullException>(
+            () => RaftEnvelope<int>.ForVoteRequest(N1, null!));
+
+        Assert.AreEqual("request", refusal.ParamName);
+    }
+
+
+    /// <summary>Pins that <see cref="RaftEnvelope{TCommand}.ForAppendReply"/> refuses a null reply instead of silently building an envelope with no payload at all.</summary>
+    [TestMethod]
+    public void ForAppendReplyRejectsANullReply()
+    {
+        ArgumentNullException refusal = Assert.ThrowsExactly<ArgumentNullException>(
+            () => RaftEnvelope<int>.ForAppendReply(N1, null!));
+
+        Assert.AreEqual("reply", refusal.ParamName);
+    }
+
+
+    /// <summary>Pins that <see cref="RaftEnvelope{TCommand}.ForAppendRequest"/> refuses a null request instead of silently building an envelope with no payload at all.</summary>
+    [TestMethod]
+    public void ForAppendRequestRejectsANullRequest()
+    {
+        ArgumentNullException refusal = Assert.ThrowsExactly<ArgumentNullException>(
+            () => RaftEnvelope<int>.ForAppendRequest(N1, null!));
+
+        Assert.AreEqual("request", refusal.ParamName);
     }
 
 

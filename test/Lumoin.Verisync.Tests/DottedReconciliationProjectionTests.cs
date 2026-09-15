@@ -254,6 +254,7 @@ internal sealed class DottedReconciliationProjectionTests
         Assert.ThrowsExactly<ArgumentNullException>(() => new DottedReconciliationProjection<string>(state, null!, Sha256Digest, CanonicalizeUtf8, BaseMemoryPool.Shared));
         Assert.ThrowsExactly<ArgumentNullException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, null!, CanonicalizeUtf8, BaseMemoryPool.Shared));
         Assert.ThrowsExactly<ArgumentNullException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, Sha256Digest, null!, BaseMemoryPool.Shared));
+        Assert.ThrowsExactly<ArgumentNullException>(() => new DottedReconciliationProjection<string>(state, ContentHashContract, Sha256Digest, CanonicalizeUtf8, null!));
     }
 
 
@@ -337,6 +338,40 @@ internal sealed class DottedReconciliationProjectionTests
         //zero, and at least one rental occurred because entries were present to frame.
         Assert.AreEqual(0L, accountant.NetActive);
         Assert.IsGreaterThan(0L, accountant.Rented);
+        Assert.AreEqual(accountant.Rented, accountant.Returned);
+    }
+
+
+    /// <summary>
+    /// A frame whose length exactly equals the header-only scratch already rented reuses that scratch: the growth
+    /// guard is <c>Memory.Length &lt; frameLength</c>, so an exact-fit frame is not "too small" and must not trigger
+    /// a dispose-and-re-rent.
+    /// </summary>
+    [TestMethod]
+    public void AFrameExactlyFillingTheHeaderScratchDoesNotReRent()
+    {
+        //A single entry with an empty canonicalized value makes the frame exactly FrameHeaderLength (32 + 8 = 40)
+        //bytes -- the same size as the constructor's initial header-only rental -- so the scratch must be reused
+        //as-is rather than grown.
+        //The pool hands back a memory of exactly the requested length, so an exact-fit frame is observable as the
+        //absence of a second rental.
+        DottedVersionVectorSetState<string> state = DottedVersionVectorSet<string>.Empty
+            .Add(R1, "")
+            .ToState();
+
+        RentalAccountant accountant = new();
+        using(accountant)
+        {
+            using BaseMemoryPool pool = new();
+
+            DottedReconciliationProjection<string> projection = new(state, ContentHashContract, Sha256Digest, CanonicalizeUtf8, pool);
+
+            Assert.AreEqual(1, projection.Count);
+        }
+
+        //Exactly one rental -- the constructor's initial header-only scratch -- because an exact-fit frame must
+        //never trip the growth guard into a needless dispose-and-re-rent.
+        Assert.AreEqual(1L, accountant.Rented);
         Assert.AreEqual(accountant.Rented, accountant.Returned);
     }
 

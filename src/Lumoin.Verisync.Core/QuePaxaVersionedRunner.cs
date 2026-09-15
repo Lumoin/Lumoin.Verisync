@@ -274,9 +274,9 @@ public sealed class QuePaxaVersionedRunner<TValue>
     /// beside a <see cref="LearnDurability.Durable"/> learn, a learn that moved
     /// <see cref="QuePaxaVersionedNode{TValue}.ActiveConfiguration"/>, and
     /// <see cref="ReadCommittedAsync"/>: a
-    /// learned record whose recorder reference did not move — the shared leaderless singleton across a
+    /// learned record that advanced no recorder — the shared leaderless singleton across a
     /// learn — becomes durable through one of the four or with the next dependent reply, whichever
-    /// comes first. None of the four is a reply path, which is why no reply vector reaches that arm. A checkpoint on a
+    /// comes first. None of the four is a reply path, and a dependent reply that finds the write owed carries it itself. A checkpoint on a
     /// host that learned its way to <see cref="RegisterVersion.MaxValue"/> without an intervening write
     /// ends the loop through the snapshot's documented throw, which is terminal by design: such a host
     /// declines every call without a write, and a deployment retires a spent key. While a runner owns the

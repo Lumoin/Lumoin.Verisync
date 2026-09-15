@@ -85,7 +85,7 @@ internal sealed class OwnedMessageChannelTests
 
         List<byte[]> received = await ReadAllOwned(reader).ConfigureAwait(false);
 
-        Assert.HasCount(0, received);
+        Assert.IsEmpty(received);
     }
 
 
@@ -321,5 +321,63 @@ internal sealed class OwnedMessageChannelTests
         }
 
         return received;
+    }
+
+
+    /// <summary>
+    /// Pins that a read genuinely parked mid-flight resumes off the thread pool instead of the caller's
+    /// captured context, matching the class's ConfigureAwait(false) on the pipe read.
+    /// </summary>
+    [TestMethod]
+    public async Task ReadAllAsyncDoesNotResumeOnTheCallersContextAfterAPendingRead()
+    {
+        using BaseMemoryPool pool = new();
+
+        Pipe pipe = new();
+        MessageChannelWriter<byte[]> writer = new(pipe.Writer, SerializeBytes);
+        OwnedMessageChannelReader<IMemoryOwner<byte>> reader = new(pipe.Reader, DeserializeOwned, pool);
+
+        PostCountingSynchronizationContext context = new();
+        IAsyncEnumerator<IMemoryOwner<byte>> messages = reader.ReadAllAsync(TestContext.CancellationToken).GetAsyncEnumerator(TestContext.CancellationToken);
+
+        Task<bool> pending = context.Start(() => messages.MoveNextAsync().AsTask());
+
+        //Nothing is written yet, so the read parked genuinely instead of completing synchronously.
+        Assert.IsFalse(pending.IsCompleted, "The read completed synchronously, so a captured continuation could not be observed.");
+
+        await writer.WriteAsync([0x01, 0x02, 0x03], TestContext.CancellationToken).ConfigureAwait(false);
+        await writer.CompleteAsync().ConfigureAwait(false);
+
+        Assert.IsTrue(await pending.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false));
+        messages.Current.Dispose();
+        await messages.DisposeAsync().AsTask().WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(0, context.Posts);
+    }
+
+
+    /// <summary>
+    /// Pins that the pipe reader is completed once the enumeration ends by throwing, so a writer flushing
+    /// afterward observes the reader having stopped instead of an abandoned pipe.
+    /// </summary>
+    [TestMethod]
+    public async Task ReadAllAsyncCompletesThePipeReaderWhenTheDeserializerThrows()
+    {
+        using BaseMemoryPool pool = new();
+
+        Pipe pipe = new();
+        MessageChannelWriter<byte[]> writer = new(pipe.Writer, SerializeBytes);
+        OwnedMessageChannelReader<IMemoryOwner<byte>> reader = new(
+            pipe.Reader,
+            (payload, _) => throw new MessageDeserializationException("rejected by the test deserializer"),
+            pool);
+
+        await writer.WriteAsync([0x01, 0x02], TestContext.CancellationToken).ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<MessageDeserializationException>(() => ReadAllOwned(reader)).ConfigureAwait(false);
+
+        FlushResult flush = await pipe.Writer.FlushAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.IsTrue(flush.IsCompleted, "The pipe reader was not completed, so a writer flushing afterward cannot observe the reader ending.");
     }
 }

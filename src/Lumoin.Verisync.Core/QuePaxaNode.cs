@@ -65,7 +65,6 @@ public sealed class QuePaxaNode<TValue>
         ArgumentNullException.ThrowIfNull(recorder);
 
         Recorder = recorder;
-        Persisted = recorder;
     }
 
 
@@ -74,16 +73,26 @@ public sealed class QuePaxaNode<TValue>
 
 
     /// <summary>
-    /// The recorder state <see cref="RunAsync"/> last made durable, which is what its durability gate compares
-    /// against.
+    /// The count of recorder transitions this node has installed.
+    /// </summary>
+    /// <remarks>
+    /// A request that changes nothing leaves this count unmoved. It is in-memory only and meaningless
+    /// outside this instance's lifetime.
+    /// </remarks>
+    public ulong Generation { get; private set; }
+
+
+    /// <summary>
+    /// The generation <see cref="RunAsync"/> last made durable, which is what its durability gate compares
+    /// against <see cref="Generation"/>.
     /// </summary>
     /// <remarks>
     /// This is node state rather than loop state, because a host whose durable write failed restarts the loop
     /// on this same node and would otherwise begin by treating whatever the failed attempt left in memory as
-    /// already durable. It starts at the recorder the node was constructed with, which is durable by
+    /// already durable. Both counters start at zero together because the constructed recorder is durable by
     /// construction: either it records nothing, or the host restored it from what it had already written.
     /// </remarks>
-    private QuePaxaRecorder<TValue> Persisted { get; set; }
+    private ulong PersistedGeneration { get; set; }
 
 
     /// <summary>
@@ -93,15 +102,20 @@ public sealed class QuePaxaNode<TValue>
     /// <returns>The reply to send back to the proposer.</returns>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="request"/> is <see langword="null"/>.</exception>
     /// <remarks>
-    /// A request that changes nothing leaves <see cref="Recorder"/> reference-identical to what it was, so a
-    /// state once persisted stays reference-equal to what <see cref="RunAsync"/> last made durable, which is
-    /// how its gate detects that a reply needs no further write.
+    /// <see cref="QuePaxaRecorder{TValue}.Record"/> returns its own instance exactly when nothing changed.
+    /// A request that changes nothing therefore leaves <see cref="Generation"/> unmoved, which is how the
+    /// <see cref="RunAsync"/> gate detects that a reply needs no further write once that generation is durable.
     /// </remarks>
     public RecordReply<TValue> Handle(RecordRequest<TValue> request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         (QuePaxaRecorder<TValue> next, RecordSummary<TValue> summary) = Recorder.Record(request.Step, request.Proposal);
+        if(!ReferenceEquals(next, Recorder))
+        {
+            Generation++;
+        }
+
         Recorder = next;
 
         //The summary's first proposal is non-null here and nowhere else in general: a request cannot carry a
@@ -124,7 +138,7 @@ public sealed class QuePaxaNode<TValue>
     /// recorder is not already known to be durable, so the whole recorder state — the step, the first proposal,
     /// the current aggregate and the prior aggregate — is durable before any of it becomes observable. A
     /// request that changes nothing — one below the recorder's step, or an identical
-    /// same-step re-delivery — leaves the recorder reference-identical and, once that state is durable, needs
+    /// same-step re-delivery — leaves the generation unmoved and, once that generation is durable, needs
     /// no further write. When
     /// <see langword="null"/>, replies are sent immediately, reproducing the in-memory behavior suitable for
     /// tests and ephemeral clusters.
@@ -140,16 +154,16 @@ public sealed class QuePaxaNode<TValue>
     /// loop: a node whose transport has failed cannot keep serving requests.
     /// </para>
     /// <para>
-    /// The gate is durability rather than mutation, and the two come apart only where the recorder has moved
-    /// past what was last made durable without the current request changing it — after a failed write, after
+    /// The gate is durability rather than mutation, and the two come apart only where the recorder's generation
+    /// has moved past what was last made durable without the current request changing it — after a failed write, after
     /// requests handled directly through <see cref="Handle"/>, or after a run without a delegate. The loop
-    /// remembers the last recorder it persisted rather than comparing against the state this request
+    /// remembers the last generation it persisted rather than comparing against the generation this request
     /// found. Comparing against the request would fail open on exactly the sequence the re-send rule makes
     /// ordinary: a request advances the recorder, the write fails and the reply is correctly withheld, the
     /// proposer re-delivers the identical request, the re-delivery changes nothing and so would skip the write,
-    /// and the reply would then carry a first proposal that never reached the disk. Remembering what was
-    /// persisted makes the retransmission retry the write instead, and costs nothing on the ordinary path,
-    /// where the two references are already the same object.
+    /// and the reply would then carry a first proposal that never reached the disk. The generation still sits
+    /// past the persisted one, so remembering what was persisted makes the retransmission retry the write
+    /// instead, and costs nothing on the ordinary path, where the two generations are already equal.
     /// </para>
     /// </remarks>
     public async Task RunAsync(
@@ -165,10 +179,11 @@ public sealed class QuePaxaNode<TValue>
         {
             RecordReply<TValue> reply = Handle(request);
 
-            if(persistRecorder is not null && !ReferenceEquals(Recorder, Persisted))
+            if(persistRecorder is not null && Generation != PersistedGeneration)
             {
+                ulong generation = Generation;
                 await persistRecorder(Recorder, cancellationToken).ConfigureAwait(false);
-                Persisted = Recorder;
+                PersistedGeneration = generation;
             }
 
             await sendReply(reply, cancellationToken).ConfigureAwait(false);

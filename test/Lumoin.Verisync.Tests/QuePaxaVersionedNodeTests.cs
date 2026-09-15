@@ -209,11 +209,14 @@ internal sealed class QuePaxaVersionedNodeTests
     }
 
 
+    /// <summary>
+    /// An advancing leaderless learn owes one write even when it shares the previous recorder, while an
+    /// identical or stale learn after that write owes nothing.
+    /// </summary>
     [TestMethod]
     public async Task ALearnedRecordIsMadeDurableEvenWhenTheRecorderInstanceIsUnchanged()
     {
-        //Constructed WITHOUT serving, deliberately: a served request would advance the recorder off the
-        //shared leaderless singleton and silently invert the premise the identity assertion below pins.
+        //An unserved leaderless instance shares its unwritten recorder with the next leaderless instance.
         QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Stranger));
         QuePaxaRecorder<VersionedValue<string>> before = host.Recorder;
 
@@ -229,8 +232,7 @@ internal sealed class QuePaxaVersionedNodeTests
             return ValueTask.CompletedTask;
         }, TestContext.CancellationToken).ConfigureAwait(false);
 
-        //The committed record moved while the recorder reference did not, so a gate reading the recorder
-        //alone would skip this write and a restart would re-open a decided instance.
+        //The learned record must survive a restart even though neither instance has served a request.
         Assert.HasCount(1, states);
         Assert.AreSame(learned, states[0].Committed);
 
@@ -242,6 +244,23 @@ internal sealed class QuePaxaVersionedNodeTests
         }, TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.HasCount(1, states);
+
+        foreach(VersionedValue<string> refused in (VersionedValue<string>[])[learned, Record(4UL, Stranger)])
+        {
+            TestContext.WriteLine($"A learn at version {refused.Version} leaves the durable record unchanged.");
+
+            Assert.IsFalse(host.Learn(refused));
+
+            await host.MakeDurableAsync((state, cancellationToken) =>
+            {
+                states.Add(state);
+
+                return ValueTask.CompletedTask;
+            }, TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.HasCount(1, states);
+            Assert.AreSame(learned, host.Committed);
+        }
     }
 
 
@@ -261,22 +280,106 @@ internal sealed class QuePaxaVersionedNodeTests
     }
 
 
+    /// <summary>
+    /// A constructed host owes no write, whether it starts without a record or with a durable committed record.
+    /// </summary>
     [TestMethod]
     public async Task AConstructedHostTreatsTheRecordItWasGivenAsDurable()
     {
-        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
+        QuePaxaVersionedNode<string>[] hosts = [new(Configuration, FirstHost), new(Configuration, FirstHost, Record(4UL, Second))];
 
-        int writes = 0;
-        await host.MakeDurableAsync((state, cancellationToken) =>
+        foreach(QuePaxaVersionedNode<string> host in hosts)
         {
-            writes++;
+            TestContext.WriteLine($"A constructed host serving version {host.LiveVersion} owes no write.");
+
+            int writes = 0;
+            await host.MakeDurableAsync((state, cancellationToken) =>
+            {
+                writes++;
+
+                return ValueTask.CompletedTask;
+            }, TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(0, writes);
+            _ = await Assert.ThrowsExactlyAsync<ArgumentNullException>(
+                async () => await host.MakeDurableAsync(null!, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+    }
+
+
+    /// <summary>
+    /// An advancing request owes one write, and further checkpoints or identical requests owe no additional write.
+    /// </summary>
+    [TestMethod]
+    public async Task AnAdvancingRequestOwesOneWriteAndItsRedeliveryOwesNoMore()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost);
+        VersionedRecordRequest<VersionedValue<string>> request = Request(1UL, ProposalPriority.Lowest, First, "a");
+        List<QuePaxaVersionedNodeState<string>> states = [];
+        PersistVersionedNodeDelegate<string> persist = (state, cancellationToken) =>
+        {
+            states.Add(state);
+            TestContext.WriteLine($"Checkpoint write {states.Count} stores recorder step {state.Recorder.Step}.");
 
             return ValueTask.CompletedTask;
-        }, TestContext.CancellationToken).ConfigureAwait(false);
+        };
 
-        Assert.AreEqual(0, writes);
-        _ = await Assert.ThrowsExactlyAsync<ArgumentNullException>(
-            async () => await host.MakeDurableAsync(null!, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+        _ = host.Handle(request);
+
+        await host.MakeDurableAsync(persist, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, states);
+        Assert.AreEqual(Four, states[0].Recorder.Step);
+
+        await host.MakeDurableAsync(persist, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, states);
+
+        _ = host.Handle(request);
+
+        await host.MakeDurableAsync(persist, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, states);
+    }
+
+
+    /// <summary>
+    /// A failed checkpoint leaves its write owed until a later checkpoint succeeds, after which no write is owed.
+    /// </summary>
+    [TestMethod]
+    public async Task AFailedCheckpointLeavesTheWriteOwedForTheNextCall()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost);
+        _ = host.Handle(Request(1UL, ProposalPriority.Lowest, First, "a"));
+
+        int writes = 0;
+        InvalidOperationException failure = new("The store refused the write.");
+        PersistVersionedNodeDelegate<string> persist = (state, cancellationToken) =>
+        {
+            writes++;
+            TestContext.WriteLine($"Checkpoint write attempt {writes} stores recorder step {state.Recorder.Step}.");
+
+            if(writes == 1)
+            {
+                throw failure;
+            }
+
+            return ValueTask.CompletedTask;
+        };
+
+        InvalidOperationException thrown = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            async () => await host.MakeDurableAsync(persist, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreSame(failure, thrown);
+        Assert.AreEqual(1, writes);
+
+        await host.MakeDurableAsync(persist, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(2, writes);
+
+        await host.MakeDurableAsync(persist, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(2, writes);
     }
 
 
@@ -864,6 +967,59 @@ internal sealed class QuePaxaVersionedNodeTests
         {
             Assert.IsFalse(IsRecorderNode(field.FieldType), $"{field.Name} exposes the recorder node.");
         }
+    }
+
+
+    /// <summary>
+    /// The durable write's continuation does not resume on the caller's synchronization context. A caller that
+    /// checkpoints from a single-threaded context and then blocks on the checkpoint would otherwise deadlock,
+    /// because the step that advances the durable baseline and completes the checkpoint would be queued to the
+    /// very thread waiting for it.
+    /// </summary>
+    [TestMethod]
+    public async Task TheCheckpointWriteDoesNotResumeOnTheCallersSynchronizationContext()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost, Record(4UL, Second));
+
+        //The learn moves the committed record and the recorder, so the host owes a write and the checkpoint
+        //reaches the awaited store rather than returning at the gate.
+        Assert.IsTrue(host.Learn(Record(5UL, Third)));
+
+        TaskCompletionSource written = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        PostCountingSynchronizationContext context = new();
+        int writes = 0;
+
+        Task checkpoint = context.Start(() => host.MakeDurableAsync((state, cancellationToken) =>
+        {
+            writes++;
+
+            return new ValueTask(written.Task);
+        }, TestContext.CancellationToken).AsTask());
+
+        //The store has not finished, so the checkpoint is suspended at its await, which captured whatever
+        //context was current when it suspended.
+        Assert.AreEqual(1, writes);
+        Assert.IsFalse(checkpoint.IsCompleted);
+
+        written.SetResult();
+        await checkpoint.ConfigureAwait(false);
+
+        Assert.AreEqual(0, context.Posts);
+    }
+
+
+    /// <summary>
+    /// The learn classifier refuses a null record with the argument exception its contract names, as the learn
+    /// does, rather than faulting on the absent record's membership.
+    /// </summary>
+    [TestMethod]
+    public void TheLearnClassifierRefusesANullRecordAsTheLearnDoes()
+    {
+        QuePaxaVersionedNode<string> host = new(Configuration, FirstHost);
+
+        ArgumentNullException refused = Assert.ThrowsExactly<ArgumentNullException>(() => _ = host.DeclinesLearn(null!));
+
+        Assert.AreEqual("committed", refused.ParamName);
     }
 
 

@@ -263,4 +263,46 @@ internal sealed class ReconciliationRemoveWireTests
 
         return ImmutableArray.Create(bytes);
     }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationEnvelope{TElement}.ForDrop"/> throws for a null drop instead of
+    /// silently constructing an envelope with no payload slot set.
+    /// </summary>
+    [TestMethod]
+    public void ForDropRejectsNullDrop()
+    {
+        ArgumentNullException exception = Assert.ThrowsExactly<ArgumentNullException>(
+            () => ReconciliationEnvelope<string>.ForDrop(null!));
+
+        Assert.AreEqual("drop", exception.ParamName);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationEnvelope{TElement}.ForCompletion"/> throws for a null completion
+    /// instead of silently constructing an envelope with no payload slot set.
+    /// </summary>
+    [TestMethod]
+    public void ForCompletionRejectsNullCompletion()
+    {
+        ArgumentNullException exception = Assert.ThrowsExactly<ArgumentNullException>(
+            () => ReconciliationEnvelope<string>.ForCompletion(null!));
+
+        Assert.AreEqual("completion", exception.ParamName);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationEnvelope{TElement}.ForContext"/> throws for a null context instead of
+    /// silently constructing an envelope with no payload slot set.
+    /// </summary>
+    [TestMethod]
+    public void ForContextRejectsNullContext()
+    {
+        ArgumentNullException exception = Assert.ThrowsExactly<ArgumentNullException>(
+            () => ReconciliationEnvelope<string>.ForContext(null!));
+
+        Assert.AreEqual("context", exception.ParamName);
+    }
 }

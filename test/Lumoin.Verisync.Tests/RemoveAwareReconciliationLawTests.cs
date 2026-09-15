@@ -873,7 +873,7 @@ internal sealed class RemoveAwareReconciliationLawTests
         responder.Complete();
         await Task.WhenAll(initiatorRun, responderRun).ConfigureAwait(false);
 
-        Assert.HasCount(0, initiator.DecodedItems);
+        Assert.IsEmpty(initiator.DecodedItems);
         Assert.AreEqual(AntiEntropySessionState.Completed, initiator.State);
         Assert.AreEqual(AntiEntropySessionState.Completed, responder.State);
 

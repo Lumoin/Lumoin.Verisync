@@ -144,9 +144,9 @@ internal sealed class OffsetAnchoredSequenceStateTests
         ImmutableArray<OffsetBaseRemovalEntry> markings = compacted.ToState().RemovedBaseOffsets;
         Assert.HasCount(2, markings);
         Assert.AreEqual(1, markings[0].Offset);
-        Assert.HasCount(0, markings[0].RemoveDots);
+        Assert.IsEmpty(markings[0].RemoveDots);
         Assert.AreEqual(3, markings[1].Offset);
-        Assert.HasCount(0, markings[1].RemoveDots);
+        Assert.IsEmpty(markings[1].RemoveDots);
     }
 
 
@@ -835,5 +835,401 @@ internal sealed class OffsetAnchoredSequenceStateTests
         buffer[0] = id;
 
         return ReplicaId.FromSpan(buffer);
+    }
+
+
+    /// <summary>Builds a clock state by incrementing each replica the given number of times.</summary>
+    private static VectorClockState ClockState(params (ReplicaId Replica, int Count)[] entries)
+    {
+        VectorClock clock = VectorClock.Empty;
+        foreach((ReplicaId replica, int count) in entries)
+        {
+            for(int i = 0; i < count; i++)
+            {
+                clock = clock.Increment(replica);
+            }
+        }
+
+        return clock.ToState();
+    }
+
+
+    /// <summary>The context every canonical fixture shares: one tick on each of R1, R2 and R3.</summary>
+    private static VectorClockState CanonicalContext { get; } = ClockState((R1, 1), (R2, 1), (R3, 1));
+
+    /// <summary>The non-genesis base frontier the canonical fixture is stamped at: one tick on R1.</summary>
+    private static VectorClockState CanonicalFrontier { get; } = ClockState((R1, 1));
+
+    /// <summary>
+    /// A minimal, self-consistent, non-genesis state with every collection empty -- the shared baseline the
+    /// Equals-chain and per-collection guard tests below perturb one field at a time so no other clause can
+    /// also fire.
+    /// </summary>
+    private static OffsetAnchoredSequenceState<int> CanonicalMinimalState { get; } = new(
+        BaseValues,
+        CanonicalFrontier,
+        1,
+        [],
+        CanonicalContext,
+        [],
+        [],
+        [],
+        []);
+
+
+    /// <summary>A typed null sequence, so the Equals overload under test is the IEquatable one.</summary>
+    private static OffsetAnchoredSequence<int>? NullSequence() => null;
+
+
+    /// <summary>
+    /// A dot-translation entry whose target is a base anchor outside the base is rejected even though its
+    /// dropped dot and shape are otherwise unremarkable -- pinning the range guard the loop applies to every
+    /// entry's target, not only the canonical-shape check FromAnchorState already performs.
+    /// </summary>
+    [TestMethod]
+    public void FromStateRejectsADotTranslationTargetOutsideTheBase()
+    {
+        OffsetAnchoredSequenceState<int> valid = CompactedWithBothMaps().ToState();
+        OffsetTranslationEntry entry = valid.CompactedDotAnchors[0];
+
+        OffsetTranslationEntry outOfRange = entry with { Target = new OffsetAnchorState(valid.Base.Length, null) };
+        OffsetAnchoredSequenceState<int> state = valid with { CompactedDotAnchors = [outOfRange] };
+
+        ArgumentException thrown = Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+
+        Assert.AreEqual("vertices", thrown.ParamName);
+    }
+
+
+    /// <summary>
+    /// A base anchor with an offset less than -1 is rejected outright, not laundered through
+    /// OffsetAnchor.AtBase's own negative-offset guard, which throws a different exact exception type.
+    /// </summary>
+    [TestMethod]
+    public void FromStateRejectsANegativeBaseAnchorOffset()
+    {
+        OffsetVertexEntry<int> malformed = new(new DotState(R1Bytes, 1), new OffsetAnchorState(-2, null), 10);
+        OffsetAnchoredSequenceState<int> state = CanonicalMinimalState with { Vertices = [malformed] };
+
+        ArgumentException thrown = Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+
+        Assert.Contains("A base anchor offset cannot be -2.", thrown.Message);
+    }
+
+
+    /// <summary>
+    /// Equals against a null operand takes the early-exit branch and returns false, never true.
+    /// </summary>
+    [TestMethod]
+    public void EqualsReturnsFalseAgainstNull()
+    {
+        OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.FromState(CanonicalMinimalState);
+
+        Assert.IsFalse(sequence.Equals(NullSequence()));
+    }
+
+
+    /// <summary>
+    /// Equals detects two sequences whose base-offset-translation maps share the same previous offset but
+    /// disagree on the target anchor -- the per-entry loop must actually compare targets, not just key
+    /// membership.
+    /// </summary>
+    [TestMethod]
+    public void EqualsDetectsADifferingCompactedBaseOffsetTargetUnderTheSamePreviousOffset()
+    {
+        OffsetAnchoredSequenceState<int> stateA = CanonicalMinimalState with
+        {
+            CompactedBaseOffsets = [new OffsetBaseAnchorEntry(0, new OffsetAnchorState(-1, null))]
+        };
+        OffsetAnchoredSequenceState<int> stateB = CanonicalMinimalState with
+        {
+            CompactedBaseOffsets = [new OffsetBaseAnchorEntry(0, new OffsetAnchorState(1, null))]
+        };
+
+        OffsetAnchoredSequence<int> a = OffsetAnchoredSequence<int>.FromState(stateA);
+        OffsetAnchoredSequence<int> b = OffsetAnchoredSequence<int>.FromState(stateB);
+
+        Assert.IsFalse(a.Equals(b));
+    }
+
+
+    /// <summary>
+    /// ToState orders one tombstone's remove-dots by (Replica, Counter): merging five concurrent removes from
+    /// distinct replicas must serialize them ascending, not in the backing set's own enumeration order.
+    /// </summary>
+    [TestMethod]
+    public void ToStateOrdersTombstoneRemoveDotsByReplicaThenCounter()
+    {
+        OffsetAnchoredSequence<int> shared = OffsetAnchoredSequence<int>.WithBase(BaseValues);
+        (OffsetAnchoredSequence<int> withInsert, OffsetAddress address) = shared.InsertAfter(new OffsetAddress(OffsetAnchor.AtBase(0), 0), 99, R1);
+
+        ReplicaId[] removers = [Replica(9), Replica(4), Replica(7), Replica(3), Replica(6)];
+        OffsetAnchoredSequence<int> merged = withInsert;
+        foreach(ReplicaId remover in removers)
+        {
+            merged = merged.Merge(withInsert.Remove(address, remover));
+        }
+
+        OffsetTombstoneEntry tombstone = merged.ToState().Tombstones[0];
+        Assert.HasCount(5, tombstone.RemoveDots);
+
+        byte[] expectedOrder = [3, 4, 6, 7, 9];
+        for(int i = 0; i < expectedOrder.Length; i++)
+        {
+            Assert.AreEqual(1, tombstone.RemoveDots[i].Counter);
+            Assert.AreEqual(expectedOrder[i], tombstone.RemoveDots[i].Replica[0]);
+        }
+    }
+
+
+    /// <summary>
+    /// Equals detects two sequences whose vertex sets share the same id but disagree on the vertex's value --
+    /// the per-vertex loop must actually compare values, not just membership.
+    /// </summary>
+    [TestMethod]
+    public void EqualsDetectsADifferingVertexValueUnderTheSameId()
+    {
+        OffsetVertexEntry<int> vertex = new(new DotState(R1Bytes, 1), new OffsetAnchorState(-1, null), 10);
+        OffsetAnchoredSequenceState<int> stateA = CanonicalMinimalState with { Vertices = [vertex] };
+        OffsetAnchoredSequenceState<int> stateB = CanonicalMinimalState with { Vertices = [vertex with { Value = 20 }] };
+
+        OffsetAnchoredSequence<int> a = OffsetAnchoredSequence<int>.FromState(stateA);
+        OffsetAnchoredSequence<int> b = OffsetAnchoredSequence<int>.FromState(stateB);
+
+        Assert.IsFalse(a.Equals(b));
+    }
+
+
+    /// <summary>
+    /// Equals detects two sequences whose tombstones share the same target but disagree on the remove-dot set
+    /// -- the per-tombstone loop must actually compare set content, not just target membership.
+    /// </summary>
+    [TestMethod]
+    public void EqualsDetectsADifferingTombstoneRemoveDotSetUnderTheSameTarget()
+    {
+        OffsetAnchoredSequenceState<int> stateA = CanonicalMinimalState with
+        {
+            Tombstones = [new OffsetTombstoneEntry(new DotState(R3Bytes, 1), [])]
+        };
+        OffsetAnchoredSequenceState<int> stateB = CanonicalMinimalState with
+        {
+            Tombstones = [new OffsetTombstoneEntry(new DotState(R3Bytes, 1), [new DotState(R2Bytes, 1)])]
+        };
+
+        OffsetAnchoredSequence<int> a = OffsetAnchoredSequence<int>.FromState(stateA);
+        OffsetAnchoredSequence<int> b = OffsetAnchoredSequence<int>.FromState(stateB);
+
+        Assert.IsFalse(a.Equals(b));
+    }
+
+
+    /// <summary>
+    /// A vertex dot with a non-positive counter is rejected, not silently accepted as a zero-counter identity.
+    /// </summary>
+    [TestMethod]
+    public void FromStateRejectsANonPositiveVertexCounter()
+    {
+        OffsetVertexEntry<int> malformed = new(new DotState(R1Bytes, 0), new OffsetAnchorState(-1, null), 10);
+        OffsetAnchoredSequenceState<int> state = CanonicalMinimalState with { Vertices = [malformed] };
+
+        ArgumentException thrown = Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+
+        Assert.Contains("A vertex counter must be positive.", thrown.Message);
+    }
+
+
+    /// <summary>
+    /// A removed base offset of exactly zero is within range and must round-trip, not be rejected as if it
+    /// were negative.
+    /// </summary>
+    [TestMethod]
+    public void FromStateAcceptsARemovedBaseOffsetOfZero()
+    {
+        OffsetAnchoredSequence<int> sequence = OffsetAnchoredSequence<int>.WithBase(BaseValues);
+        sequence = sequence.Remove(new OffsetAddress(OffsetAnchor.AtBase(0), 0), R1);
+
+        OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(sequence.ToState());
+
+        Assert.AreEqual(sequence, back);
+    }
+
+
+    /// <summary>
+    /// Equals detects a BaseFrontier difference by itself, with every other clause in the guard chain equal --
+    /// pinning the OR between the base-content and base-frontier checks specifically.
+    /// </summary>
+    [TestMethod]
+    public void EqualsDetectsABaseFrontierDifferenceAloneAmongTheCountGuards()
+    {
+        OffsetAnchoredSequence<int> a = OffsetAnchoredSequence<int>.FromState(CanonicalMinimalState);
+        OffsetAnchoredSequence<int> b = OffsetAnchoredSequence<int>.FromState(CanonicalMinimalState with { BaseFrontier = ClockState((R2, 1)) });
+
+        Assert.IsFalse(a.Equals(b));
+    }
+
+
+    /// <summary>
+    /// ToState orders CompactedDotAnchors by the dropped dot's (Replica, Counter), including the counter
+    /// tie-break when two dropped dots share one replica -- a single-entry map can never show a broken
+    /// comparator, so this fixture carries four entries across three replicas, one replica repeated.
+    /// </summary>
+    [TestMethod]
+    public void ToStateOrdersCompactedDotAnchorsByDroppedDotReplicaThenCounter()
+    {
+        OffsetAnchoredSequenceState<int> valid = CompactedWithBothMaps().ToState();
+        OffsetTranslationEntry existing = valid.CompactedDotAnchors[0];
+
+        OffsetAnchorState head = new(-1, null);
+        OffsetTranslationEntry low = new(new DotState(ImmutableArray.Create(Replica(4).AsSpan()), 1), head);
+        OffsetTranslationEntry highEarly = new(new DotState(ImmutableArray.Create(Replica(9).AsSpan()), 1), head);
+        OffsetTranslationEntry highLate = new(new DotState(ImmutableArray.Create(Replica(9).AsSpan()), 5), head);
+
+        OffsetAnchoredSequenceState<int> state = valid with { CompactedDotAnchors = [highLate, existing, low, highEarly] };
+
+        OffsetAnchoredSequence<int> back = OffsetAnchoredSequence<int>.FromState(state);
+        ImmutableArray<OffsetTranslationEntry> reordered = back.ToState().CompactedDotAnchors;
+
+        Assert.HasCount(4, reordered);
+        Assert.AreEqual(1, reordered[0].Dropped.Replica[0]);
+        Assert.AreEqual(4, reordered[1].Dropped.Replica[0]);
+        Assert.AreEqual(9, reordered[2].Dropped.Replica[0]);
+        Assert.AreEqual(1, reordered[2].Dropped.Counter);
+        Assert.AreEqual(9, reordered[3].Dropped.Replica[0]);
+        Assert.AreEqual(5, reordered[3].Dropped.Counter);
+    }
+
+
+    /// <summary>
+    /// A dot-translation entry whose target claims to be live but carries a base offset other than -1 is
+    /// rejected even when that live id names a genuinely retained vertex -- so the "not a vertex" guard cannot
+    /// mask the canonical-shape guard's removal.
+    /// </summary>
+    [TestMethod]
+    public void FromStateRejectsATranslationTargetLiveShapeEvenWhenTheLiveIdIsARealVertex()
+    {
+        OffsetAnchoredSequenceState<int> valid = CompactedWithBothMaps().ToState();
+        OffsetTranslationEntry entry = valid.CompactedDotAnchors[0];
+
+        //(R2,3) is the post-seal retained live vertex per CompactedWithBothMaps's own remark, so only the
+        //base-offset-must-be-negative-one guard, not the "not a vertex" guard, can reject this shape.
+        OffsetTranslationEntry malformed = entry with { Target = new OffsetAnchorState(0, new DotState(R2Bytes, 3)) };
+        OffsetAnchoredSequenceState<int> state = valid with { CompactedDotAnchors = [malformed] };
+
+        ArgumentException thrown = Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+
+        Assert.AreEqual("state", thrown.ParamName);
+    }
+
+
+    /// <summary>
+    /// Equals detects a Context difference by itself, with every other clause in the guard chain equal --
+    /// pinning the OR between the base-generation and context checks specifically.
+    /// </summary>
+    [TestMethod]
+    public void EqualsDetectsAContextDifferenceAloneAmongTheCountGuards()
+    {
+        OffsetAnchoredSequence<int> a = OffsetAnchoredSequence<int>.FromState(CanonicalMinimalState);
+        OffsetAnchoredSequence<int> b = OffsetAnchoredSequence<int>.FromState(CanonicalMinimalState with { Context = ClockState((R1, 1), (R2, 1)) });
+
+        Assert.IsFalse(a.Equals(b));
+    }
+
+
+    /// <summary>
+    /// Equals detects two sequences whose dot-translation maps share the same dropped dot but disagree on the
+    /// target anchor -- the per-entry loop must actually compare targets, not just dropped-dot membership.
+    /// </summary>
+    [TestMethod]
+    public void EqualsDetectsADifferingCompactedDotAnchorTargetUnderTheSameDroppedDot()
+    {
+        OffsetAnchoredSequenceState<int> stateA = CanonicalMinimalState with
+        {
+            CompactedDotAnchors = [new OffsetTranslationEntry(new DotState(R3Bytes, 1), new OffsetAnchorState(-1, null))]
+        };
+        OffsetAnchoredSequenceState<int> stateB = CanonicalMinimalState with
+        {
+            CompactedDotAnchors = [new OffsetTranslationEntry(new DotState(R3Bytes, 1), new OffsetAnchorState(0, null))]
+        };
+
+        OffsetAnchoredSequence<int> a = OffsetAnchoredSequence<int>.FromState(stateA);
+        OffsetAnchoredSequence<int> b = OffsetAnchoredSequence<int>.FromState(stateB);
+
+        Assert.IsFalse(a.Equals(b));
+    }
+
+
+    /// <summary>
+    /// Equals detects two sequences whose removed base offsets share the same offset key but disagree on the
+    /// remove-dot set -- the per-offset loop must actually compare set content, not just key membership.
+    /// </summary>
+    [TestMethod]
+    public void EqualsDetectsADifferingRemovedBaseOffsetRemoveDotSetUnderTheSameOffset()
+    {
+        OffsetAnchoredSequenceState<int> stateA = CanonicalMinimalState with
+        {
+            RemovedBaseOffsets = [new OffsetBaseRemovalEntry(0, [])]
+        };
+        OffsetAnchoredSequenceState<int> stateB = CanonicalMinimalState with
+        {
+            RemovedBaseOffsets = [new OffsetBaseRemovalEntry(0, [new DotState(R2Bytes, 1)])]
+        };
+
+        OffsetAnchoredSequence<int> a = OffsetAnchoredSequence<int>.FromState(stateA);
+        OffsetAnchoredSequence<int> b = OffsetAnchoredSequence<int>.FromState(stateB);
+
+        Assert.IsFalse(a.Equals(b));
+    }
+
+
+    /// <summary>
+    /// Two tombstone entries naming the same target dot are rejected as a duplicate, not silently overwritten.
+    /// </summary>
+    [TestMethod]
+    public void FromStateRejectsADuplicatedTombstoneTarget()
+    {
+        OffsetTombstoneEntry first = new(new DotState(R3Bytes, 1), []);
+        OffsetTombstoneEntry second = new(new DotState(R3Bytes, 1), [new DotState(R2Bytes, 1)]);
+        OffsetAnchoredSequenceState<int> state = CanonicalMinimalState with { Tombstones = [first, second] };
+
+        ArgumentException thrown = Assert.ThrowsExactly<ArgumentException>(() => OffsetAnchoredSequence<int>.FromState(state));
+
+        Assert.Contains("A tombstone target appears more than once.", thrown.Message);
+    }
+
+
+    /// <summary>
+    /// Equals detects a CompactedDotAnchors-count difference by itself, with every other clause in the guard
+    /// chain equal -- pinning the OR between the removed-base-offset-count and translation-count checks
+    /// specifically.
+    /// </summary>
+    [TestMethod]
+    public void EqualsDetectsACompactedDotAnchorsCountDifferenceAloneAmongTheCountGuards()
+    {
+        OffsetAnchoredSequence<int> a = OffsetAnchoredSequence<int>.FromState(CanonicalMinimalState);
+        OffsetAnchoredSequenceState<int> withTranslation = CanonicalMinimalState with
+        {
+            CompactedDotAnchors = [new OffsetTranslationEntry(new DotState(R3Bytes, 1), new OffsetAnchorState(-1, null))]
+        };
+        OffsetAnchoredSequence<int> b = OffsetAnchoredSequence<int>.FromState(withTranslation);
+
+        Assert.IsFalse(a.Equals(b));
+    }
+
+
+    /// <summary>
+    /// Equals detects a Tombstones-count difference by itself, with every other clause in the guard chain
+    /// equal -- pinning the OR between the vertex-count and tombstone-count checks specifically.
+    /// </summary>
+    [TestMethod]
+    public void EqualsDetectsATombstoneCountDifferenceAloneAmongTheCountGuards()
+    {
+        OffsetAnchoredSequence<int> a = OffsetAnchoredSequence<int>.FromState(CanonicalMinimalState);
+        OffsetAnchoredSequenceState<int> withTombstone = CanonicalMinimalState with
+        {
+            Tombstones = [new OffsetTombstoneEntry(new DotState(R3Bytes, 1), [])]
+        };
+        OffsetAnchoredSequence<int> b = OffsetAnchoredSequence<int>.FromState(withTombstone);
+
+        Assert.IsFalse(a.Equals(b));
     }
 }

@@ -182,6 +182,47 @@ internal sealed class VectorClockTests
     }
 
 
+    /// <summary>Pins that <see cref="VectorClock.GetHashCode"/> differs between clocks with different content.</summary>
+    [TestMethod]
+    public void GetHashCodeDiffersForDifferentContent()
+    {
+        VectorClock a = VectorClock.Empty.Increment(R1);
+        VectorClock b = VectorClock.Empty.Increment(R2).Increment(R2);
+
+        Assert.AreNotEqual(a.GetHashCode(), b.GetHashCode());
+    }
+
+
+    /// <summary>Pins that <see cref="VectorClock.Compare(VectorClock)"/> rejects a null operand.</summary>
+    [TestMethod]
+    public void CompareThrowsOnNullOther()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() => VectorClock.Empty.Compare(null!));
+    }
+
+
+    /// <summary>Returns a null VectorClock for the equality vector.</summary>
+    private static VectorClock? NullVectorClock() => null;
+
+
+    /// <summary>Pins that <see cref="VectorClock.Equals(VectorClock)"/> returns false for a null operand.</summary>
+    [TestMethod]
+    public void EqualsReturnsFalseForNull()
+    {
+        VectorClock clock = VectorClock.Empty.Increment(R1);
+
+        Assert.IsFalse(clock.Equals(NullVectorClock()));
+    }
+
+
+    /// <summary>Pins that <see cref="VectorClock.Merge(VectorClock)"/> rejects a null operand.</summary>
+    [TestMethod]
+    public void MergeThrowsOnNullOther()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() => VectorClock.Empty.Merge(null!));
+    }
+
+
     private static ImmutableArray<byte> Bytes(ReplicaId replica) => ImmutableArray.Create(replica.AsSpan());
 
 

@@ -112,6 +112,87 @@ internal sealed class LwwRegisterTests
     }
 
 
+    /// <summary>Pins that <see cref="LwwRegister{TValue}.Equals(LwwRegister{TValue}?)"/> refuses operands whose <see cref="LwwRegister{TValue}.HasValue"/> differ.</summary>
+    [TestMethod]
+    public void EqualsWhenHasValueDiffersReturnsFalse()
+    {
+        LwwRegister<string> empty = LwwRegister<string>.Empty;
+        LwwRegister<string> written = LwwRegister<string>.Empty.Write("a", new Timestamp(1), R1);
+
+        Assert.IsFalse(empty.Equals(written));
+        Assert.IsFalse(written.Equals(empty));
+    }
+
+
+    /// <summary>Pins that <see cref="LwwRegister{TValue}.Merge"/> rejects a null operand.</summary>
+    [TestMethod]
+    public void MergeRejectsNullOther()
+    {
+        LwwRegister<string> register = LwwRegister<string>.Empty.Write("a", new Timestamp(1), R1);
+
+        Assert.ThrowsExactly<ArgumentNullException>(() => register.Merge(null!));
+    }
+
+
+    /// <summary>
+    /// Pins that a register holding a value hashes differently from the empty register, so the value branch of
+    /// GetHashCode is taken rather than folded to the empty register's zero.
+    /// </summary>
+    [TestMethod]
+    public void GetHashCodeWithValueDiffersFromEmpty()
+    {
+        Timestamp timestamp = new(7);
+        LwwRegister<string> register = LwwRegister<string>.Empty.Write("a", timestamp, R1);
+
+        Assert.AreNotEqual(LwwRegister<string>.Empty.GetHashCode(), register.GetHashCode());
+    }
+
+
+    /// <summary>Pins that <see cref="LwwRegister{TValue}.Equals(LwwRegister{TValue}?)"/> refuses a null operand.</summary>
+    [TestMethod]
+    public void EqualsWithNullOtherReturnsFalse()
+    {
+        LwwRegister<string> register = LwwRegister<string>.Empty.Write("a", new Timestamp(1), R1);
+
+        Assert.IsFalse(register.Equals(NullRegister()));
+    }
+
+
+    /// <summary>Returns a null LwwRegister for the equality vector.</summary>
+    private static LwwRegister<string>? NullRegister() => null;
+
+
+    /// <summary>Pins that <see cref="LwwRegister{TValue}.Equals(LwwRegister{TValue}?)"/> requires the timestamp to match even when the writer and value already do.</summary>
+    [TestMethod]
+    public void EqualsWhenTimestampsDifferButWriterAndValueMatchReturnsFalse()
+    {
+        LwwRegister<string> earlier = LwwRegister<string>.Empty.Write("a", new Timestamp(1), R1);
+        LwwRegister<string> later = LwwRegister<string>.Empty.Write("a", new Timestamp(2), R1);
+
+        Assert.IsFalse(earlier.Equals(later));
+    }
+
+
+    /// <summary>Pins that <see cref="LwwRegister{TValue}.Merge"/> keeps the receiver when timestamp and writer both tie.</summary>
+    [TestMethod]
+    public void MergeOnExactTiePrefersThis()
+    {
+        LwwRegister<string> left = LwwRegister<string>.Empty.Write("left", new Timestamp(5), R1);
+        LwwRegister<string> right = LwwRegister<string>.Empty.Write("right", new Timestamp(5), R1);
+
+        Assert.AreEqual("left", left.Merge(right).Value);
+        Assert.AreEqual("right", right.Merge(left).Value);
+    }
+
+
+    /// <summary>Pins that <see cref="LwwRegister{TValue}.GetHashCode"/> is zero for the empty register.</summary>
+    [TestMethod]
+    public void GetHashCodeWhenEmptyIsZero()
+    {
+        Assert.AreEqual(0, LwwRegister<string>.Empty.GetHashCode());
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

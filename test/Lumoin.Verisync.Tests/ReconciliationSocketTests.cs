@@ -12,12 +12,14 @@ using System.Text.Json;
 namespace Lumoin.Verisync.Tests;
 
 /// <summary>
-/// End-to-end reconciliation over a real localhost socket, following <see cref="RaftSocketClusterTests"/> and
-/// <see cref="SocketClusterTests"/> plumbing exactly: a <see cref="TcpListener"/> on the loopback ephemeral
-/// port, one duplex <see cref="TcpClient"/> connection, pipe-backed message channels with the
-/// <see cref="ReconciliationJson"/> codecs, and reader pipes completed in a finally. Each round is its own
-/// fresh session over its own connection; per-direction messages are handled in arrival order by a single
-/// reader loop per side, which is what makes the post-completion fetch/elements exchange sound.
+/// End-to-end reconciliation over a real localhost socket: a <see cref="TcpListener"/> on the loopback
+/// ephemeral port, one duplex <see cref="TcpClient"/> connection, and pipe-backed message channels with the
+/// <see cref="ReconciliationJson"/> codecs. Both readers leave the shared duplex stream open, so no read loop
+/// can dispose a connection its peer is still writing into; the session ends on a half-shutdown of the
+/// initiator's send side, as <see cref="LogCommitmentSocketTests"/> ends its own, and the connection is closed
+/// once the round is over. Each round is its own fresh session over its own connection; per-direction messages
+/// are handled in arrival order by a single reader loop per side, which is what makes the post-completion
+/// fetch/elements exchange sound.
 /// </summary>
 /// <remarks>
 /// Divergence is ADD-ONLY. Remove-aware reconciliation needs the causal/frontier machinery of the phase 3
@@ -105,14 +107,18 @@ internal sealed class ReconciliationSocketTests
     /// completion, and returns the round's observed metrics and both sides' converged sets.
     /// </summary>
     /// <remarks>
+    /// The session ends on an ordering barrier rather than a race: the initiator's task completes first, only
+    /// then is its send side half-closed, and that end of stream is the one event the responder's loop ends on.
     /// The listener, client, and server are all disposed in the finally even when the proof fails mid-flight.
     /// </remarks>
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The listener, client, server, and linked token source are all disposed in the finally block.")]
+    [SuppressMessage("Usage", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "The initiator task is awaited before the barrier and the responder task is observed through SwallowAsync in the finally, so every task touching the connection has completed before the linked token source is disposed.")]
     private async Task<RoundOutcome> RunRoundAsync(OrSet<string> sideA, OrSet<string> sideB, FramePadding? padding)
     {
         TcpListener listener = new(IPAddress.Loopback, 0);
         TcpClient? client = null;
         TcpClient? server = null;
+        Task<OrSet<string>>? responder = null;
 
         //The timeout — not a fixed sleep — bounds the deterministic choreography so a stalled side fails the
         //test instead of hanging the run; the cancellation token is the synchronization boundary.
@@ -133,17 +139,25 @@ internal sealed class ReconciliationSocketTests
             NetworkStream clientStream = client.GetStream();
             NetworkStream serverStream = server.GetStream();
 
+            //Both readers leave the duplex stream open, so a read loop that ends never disposes the connection
+            //under a peer that is still writing; the connection is closed once, in the finally, after both
+            //sides have returned.
             MessageChannelWriter<ReconciliationEnvelope<string>> aOut = new(PipeWriter.Create(clientStream, new StreamPipeWriterOptions(leaveOpen: true)), Serialize, padding: padding);
-            MessageChannelReader<ReconciliationEnvelope<string>> aIn = new(PipeReader.Create(clientStream), Deserialize, padding: padding);
+            MessageChannelReader<ReconciliationEnvelope<string>> aIn = new(PipeReader.Create(clientStream, new StreamPipeReaderOptions(leaveOpen: true)), Deserialize, padding: padding);
             MessageChannelWriter<ReconciliationEnvelope<string>> bOut = new(PipeWriter.Create(serverStream, new StreamPipeWriterOptions(leaveOpen: true)), Serialize, padding: padding);
-            MessageChannelReader<ReconciliationEnvelope<string>> bIn = new(PipeReader.Create(serverStream), Deserialize, padding: padding);
+            MessageChannelReader<ReconciliationEnvelope<string>> bIn = new(PipeReader.Create(serverStream, new StreamPipeReaderOptions(leaveOpen: true)), Deserialize, padding: padding);
 
             Task<InitiatorResult> initiator = RunInitiatorAsync(sideA, aOut, aIn, cancellationToken);
-            Task<OrSet<string>> responder = RunResponderAsync(sideB, bOut, bIn, cancellationToken);
+            responder = RunResponderAsync(sideB, bOut, bIn, cancellationToken);
 
-            await Task.WhenAll(initiator, responder).ConfigureAwait(false);
-
+            //The initiator finishes its exchange first; only then is its send side half-closed. An end of
+            //stream, unlike a reset, is ordered behind every frame already sent, so the close cannot destroy a
+            //frame the responder has not yet read, and the responder writes into a live connection until it has
+            //returned.
             InitiatorResult aResult = await initiator.ConfigureAwait(false);
+            await aOut.CompleteAsync().ConfigureAwait(false);
+            client.Client.Shutdown(SocketShutdown.Send);
+
             OrSet<string> bResult = await responder.ConfigureAwait(false);
 
             return new RoundOutcome(aResult.Lacks, aResult.Surplus, aResult.AbsorbedCount, aResult.DecodedCount, aResult.Set, bResult);
@@ -153,6 +167,35 @@ internal sealed class ReconciliationSocketTests
             client?.Dispose();
             server?.Dispose();
             listener.Dispose();
+
+            //A round that fails before the barrier leaves the responder waiting on an end of stream that never
+            //comes; the disposal above unblocks it, and its wind-down failure is reported rather than thrown so
+            //the round's original cause stays the surfaced one.
+            await SwallowAsync(responder).ConfigureAwait(false);
+        }
+    }
+
+
+    /// <summary>
+    /// Awaits a wind-down task that only matters once the round has already failed, reporting rather than
+    /// throwing its failure so the round's original cause stays the surfaced one.
+    /// </summary>
+    /// <param name="task">The wind-down task, or <see langword="null"/> when the round failed before it started.</param>
+    /// <returns>A task that completes when the wind-down task has been observed.</returns>
+    private async Task SwallowAsync(Task? task)
+    {
+        if(task is null || task.IsCompletedSuccessfully)
+        {
+            return;
+        }
+
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch(Exception exception) when(exception is OperationCanceledException or InvalidOperationException or IOException or ObjectDisposedException or SocketException or MessageDeserializationException or AssertFailedException)
+        {
+            TestContext.WriteLine($"The responder wound down with {exception.GetType().Name}: {exception.Message}");
         }
     }
 
@@ -162,6 +205,10 @@ internal sealed class ReconciliationSocketTests
     /// until the decoder completes, then resolves the difference: it requests the digests it lacks and offers
     /// the elements it holds in surplus, applies the responder's answer, and ends its single reader loop.
     /// </summary>
+    /// <remarks>
+    /// This side does not complete its own writer: the caller completes it and half-closes the send side once
+    /// this task has returned, which is what ends the responder's loop.
+    /// </remarks>
     private static async Task<InitiatorResult> RunInitiatorAsync(
         OrSet<string> set,
         MessageChannelWriter<ReconciliationEnvelope<string>> outbound,
@@ -238,8 +285,6 @@ internal sealed class ReconciliationSocketTests
             }
         }
 
-        await outbound.CompleteAsync().ConfigureAwait(false);
-
         return new InitiatorResult(lacks, surplus, decoder.AbsorbedCount, decodedCount, set);
     }
 
@@ -250,8 +295,8 @@ internal sealed class ReconciliationSocketTests
     /// initiator offered.
     /// </summary>
     /// <remarks>
-    /// Streaming runs alongside the single reader loop; the loop ends when the peer's writer completes, after
-    /// which the responder completes its own writer.
+    /// Streaming runs alongside the single reader loop; the loop ends on the initiator's half-close, after
+    /// which this side stops the streamer, waits it out, and completes its own writer.
     /// </remarks>
     private static async Task<OrSet<string>> RunResponderAsync(
         OrSet<string> set,
@@ -293,16 +338,14 @@ internal sealed class ReconciliationSocketTests
                 }
             }
         }
-        catch(IOException) when(doneSignal.Task.IsCompleted)
+        finally
         {
-            //The initiator tears its connection down after done while this side's last streamed batch is
-            //still unread on its socket, which turns the close into a reset instead of a graceful end of
-            //stream — the same benign end-of-session race the streamer tolerates, observed from the read
-            //side. State-affecting envelopes all precede the teardown, and the convergence assertions
-            //below would still catch a genuinely lost message.
+            //A loop ending for any reason must release the streamer from the shared writer.
+            doneSignal.TrySetResult();
         }
 
-        doneSignal.TrySetResult();
+        //The loop ended on the initiator's half-close, which follows every frame the initiator sent; the
+        //streamer is stopped and waited out so no batch is left in flight past this side's own end.
         await streamer.ConfigureAwait(false);
         await outbound.CompleteAsync().ConfigureAwait(false);
 
@@ -339,21 +382,7 @@ internal sealed class ReconciliationSocketTests
             ReconciliationSymbolBatch batch = new(produced, [.. symbols]);
             produced += BatchSize;
 
-            try
-            {
-                await outbound.WriteAsync(ReconciliationEnvelope<string>.ForSymbols(batch), cancellationToken).ConfigureAwait(false);
-            }
-            catch(IOException) when(doneSignal.IsCompleted)
-            {
-                //The initiator completed and stopped reading one batch ahead of this side seeing the done
-                //signal; a write into the now-quiet pipe is a benign end-of-session race, not a failure.
-                break;
-            }
-            catch(InvalidOperationException) when(doneSignal.IsCompleted)
-            {
-                //Same benign race when the pipe has already been completed under an in-flight flush.
-                break;
-            }
+            await outbound.WriteAsync(ReconciliationEnvelope<string>.ForSymbols(batch), cancellationToken).ConfigureAwait(false);
 
             //Pace the stream so the initiator's done signal can round-trip before the cap; the signal ends
             //the wait early, so a completed peer never waits out the delay.

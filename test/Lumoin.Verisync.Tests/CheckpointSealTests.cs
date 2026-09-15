@@ -157,7 +157,7 @@ internal sealed class CheckpointSealTests
         //returning the same instance: nothing was recorded and nothing compacted.
         Assert.IsNull(sealedB.Commitment);
         Assert.IsNull(sealedB.CheckpointBallot);
-        Assert.HasCount(0, sealedB.Checkpoint);
+        Assert.IsEmpty(sealedB.Checkpoint);
         Assert.AreEqual(withC.Live, sealedB.Live);
 
         //B then seals at F2, which strictly dominates F1: the chain ascends and the seal succeeds.
@@ -220,7 +220,7 @@ internal sealed class CheckpointSealTests
         Assert.AreEqual(containerY, sealedY);
         Assert.IsNull(sealedY.Commitment);
         Assert.IsNull(sealedY.CheckpointBallot);
-        Assert.HasCount(0, sealedY.Checkpoint);
+        Assert.IsEmpty(sealedY.Checkpoint);
         Assert.AreEqual(containerY.Live, sealedY.Live);
     }
 
@@ -392,6 +392,78 @@ internal sealed class CheckpointSealTests
         Assert.IsFalse(didSeal);
         Assert.IsFalse(outcome.IsChosen);
         Assert.AreEqual(withA, afterFailedSeal);
+    }
+
+
+    /// <summary>
+    /// GetHashCode incorporates the frontier: two commitments carrying the same digest but different
+    /// frontiers must not collapse to the same hash code.
+    /// </summary>
+    [TestMethod]
+    public void GetHashCodeDependsOnTheFrontier()
+    {
+        byte[] digest = [1, 2, 3];
+        var atEmpty = new CheckpointCommitment(VectorClock.Empty, digest);
+        var atAdvanced = new CheckpointCommitment(VectorClock.Empty.Increment(Replica(1)), digest);
+
+        Assert.AreNotEqual(atEmpty.GetHashCode(), atAdvanced.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// Equals(CheckpointCommitment?) returns false when compared against a null other, matching the
+    /// IEquatable null-argument contract the [NotNullWhen(true)] annotation promises.
+    /// </summary>
+    [TestMethod]
+    public void EqualsReturnsFalseForANullOther()
+    {
+        var commitment = new CheckpointCommitment(VectorClock.Empty, new byte[] { 1 });
+
+        Assert.IsFalse(commitment.Equals(NullCommitment()));
+    }
+
+
+    /// <summary>Returns a null reference typed so the call binds to the <see cref="IEquatable{T}"/> overload.</summary>
+    private static CheckpointCommitment? NullCommitment() => null;
+
+
+    /// <summary>
+    /// The constructor rejects a null frontier: a commitment with no frontier could never be compared
+    /// against the container's monotone refusal rule.
+    /// </summary>
+    [TestMethod]
+    public void ConstructorRejectsANullFrontier()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() => _ = new CheckpointCommitment(null!, new byte[] { 1 }));
+    }
+
+
+    /// <summary>
+    /// GetHashCode incorporates the digest bytes: two commitments at the same frontier but with different
+    /// digests must not collapse to the same hash code.
+    /// </summary>
+    [TestMethod]
+    public void GetHashCodeDependsOnTheDigest()
+    {
+        VectorClock frontier = FrontierTo(1);
+        var withDigestA = new CheckpointCommitment(frontier, new byte[] { 1, 2, 3 });
+        var withDigestB = new CheckpointCommitment(frontier, new byte[] { 4, 5, 6 });
+
+        Assert.AreNotEqual(withDigestA.GetHashCode(), withDigestB.GetHashCode());
+    }
+
+
+    /// <summary>
+    /// The constructor rejects an empty digest: a commitment with no digest bytes could not verify anything
+    /// against the certified projection it claims to anchor.
+    /// </summary>
+    [TestMethod]
+    public void ConstructorRejectsAnEmptyDigest()
+    {
+        ArgumentException thrown = Assert.ThrowsExactly<ArgumentException>(
+            () => _ = new CheckpointCommitment(VectorClock.Empty, ReadOnlyMemory<byte>.Empty));
+
+        Assert.AreEqual("digest", thrown.ParamName);
     }
 
 

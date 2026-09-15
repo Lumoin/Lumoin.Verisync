@@ -129,7 +129,7 @@ internal sealed class ReconciliationDecoderScaleTests
         //when the shared corpus is large.
         Assert.IsTrue(decoder.IsComplete);
         Assert.AreEqual(1, decoder.AbsorbedCount);
-        Assert.HasCount(0, decoder.DecodedItems);
+        Assert.IsEmpty(decoder.DecodedItems);
     }
 
 

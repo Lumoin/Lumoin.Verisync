@@ -232,6 +232,19 @@ internal sealed class FastAcceptorTests
     }
 
 
+    /// <summary>Pins that a prepare at exactly the standing promise is accepted: Prepare's contract promotes
+    /// a classic ballot "at least" the promised ballot, so equality — not only strictly-above — must succeed.</summary>
+    [TestMethod]
+    public void PrepareAtExactlyThePromisedBallotIsAccepted()
+    {
+        (FastAcceptor<string> promised, _) = FastAcceptor<string>.Initial.Prepare(FastBallot.Classic(2, R1));
+
+        (_, FastPrepareResponse<string> response) = promised.Prepare(FastBallot.Classic(2, R1));
+
+        Assert.IsTrue(response.Promised);
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

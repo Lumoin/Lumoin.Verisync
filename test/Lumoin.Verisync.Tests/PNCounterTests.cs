@@ -178,6 +178,52 @@ internal sealed class PNCounterTests
     }
 
 
+    /// <summary>Pins that <see cref="PNCounter.Merge"/> throws <see cref="ArgumentNullException"/> naming "other" when passed a null counter, instead of falling through to a null-reference dereference.</summary>
+    [TestMethod]
+    public void MergeRejectsNullOther()
+    {
+        PNCounter counter = PNCounter.Empty;
+
+        ArgumentNullException ex = Assert.ThrowsExactly<ArgumentNullException>(() => counter.Merge(null!));
+
+        Assert.AreEqual("other", ex.ParamName);
+    }
+
+
+    /// <summary>Pins that Equals reports a counter as unequal to a null counter.</summary>
+    [TestMethod]
+    public void EqualsReturnsFalseForNull()
+    {
+        PNCounter counter = PNCounter.Empty.Increment(R1, 1);
+
+        Assert.IsFalse(counter.Equals(NullOfT()));
+    }
+
+    /// <summary>Returns a null PNCounter for the equality vector.</summary>
+    private static PNCounter? NullOfT() => null;
+
+
+    /// <summary>Pins that a counter equals itself by reference, via the ReferenceEquals fast path rather than the half-by-half comparison.</summary>
+    [TestMethod]
+    public void EqualsIsTrueForSameReference()
+    {
+        PNCounter counter = PNCounter.Empty.Increment(R1, 2).Decrement(R2, 1);
+
+        Assert.IsTrue(counter.Equals(counter));
+    }
+
+
+    /// <summary>Pins that two counters with equal increment halves but different decrement halves are not equal.</summary>
+    [TestMethod]
+    public void EqualityRequiresBothHalvesToMatch()
+    {
+        PNCounter a = PNCounter.Empty.Increment(R1, 2);
+        PNCounter b = PNCounter.Empty.Increment(R1, 2).Decrement(R2, 1);
+
+        Assert.AreNotEqual(a, b);
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

@@ -149,6 +149,48 @@ internal sealed class GCounterTests
     }
 
 
+    /// <summary>Pins that <see cref="GCounter.Equals(GCounter)"/> returns false when the argument is null.</summary>
+    [TestMethod]
+    public void EqualsReturnsFalseForNull()
+    {
+        GCounter counter = GCounter.Empty.Increment(R1);
+
+        Assert.IsFalse(counter.Equals(NullCounter()));
+    }
+
+
+    /// <summary>Pins that <see cref="GCounter.Equals(GCounter)"/> is reflexive when passed the same reference.</summary>
+    [TestMethod]
+    public void EqualsIsReflexiveForSameReference()
+    {
+        GCounter counter = GCounter.Empty.Increment(R1, 2).Increment(R2, 3);
+
+        Assert.IsTrue(counter.Equals(counter));
+    }
+
+
+    /// <summary>Pins that <see cref="GCounter.GetHashCode"/> does not collapse to zero for a non-empty counter.</summary>
+    [TestMethod]
+    public void GetHashCodeIsNotZeroForNonEmptyCounter()
+    {
+        GCounter counter = GCounter.Empty.Increment(R1, 2).Increment(R2, 3);
+
+        Assert.AreNotEqual(0, counter.GetHashCode());
+    }
+
+
+    /// <summary>Pins that <see cref="GCounter.Merge(GCounter)"/> rejects a null argument.</summary>
+    [TestMethod]
+    public void MergeRejectsNullOther()
+    {
+        GCounter counter = GCounter.Empty.Increment(R1);
+
+        ArgumentNullException ex = Assert.ThrowsExactly<ArgumentNullException>(() => counter.Merge(null!));
+
+        Assert.AreEqual("other", ex.ParamName);
+    }
+
+
     private static ImmutableArray<byte> Bytes(ReplicaId replica) => ImmutableArray.Create(replica.AsSpan());
 
 
@@ -159,4 +201,8 @@ internal sealed class GCounterTests
 
         return ReplicaId.FromSpan(buffer);
     }
+
+
+    /// <summary>Returns a null GCounter for the equality vector.</summary>
+    private static GCounter? NullCounter() => null;
 }

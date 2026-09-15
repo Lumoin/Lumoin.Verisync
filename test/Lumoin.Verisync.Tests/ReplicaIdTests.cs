@@ -12,6 +12,9 @@ internal sealed class ReplicaIdTests
     }
 
 
+    /// <summary>
+    /// The bytes round-trip through both read forms: the span view and the array form built directly.
+    /// </summary>
     [TestMethod]
     public void FromSpanRoundTripsBytes()
     {
@@ -24,6 +27,7 @@ internal sealed class ReplicaIdTests
         ReplicaId id = ReplicaId.FromSpan(bytes);
 
         Assert.AreSequenceEqual(bytes, id.AsSpan().ToArray());
+        Assert.AreSequenceEqual(bytes, id.ToArray());
     }
 
 
@@ -140,6 +144,38 @@ internal sealed class ReplicaIdTests
 
         Assert.Contains("32 bytes", text);
         Assert.Contains("010203", text);
+    }
+
+
+    /// <summary>
+    /// Identifiers whose leading bytes differ hash differently, because the leading word of the random bytes is
+    /// the hash. A constant hash keeps equality exact while putting every replica a vector clock, a counter or a
+    /// stability frontier keys by into one bucket, which the equality vectors cannot see.
+    /// </summary>
+    [TestMethod]
+    public void IdentifiersWithDifferentLeadingBytesHashDifferently()
+    {
+        Assert.AreNotEqual(Replica(1).GetHashCode(), Replica(2).GetHashCode());
+    }
+
+
+    /// <summary>
+    /// Two identifiers holding the same bytes compare equal, so the non-strict comparisons hold between them and
+    /// the strict ones do not. The equal arm is the only input on which each operator differs from its strict or
+    /// non-strict sibling.
+    /// </summary>
+    [TestMethod]
+    public void TheNonStrictComparisonsAreReflexiveAndTheStrictOnesAreNot()
+    {
+        ReplicaId left = Replica(5, 6, 7);
+        ReplicaId right = Replica(5, 6, 7);
+
+        Assert.AreEqual(0, left.CompareTo(right));
+
+        Assert.IsTrue(left <= right);
+        Assert.IsTrue(left >= right);
+        Assert.IsFalse(left < right);
+        Assert.IsFalse(left > right);
     }
 
 

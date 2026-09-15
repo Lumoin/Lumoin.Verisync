@@ -1,0 +1,19 @@
+{
+  "stryker-config": {
+    "test-runner": "vstest",
+    "reporters": [
+      "html",
+      "json",
+      "progress"
+    ],
+    "mutation-level": "Standard",
+    "ignore-mutations": [
+      "string"
+    ],
+    "thresholds": {
+      "high": 80,
+      "low": 60,
+      "break": 0
+    }
+  }
+}

@@ -98,6 +98,21 @@ internal sealed class CasPaxosRegisterTests
     }
 
 
+    /// <summary>Pins that a single-acceptor register reaches quorum on its own promise: a quorum of one
+    /// is exactly the boundary the promise-count check must not exclude.</summary>
+    [TestMethod]
+    public void SingleAcceptorChangeReachesQuorum()
+    {
+        CasPaxosRegister<string> register = CasPaxosRegister<string>.WithAcceptors(1);
+
+        (_, ChangeOutcome<string> outcome) = register.Change(new Ballot(1, R1), _ => "a");
+
+        Assert.IsTrue(outcome.IsChosen);
+        Assert.AreEqual("a", outcome.Value);
+        Assert.AreEqual(1, outcome.AcceptedCount);
+    }
+
+
     private static ReplicaId Replica(byte id)
     {
         Span<byte> buffer = stackalloc byte[ReplicaId.Size];

@@ -203,7 +203,66 @@ internal sealed class ReconciliationVectorTests
         using ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared);
         decoder.Absorb(cellZero);
 
-        Assert.HasCount(0, decoder.DecodedItems);
+        Assert.IsEmpty(decoder.DecodedItems);
+    }
+
+
+    /// <summary>
+    /// Pins the documented guard in <see cref="ReconciliationChecksum.Write"/>: a destination width of
+    /// zero, and a width of nine, are outside the inclusive one-to-eight byte range and must throw
+    /// <see cref="ArgumentException"/> naming <c>destination</c> rather than writing silently.
+    /// </summary>
+    [TestMethod]
+    public void WriteRejectsDestinationWidthOutsideOneToEightBytes()
+    {
+        ArgumentException tooNarrow = Assert.ThrowsExactly<ArgumentException>(() => ReconciliationChecksum.Write(0UL, []));
+        Assert.AreEqual("destination", tooNarrow.ParamName);
+
+        ArgumentException tooWide = Assert.ThrowsExactly<ArgumentException>(() => ReconciliationChecksum.Write(0UL, new byte[9]));
+        Assert.AreEqual("destination", tooWide.ParamName);
+    }
+
+
+    /// <summary>
+    /// Pins the decoder's forward cursor-drain: once W1 and W2 both decode (absorbing symbol index one
+    /// completes the difference), their walks both revisit indices two and three (AssertWalk's indicesW1 and
+    /// indicesW2 above), so every subsequently absorbed cell must have both already-decoded contributions
+    /// folded out before its own purity check, leaving it neutral and adding no further purity check. A
+    /// missing fold at absorb time, a dropped checksum write/fold, or a dropped re-queue of the advancing
+    /// cursor each leave a mixed cell behind and inflate <see cref="ReconciliationDecoder.PurityCheckCount"/>.
+    /// </summary>
+    [TestMethod]
+    public void ForwardCursorDrainKeepsCellsPastCompletionNeutral()
+    {
+        using ReconciliationEncoder left = new(ReconciliationContract.ContentHashDefault, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        left.Add(W1);
+        left.Add(W2);
+        using ReconciliationEncoder right = new(ReconciliationContract.ContentHashDefault, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+
+        using ReconciliationDecoder decoder = new(ReconciliationContract.ContentHashDefault, BaseMemoryPool.Shared);
+
+        //Symbol 0: W1 XOR W2, a degree-two mix; neither decodes yet.
+        decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
+        Assert.IsFalse(decoder.IsComplete);
+
+        //Symbol 1: W1's walk visits index one alone, so it decodes immediately; peeling it out of cell zero
+        //leaves W2 alone there too, so both decode within this one absorb.
+        decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
+        Assert.IsTrue(decoder.IsComplete);
+        Assert.HasCount(2, decoder.DecodedItems);
+        Assert.AreEqual(3L, decoder.PurityCheckCount);
+
+        //Both walks revisit index two next. The freshly absorbed cell there is W1 XOR W2 again (both items'
+        //walks still contribute to every symbol the encoders produce); the forward cursor drain must fold both
+        //decoded contributions out before this cell's own purity check, leaving it neutral and adding none.
+        decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
+        Assert.AreEqual(3L, decoder.PurityCheckCount);
+
+        //Both walks revisit index three too, requiring the cursors re-queued after firing at index two to fire
+        //again rather than being dropped after their first future fold.
+        decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
+        Assert.AreEqual(3L, decoder.PurityCheckCount);
+        Assert.HasCount(2, decoder.DecodedItems);
     }
 
 
@@ -229,5 +288,62 @@ internal sealed class ReconciliationVectorTests
     {
         Assert.AreSequenceEqual(Convert.FromHexString(expectedSumHex), symbol.Sum.ToArray());
         Assert.AreSequenceEqual(Convert.FromHexString(expectedChecksumHex), symbol.Checksum.ToArray());
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationIndexWalk.Next"/> throws <see cref="OverflowException"/>, rather
+    /// than silently wrapping past <see cref="long.MaxValue"/>, when the next index would overflow.
+    /// </summary>
+    [TestMethod]
+    public void NextThrowsWhenTheNextIndexWouldExceedLongMaxValue()
+    {
+        ReconciliationWalkPosition position = new(long.MaxValue, 10UL);
+
+        Assert.ThrowsExactly<OverflowException>(() => ReconciliationIndexWalk.Next(position));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="ReconciliationIndexWalk.Start"/> rejects an empty item with an
+    /// <see cref="ArgumentException"/> naming the <c>item</c> parameter, per its documented contract.
+    /// </summary>
+    [TestMethod]
+    public void StartRejectsAnEmptyItem()
+    {
+        ArgumentException refusal = Assert.ThrowsExactly<ArgumentException>(() => ReconciliationIndexWalk.Start(ReadOnlySpan<byte>.Empty));
+
+        Assert.AreEqual("item", refusal.ParamName);
+    }
+
+
+    /// <summary>Pins that the inner gap cast stays checked: a negative walk index whose computed gap underflows long faults rather than saturating and returning silently.</summary>
+    [TestMethod]
+    public void NextThrowsWhenTheGapCastWouldOverflow()
+    {
+        //ReconciliationWalkPosition is a public, unvalidated record struct, so a negative index is a reachable
+        //input. For long.MinValue the computed gap ceiling falls far below long.MinValue: the original's checked
+        //inner cast throws OverflowException, while an unchecked cast would saturate the double-to-long conversion
+        //to long.MinValue, take Math.Max(1L, long.MinValue) = 1, and return long.MinValue + 1 silently. Only the
+        //inner cast overflows here; the outer index add of long.MinValue + 1 does not.
+        ReconciliationWalkPosition position = new(long.MinValue, 0UL);
+
+        Assert.ThrowsExactly<OverflowException>(() => ReconciliationIndexWalk.Next(position));
+    }
+
+
+    /// <summary>
+    /// Pins the exact index <see cref="ReconciliationIndexWalk.Next"/> derives from a known generator
+    /// state, fixing the splitmix64 finalization step as exclusive-or against the value's own top bits
+    /// rather than inclusive-or (the two diverge for this state: gap 724 vs. 725).
+    /// </summary>
+    [TestMethod]
+    public void NextMixesTheFinalStateWithExclusiveOr()
+    {
+        ReconciliationWalkPosition position = new(5L, 563824UL);
+
+        ReconciliationWalkPosition next = ReconciliationIndexWalk.Next(position);
+
+        Assert.AreEqual(729L, next.Index);
     }
 }

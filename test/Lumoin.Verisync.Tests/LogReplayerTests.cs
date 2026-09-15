@@ -67,7 +67,7 @@ internal sealed class LogReplayerTests
     {
         List<LogReplayResult<string, string, string>> results = await ReplayAll([]).ConfigureAwait(false);
 
-        Assert.HasCount(0, results);
+        Assert.IsEmpty(results);
     }
 
 
@@ -186,5 +186,162 @@ internal sealed class LogReplayerTests
         }
 
         return left.Value.Span.SequenceEqual(right.Value.Span);
+    }
+
+
+    /// <summary>
+    /// Pins that enumerating <see cref="LogReplayer{TState,TOperation,TProof,TContext}.ReplayFromAsync"/> throws
+    /// <see cref="ArgumentNullException"/> naming "entries" when the entry source is <see langword="null"/>. The
+    /// check only fires once enumeration starts, since the method is a `yield`-based async iterator.
+    /// </summary>
+    [TestMethod]
+    public async Task ReplayFromThrowsWhenEntriesIsNull()
+    {
+        LogReplayer<string, string, string, string> replayer = new();
+        LogReplayContext<string, string, string, string> context = NewReaderContext();
+
+        IAsyncEnumerable<LogReplayResult<string, string, string>> stream = replayer.ReplayFromAsync(
+            null!, new EmptyLogState<string>(), null, context, TestContext.CancellationToken);
+
+        ArgumentNullException exception = await Assert.ThrowsExactlyAsync<ArgumentNullException>(async () =>
+        {
+            await foreach(LogReplayResult<string, string, string> _ in stream.WithCancellation(TestContext.CancellationToken).ConfigureAwait(false))
+            {
+            }
+        }).ConfigureAwait(false);
+
+        Assert.AreEqual("entries", exception.ParamName);
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="LogReplayContext{TState,TOperation,TProof,TContext}.OnEntryProcessed"/>, when set, is
+    /// invoked once per successfully processed entry with that entry's own result.
+    /// </summary>
+    [TestMethod]
+    public async Task ReplayInvokesOnEntryProcessedForEachSuccessfulEntry()
+    {
+        LogEntry<string, string> genesis = MakeEntry(0, null, "create", Proof);
+        LogEntry<string, string> update = MakeEntry(1, Digest(0, "create"), "edit", Proof);
+
+        List<LogReplayResult<string, string, string>> notified = [];
+        LogReplayContext<string, string, string, string> context = new()
+        {
+            Classify = entry => entry.Index == 0 ? LogEntryClassification.Genesis : LogEntryClassification.Update,
+            VerifyChainIntegrity = (entry, previousEntryDigest, _) =>
+                ValueTask.FromResult<string?>(NullableEqual(entry.PreviousDigest, previousEntryDigest) ? null : "chain broken"),
+            ValidateProof = (entry, _, _, _) =>
+                ValueTask.FromResult<string?>(entry.Proofs.IsDefaultOrEmpty ? "no proof" : null),
+            ValidationContext = "trust-anchors",
+            Apply = (classification, state, entry, _) => ValueTask.FromResult(ApplyEntry(classification, state, entry)),
+            OnEntryProcessed = (result, _) =>
+            {
+                notified.Add(result);
+
+                return ValueTask.CompletedTask;
+            },
+            TimeProvider = TimeProvider.System
+        };
+
+        LogReplayer<string, string, string, string> replayer = new();
+        List<LogReplayResult<string, string, string>> results = [];
+        await foreach(LogReplayResult<string, string, string> result in
+            replayer.ReplayAsync(ToAsync([genesis, update], TestContext.CancellationToken), context, TestContext.CancellationToken).ConfigureAwait(false))
+        {
+            results.Add(result);
+        }
+
+        Assert.HasCount(2, results);
+        Assert.HasCount(2, notified);
+        Assert.AreSame(results[0], notified[0]);
+        Assert.AreSame(results[1], notified[1]);
+    }
+
+
+    /// <summary>
+    /// Pins that enumerating <see cref="LogReplayer{TState,TOperation,TProof,TContext}.ReplayFromAsync"/> throws
+    /// <see cref="ArgumentNullException"/> naming "startState" when the checkpoint state is <see langword="null"/>.
+    /// </summary>
+    [TestMethod]
+    public async Task ReplayFromThrowsWhenStartStateIsNull()
+    {
+        LogReplayer<string, string, string, string> replayer = new();
+        LogReplayContext<string, string, string, string> context = NewReaderContext();
+
+        IAsyncEnumerable<LogReplayResult<string, string, string>> stream = replayer.ReplayFromAsync(
+            ToAsync([], TestContext.CancellationToken), null!, null, context, TestContext.CancellationToken);
+
+        ArgumentNullException exception = await Assert.ThrowsExactlyAsync<ArgumentNullException>(async () =>
+        {
+            await foreach(LogReplayResult<string, string, string> _ in stream.WithCancellation(TestContext.CancellationToken).ConfigureAwait(false))
+            {
+            }
+        }).ConfigureAwait(false);
+
+        Assert.AreEqual("startState", exception.ParamName);
+    }
+
+
+    /// <summary>
+    /// Pins that when <see cref="LogReplayContext{TState,TOperation,TProof,TContext}.Apply"/> reports an error,
+    /// replay yields exactly one error result for the failing entry and then stops immediately — no further
+    /// entries are processed and no extra success result is produced for the failing entry.
+    /// </summary>
+    [TestMethod]
+    public async Task ReplayStopsOnApplyError()
+    {
+        LogEntry<string, string> genesis = MakeEntry(0, null, "create", Proof);
+        LogEntry<string, string> failing = MakeEntry(1, Digest(0, "create"), "fail", Proof);
+
+        LogReplayContext<string, string, string, string> context = new()
+        {
+            Classify = entry => entry.Index == 0 ? LogEntryClassification.Genesis : LogEntryClassification.Update,
+            VerifyChainIntegrity = (entry, previousEntryDigest, _) =>
+                ValueTask.FromResult<string?>(NullableEqual(entry.PreviousDigest, previousEntryDigest) ? null : "chain broken"),
+            ValidateProof = (entry, _, _, _) =>
+                ValueTask.FromResult<string?>(entry.Proofs.IsDefaultOrEmpty ? "no proof" : null),
+            ValidationContext = "trust-anchors",
+            Apply = (classification, state, entry, _) =>
+                ValueTask.FromResult(entry.Operation == "fail"
+                    ? (state, "apply failed")
+                    : ApplyEntry(classification, state, entry)),
+            TimeProvider = TimeProvider.System
+        };
+
+        LogReplayer<string, string, string, string> replayer = new();
+        List<LogReplayResult<string, string, string>> results = [];
+        await foreach(LogReplayResult<string, string, string> result in
+            replayer.ReplayAsync(ToAsync([genesis, failing], TestContext.CancellationToken), context, TestContext.CancellationToken).ConfigureAwait(false))
+        {
+            results.Add(result);
+        }
+
+        Assert.HasCount(2, results);
+        Assert.IsTrue(results[0].IsSuccess);
+        Assert.IsFalse(results[1].IsSuccess);
+        Assert.AreEqual("apply failed", results[1].Error);
+    }
+
+
+    /// <summary>
+    /// Pins that enumerating <see cref="LogReplayer{TState,TOperation,TProof,TContext}.ReplayFromAsync"/> throws
+    /// <see cref="ArgumentNullException"/> naming "context" when the replay context is <see langword="null"/>.
+    /// </summary>
+    [TestMethod]
+    public async Task ReplayFromThrowsWhenContextIsNull()
+    {
+        LogReplayer<string, string, string, string> replayer = new();
+
+        IAsyncEnumerable<LogReplayResult<string, string, string>> stream = replayer.ReplayFromAsync(
+            ToAsync([], TestContext.CancellationToken), new EmptyLogState<string>(), null, null!, TestContext.CancellationToken);
+
+        ArgumentNullException exception = await Assert.ThrowsExactlyAsync<ArgumentNullException>(async () =>
+        {
+            await foreach(LogReplayResult<string, string, string> _ in stream.WithCancellation(TestContext.CancellationToken).ConfigureAwait(false))
+            {
+            }
+        }).ConfigureAwait(false);
+
+        Assert.AreEqual("context", exception.ParamName);
     }
 }

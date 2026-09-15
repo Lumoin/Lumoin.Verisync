@@ -216,4 +216,28 @@ internal sealed class ProposalPriorityTests
             }
         }
     }
+
+
+    /// <summary>Pins that <c>operator &gt;</c> is strict: two priorities of equal value are never greater than each other.</summary>
+    [TestMethod]
+    public void GreaterThanIsFalseForEqualPriorities()
+    {
+        var low = new ProposalPriority(10);
+        var alsoLow = new ProposalPriority(10);
+
+        Assert.IsFalse(low > alsoLow);
+        Assert.IsFalse(alsoLow > low);
+    }
+
+
+    /// <summary>Pins that <c>operator &lt;</c> is strict: two priorities of equal value are never less than each other.</summary>
+    [TestMethod]
+    public void LessThanIsFalseForEqualPriorities()
+    {
+        var low = new ProposalPriority(10);
+        var alsoLow = new ProposalPriority(10);
+
+        Assert.IsFalse(low < alsoLow);
+        Assert.IsFalse(alsoLow < low);
+    }
 }

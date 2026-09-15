@@ -590,6 +590,161 @@ internal sealed class MerkleLogTreeTests
     }
 
 
+    /// <summary>
+    /// Pins that a negative <c>treeSize</c> is rejected by its own guard (naming "treeSize"), not merely by
+    /// the incidental leafIndex-vs-treeSize check that a non-negative leafIndex would also trip.
+    /// </summary>
+    [TestMethod]
+    public void InclusionProofConstructorRejectsNegativeTreeSizeByName()
+    {
+        ImmutableArray<ReadOnlyMemory<byte>> emptyPath = [];
+
+        ArgumentOutOfRangeException exception = Assert.ThrowsExactly<ArgumentOutOfRangeException>(
+            () => new MerkleInclusionProof(0, -1, emptyPath));
+
+        Assert.AreEqual("treeSize", exception.ParamName);
+    }
+
+
+    /// <summary>
+    /// Pins that a consistency proof with one extra, unconsumed hash appended returns <see langword="false"/>
+    /// because position never reaches the end of the proof array, rather than accepting leftover hashes.
+    /// </summary>
+    [TestMethod]
+    public void ConsistencyVerifyRejectsExtendedPath()
+    {
+        MerkleLogTree tree = Build(DistinctLeaves(7));
+        byte[] newRoot = tree.ComputeRoot(Sha256).ToArray();
+        byte[] oldRoot = Build(DistinctLeaves(4)).ComputeRoot(Sha256).ToArray();
+        MerkleConsistencyProof original = tree.ProveConsistency(4, Sha256);
+
+        ReadOnlyMemory<byte> extra = SHA256.HashData([0xDE, 0xAD]);
+        ImmutableArray<ReadOnlyMemory<byte>> extended = original.Path.Add(extra);
+        MerkleConsistencyProof tampered = new(original.OldTreeSize, original.NewTreeSize, extended);
+
+        Assert.IsFalse(tampered.Verify(oldRoot, newRoot, Sha256));
+    }
+
+
+    /// <summary>Pins that a negative leaf index is rejected before any tree traversal even for an empty
+    /// tree, where Leaves.Length being zero would otherwise let the upper-bound guard (ThrowIfGreaterThanOrEqual)
+    /// stay silent and only the negative-index guard can fire.</summary>
+    [TestMethod]
+    public void ProveInclusionRejectsNegativeLeafIndexOnEmptyTree()
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => MerkleLogTree.Empty.ProveInclusion(-1, Sha256));
+    }
+
+
+    /// <summary>
+    /// Pins that truncating a genuine consistency proof by one hash returns <see langword="false"/> once
+    /// position exhausts the shared-prefix loop's array, rather than indexing past the end of the proof array.
+    /// </summary>
+    [TestMethod]
+    public void ConsistencyVerifyRejectsTruncatedPathInSharedPrefixLoop()
+    {
+        MerkleLogTree tree = Build(DistinctLeaves(7));
+        byte[] newRoot = tree.ComputeRoot(Sha256).ToArray();
+        byte[] oldRoot = Build(DistinctLeaves(6)).ComputeRoot(Sha256).ToArray();
+        MerkleConsistencyProof original = tree.ProveConsistency(6, Sha256);
+
+        ImmutableArray<ReadOnlyMemory<byte>> truncated = original.Path.RemoveAt(original.Path.Length - 1);
+        MerkleConsistencyProof tampered = new(original.OldTreeSize, original.NewTreeSize, truncated);
+
+        Assert.IsFalse(tampered.Verify(oldRoot, newRoot, Sha256));
+    }
+
+
+    /// <summary>
+    /// Pins that a genuine consistency proof truncated to have no path hashes returns <see langword="false"/>
+    /// once position exhausts the extension loop's array, rather than indexing past the end of the proof array.
+    /// </summary>
+    [TestMethod]
+    public void ConsistencyVerifyRejectsTruncatedPathInExtensionLoop()
+    {
+        MerkleLogTree tree = Build(DistinctLeaves(7));
+        byte[] newRoot = tree.ComputeRoot(Sha256).ToArray();
+        byte[] oldRoot = Build(DistinctLeaves(4)).ComputeRoot(Sha256).ToArray();
+        MerkleConsistencyProof original = tree.ProveConsistency(4, Sha256);
+
+        ImmutableArray<ReadOnlyMemory<byte>> truncated = original.Path.RemoveAt(original.Path.Length - 1);
+        MerkleConsistencyProof tampered = new(original.OldTreeSize, original.NewTreeSize, truncated);
+
+        Assert.IsFalse(tampered.Verify(oldRoot, newRoot, Sha256));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="MerkleConsistencyProof.Verify"/> rejects a proof built with a default
+    /// (uninitialized) <see cref="MerkleConsistencyProof.Path"/> by returning <see langword="false"/>
+    /// instead of touching a default <see cref="ImmutableArray{T}"/>.
+    /// </summary>
+    [TestMethod]
+    public void ConsistencyVerifyRejectsDefaultPath()
+    {
+        ImmutableArray<ReadOnlyMemory<byte>> defaultPath = default;
+        MerkleConsistencyProof proof = new(2, 5, defaultPath);
+
+        byte[] someRoot = SHA256.HashData([1, 2, 3]);
+
+        Assert.IsFalse(proof.Verify(someRoot, someRoot, Sha256));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="MerkleInclusionProof.Verify"/> treats a default (uninitialized)
+    /// <see cref="MerkleInclusionProof.Path"/> as structurally invalid and returns <see langword="false"/>,
+    /// never <see langword="true"/>.
+    /// </summary>
+    [TestMethod]
+    public void VerifyWithDefaultPathReturnsFalse()
+    {
+        MerkleInclusionProof proof = new(0, 1, default);
+
+        Assert.IsFalse(proof.Verify(new byte[] { 1 }, new byte[32], Sha256));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="MerkleConsistencyProof.Verify"/> rejects a proof whose <see cref="MerkleConsistencyProof.OldTreeSize"/>
+    /// exceeds its <see cref="MerkleConsistencyProof.NewTreeSize"/> by returning <see langword="false"/> — the
+    /// 'inconsistent sizes' hostile-data case the type's XML doc calls out — instead of attempting reconstruction.
+    /// </summary>
+    /// <remarks>
+    /// The vector is otherwise well-formed: a power-of-two old size and an empty path seed the reconstruction with
+    /// the supplied root, and the old and new roots are equal, so the size rule is the only guard that can refuse
+    /// it. Without that rule the seeded-root reconstruction would return the two equal roots as a match.
+    /// </remarks>
+    [TestMethod]
+    public void ConsistencyVerifyRejectsOldSizeGreaterThanNewSize()
+    {
+        ImmutableArray<ReadOnlyMemory<byte>> emptyPath = [];
+        MerkleConsistencyProof proof = new(4, 3, emptyPath);
+
+        byte[] someRoot = SHA256.HashData([1, 2, 3]);
+
+        Assert.IsFalse(proof.Verify(someRoot, someRoot, Sha256));
+    }
+
+
+    /// <summary>
+    /// Pins that <see cref="MerkleConsistencyProof.Verify"/> rejects a forged proof carrying an empty
+    /// <see cref="MerkleConsistencyProof.Path"/> when <see cref="MerkleConsistencyProof.OldTreeSize"/> is not a
+    /// power of two: the seeded-root fast path does not apply, so an empty path leaves zero proof hashes and
+    /// Verify must return <see langword="false"/> instead of indexing an empty array.
+    /// </summary>
+    [TestMethod]
+    public void ConsistencyVerifyRejectsEmptyPathForNonPowerOfTwoOldSize()
+    {
+        ImmutableArray<ReadOnlyMemory<byte>> emptyPath = [];
+        MerkleConsistencyProof proof = new(3, 5, emptyPath);
+
+        byte[] someRoot = SHA256.HashData([1, 2, 3]);
+
+        Assert.IsFalse(proof.Verify(someRoot, someRoot, Sha256));
+    }
+
+
     private static MerkleLogTree Build(IEnumerable<byte[]> leaves)
     {
         MerkleLogTree tree = MerkleLogTree.Empty;
