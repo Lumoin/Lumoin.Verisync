@@ -13,7 +13,7 @@ namespace Lumoin.Verisync.Tests;
 /// The finding's reproSketch limits its gate analysis to RepairCoordinator.cs:282-299 and never engages the
 /// faithfulness gate the coordinator applies before any heal is staged: HealedSetMatchesGenerationSketch
 /// (RepairCoordinator.cs:336, defined 439-470), which reconciles the healed set (survivors + recovered) against
-/// the GENERATION'S OWN at-rest-verified sketch — a LOCAL record of the exact pre-damage item set that a
+/// the GENERATION'S OWN at-rest-verified sketch -- a LOCAL record of the exact pre-damage item set that a
 /// dishonest peer neither supplies nor knows the content of.
 ///
 /// This probe reproduces the attack against the REAL Verisync encoder/decoder under the PUBLIC well-known key
@@ -24,20 +24,20 @@ namespace Lumoin.Verisync.Tests;
 ///   A dishonest peer, knowing the PUBLIC key, crafts peer set P = S union {x} for any attacker-chosen x != d.
 ///
 /// Round 1 (RepairCoordinator gates A/B): Recover(S, P) peels to exactly {x}, IsComplete, count == 1, peer-only
-/// — every early gate the finding names passes, exactly as it claims.
+/// -- every early gate the finding names passes, exactly as it claims.
 ///
 /// Round 2 (the faithfulness gate the finding omits): the healed set S union {x} = {a, b, c, x} is reconciled
 /// against the generation's own record D = {a, b, c, d}. Because x != d, the residual is {x, d} != empty, so the
 /// gate DECLINES to a named loss instead of writing attacker-chosen content. Knowing the public key does not help
 /// the attacker here: the residual is computed over two LOCAL sketches (the healed set and the generation record),
 /// and no attacker-chosen x other than the genuine d makes {a, b, c, x} reconcile emptily against {a, b, c, d}.
-/// The control (x == d, i.e. the genuine lost item) is the only heal that passes — which is the faithful restore.
+/// The control (x == d, i.e. the genuine lost item) is the only heal that passes -- which is the faithful restore.
 /// </summary>
 [TestClass]
 internal sealed class PeerReconciliationPublicKeyChosenContentGateProbe
 {
     /// <summary>
-    /// ContentHashDefault pins the PUBLIC WellKnownChecksumKeyLow/High — exactly the "public key" the finding
+    /// ContentHashDefault pins the PUBLIC WellKnownChecksumKeyLow/High -- exactly the "public key" the finding
     /// names.
     /// </summary>
     private static ReconciliationContract PublicKeyContract { get; } = ReconciliationContract.ContentHashDefault;
@@ -48,6 +48,7 @@ internal sealed class PeerReconciliationPublicKeyChosenContentGateProbe
     private static byte[] HashD { get; } = Digest("d");
 
 
+    /// <summary>Chosen content can peel under a public key but fails the element faithfulness check.</summary>
     [TestMethod]
     public void ChosenContentPeelsUnderPublicKeyButFailsTheFaithfulnessGate()
     {
@@ -70,7 +71,7 @@ internal sealed class PeerReconciliationPublicKeyChosenContentGateProbe
         Assert.IsTrue(peerOnly, "The recovered attacker item is peer-only (gate B passes).");
         Assert.AreEqual(ToHex(attackerChosen), ToHex(recovered[0].Span), "Round 1 recovers exactly the attacker-chosen item, not the genuine lost d.");
 
-        //Round 2 — the faithfulness gate the finding omits (HealedSetMatchesGenerationSketch): reconcile the
+        //Round 2 -- the faithfulness gate the finding omits (HealedSetMatchesGenerationSketch): reconcile the
         //healed set {a, b, c, attackerChosen} against the generation's own at-rest record D = {a, b, c, d}.
         byte[][] attackerHealed = [HashA, HashB, HashC, attackerChosen];
         (bool residualComplete, int residualCount) = Residual(PublicKeyContract, attackerHealed, preDamage);
@@ -79,10 +80,11 @@ internal sealed class PeerReconciliationPublicKeyChosenContentGateProbe
         //is {attackerChosen, d}, so the coordinator DECLINES to a named loss instead of writing poisoned content.
         bool faithfulnessGatePasses = residualComplete && residualCount == 0;
         Assert.IsFalse(faithfulnessGatePasses, "The attacker-chosen heal fails the faithfulness gate: it is NOT written to the system-of-record.");
-        Assert.AreEqual(2, residualCount, "The residual against the generation's own record is exactly {attackerChosen, d} — non-empty, so the heal is rejected.");
+        Assert.AreEqual(2, residualCount, "The residual against the generation's own record is exactly {attackerChosen, d} -- non-empty, so the heal is rejected.");
     }
 
 
+    /// <summary>Only the genuine missing item passes the element faithfulness check.</summary>
     [TestMethod]
     public void OnlyTheGenuineLostItemPassesTheFaithfulnessGate()
     {
@@ -94,7 +96,7 @@ internal sealed class PeerReconciliationPublicKeyChosenContentGateProbe
         (bool residualComplete, int residualCount) = Residual(PublicKeyContract, faithfulHealed, preDamage);
 
         Assert.IsTrue(residualComplete, "A faithful heal reconciles to a complete peel against the generation's own record.");
-        Assert.AreEqual(0, residualCount, "A faithful heal has an EMPTY residual — the only case the gate accepts.");
+        Assert.AreEqual(0, residualCount, "A faithful heal has an EMPTY residual -- the only case the gate accepts.");
     }
 
 
@@ -131,7 +133,7 @@ internal sealed class PeerReconciliationPublicKeyChosenContentGateProbe
     {
         using ReconciliationEncoder left = LoadEncoder(contract, leftItems);
         using ReconciliationEncoder right = LoadEncoder(contract, rightItems);
-        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         int cap = 100 + (20 * (leftItems.Length + rightItems.Length));
         for(int n = 0; n < cap && !decoder.IsComplete; n++)
@@ -157,9 +159,10 @@ internal sealed class PeerReconciliationPublicKeyChosenContentGateProbe
     }
 
 
+    /// <summary>Creates an encoder seeded with the supplied items.</summary>
     private static ReconciliationEncoder LoadEncoder(ReconciliationContract contract, byte[][] items)
     {
-        ReconciliationEncoder encoder = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        ReconciliationEncoder encoder = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(byte[] item in items)
         {
             encoder.Add(item);
@@ -169,12 +172,14 @@ internal sealed class PeerReconciliationPublicKeyChosenContentGateProbe
     }
 
 
+    /// <summary>Returns the SHA-256 digest of the element's UTF-8 bytes.</summary>
     private static byte[] Digest(string element)
     {
         return SHA256.HashData(Encoding.UTF8.GetBytes(element));
     }
 
 
+    /// <summary>Returns the hexadecimal representation of the supplied bytes.</summary>
     private static string ToHex(ReadOnlySpan<byte> bytes)
     {
         return Convert.ToHexString(bytes);

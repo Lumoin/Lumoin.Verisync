@@ -1,5 +1,6 @@
 using Lumoin.Base;
 using Lumoin.Verisync.Core;
+using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.Diagnostics.Metrics;
 using System.Security.Cryptography;
@@ -15,13 +16,13 @@ namespace Lumoin.Verisync.Tests;
 /// a full session, and after every pooled object is disposed the rented count must equal the returned count and
 /// exceed zero, so every pooled backing was returned. One test drives a direct encode, stream, decode exchange
 /// over a fresh <see cref="BaseMemoryPool"/>; the other drives the two-session in-memory reconcile with a pool
-/// injected into both sessions. A rented/returned imbalance is a leaked rental — a hard CI failure, never
+/// injected into both sessions. A rented/returned imbalance is a leaked rental -- a hard CI failure, never
 /// tolerated.
 /// </summary>
 /// <remarks>
 /// Both tests observe the pool's process-global rental instruments, so the class is marked
 /// <see cref="DoNotParallelizeAttribute"/> to keep their measurement totals free of rentals emitted by other
-/// pool-using tests running concurrently — the same isolation the other metric-observing suites use.
+/// pool-using tests running concurrently -- the same isolation the other metric-observing suites use.
 /// </remarks>
 [TestClass]
 [DoNotParallelize]
@@ -55,6 +56,425 @@ internal sealed class ReconciliationMemoryAccountabilityTests
     public TestContext TestContext { get; set; } = null!;
 
 
+    /// <summary>A faulting cell owner still releases the other backing and a retried disposal does nothing.</summary>
+    [TestMethod]
+    public void AFaultingCellReleaseStillReturnsTheOtherCellBuffer()
+    {
+        using BaseMemoryPool inner = new();
+        using ThrowingOwnerMemoryPool pool = new(inner, throwingRent: 1);
+        ReconciliationCellBuffer buffer = new(8, 8, pool, 4);
+        TestContext.WriteLine($"Rentals before disposal: {pool.Rented}.");
+        Assert.AreEqual(2, pool.Rented);
+
+        InvalidOperationException failure = Assert.ThrowsExactly<InvalidOperationException>(() => buffer.Dispose());
+
+        Assert.AreEqual("The rental cannot be released.", failure.Message);
+        Assert.AreEqual(1, pool.FaultedReleases);
+        Assert.IsGreaterThan(1, pool.Rented);
+        Assert.AreEqual(pool.Rented - 1, pool.Returned);
+
+        int rented = pool.Rented;
+        int returned = pool.Returned;
+        int faultedReleases = pool.FaultedReleases;
+
+        buffer.Dispose();
+
+        Assert.AreEqual(rented, pool.Rented);
+        Assert.AreEqual(returned, pool.Returned);
+        Assert.AreEqual(faultedReleases, pool.FaultedReleases);
+        GC.KeepAlive(buffer);
+    }
+
+
+    /// <summary>A faulting block owner still releases the other blocks and leaves the arena disposed.</summary>
+    [TestMethod]
+    public void AFaultingBlockReleaseStillReturnsTheOtherBlocks()
+    {
+        using BaseMemoryPool inner = new();
+        using ThrowingOwnerMemoryPool pool = new(inner, throwingRent: 1);
+        ReconciliationItemArena arena = new(8, pool, itemCapacityHint: 0);
+        Span<byte> item = stackalloc byte[8];
+        for(int i = 0; i < 65_537; i++)
+        {
+            BinaryPrimitives.WriteInt64LittleEndian(item, i);
+            _ = arena.Append(item);
+        }
+
+        TestContext.WriteLine($"Rentals before disposal: {pool.Rented}.");
+        Assert.AreEqual(2, pool.Rented);
+
+        InvalidOperationException failure = Assert.ThrowsExactly<InvalidOperationException>(() => arena.Dispose());
+
+        Assert.AreEqual("The rental cannot be released.", failure.Message);
+        Assert.AreEqual(1, pool.FaultedReleases);
+        Assert.IsGreaterThan(1, pool.Rented);
+        Assert.AreEqual(pool.Rented - 1, pool.Returned);
+        Assert.ThrowsExactly<ObjectDisposedException>(() => arena.Append(A1));
+
+        int rented = pool.Rented;
+        int returned = pool.Returned;
+        int faultedReleases = pool.FaultedReleases;
+
+        arena.Dispose();
+
+        Assert.AreEqual(rented, pool.Rented);
+        Assert.AreEqual(returned, pool.Returned);
+        Assert.AreEqual(faultedReleases, pool.FaultedReleases);
+        GC.KeepAlive(arena);
+    }
+
+
+    /// <summary>A faulting cell owner still releases the encoder items, cursors, and membership storage.</summary>
+    [TestMethod]
+    public void AFaultingCellReleaseStillReleasesTheEncodersItemsAndCursors()
+    {
+        using BaseMemoryPool inner = new();
+        using ThrowingOwnerMemoryPool pool = new(inner, throwingRent: 1);
+        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict,
+            pool, new ReconciliationCapacityHint(items: 4, cells: 4));
+        encoder.Add(A1);
+        encoder.Add(A2);
+        _ = encoder.ProduceNext();
+        TestContext.WriteLine($"Rentals before disposal: {pool.Rented}.");
+        Assert.AreEqual(3, pool.Rented);
+
+        InvalidOperationException failure = Assert.ThrowsExactly<InvalidOperationException>(() => encoder.Dispose());
+
+        Assert.AreEqual("The rental cannot be released.", failure.Message);
+        Assert.AreEqual(1, pool.FaultedReleases);
+        Assert.IsGreaterThan(1, pool.Rented);
+        Assert.AreEqual(pool.Rented - 1, pool.Returned);
+        Assert.AreEqual(0, encoder.PendingCursorCount);
+        Assert.AreEqual(0, encoder.MemberCount);
+
+        int rented = pool.Rented;
+        int returned = pool.Returned;
+        int faultedReleases = pool.FaultedReleases;
+
+        encoder.Dispose();
+
+        Assert.AreEqual(rented, pool.Rented);
+        Assert.AreEqual(returned, pool.Returned);
+        Assert.AreEqual(faultedReleases, pool.FaultedReleases);
+        GC.KeepAlive(encoder);
+    }
+
+
+    /// <summary>A faulting cell owner still releases the decoder items and a retried disposal does nothing.</summary>
+    [TestMethod]
+    public void AFaultingCellReleaseStillReleasesTheDecodersItems()
+    {
+        using BaseMemoryPool inner = new();
+        using ThrowingOwnerMemoryPool pool = new(inner, throwingRent: 1);
+        ReconciliationDecoder decoder = new(StructuralContract, pool, new ReconciliationCapacityHint(items: 4, cells: 4));
+        using(ReconciliationEncoder source = new(StructuralContract, ReconciliationInjectivityEnforcement.None,
+            BaseMemoryPool.Shared, ReconciliationCapacityHint.None))
+        {
+            source.Add(A1);
+            decoder.Absorb(source.ProduceNext());
+        }
+
+        Assert.HasCount(1, decoder.DecodedItems);
+        TestContext.WriteLine($"Rentals before disposal: {pool.Rented}.");
+        Assert.AreEqual(3, pool.Rented);
+
+        InvalidOperationException failure = Assert.ThrowsExactly<InvalidOperationException>(() => decoder.Dispose());
+
+        Assert.AreEqual("The rental cannot be released.", failure.Message);
+        Assert.AreEqual(1, pool.FaultedReleases);
+        Assert.IsGreaterThan(1, pool.Rented);
+        Assert.AreEqual(pool.Rented - 1, pool.Returned);
+
+        int rented = pool.Rented;
+        int returned = pool.Returned;
+        int faultedReleases = pool.FaultedReleases;
+
+        decoder.Dispose();
+
+        Assert.AreEqual(rented, pool.Rented);
+        Assert.AreEqual(returned, pool.Returned);
+        Assert.AreEqual(faultedReleases, pool.FaultedReleases);
+        GC.KeepAlive(decoder);
+    }
+
+
+    /// <summary>A faulting encoder release still releases the session decoder and a retried disposal does nothing.</summary>
+    [TestMethod]
+    public void AFaultingEncoderReleaseStillReleasesTheSessionsDecoder()
+    {
+        using BaseMemoryPool inner = new();
+        using ThrowingOwnerMemoryPool pool = new(inner, throwingRent: 1);
+        AntiEntropySession<string> session = new(AntiEntropyRole.Initiator, StructuralContract, [A1, A2], DefaultBatchSize, pool);
+        TestContext.WriteLine($"Rentals before disposal: {pool.Rented}.");
+        Assert.AreEqual(5, pool.Rented);
+
+        InvalidOperationException failure = Assert.ThrowsExactly<InvalidOperationException>(() => session.Dispose());
+
+        Assert.AreEqual("The rental cannot be released.", failure.Message);
+        Assert.AreEqual(1, pool.FaultedReleases);
+        Assert.IsGreaterThan(1, pool.Rented);
+        Assert.AreEqual(pool.Rented - 1, pool.Returned);
+
+        int rented = pool.Rented;
+        int returned = pool.Returned;
+        int faultedReleases = pool.FaultedReleases;
+
+        session.Dispose();
+
+        Assert.AreEqual(rented, pool.Rented);
+        Assert.AreEqual(returned, pool.Returned);
+        Assert.AreEqual(faultedReleases, pool.FaultedReleases);
+        GC.KeepAlive(session);
+    }
+
+
+    /// <summary>A snapshot responder rents fewer buffers because only the initiator builds a decoder.</summary>
+    [TestMethod]
+    public void ASnapshotResponderSessionRentsFewerBuffersThanASnapshotInitiator()
+    {
+        EnumerateReconciliationItemsDelegate enumerate = (visit, _) =>
+        {
+            visit(A1);
+            visit(A2);
+        };
+
+        long initiatorRented;
+        using(RentalAccountant accountant = new())
+        {
+            using BaseMemoryPool pool = new();
+            using(new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, enumerate, DefaultBatchSize, pool))
+            {
+            }
+
+            initiatorRented = accountant.Rented;
+        }
+
+        long responderRented;
+        using(RentalAccountant accountant = new())
+        {
+            using BaseMemoryPool pool = new();
+            using(new AntiEntropySession<string>(AntiEntropyRole.Responder, StructuralContract, enumerate, DefaultBatchSize, pool))
+            {
+            }
+
+            responderRented = accountant.Rented;
+        }
+
+        TestContext.WriteLine($"Initiator rentals: {initiatorRented}; responder rentals: {responderRented}.");
+        Assert.IsGreaterThan(0L, responderRented);
+        Assert.IsLessThan(initiatorRented, responderRented);
+    }
+
+
+    /// <summary>Disposing a still-referenced snapshot session returns every rental while its pool remains live.</summary>
+    [TestMethod]
+    public void DisposingASnapshotSessionReturnsEveryRentalWhileThePoolIsLive()
+    {
+        using RentalAccountant accountant = new();
+        using BaseMemoryPool pool = new();
+        EnumerateReconciliationItemsDelegate enumerate = (visit, _) => visit(A1);
+        AntiEntropySession<string> session = new(AntiEntropyRole.Responder, StructuralContract, enumerate, DefaultBatchSize, pool);
+        TestContext.WriteLine($"Active rentals before disposal: {accountant.NetActive}.");
+        Assert.IsGreaterThan(0L, accountant.NetActive);
+
+        session.Dispose();
+
+        Assert.AreEqual(0L, accountant.NetActive);
+        GC.KeepAlive(session);
+    }
+
+
+    /// <summary>A failed pending-queue allocation propagates before any cell rental is acquired.</summary>
+    [TestMethod]
+    public void AnItemHintPastTheQueueBoundFailsBeforeAnyRental()
+    {
+        using RentalAccountant accountant = new();
+        using BaseMemoryPool pool = new();
+
+        OutOfMemoryException fault = Assert.ThrowsExactly<OutOfMemoryException>(() =>
+            new ReconciliationEncoder(StructuralContract, ReconciliationInjectivityEnforcement.None,
+                pool, new ReconciliationCapacityHint(items: int.MaxValue, cells: 0)));
+
+        TestContext.WriteLine($"{fault.GetType().FullName}: {fault.Message}");
+        Assert.AreEqual(0L, accountant.Rented);
+        Assert.AreEqual(0L, accountant.NetActive);
+    }
+
+
+    /// <summary>A faulting retired release preserves the grown pair and the live cells without appending a cell.</summary>
+    [TestMethod]
+    public void AFaultingRetiredReleaseOnGrowthKeepsTheBufferUsable()
+    {
+        using BaseMemoryPool inner = new();
+        using ThrowingOwnerMemoryPool pool = new(inner, throwingRent: 1);
+        ReconciliationCellBuffer buffer = new(8, 8, pool, cellCapacityHint: 0);
+        for(int i = 0; i < 4; i++)
+        {
+            _ = buffer.Append();
+        }
+
+        A1.CopyTo(buffer.SumAt(0));
+
+        InvalidOperationException failure = Assert.ThrowsExactly<InvalidOperationException>(() => buffer.Append());
+
+        Assert.AreEqual("The rental cannot be released.", failure.Message);
+        Assert.AreEqual(1, pool.FaultedReleases);
+        Assert.AreEqual(4, pool.Rented);
+        Assert.AreEqual(1, pool.Returned);
+        Assert.AreEqual(4, buffer.Count);
+
+        Assert.AreEqual(4, buffer.Append());
+        Assert.AreEqual(4, pool.Rented);
+        Assert.AreSequenceEqual(new byte[8], buffer.SumAt(4).ToArray());
+        Assert.AreSequenceEqual(A1, buffer.SumAt(0).ToArray());
+
+        buffer.Dispose();
+
+        Assert.AreEqual(3, pool.Returned);
+        Assert.AreEqual(1, pool.FaultedReleases);
+        GC.KeepAlive(buffer);
+    }
+
+
+    /// <summary>Growth clears retired backings before returning them and preserves live cells in the grown pair.</summary>
+    [TestMethod]
+    public void ARetiredBackingIsClearedBeforeItReturnsToThePool()
+    {
+        using BaseMemoryPool inner = new();
+        using ReturnObservingMemoryPool pool = new(inner);
+        using ReconciliationCellBuffer buffer = new(8, 8, pool, cellCapacityHint: 0);
+        for(int i = 0; i < 4; i++)
+        {
+            _ = buffer.Append();
+            buffer.SumAt(i).Fill(0xFF);
+            buffer.ChecksumAt(i).Fill(0xFF);
+        }
+
+        Assert.AreEqual(4, buffer.Append());
+
+        Assert.AreEqual(2, pool.Returned);
+        Assert.AreEqual(0, pool.DirtyReturns);
+        foreach(byte value in buffer.SumAt(0))
+        {
+            Assert.AreEqual((byte)0xFF, value);
+        }
+
+        Assert.AreSequenceEqual(new byte[8], buffer.SumAt(4).ToArray());
+
+        buffer.Dispose();
+
+        Assert.AreEqual(4, pool.Returned);
+        Assert.AreEqual(0, pool.DirtyReturns);
+    }
+
+
+    /// <summary>A refused first decoder rental releases every rental held by the session's item-list encoder.</summary>
+    [TestMethod]
+    public void AFailedDecoderRentReleasesTheSessionsEncoder()
+    {
+        using BaseMemoryPool inner = new();
+        using RefusingRentMemoryPool pool = new(inner, refusedRent: 4);
+
+        InvalidOperationException failure = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, [A1, A2], DefaultBatchSize, pool));
+
+        Assert.AreEqual("The rental cannot be made.", failure.Message);
+        Assert.AreEqual(1, pool.RefusedRents);
+        Assert.AreEqual(3, pool.Rented);
+        Assert.AreEqual(3, pool.Returned);
+    }
+
+
+    /// <summary>A refused first decoder rental releases both rentals held by the session's snapshot encoder.</summary>
+    [TestMethod]
+    public void AFailedDecoderRentReleasesTheSessionsSnapshotEncoder()
+    {
+        using BaseMemoryPool inner = new();
+        using RefusingRentMemoryPool pool = new(inner, refusedRent: 3);
+        EnumerateReconciliationItemsDelegate enumerate = (visit, _) => visit(A1);
+
+        InvalidOperationException failure = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, enumerate, DefaultBatchSize, pool));
+
+        Assert.AreEqual("The rental cannot be made.", failure.Message);
+        Assert.AreEqual(1, pool.RefusedRents);
+        Assert.AreEqual(2, pool.Rented);
+        Assert.AreEqual(2, pool.Returned);
+    }
+
+
+    /// <summary>A construction failure and a release failure propagate together while every other rental is returned.</summary>
+    [TestMethod]
+    public void AFailedConstructionWhoseReleaseAlsoFailsCarriesBothFailures()
+    {
+        using BaseMemoryPool inner = new();
+        using RefusingRentMemoryPool refusing = new(inner, refusedRent: 4);
+        using ThrowingOwnerMemoryPool pool = new(refusing, throwingRent: 1);
+
+        AggregateException failure = Assert.ThrowsExactly<AggregateException>(() =>
+            new AntiEntropySession<string>(AntiEntropyRole.Initiator, StructuralContract, [A1, A2], DefaultBatchSize, pool));
+
+        Assert.HasCount(2, failure.InnerExceptions);
+        InvalidOperationException constructionFailure = Assert.IsInstanceOfType<InvalidOperationException>(failure.InnerExceptions[0]);
+        InvalidOperationException releaseFailure = Assert.IsInstanceOfType<InvalidOperationException>(failure.InnerExceptions[1]);
+        Assert.AreEqual("The rental cannot be made.", constructionFailure.Message);
+        Assert.AreEqual("The rental cannot be released.", releaseFailure.Message);
+        Assert.AreEqual(1, pool.FaultedReleases);
+        Assert.AreEqual(2, refusing.Returned);
+    }
+
+
+    /// <summary>A large item hint leaves the arena lazy with fixed blocks and sizes cell rentals only by the cell hint.</summary>
+    [TestMethod]
+    public void ALargeItemHintRentsOnlySmallCellsUntilTheFirstAdd()
+    {
+        using RentalAccountant accountant = new();
+        using var meter = new Meter(BaseMemoryPoolMetrics.MeterName);
+        List<int> segmentSizes = [];
+        using BaseMemoryPool pool = new(meter, capacityStrategy: size =>
+        {
+            segmentSizes.Add(size);
+
+            return 1;
+        });
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None,
+            pool, new ReconciliationCapacityHint(items: 1 << 20, cells: 8));
+
+        Assert.AreEqual(2L, accountant.Rented);
+        Assert.AreEqual(2L, accountant.NetActive);
+        Assert.AreSequenceEqual(new[] { 8 * StructuralContract.ItemWidth, 8 * StructuralContract.ChecksumWidth }, segmentSizes);
+
+        encoder.Add(A1);
+
+        Assert.AreEqual(3L, accountant.Rented);
+        Assert.AreEqual(3L, accountant.NetActive);
+        Assert.AreEqual(65_536 * StructuralContract.ItemWidth, segmentSizes[^1]);
+    }
+
+
+    /// <summary>Disposing a still-referenced encoder returns every rental while its pool remains live.</summary>
+    [TestMethod]
+    public void ADisposedReferencedEncoderLeavesNoOutstandingRentals()
+    {
+        using RentalAccountant accountant = new();
+        using BaseMemoryPool pool = new();
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict,
+            pool, new ReconciliationCapacityHint(items: 16, cells: 8));
+        encoder.Add(A1);
+        encoder.Add(A2);
+        _ = encoder.ProduceNext();
+        Assert.IsGreaterThan(0L, accountant.NetActive);
+
+        encoder.Dispose();
+
+        Assert.AreEqual(0L, accountant.NetActive);
+        Assert.AreEqual(accountant.Rented, accountant.Returned);
+        Assert.ThrowsExactly<ObjectDisposedException>(() => encoder.ProduceNext());
+        GC.KeepAlive(encoder);
+    }
+
+
+    /// <summary>An encode and decode exchange returns every pooled rental on disposal.</summary>
     [TestMethod]
     public void OneEncodeStreamDecodeSessionLeaksNoPooledRentals()
     {
@@ -66,17 +486,17 @@ internal sealed class ReconciliationMemoryAccountabilityTests
             //A small structural difference over the well-known key: the left set holds A1, A2, B1, the right
             //holds A1, A2, A3, so the symmetric difference is the two items B1 and A3. Both encoders and the
             //decoder rent their cell backings from the same pool inside this scope.
-            using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, pool, cellCapacityHint: 0);
+            using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, pool, ReconciliationCapacityHint.None);
             left.Add(A1);
             left.Add(A2);
             left.Add(B1);
 
-            using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, pool, cellCapacityHint: 0);
+            using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, pool, ReconciliationCapacityHint.None);
             right.Add(A1);
             right.Add(A2);
             right.Add(A3);
 
-            using ReconciliationDecoder decoder = new(StructuralContract, pool, cellCapacityHint: 0);
+            using ReconciliationDecoder decoder = new(StructuralContract, pool, ReconciliationCapacityHint.None);
 
             //Absorb the symbol-wise difference until the peel completes; the cap is generous for a difference of
             //two and the loop stops the moment cell zero clears.
@@ -131,19 +551,17 @@ internal sealed class ReconciliationMemoryAccountabilityTests
     }
 
 
+    /// <summary>Encoder and decoder growth returns every cell and arena rental on disposal.</summary>
     [TestMethod]
     public void EncoderAndDecoderArenaGrowthLeavesNoActiveRentals()
     {
         const int Stride = 8;
 
-        //A shared corpus plus a per-side surplus, all distinct: the left set is the shared corpus and a few
-        //hundred left-only items, the right set is the shared corpus and a few hundred right-only items, so the
-        //symmetric difference the decoder recovers is the few-hundred-item left surplus and the few-hundred-item
-        //right surplus. A corpus and difference this large force both the cell buffers AND the arenas across
-        //several doubling block grows on the pooled path, with a zero hint pinning the small initial blocks.
-        const int SharedCount = 200;
-        const int LeftOnlyCount = 200;
-        const int RightOnlyCount = 200;
+        //Each encoder holds 65,537 distinct items and the decoder recovers 65,538, so all three arenas
+        //cross a fixed-block boundary while the cell buffers grow with the produced stream.
+        const int SharedCount = 32_768;
+        const int LeftOnlyCount = 32_769;
+        const int RightOnlyCount = 32_769;
         const int ExpectedDecoded = LeftOnlyCount + RightOnlyCount;
 
         RentalAccountant accountant = new();
@@ -151,8 +569,8 @@ internal sealed class ReconciliationMemoryAccountabilityTests
         {
             using BaseMemoryPool pool = new();
 
-            using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, pool, cellCapacityHint: 0);
-            using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, pool, cellCapacityHint: 0);
+            using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, pool, ReconciliationCapacityHint.None);
+            using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, pool, ReconciliationCapacityHint.None);
 
             for(int n = 0; n < SharedCount; n++)
             {
@@ -171,10 +589,10 @@ internal sealed class ReconciliationMemoryAccountabilityTests
                 right.Add(BuildArenaItem(Stride, 2, n));
             }
 
-            using ReconciliationDecoder decoder = new(StructuralContract, pool, cellCapacityHint: 0);
+            using ReconciliationDecoder decoder = new(StructuralContract, pool, ReconciliationCapacityHint.None);
 
-            //The cap is generous for a difference of a few hundred; the loop stops the moment the peel completes.
-            const int Cap = 4000;
+            //The symbol cap bounds the exchange; the whole difference peels within it.
+            const int Cap = 400_000;
             for(int n = 0; n < Cap && !decoder.IsComplete; n++)
             {
                 decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
@@ -307,19 +725,19 @@ internal sealed class ReconciliationMemoryAccountabilityTests
         IReadOnlyList<ReadOnlyMemory<byte>> responderItems,
         CancellationToken cancellationToken)
     {
-        using ReconciliationEncoder local = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder local = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in initiatorItems)
         {
             local.Add(item.Span);
         }
 
-        using ReconciliationEncoder remote = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in responderItems)
         {
             remote.Add(item.Span);
         }
 
-        using ReconciliationDecoder mirror = new(contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder mirror = new(contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         int symbols = 0;
         while(!mirror.IsComplete)
         {
@@ -337,12 +755,14 @@ internal sealed class ReconciliationMemoryAccountabilityTests
     }
 
 
+    /// <summary>Creates a sender that forwards envelopes to the peer session.</summary>
     private static SendReconciliationEnvelopeDelegate<string> Forward(AntiEntropySession<string> peer)
     {
         return (envelope, cancellationToken) => ForwardTo(peer, envelope, cancellationToken);
     }
 
 
+    /// <summary>Submits an envelope to the peer and discards it if the peer has already closed its channel.</summary>
     private static ValueTask ForwardTo(AntiEntropySession<string> peer, ReconciliationEnvelope<string> envelope, CancellationToken cancellationToken)
     {
         try
@@ -352,6 +772,7 @@ internal sealed class ReconciliationMemoryAccountabilityTests
         catch(ChannelClosedException)
         {
             //A completed peer is a wound-down session; dropping the late send is exactly the transport's behaviour.
+
             return ValueTask.CompletedTask;
         }
     }
@@ -381,6 +802,7 @@ internal sealed class ReconciliationMemoryAccountabilityTests
     }
 
 
+    /// <summary>Returns the set elements in sorted order.</summary>
     private static string[] Sorted(OrSet<string> set)
     {
         return [.. set.Elements.Order()];

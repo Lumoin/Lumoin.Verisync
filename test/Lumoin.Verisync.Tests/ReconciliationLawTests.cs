@@ -47,6 +47,7 @@ internal sealed class ReconciliationLawTests
     }
 
 
+    /// <summary>Equivalent sets produce identical streams regardless of their construction history.</summary>
     [TestMethod]
     public void HistoryIsErasedRegardlessOfConstruction()
     {
@@ -56,7 +57,7 @@ internal sealed class ReconciliationLawTests
 
             //Transient items added then removed, net items added by odd repetition (add, remove, add), and
             //ProduceNext calls interleaved at points driven by the case seed.
-            ReconciliationEncoder encoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+            ReconciliationEncoder encoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
             byte[] transient = ItemOf(3_000_001L + (input.noise % 1000));
             int produced = 0;
 
@@ -94,6 +95,7 @@ internal sealed class ReconciliationLawTests
     }
 
 
+    /// <summary>Decoding completes within the symbol cap and recovers exactly the symmetric difference.</summary>
     [TestMethod]
     public void DecodeCompletesWithinTheCapAndIsExact()
     {
@@ -105,7 +107,7 @@ internal sealed class ReconciliationLawTests
             int d = difference.LeftOnly.Length + difference.RightOnly.Length;
             int cap = 100 + (20 * d);
 
-            ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
+            ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
             int absorbed = 0;
             while(!decoder.IsComplete && absorbed < cap)
             {
@@ -129,6 +131,7 @@ internal sealed class ReconciliationLawTests
     }
 
 
+    /// <summary>Equal sets reconcile after one symbol with no decoded items.</summary>
     [TestMethod]
     public void EqualSetsAreQuiescentAfterOneSymbol()
     {
@@ -138,7 +141,7 @@ internal sealed class ReconciliationLawTests
             ReconciliationEncoder left = Encoder(items);
             ReconciliationEncoder right = Encoder(items);
 
-            ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
+            ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
             decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
 
             Assert.IsTrue(decoder.IsComplete);
@@ -147,6 +150,7 @@ internal sealed class ReconciliationLawTests
     }
 
 
+    /// <summary>Additional symbols preserve decoded knowledge after completion.</summary>
     [TestMethod]
     public void KnowledgeIsMonotoneAfterCompletion()
     {
@@ -158,7 +162,7 @@ internal sealed class ReconciliationLawTests
             int d = difference.LeftOnly.Length + difference.RightOnly.Length;
             int cap = 100 + (20 * d);
 
-            ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
+            ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
             int absorbed = 0;
             while(!decoder.IsComplete && absorbed < cap)
             {
@@ -181,6 +185,7 @@ internal sealed class ReconciliationLawTests
     }
 
 
+    /// <summary>A one-bit corruption cannot produce an accepted incorrect difference in the tested vectors.</summary>
     [TestMethod]
     public void FlippingOneBitNeverYieldsAWrongSet()
     {
@@ -201,7 +206,7 @@ internal sealed class ReconciliationLawTests
             int corruptByte = (input.position / cap) % fieldWidth;
             int corruptBit = input.position % 8;
 
-            ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
+            ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
             int absorbed = 0;
             while(!decoder.IsComplete && absorbed < cap)
             {
@@ -287,9 +292,10 @@ internal sealed class ReconciliationLawTests
     }
 
 
+    /// <summary>Creates an encoder seeded with the supplied items.</summary>
     private static ReconciliationEncoder Encoder(byte[][] items)
     {
-        ReconciliationEncoder encoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        ReconciliationEncoder encoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(byte[] item in items)
         {
             encoder.Add(item);
@@ -299,6 +305,7 @@ internal sealed class ReconciliationLawTests
     }
 
 
+    /// <summary>Returns sorted hexadecimal representations of the supplied items.</summary>
     private static IEnumerable<string> HexSet(byte[][] items)
     {
         return items.Select(Convert.ToHexString).Order();
@@ -308,6 +315,7 @@ internal sealed class ReconciliationLawTests
     private static byte[] ItemOf(long seed) => BitConverter.GetBytes(seed);
 
 
+    /// <summary>Generates a bucket of distinct deterministic items from the supplied base seed.</summary>
     private static Gen<byte[][]> GenBucket(long baseSeed)
     {
         return Gen.Int[0, 999].Array[0, 8].Select(offsets =>

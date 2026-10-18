@@ -8,8 +8,8 @@ namespace Lumoin.Verisync.Tests;
 /// Pins the decoder's per-decode masquerade-bound surface: <see cref="ReconciliationDecoder.PurityCheckCount"/>
 /// counts the non-neutral purity evaluations a decode runs (the union-bound multiplier), and
 /// <see cref="ReconciliationDecoder.FalseDecodeProbabilityBound"/> is that count against the per-cell bound
-/// <c>2^(−8·ChecksumWidth)</c>, clamped to one. Covers a fresh decoder's zero baseline, a real
-/// production-width-eight decode whose bound is the exact <c>PurityCheckCount·2^(−64)</c> and negligibly small,
+/// <c>2^(-8*ChecksumWidth)</c>, clamped to one. Covers a fresh decoder's zero baseline, a real
+/// production-width-eight decode whose bound is the exact <c>PurityCheckCount*2^(-64)</c> and negligibly small,
 /// and a deliberately weak factory-width-one decode driven far enough to saturate the bound to one.
 /// </summary>
 [TestClass]
@@ -22,10 +22,11 @@ internal sealed class ReconciliationDecodeBoundTests
         ReconciliationContract.ForAdversarialTesting(ReconciliationItemDomain.Structural, 8, 1, ReconciliationContract.WellKnownChecksumKeyLow, ReconciliationContract.WellKnownChecksumKeyHigh);
 
 
+    /// <summary>A fresh decoder has no purity checks and a zero false-decode bound.</summary>
     [TestMethod]
     public void FreshDecoderHasNoPurityChecksAndAVacantBound()
     {
-        using ReconciliationDecoder decoder = new(ProductionContract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(ProductionContract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         Assert.AreEqual(0L, decoder.PurityCheckCount);
         Assert.AreEqual(0.0, decoder.FalseDecodeProbabilityBound);
@@ -71,15 +72,15 @@ internal sealed class ReconciliationDecodeBoundTests
     /// </remarks>
     private static ReconciliationDecoder DecodeOverOneSidedDifference(ReconciliationContract contract, int itemCount, int absorbCount, bool stopAtCompletion)
     {
-        using ReconciliationEncoder left = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder left = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         for(int i = 0; i < itemCount; i++)
         {
             left.Add(BitConverter.GetBytes((long)(i + 1)));
         }
 
-        using ReconciliationEncoder empty = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder empty = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
-        ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared);
+        ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         for(int n = 0; n < absorbCount; n++)
         {
             decoder.Absorb(left.ProduceNext().Combine(empty.ProduceNext()));

@@ -95,8 +95,8 @@ internal sealed class ReconciliationSocketTests
 
         Assert.AreEqual(1, second.AbsorbedCount);
         Assert.AreEqual(0, second.DecodedCount);
-        Assert.HasCount(0, second.Lacks);
-        Assert.HasCount(0, second.Surplus);
+        Assert.IsEmpty(second.Lacks);
+        Assert.IsEmpty(second.Surplus);
         Assert.AreSequenceEqual(expectedConverged, Sorted(second.SideA));
         Assert.AreSequenceEqual(expectedConverged, Sorted(second.SideB));
     }
@@ -120,7 +120,7 @@ internal sealed class ReconciliationSocketTests
         TcpClient? server = null;
         Task<OrSet<string>>? responder = null;
 
-        //The timeout — not a fixed sleep — bounds the deterministic choreography so a stalled side fails the
+        //The timeout -- not a fixed sleep -- bounds the deterministic choreography so a stalled side fails the
         //test instead of hanging the run; the cancellation token is the synchronization boundary.
         using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
         timeoutSource.CancelAfter(Timeout);
@@ -219,13 +219,13 @@ internal sealed class ReconciliationSocketTests
         Dictionary<string, string> directory = BuildDirectory(set);
         HashSet<string> localHexes = [.. items.Select(item => Hex(item.Span))];
 
-        using ReconciliationEncoder localEncoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder localEncoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in items)
         {
             localEncoder.Add(item.Span);
         }
 
-        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         await outbound.WriteAsync(ReconciliationEnvelope<string>.ForOffer(ReconciliationOffer.FromContract(Contract)), cancellationToken).ConfigureAwait(false);
 
@@ -364,7 +364,7 @@ internal sealed class ReconciliationSocketTests
         Task doneSignal,
         CancellationToken cancellationToken)
     {
-        using ReconciliationEncoder encoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder encoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in items)
         {
             encoder.Add(item.Span);
@@ -421,12 +421,14 @@ internal sealed class ReconciliationSocketTests
     }
 
 
+    /// <summary>Builds a fetch request from hexadecimal item identifiers.</summary>
     private static ReconciliationFetch BuildFetch(string[] hexes)
     {
         return new ReconciliationFetch([.. hexes.Select(hex => (ReadOnlyMemory<byte>)Convert.FromHexString(hex))]);
     }
 
 
+    /// <summary>Builds element entries by resolving hexadecimal item identifiers through the directory.</summary>
     private static ReconciliationElements<string> BuildElements(string[] hexes, Dictionary<string, string> directory)
     {
         return new ReconciliationElements<string>([.. hexes.Select(hex => new ReconciliationElementEntry<string>(Convert.FromHexString(hex), directory[hex]))]);
@@ -462,18 +464,21 @@ internal sealed class ReconciliationSocketTests
     }
 
 
+    /// <summary>Returns the set elements in sorted order.</summary>
     private static string[] Sorted(OrSet<string> set)
     {
         return [.. set.Elements.Order()];
     }
 
 
+    /// <summary>Returns the SHA-256 digest of the element's UTF-8 bytes.</summary>
     private static ReadOnlyMemory<byte> Digest(string element)
     {
         return SHA256.HashData(Encoding.UTF8.GetBytes(element));
     }
 
 
+    /// <summary>Returns hexadecimal representations of the supplied bytes.</summary>
     private static string Hex(ReadOnlySpan<byte> bytes)
     {
         return Convert.ToHexString(bytes);

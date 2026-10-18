@@ -30,6 +30,10 @@ internal sealed class ReconciliationKernelTests
     private static ReplicaId R2 { get; } = Replica(2);
 
 
+    /// <summary>The context receiving contract precondition diagnostics.</summary>
+    public TestContext TestContext { get; set; } = null!;
+
+
     [TestMethod]
     public void ContractValidationRejectsBadArgumentsAndPinsTheDefault()
     {
@@ -94,10 +98,11 @@ internal sealed class ReconciliationKernelTests
     }
 
 
+    /// <summary>The encoder rejects wrong item widths and symbol indices outside the produced range.</summary>
     [TestMethod]
     public void EncoderValidationRejectsWrongWidthsAndOutOfRange()
     {
-        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         byte[] tooShort = [0x01, 0x02, 0x03];
 
         Assert.ThrowsExactly<ArgumentException>(() => encoder.Add(tooShort));
@@ -111,10 +116,114 @@ internal sealed class ReconciliationKernelTests
     }
 
 
+    /// <summary>Independent item and cell hints preserve every byte of the encoded stream across cell growth.</summary>
+    [TestMethod]
+    public void ALargeItemHintAndSmallCellHintPreserveTheStream()
+    {
+        using ReconciliationEncoder expected = new(StructuralContract, ReconciliationInjectivityEnforcement.None,
+            BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
+        using ReconciliationEncoder actual = new(StructuralContract, ReconciliationInjectivityEnforcement.None,
+            BaseMemoryPool.Shared, new ReconciliationCapacityHint(items: 1 << 16, cells: 4));
+
+        foreach(byte[] item in new[] { A1, A2, A3, B1 })
+        {
+            expected.Add(item);
+            actual.Add(item);
+        }
+
+        AssertSameStream(expected, actual, 64);
+    }
+
+
+    /// <summary>An item hint beyond the pending queue's array bound fails encoder construction.</summary>
+    [TestMethod]
+    public void AnItemHintPastTheQueueBoundFailsTheConstruction()
+    {
+        Assert.ThrowsExactly<OutOfMemoryException>(() =>
+            new ReconciliationEncoder(StructuralContract, ReconciliationInjectivityEnforcement.None,
+                BaseMemoryPool.Shared, new ReconciliationCapacityHint(items: int.MaxValue, cells: 0)));
+    }
+
+
+    /// <summary>A disposed encoder retains no pending walk cursors even while the encoder remains referenced.</summary>
+    [TestMethod]
+    public void ADisposedReferencedEncoderHoldsNoPendingCursors()
+    {
+        ReconciliationEncoder encoder = CreatePopulatedEncoder();
+        Assert.AreEqual(16, encoder.PendingCursorCount);
+
+        encoder.Dispose();
+
+        Assert.AreEqual(0, encoder.PendingCursorCount);
+        GC.KeepAlive(encoder);
+    }
+
+
+    /// <summary>A disposed encoder releases the pending cursor backing even while the encoder remains referenced.</summary>
+    [TestMethod]
+    public void ADisposedReferencedEncoderTrimsThePendingCursorBacking()
+    {
+        ReconciliationEncoder encoder = CreatePopulatedEncoder();
+        Assert.AreEqual(16, encoder.PendingCursorCapacity);
+
+        encoder.Dispose();
+
+        Assert.AreEqual(0, encoder.PendingCursorCapacity);
+        GC.KeepAlive(encoder);
+    }
+
+
+    /// <summary>A disposed encoder retains no membership keys even while the encoder remains referenced.</summary>
+    [TestMethod]
+    public void ADisposedReferencedEncoderHoldsNoMembershipKeys()
+    {
+        ReconciliationEncoder encoder = CreatePopulatedEncoder();
+        Assert.AreEqual(16, encoder.MemberCount);
+
+        encoder.Dispose();
+
+        Assert.AreEqual(0, encoder.MemberCount);
+        GC.KeepAlive(encoder);
+    }
+
+
+    /// <summary>A disposed encoder trims the membership backing even while the encoder remains referenced.</summary>
+    [TestMethod]
+    public void ADisposedReferencedEncoderTrimsTheMembershipBacking()
+    {
+        ReconciliationEncoder encoder = CreatePopulatedEncoder();
+        int capacityBefore = encoder.MemberCapacity;
+        TestContext.WriteLine($"Membership capacity before disposal: {capacityBefore}.");
+        Assert.IsGreaterThanOrEqualTo(16, capacityBefore);
+
+        encoder.Dispose();
+
+        Assert.IsLessThan(capacityBefore, encoder.MemberCapacity);
+        GC.KeepAlive(encoder);
+    }
+
+
+    /// <summary>Creates a strict encoder with sixteen distinct items and one produced symbol for disposal checks.</summary>
+    private static ReconciliationEncoder CreatePopulatedEncoder()
+    {
+        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict,
+            BaseMemoryPool.Shared, new ReconciliationCapacityHint(items: 16, cells: 8));
+        for(int i = 0; i < 16; i++)
+        {
+            encoder.Add([(byte)(i + 1), 0, 0, 0, 0, 0, 0, 0]);
+        }
+
+        _ = encoder.ProduceNext();
+
+        return encoder;
+    }
+
+
+    /// <summary>Strict enforcement rejects duplicate adds and unmatched removes.</summary>
     [TestMethod]
     public void StrictEnforcementGuardsMembership()
     {
-        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict, BaseMemoryPool.Shared);
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         encoder.Add(A1);
 
         Assert.ThrowsExactly<InvalidOperationException>(() => encoder.Add(A1));
@@ -124,26 +233,27 @@ internal sealed class ReconciliationKernelTests
         encoder.Remove(A1);
         encoder.Add(A1);
 
-        using ReconciliationEncoder expected = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder expected = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         expected.Add(A1);
 
         AssertSameStream(expected, encoder, 8);
     }
 
 
+    /// <summary>Unchecked operations cancel repeated items under XOR set semantics.</summary>
     [TestMethod]
     public void NoneEnforcementHasSetSemantics()
     {
         //Double-add cancels under XOR: the stream equals the empty-set stream.
-        using ReconciliationEncoder doubleAdd = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder doubleAdd = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         doubleAdd.Add(A1);
         doubleAdd.Add(A1);
 
-        using ReconciliationEncoder empty = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder empty = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         AssertSameStream(empty, doubleAdd, 8);
 
         //Add then remove cancels likewise.
-        using ReconciliationEncoder addRemove = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder addRemove = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         addRemove.Add(A2);
         addRemove.Remove(A2);
 
@@ -151,10 +261,11 @@ internal sealed class ReconciliationKernelTests
     }
 
 
+    /// <summary>Incremental updates produce the same symbols as a fresh encoder over the current set.</summary>
     [TestMethod]
     public void IncrementalUpdateTracksTheLiveSet()
     {
-        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         encoder.Add(A1);
         encoder.Add(A2);
         encoder.Add(A3);
@@ -166,7 +277,7 @@ internal sealed class ReconciliationKernelTests
         encoder.Add(B1);
         encoder.Remove(A2);
 
-        using ReconciliationEncoder fresh = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder fresh = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         fresh.Add(A1);
         fresh.Add(A3);
         fresh.Add(B1);
@@ -178,19 +289,77 @@ internal sealed class ReconciliationKernelTests
     }
 
 
+    /// <summary>Re-queued walks preserve history erasure across removal and addition after a produced prefix.</summary>
+    [TestMethod]
+    public void RequeuedWalksPreserveHistoryErasureAfterUpdates()
+    {
+        byte[][] items = new byte[9][];
+        for(int i = 0; i < items.Length; i++)
+        {
+            items[i] = new byte[StructuralContract.ItemWidth];
+            for(int b = 0; b < items[i].Length; b++)
+            {
+                items[i][b] = (byte)((i * 16) + b + 1);
+            }
+        }
+
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict,
+            BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
+        for(int i = 0; i < 8; i++)
+        {
+            encoder.Add(items[i]);
+        }
+
+        for(int n = 0; n < 64; n++)
+        {
+            _ = encoder.ProduceNext();
+        }
+
+        encoder.Remove(items[3]);
+        encoder.Add(items[8]);
+        for(int n = 0; n < 32; n++)
+        {
+            _ = encoder.ProduceNext();
+        }
+
+        using ReconciliationEncoder fresh = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict,
+            BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
+        for(int i = 0; i < items.Length; i++)
+        {
+            if(i != 3)
+            {
+                fresh.Add(items[i]);
+            }
+        }
+
+        for(int n = 0; n < 96; n++)
+        {
+            _ = fresh.ProduceNext();
+        }
+
+        Assert.AreEqual(96, encoder.ProducedCount);
+        Assert.AreEqual(96, fresh.ProducedCount);
+        for(int n = 0; n < 96; n++)
+        {
+            Assert.AreEqual(fresh.SymbolAt(n), encoder.SymbolAt(n), $"Symbol {n} must match the current net set.");
+        }
+    }
+
+
+    /// <summary>Absorption validates symbol widths and preserves completion after an equal-set decode.</summary>
     [TestMethod]
     public void DecoderAbsorbValidationAndPostCompletionAbsorb()
     {
-        using ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         Assert.ThrowsExactly<ArgumentNullException>(() => decoder.Absorb(null!));
         Assert.ThrowsExactly<ArgumentException>(() => decoder.Absorb(new ReconciliationSymbol(new byte[4], new byte[8])));
         Assert.ThrowsExactly<ArgumentException>(() => decoder.Absorb(new ReconciliationSymbol(new byte[8], new byte[4])));
 
         //Equal-set reconciliation: complete after the first absorbed symbol; a further absorb stays legal.
-        using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         left.Add(A1);
-        using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         right.Add(A1);
 
         decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
@@ -221,7 +390,7 @@ internal sealed class ReconciliationKernelTests
         byte[] checksumBytes = new byte[contract.ChecksumWidth];
         ReconciliationChecksum.Write(checksum, checksumBytes);
 
-        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         decoder.Absorb(new ReconciliationSymbol((byte[])w2.Clone(), (byte[])checksumBytes.Clone()));
         decoder.Absorb(new ReconciliationSymbol((byte[])w2.Clone(), (byte[])checksumBytes.Clone()));
 
@@ -233,6 +402,7 @@ internal sealed class ReconciliationKernelTests
     }
 
 
+    /// <summary>A narrow unkeyed checksum admits a crafted collision that a secret key rejects.</summary>
     [TestMethod]
     public void MasqueradeIsWidthBoundedAndKeyRefuses()
     {
@@ -262,12 +432,12 @@ internal sealed class ReconciliationKernelTests
 
         //Unkeyed decoder over {x, y} versus empty: difference symbol 0 masquerades as pure and the
         //decoder completes immediately with the single WRONG item x ^ y.
-        using ReconciliationEncoder twoItems = new(toyWellKnown, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder twoItems = new(toyWellKnown, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         twoItems.Add(x);
         twoItems.Add(collidingY);
-        using ReconciliationEncoder emptyWellKnown = new(toyWellKnown, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder emptyWellKnown = new(toyWellKnown, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
-        using ReconciliationDecoder unkeyed = new(toyWellKnown, BaseMemoryPool.Shared);
+        using ReconciliationDecoder unkeyed = new(toyWellKnown, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         unkeyed.Absorb(twoItems.ProduceNext().Combine(emptyWellKnown.ProduceNext()));
 
         Assert.IsTrue(unkeyed.IsComplete);
@@ -276,18 +446,19 @@ internal sealed class ReconciliationKernelTests
 
         //The same construction under a secret key refuses the crafted collision: not complete after symbol 0.
         ReconciliationContract toySecret = ReconciliationContract.ForAdversarialTesting(ReconciliationItemDomain.Structural, 8, 1, 0x0123456789ABCDEFUL, 0xFEDCBA9876543210UL);
-        using ReconciliationEncoder twoItemsSecret = new(toySecret, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder twoItemsSecret = new(toySecret, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         twoItemsSecret.Add(x);
         twoItemsSecret.Add(collidingY);
-        using ReconciliationEncoder emptySecret = new(toySecret, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder emptySecret = new(toySecret, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
-        using ReconciliationDecoder keyed = new(toySecret, BaseMemoryPool.Shared);
+        using ReconciliationDecoder keyed = new(toySecret, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         keyed.Absorb(twoItemsSecret.ProduceNext().Combine(emptySecret.ProduceNext()));
 
         Assert.IsFalse(keyed.IsComplete);
     }
 
 
+    /// <summary>Merged observed-remove sets reconcile with no remaining difference.</summary>
     [TestMethod]
     public void OrSetReconciliationReachesQuiescence()
     {
@@ -324,7 +495,7 @@ internal sealed class ReconciliationKernelTests
 
         using ReconciliationEncoder encoderLeft = LoadEncoder(contract, mergedLeftItems);
         using ReconciliationEncoder encoderRight = LoadEncoder(contract, mergedRightItems);
-        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         decoder.Absorb(encoderLeft.ProduceNext().Combine(encoderRight.ProduceNext()));
 
         Assert.IsTrue(decoder.IsComplete);
@@ -332,11 +503,12 @@ internal sealed class ReconciliationKernelTests
     }
 
 
+    /// <summary>Reconciles the supplied sets and reports the resulting decode or measurement.</summary>
     private static IReadOnlyList<ReadOnlyMemory<byte>> Reconcile(ReconciliationContract contract, ReadOnlyMemory<byte>[] leftItems, ReadOnlyMemory<byte>[] rightItems)
     {
         using ReconciliationEncoder left = LoadEncoder(contract, leftItems);
         using ReconciliationEncoder right = LoadEncoder(contract, rightItems);
-        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         int cap = 100 + (20 * (leftItems.Length + rightItems.Length));
         for(int n = 0; n < cap && !decoder.IsComplete; n++)
@@ -350,9 +522,10 @@ internal sealed class ReconciliationKernelTests
     }
 
 
+    /// <summary>Creates an encoder seeded with the supplied items.</summary>
     private static ReconciliationEncoder LoadEncoder(ReconciliationContract contract, ReadOnlyMemory<byte>[] items)
     {
-        ReconciliationEncoder encoder = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        ReconciliationEncoder encoder = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in items)
         {
             encoder.Add(item.Span);
@@ -362,6 +535,7 @@ internal sealed class ReconciliationKernelTests
     }
 
 
+    /// <summary>Returns the SHA-256 digest of the element's UTF-8 bytes.</summary>
     private static ReadOnlyMemory<byte> Digest(string element)
     {
         return SHA256.HashData(Encoding.UTF8.GetBytes(element));
@@ -426,7 +600,7 @@ internal sealed class ReconciliationKernelTests
     [TestMethod]
     public void DisposedEncoderSymbolAtReportsDisposalBeforeTheRangeCheck()
     {
-        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         encoder.Dispose();
 
         //ProducedCount is zero, so index 0 is also out of the produced range; disposal must be checked first,
@@ -443,7 +617,7 @@ internal sealed class ReconciliationKernelTests
     [TestMethod]
     public void DisposedEncoderRemoveReportsItselfAsTheDisposedObject()
     {
-        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         encoder.Dispose();
 
         ObjectDisposedException thrown = Assert.ThrowsExactly<ObjectDisposedException>(() => encoder.Remove(A1));
@@ -469,7 +643,7 @@ internal sealed class ReconciliationKernelTests
     [TestMethod]
     public void ConstructorRejectsUndefinedEnforcementValue()
     {
-        ArgumentOutOfRangeException thrown = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationEncoder(StructuralContract, (ReconciliationInjectivityEnforcement)99, BaseMemoryPool.Shared));
+        ArgumentOutOfRangeException thrown = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationEncoder(StructuralContract, (ReconciliationInjectivityEnforcement)99, BaseMemoryPool.Shared, ReconciliationCapacityHint.None));
         Assert.AreEqual("enforcement", thrown.ParamName);
     }
 
@@ -482,7 +656,7 @@ internal sealed class ReconciliationKernelTests
     [TestMethod]
     public void ConstructorRejectsNullContract()
     {
-        ArgumentNullException thrown = Assert.ThrowsExactly<ArgumentNullException>(() => new ReconciliationEncoder(null!, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared));
+        ArgumentNullException thrown = Assert.ThrowsExactly<ArgumentNullException>(() => new ReconciliationEncoder(null!, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None));
         Assert.AreEqual("contract", thrown.ParamName);
     }
 
@@ -496,7 +670,7 @@ internal sealed class ReconciliationKernelTests
     public void ConstructorRejectsNullPool()
     {
         ArgumentNullException thrown = Assert.ThrowsExactly<ArgumentNullException>(
-            () => new ReconciliationEncoder(StructuralContract, (ReconciliationInjectivityEnforcement)99, null!));
+            () => new ReconciliationEncoder(StructuralContract, (ReconciliationInjectivityEnforcement)99, null!, ReconciliationCapacityHint.None));
         Assert.AreEqual("pool", thrown.ParamName);
     }
 
@@ -508,7 +682,7 @@ internal sealed class ReconciliationKernelTests
     [TestMethod]
     public void DisposedEncoderAddReportsItselfAsTheDisposedObject()
     {
-        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         encoder.Dispose();
 
         ObjectDisposedException thrown = Assert.ThrowsExactly<ObjectDisposedException>(() => encoder.Add(A1));
@@ -522,7 +696,7 @@ internal sealed class ReconciliationKernelTests
     [TestMethod]
     public void AbsorbAfterDisposeThrowsTheDecodersOwnObjectDisposedException()
     {
-        ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared);
+        ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         decoder.Dispose();
 
         ObjectDisposedException refusal = Assert.ThrowsExactly<ObjectDisposedException>(
@@ -532,8 +706,8 @@ internal sealed class ReconciliationKernelTests
     }
 
 
-    /// <summary>Pins that <see cref="ReconciliationSymbol.Combine(ReconciliationSymbol)"/>'s own width guard —
-    /// not the XOR primitive's unrelated length check — is what rejects a mismatch, naming
+    /// <summary>Pins that <see cref="ReconciliationSymbol.Combine(ReconciliationSymbol)"/>'s own width guard --
+    /// not the XOR primitive's unrelated length check -- is what rejects a mismatch, naming
     /// <paramref name="other"/> even when only one of the two fields differs in width.</summary>
     [TestMethod]
     public void CombineNamesOtherWhenOnlyOneFieldWidthDiffers()
@@ -570,7 +744,7 @@ internal sealed class ReconciliationKernelTests
     [TestMethod]
     public void DisposedEncoderProduceNextReportsItselfAsTheDisposedObject()
     {
-        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         encoder.Dispose();
 
         ObjectDisposedException thrown = Assert.ThrowsExactly<ObjectDisposedException>(() => encoder.ProduceNext());
@@ -584,7 +758,7 @@ internal sealed class ReconciliationKernelTests
     public void DecoderConstructorRejectsNullContract()
     {
         ArgumentNullException refusal = Assert.ThrowsExactly<ArgumentNullException>(
-            () => new ReconciliationDecoder(null!, BaseMemoryPool.Shared));
+            () => new ReconciliationDecoder(null!, BaseMemoryPool.Shared, ReconciliationCapacityHint.None));
 
         Assert.AreEqual("contract", refusal.ParamName);
     }
@@ -592,7 +766,7 @@ internal sealed class ReconciliationKernelTests
 
     /// <summary>Pins <see cref="ReconciliationSymbol.Equals(ReconciliationSymbol?)"/>'s full contract: a null
     /// other is never equal, a self-reference is always equal, and content equality requires both fields to
-    /// match — a match on only one field is not equality.</summary>
+    /// match -- a match on only one field is not equality.</summary>
     [TestMethod]
     public void EqualsHonorsNullSelfReferenceAndBothFieldsContract()
     {
@@ -641,7 +815,7 @@ internal sealed class ReconciliationKernelTests
 
 
     /// <summary>Pins that <see cref="ReconciliationSymbol.IsNeutral"/> requires both fields to be all zero, not
-    /// just one — a cell with a zero sum and a non-zero checksum (or vice versa) still carries net contribution
+    /// just one -- a cell with a zero sum and a non-zero checksum (or vice versa) still carries net contribution
     /// and must not read as neutral.</summary>
     [TestMethod]
     public void IsNeutralRequiresBothFieldsToBeZero()

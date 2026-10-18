@@ -98,10 +98,11 @@ internal sealed class ReconciliationVectorTests
     }
 
 
+    /// <summary>The encoder produces the pinned symbol stream byte for byte.</summary>
     [TestMethod]
     public void EncoderStreamMatchesTheVector()
     {
-        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         encoder.Add(W3);
         encoder.Add(A2);
         encoder.Add(A3);
@@ -133,15 +134,16 @@ internal sealed class ReconciliationVectorTests
     }
 
 
+    /// <summary>The difference stream decodes to exactly the symmetric difference.</summary>
     [TestMethod]
     public void DifferenceStreamDecodesToTheTrueDifference()
     {
-        using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         left.Add(W3);
         left.Add(A2);
         left.Add(A3);
 
-        using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         right.Add(W3);
         right.Add(B1);
 
@@ -157,7 +159,7 @@ internal sealed class ReconciliationVectorTests
             ("0000000000000000", "0000000000000000")
         ];
 
-        using ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         for(int n = 0; n < expected.Length; n++)
         {
             ReconciliationSymbol difference = left.ProduceNext().Combine(right.ProduceNext());
@@ -181,15 +183,16 @@ internal sealed class ReconciliationVectorTests
     }
 
 
+    /// <summary>Cell zero of the difference vector is impure and cannot be peeled as one item.</summary>
     [TestMethod]
     public void DifferenceCellZeroIsAnImpureNearMiss()
     {
-        using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         left.Add(W3);
         left.Add(A2);
         left.Add(A3);
 
-        using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         right.Add(W3);
         right.Add(B1);
 
@@ -200,7 +203,7 @@ internal sealed class ReconciliationVectorTests
         Assert.IsFalse(cellZero.IsNeutral);
         Assert.AreSequenceEqual(W3, cellZero.Sum.ToArray());
 
-        using ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(StructuralContract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         decoder.Absorb(cellZero);
 
         Assert.IsEmpty(decoder.DecodedItems);
@@ -234,12 +237,12 @@ internal sealed class ReconciliationVectorTests
     [TestMethod]
     public void ForwardCursorDrainKeepsCellsPastCompletionNeutral()
     {
-        using ReconciliationEncoder left = new(ReconciliationContract.ContentHashDefault, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder left = new(ReconciliationContract.ContentHashDefault, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         left.Add(W1);
         left.Add(W2);
-        using ReconciliationEncoder right = new(ReconciliationContract.ContentHashDefault, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder right = new(ReconciliationContract.ContentHashDefault, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
-        using ReconciliationDecoder decoder = new(ReconciliationContract.ContentHashDefault, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(ReconciliationContract.ContentHashDefault, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         //Symbol 0: W1 XOR W2, a degree-two mix; neither decodes yet.
         decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));

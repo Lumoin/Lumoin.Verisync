@@ -186,6 +186,7 @@ internal sealed class ReconciliationXorAgreementTests
     }
 
 
+    /// <summary>The encoder stream equals the scalar reference fold.</summary>
     [TestMethod]
     public void EncoderStreamEqualsTheScalarReferenceFold()
     {
@@ -219,7 +220,7 @@ internal sealed class ReconciliationXorAgreementTests
         }
 
         //The encoder dispatches its folds through the facade; its emitted symbols must equal the reference.
-        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         encoder.Add(A1);
         encoder.Add(A2);
         encoder.Add(A3);

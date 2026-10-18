@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 
 namespace Lumoin.Verisync.Core;
 
@@ -15,7 +16,7 @@ namespace Lumoin.Verisync.Core;
 /// <para>
 /// Unlike <see cref="ReconciliationCellBuffer"/>, which grows by copying its live bytes into a larger backing,
 /// this arena grows by renting an additional block and never relocates a stored item. A relocation would
-/// corrupt every membership key and cursor viewing the moved bytes — a silent wrong result — so the arena is
+/// corrupt every membership key and cursor viewing the moved bytes -- a silent wrong result -- so the arena is
 /// deliberately the opposite pattern: it only ever appends, leaving every prior block exactly where it is. A
 /// slice it hands out stays byte-valid for the arena's whole life.
 /// </para>
@@ -25,9 +26,13 @@ namespace Lumoin.Verisync.Core;
 /// <see cref="Dispose"/>; it never disposes the injected pool.
 /// </para>
 /// <para>
+/// Every block holds 65,536 items and is rented only when needed. No rental grows with the set; the item
+/// capacity hint presizes only the block table.
+/// </para>
+/// <para>
 /// No clear-on-rent is needed, unlike the cell buffer: every slot handed out is fully overwritten by the
 /// append copy before it is returned, and a slot beyond the used count is never viewed, so a recycled-dirty
-/// pooled segment can never be observed through a handed-out slice. The whole logical region of each block is
+/// pooled segment can never be observed through a handed-out slice. The used region of each block is
 /// still cleared on <see cref="Dispose"/> as defence in depth so a recycled pool segment carries no stale
 /// item bytes.
 /// </para>
@@ -37,36 +42,34 @@ namespace Lumoin.Verisync.Core;
 /// </remarks>
 public sealed class ReconciliationItemArena: IDisposable
 {
-    //The smallest items a first block holds, keeping the common tiny session small while still amortizing the grow.
-    private const int MinItemsPerBlock = 4;
+    /// <summary>The shift that maps an item index to its block index.</summary>
+    private const int ItemsPerBlockShift = 16;
+
+    /// <summary>The number of items held by every block.</summary>
+    private const int ItemsPerBlock = 1 << ItemsPerBlockShift;
 
 
     private MemoryPool<byte> Pool { get; }
     private int Stride { get; }
-    private int HintItems { get; }
-    private List<Block> Blocks { get; } = [];
+    /// <summary>The rented blocks in append order.</summary>
+    private List<Block> Blocks { get; }
     private int currentBlockUsed;
-    private int currentBlockCapacity;
-    private int totalCapacityItems;
     private bool disposed;
 
 
     /// <summary>
-    /// Initializes an empty arena whose every slice is <paramref name="stride"/> bytes, renting its blocks
-    /// lazily on the first <see cref="Append"/> from a quantized first-block capacity seeded from
-    /// <paramref name="itemCapacityHint"/>; the total capacity then doubles a block at a time as items are
-    /// appended.
+    /// Initializes an empty arena whose every slice is <paramref name="stride"/> bytes; blocks of 65,536 items
+    /// are rented as items are appended and the constructor rents nothing.
     /// </summary>
     /// <param name="stride">The item width in bytes, in the inclusive range one through 1024; every slice handed out is exactly this long.</param>
     /// <param name="pool">The pool to rent the blocks from, tracking the memory. The arena never disposes it.</param>
     /// <param name="itemCapacityHint">
-    /// A lower bound on the items the session will append; the first block's capacity is the smallest power of
-    /// two at or above the larger of this and the minimum, pre-sizing past the doubling churn. Must not be negative.
+    /// A lower bound on the items the session will append, used only to presize the block table. Must not be negative.
     /// </param>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="pool"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// Thrown when <paramref name="stride"/> is outside one through 1024, when <paramref name="itemCapacityHint"/>
-    /// is negative, or when it rounds up to a first block whose backing would exceed the maximum array length.
+    /// Thrown when <paramref name="stride"/> is outside one through 1024 or when <paramref name="itemCapacityHint"/>
+    /// is negative.
     /// </exception>
     public ReconciliationItemArena(int stride, MemoryPool<byte> pool, int itemCapacityHint = 0)
     {
@@ -82,23 +85,9 @@ public sealed class ReconciliationItemArena: IDisposable
             throw new ArgumentOutOfRangeException(nameof(itemCapacityHint), itemCapacityHint, "The item capacity hint cannot be negative.");
         }
 
-        //Reject a hint whose first block backing would overflow a single allocation up front, so construction
-        //fails fast with the hint's own name rather than the first append meeting the limit. The rounding is done
-        //in 64-bit, so an out-of-range hint is caught by this widened bound check, never by a spinning doubling
-        //loop. No rental happens here — only the validation is eager; the first block stays lazily rented.
-        long firstBlock64 = NextPowerOfTwo(Math.Max(itemCapacityHint, MinItemsPerBlock));
-        if(firstBlock64 * stride > Array.MaxLength)
-        {
-            throw new ArgumentOutOfRangeException(nameof(itemCapacityHint), itemCapacityHint, $"The item capacity hint of {itemCapacityHint} rounds up to a first block of {firstBlock64} items whose {stride}-byte-wide backing would exceed the maximum array length of {Array.MaxLength}.");
-        }
-
         Stride = stride;
         Pool = pool;
-        HintItems = itemCapacityHint;
-
-        //Rent nothing here: the first block is rented lazily on the first append, so an arena constructed and
-        //disposed with zero items rents nothing, and a never-renting constructor cannot leave a partial-
-        //construction leak — which is why the encoder and decoder need no try/catch guard around building it.
+        Blocks = new List<Block>((int)(((long)itemCapacityHint + ItemsPerBlock - 1) >> ItemsPerBlockShift));
     }
 
 
@@ -107,15 +96,15 @@ public sealed class ReconciliationItemArena: IDisposable
 
 
     /// <summary>
-    /// Copies <paramref name="item"/> into the next free slot of the current block — growing by one block when
-    /// the current block is full or none exists yet — and returns a view over the stored bytes. The view
+    /// Copies <paramref name="item"/> into the next free slot of the current block -- growing by one block when
+    /// the current block is full or none exists yet -- and returns a view over the stored bytes. The view
     /// stays valid until <see cref="Dispose"/> because blocks are never relocated.
     /// </summary>
     /// <param name="item">The item bytes. Must be exactly <see cref="Stride"/> bytes.</param>
     /// <returns>A stable, never-moved view over the stored copy, exactly <see cref="Stride"/> bytes long.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the arena has been disposed.</exception>
     /// <exception cref="ArgumentException">Thrown when <paramref name="item"/>'s length differs from <see cref="Stride"/>.</exception>
-    /// <exception cref="InvalidOperationException">Thrown when the arena is full and cannot grow without its backing exceeding the maximum array length.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when <see cref="Count"/> has reached <see cref="Array.MaxLength"/>.</exception>
     public ReadOnlyMemory<byte> Append(ReadOnlySpan<byte> item)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
@@ -125,7 +114,12 @@ public sealed class ReconciliationItemArena: IDisposable
             throw new ArgumentException($"An item must be exactly {Stride} bytes.", nameof(item));
         }
 
-        if(Blocks.Count == 0 || currentBlockUsed == currentBlockCapacity)
+        if(Count == Array.MaxLength)
+        {
+            throw new InvalidOperationException($"The item arena cannot hold more than {Array.MaxLength} items.");
+        }
+
+        if(Blocks.Count == 0 || currentBlockUsed == ItemsPerBlock)
         {
             Grow();
         }
@@ -146,9 +140,33 @@ public sealed class ReconciliationItemArena: IDisposable
 
 
     /// <summary>
-    /// Clears and disposes every block's rental, returning the rentals to the pool when one was injected. The
-    /// call is idempotent; after it, <see cref="Append"/> throws <see cref="ObjectDisposedException"/>. The
-    /// injected pool, if any, is never disposed — the arena owns its block rentals, not the pool.
+    /// Returns the stable view of the item appended at <paramref name="index"/>, in append order.
+    /// </summary>
+    /// <param name="index">The zero-based append index of the item.</param>
+    /// <returns>The same memory that <see cref="Append"/> returned for the item, valid until <see cref="Dispose"/>.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="index"/> is outside the appended range.</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the arena has been disposed.</exception>
+    public ReadOnlyMemory<byte> ItemAt(int index)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+
+        if(index < 0 || index >= Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index), index, "The item index must be within the appended range.");
+        }
+
+        Block block = Blocks[index >> ItemsPerBlockShift];
+        int slot = index & (ItemsPerBlock - 1);
+
+        return block.Owner.Memory.Slice(slot * Stride, Stride);
+    }
+
+
+    /// <summary>
+    /// Clears every block's used region and returns every rental to the pool. The call is idempotent; after it,
+    /// <see cref="Append"/> and <see cref="ItemAt"/> throw <see cref="ObjectDisposedException"/>. The injected
+    /// pool is never disposed.
+    /// If a component's release throws, every remaining component is still released and the first failure propagates afterwards.
     /// </summary>
     public void Dispose()
     {
@@ -158,96 +176,60 @@ public sealed class ReconciliationItemArena: IDisposable
         }
 
         disposed = true;
+        Exception? failure = null;
 
-        //Clear each block's logical region before releasing so a recycled pool segment carries no stale item
-        //bytes (defence in depth, matching the cell buffer and the tagged-memory pattern), then return it.
-        foreach(Block block in Blocks)
+        for(int index = 0; index < Blocks.Count; index++)
         {
-            block.Owner.Memory.Span[..(block.ItemCapacity * Stride)].Clear();
-            block.Owner.Dispose();
+            Block block = Blocks[index];
+            int used = index == Blocks.Count - 1 ? currentBlockUsed : ItemsPerBlock;
+            ReconciliationRental.Release(block.Owner, used * Stride, ref failure);
         }
 
-        Blocks.Clear();
-    }
-
-
-    //The rented owner's ownership transfers into the Blocks list, which Dispose releases in full; the analyzer
-    //cannot see ownership flow through a List.Add, so the lifetime is sound but not statically provable here.
-    [SuppressMessage("Reliability", "CA2000", Justification = "The rented block owner transfers into the Blocks list and is disposed in Dispose; the insertion is exception-safe, so the owner is always either held by the list or released on the throwing path.")]
-    private void Grow()
-    {
-        //The total capacity progresses b, 2b, 4b, 8b… so a session of N items uses O(log N) blocks at amortized
-        //O(1) per append; appending a new block never touches the bytes of any existing block, which is the
-        //whole point — every prior slice stays exactly where it was handed out.
-        long newCapacity64 = Blocks.Count == 0
-            ? NextPowerOfTwo(Math.Max(HintItems, MinItemsPerBlock))
-            : totalCapacityItems;
-
-        //The new block's byte length and the running total are computed in 64-bit and bound-checked before
-        //narrowing, so a growth whose block backing or total capacity would exceed a single allocation throws
-        //here rather than wrapping a rental size to a too-small block the later slices would overrun. The ctor
-        //bounds the hint to keep the first block within range; this is the growth path's own guard.
-        long blockBytes64 = newCapacity64 * Stride;
-        long newTotal64 = totalCapacityItems + newCapacity64;
-        if(blockBytes64 > Array.MaxLength || newTotal64 > Array.MaxLength)
-        {
-            throw new InvalidOperationException($"The item arena cannot grow by {newCapacity64} items: a block of {blockBytes64} bytes or a total backing of {newTotal64} bytes would exceed the maximum array length of {Array.MaxLength}.");
-        }
-
-        int newCapacity = (int)newCapacity64;
-
-        //Rent first, then transfer ownership into the list exception-safely: if the insertion throws (only an
-        //OutOfMemoryException while the list resizes its own backing), the just-rented owner is returned rather
-        //than orphaned, so every rental still balances. This mirrors the cell buffer's paired-rent discipline.
-        IMemoryOwner<byte> owner = Rent((int)blockBytes64);
         try
         {
-            Blocks.Add(new Block(owner, newCapacity));
+            Blocks.Clear();
         }
-        catch
+        catch(Exception exception)
         {
-            owner.Dispose();
-
-            throw;
+            failure ??= exception;
         }
 
-        currentBlockUsed = 0;
-        currentBlockCapacity = newCapacity;
-        totalCapacityItems = (int)newTotal64;
+        if(failure is not null)
+        {
+            ExceptionDispatchInfo.Throw(failure);
+        }
     }
 
 
+    /// <summary>Rents one block of 65,536 items without relocating any previously stored item.</summary>
+    [SuppressMessage("Reliability", "CA2000", Justification = "The list's capacity is ensured before the rental, so the insertion cannot fail after the owner exists and Dispose releases every held block.")]
+    private void Grow()
+    {
+        //Ensure the list's capacity before renting the block so insertion cannot fail after the owner exists.
+        Blocks.EnsureCapacity(Blocks.Count + 1);
+        IMemoryOwner<byte> owner = Rent(ItemsPerBlock * Stride);
+        Blocks.Add(new Block(owner));
+
+        currentBlockUsed = 0;
+    }
+
+
+    /// <summary>Rents a backing region of at least the requested byte length from the injected pool.</summary>
     private IMemoryOwner<byte> Rent(int byteLength)
     {
-        //A general pool may return an owner larger than requested; the arena only ever slices within
-        //capacity * Stride, so an over-sized owner is harmless.
+        //A general pool may return an owner larger than requested; the arena only ever slices within the
+        //ItemsPerBlock * Stride bytes of a block, so an over-sized owner is harmless.
+
         return Pool.Rent(byteLength);
     }
 
 
-    private static long NextPowerOfTwo(int value)
-    {
-        //Rounds up in 64-bit so the doubling cannot overflow into the sign flip that would spin this loop forever:
-        //for any int value the result reaches at most 2^31, well within long, so the loop always terminates and
-        //the caller's widened bound check rejects a capacity whose backing would not fit a single allocation.
-        //value is at least MinItemsPerBlock here, so the result is always a positive power of two at or above it.
-        long power = 1;
-        while(power < value)
-        {
-            power *= 2;
-        }
-
-        return power;
-    }
-
-
-    //A non-compared internal carrier holding a rented block and its item-capacity; not a record struct because
-    //the IMemoryOwner member would drag in reference equality the arena never wants.
+    /// <summary>Owns one fixed-size item block.</summary>
+    /// <param name="owner">The rental released when the arena is disposed.</param>
     [SuppressMessage("Usage", "CA1815", Justification = "A non-compared internal carrier; blocks are never compared, only appended and disposed.")]
-    private readonly struct Block(IMemoryOwner<byte> owner, int itemCapacity)
+    private readonly struct Block(IMemoryOwner<byte> owner)
     {
+        /// <summary>The rental that backs the block's item bytes.</summary>
         public IMemoryOwner<byte> Owner { get; } = owner;
-
-        public int ItemCapacity { get; } = itemCapacity;
     }
 }

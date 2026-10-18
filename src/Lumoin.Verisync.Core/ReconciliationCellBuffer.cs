@@ -1,12 +1,13 @@
 using System;
 using System.Buffers;
+using System.Runtime.ExceptionServices;
 
 namespace Lumoin.Verisync.Core;
 
 /// <summary>
 /// A dense, append-only, fixed-width cell store backing the reconciliation kernel's coded cells. Every cell
-/// is a pair of constant-width fields — a <see cref="SumWidth"/>-byte sum and a <see cref="ChecksumWidth"/>-byte
-/// checksum — laid out row-major in two contiguous backing owners, so cell <c>i</c> occupies a single
+/// is a pair of constant-width fields -- a <see cref="SumWidth"/>-byte sum and a <see cref="ChecksumWidth"/>-byte
+/// checksum -- laid out row-major in two contiguous backing owners, so cell <c>i</c> occupies a single
 /// slice of each backing. The contiguous layout is what the vectorized XOR fold walks; one buffer is shared
 /// by the encoder's produced cells and the decoder's absorbed cells, replacing the per-cell array allocation.
 /// </summary>
@@ -19,11 +20,11 @@ namespace Lumoin.Verisync.Core;
 /// except through the spans <see cref="SumAt(int)"/> and <see cref="ChecksumAt(int)"/> hand out.
 /// </para>
 /// <para>
-/// The buffer's contract is that a freshly appended cell is all zero across both fields — the encoder folds
+/// The buffer's contract is that a freshly appended cell is all zero across both fields -- the encoder folds
 /// into a zero cell and the decoder copies a raw symbol in then folds decoded items out, both assuming
 /// zero-initialized cells. A pooled segment is NOT zero-filled on rent, so the load-bearing clear after every
 /// rent restores that contract: the whole logical span on the initial rent, and the region beyond the copied
-/// live bytes after a grow. The logical capacity is authoritative — a pool may return an over-sized owner, so
+/// live bytes after a grow. The logical capacity is authoritative -- a pool may return an over-sized owner, so
 /// the buffer always slices within <c>Capacity * width</c> and never trusts the owner's own length.
 /// </para>
 /// <para>
@@ -102,7 +103,7 @@ public sealed class ReconciliationCellBuffer: IDisposable
         Capacity = capacity;
 
         //Rent both backings at the logical size, exception-safely: if the second rent throws, the first is
-        //returned, so a failed construction leaks no rental. Then clear the whole logical span — a pooled
+        //returned, so a failed construction leaks no rental. Then clear the whole logical span -- a pooled
         //segment is not zero-filled on rent, so this restores the all-zero-fresh-cell contract every appended
         //cell relies on.
         IMemoryOwner<byte> sumOwner = Rent(sumBytes);
@@ -139,6 +140,7 @@ public sealed class ReconciliationCellBuffer: IDisposable
     /// Appends a new cell and returns its index. The buffer doubles both backings when full; the new cell's
     /// sum and checksum bytes are guaranteed to be all zero, so a caller may fold straight into the returned
     /// spans without clearing them first.
+    /// If a retired backing's release throws after the grown pair is installed, the failure propagates before any cell is appended and the buffer remains usable.
     /// </summary>
     /// <returns>The index of the newly appended cell, equal to the prior <see cref="Count"/>.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the buffer has been disposed.</exception>
@@ -149,9 +151,9 @@ public sealed class ReconciliationCellBuffer: IDisposable
 
         if(Count == Capacity)
         {
-            //Grow by renting the next power-of-two, copying the live bytes across, clearing the newly-exposed
-            //region (the pool does not zero recycled segments), and disposing the old owners. The new cell at
-            //the returned index lies in the just-cleared region, so it is zero — the fresh-cell contract holds.
+            //Grow by renting the next power-of-two, copying the live bytes, clearing the new region, and
+            //installing the grown pair before releasing the retired pair, so a failed release leaves the buffer usable.
+            //The new cell lies in the cleared region, preserving the fresh-cell contract.
             //The doubled capacity and both byte lengths are computed in 64-bit and bound-checked before narrowing,
             //so a growth whose backing would exceed a single allocation throws here rather than wrapping a rental
             //size to a too-small buffer the later slices would overrun. The ctor bounds the hint to keep this
@@ -168,8 +170,8 @@ public sealed class ReconciliationCellBuffer: IDisposable
             int grownSumBytes = (int)grownSumBytes64;
             int grownChecksumBytes = (int)grownChecksumBytes64;
 
-            //Rent the new pair exception-safely too: a throwing second rent disposes the first and leaves the
-            //buffer's existing owners untouched, so neither the new nor the old rentals leak.
+            //A throwing second rent disposes the first and leaves the existing owners untouched; after the
+            //grown pair is installed, the retired backings are cleared before they return to the pool.
             IMemoryOwner<byte> grownSumOwner = Rent(grownSumBytes);
             IMemoryOwner<byte> grownChecksumOwner;
             try
@@ -192,12 +194,21 @@ public sealed class ReconciliationCellBuffer: IDisposable
             grownSumOwner.Memory.Span[liveSumBytes..grownSumBytes].Clear();
             grownChecksumOwner.Memory.Span[liveChecksumBytes..grownChecksumBytes].Clear();
 
-            SumOwner.Dispose();
-            ChecksumOwner.Dispose();
+            IMemoryOwner<byte> retiredSumOwner = SumOwner;
+            IMemoryOwner<byte> retiredChecksumOwner = ChecksumOwner;
+            int retiredCapacity = Capacity;
 
             SumOwner = grownSumOwner;
             ChecksumOwner = grownChecksumOwner;
             Capacity = grown;
+
+            Exception? failure = null;
+            ReconciliationRental.Release(retiredSumOwner, retiredCapacity * SumWidth, ref failure);
+            ReconciliationRental.Release(retiredChecksumOwner, retiredCapacity * ChecksumWidth, ref failure);
+            if(failure is not null)
+            {
+                ExceptionDispatchInfo.Throw(failure);
+            }
         }
 
         int index = Count;
@@ -255,7 +266,8 @@ public sealed class ReconciliationCellBuffer: IDisposable
     /// Clears and disposes both rented backings, returning the rentals to the pool when one was injected. The
     /// call is idempotent; after it, <see cref="Append"/>, <see cref="SumAt(int)"/>, and
     /// <see cref="ChecksumAt(int)"/> throw <see cref="ObjectDisposedException"/>. The injected pool, if any, is
-    /// never disposed — the buffer owns its rentals, not the pool.
+    /// never disposed -- the buffer owns its rentals, not the pool.
+    /// If a component's release throws, every remaining component is still released and the first failure propagates afterwards.
     /// </summary>
     public void Dispose()
     {
@@ -265,14 +277,16 @@ public sealed class ReconciliationCellBuffer: IDisposable
         }
 
         disposed = true;
+        Exception? failure = null;
 
-        //Clear the logical span before releasing so a recycled pool segment carries no stale bytes, then
-        //release the rentals; the pool clears returned segments too, so this is defence in depth on both paths.
-        SumOwner.Memory.Span[..(Capacity * SumWidth)].Clear();
-        ChecksumOwner.Memory.Span[..(Capacity * ChecksumWidth)].Clear();
+        //Clear the logical spans before releasing so recycled pool segments carry no stale bytes.
+        ReconciliationRental.Release(SumOwner, Capacity * SumWidth, ref failure);
+        ReconciliationRental.Release(ChecksumOwner, Capacity * ChecksumWidth, ref failure);
 
-        SumOwner.Dispose();
-        ChecksumOwner.Dispose();
+        if(failure is not null)
+        {
+            ExceptionDispatchInfo.Throw(failure);
+        }
     }
 
 

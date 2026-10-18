@@ -32,16 +32,16 @@ internal sealed class ReconciliationItemArenaInvariantTests
     private static byte[] B1 { get; } = [0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38];
 
 
+    /// <summary>Strict membership checks remain correct across arena growth.</summary>
     [TestMethod]
     public void StrictMembershipSurvivesArenaGrowth()
     {
         const int Stride = 8;
-        const int Items = 1000;
+        const int Items = (2 * 65_536) + 1;
 
-        //A zero hint pins the small initial arena block, so adding a thousand distinct items forces the arena
-        //across several block grows. The first item's membership key views the very first block; if any grow
-        //relocated that block the re-add below would not be detected as a duplicate.
-        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict, BaseMemoryPool.Shared, cellCapacityHint: 0);
+        //Adding into a third fixed block must preserve the first item's membership key in the first block.
+        //If any grow relocated that block, the re-add below would not be detected as a duplicate.
+        using ReconciliationEncoder encoder = new(StructuralContract, ReconciliationInjectivityEnforcement.Strict, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         byte[] firstItem = BuildItem(Stride, 0);
         encoder.Add(firstItem);
@@ -51,7 +51,7 @@ internal sealed class ReconciliationItemArenaInvariantTests
         }
 
         //Re-adding the FIRST item, whose key views block zero, must still be rejected as a duplicate after all
-        //the later blocks were appended — the no-move arena kept that key's viewed bytes valid.
+        //the later blocks were appended -- the no-move arena kept that key's viewed bytes valid.
         Assert.ThrowsExactly<InvalidOperationException>(() => encoder.Add(BuildItem(Stride, 0)));
 
         //A brand-new item that was never added must not throw, proving the rejection above was a genuine
@@ -60,6 +60,7 @@ internal sealed class ReconciliationItemArenaInvariantTests
     }
 
 
+    /// <summary>Escaped decoded items retain their bytes after decoder disposal.</summary>
     [TestMethod]
     public void DecodedItemsRemainReadableAfterDecoderDisposal()
     {
@@ -69,17 +70,17 @@ internal sealed class ReconciliationItemArenaInvariantTests
         IReadOnlyList<ReadOnlyMemory<byte>> captured;
         using(BaseMemoryPool pool = new())
         {
-            using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, pool, cellCapacityHint: 0);
+            using ReconciliationEncoder left = new(StructuralContract, ReconciliationInjectivityEnforcement.None, pool, ReconciliationCapacityHint.None);
             left.Add(A1);
             left.Add(A2);
             left.Add(B1);
 
-            using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, pool, cellCapacityHint: 0);
+            using ReconciliationEncoder right = new(StructuralContract, ReconciliationInjectivityEnforcement.None, pool, ReconciliationCapacityHint.None);
             right.Add(A1);
             right.Add(A2);
             right.Add(A3);
 
-            using ReconciliationDecoder decoder = new(StructuralContract, pool, cellCapacityHint: 0);
+            using ReconciliationDecoder decoder = new(StructuralContract, pool, ReconciliationCapacityHint.None);
 
             const int Cap = 200;
             for(int n = 0; n < Cap && !decoder.IsComplete; n++)

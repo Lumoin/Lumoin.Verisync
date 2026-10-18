@@ -39,6 +39,7 @@ internal sealed class ReconciliationDecoderScaleTests
         new(ReconciliationItemDomain.Structural, 8, 8, ReconciliationContract.WellKnownChecksumKeyLow, ReconciliationContract.WellKnownChecksumKeyHigh);
 
 
+    /// <summary>Large differences decode exactly within the symbol cap.</summary>
     [TestMethod]
     public void LargeDifferencesDecodeExactlyWithinTheCap()
     {
@@ -50,20 +51,20 @@ internal sealed class ReconciliationDecoderScaleTests
 
                 //The encoders are built inline rather than through the Encoder helper so the disposable owner is
                 //a directly-constructed local the dispose analysis recognizes across the nested sweep.
-                using ReconciliationEncoder left = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+                using ReconciliationEncoder left = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
                 foreach(byte[] item in (byte[][])[.. shared, .. leftOnly])
                 {
                     left.Add(item);
                 }
 
-                using ReconciliationEncoder right = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+                using ReconciliationEncoder right = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
                 foreach(byte[] item in (byte[][])[.. shared, .. rightOnly])
                 {
                     right.Add(item);
                 }
 
                 int cap = 100 + (20 * d);
-                using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
+                using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
                 int absorbed = 0;
                 while(!decoder.IsComplete && absorbed < cap)
                 {
@@ -81,6 +82,7 @@ internal sealed class ReconciliationDecoderScaleTests
     }
 
 
+    /// <summary>Two decoders recover the same difference from the same stream.</summary>
     [TestMethod]
     public void TwoDecodersOverTheSameStreamAreConfluent()
     {
@@ -94,8 +96,8 @@ internal sealed class ReconciliationDecoderScaleTests
         int d = leftOnly.Length + rightOnly.Length;
         int cap = 100 + (20 * d);
 
-        using ReconciliationDecoder decoderOne = new(Contract, BaseMemoryPool.Shared);
-        using ReconciliationDecoder decoderTwo = new(Contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoderOne = new(Contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
+        using ReconciliationDecoder decoderTwo = new(Contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         int absorbed = 0;
         while((!decoderOne.IsComplete || !decoderTwo.IsComplete) && absorbed < cap)
         {
@@ -113,6 +115,7 @@ internal sealed class ReconciliationDecoderScaleTests
     }
 
 
+    /// <summary>Equal large sets reconcile with no decoded difference.</summary>
     [TestMethod]
     public void EqualSetsAreQuiescentOverALargeCorpus()
     {
@@ -122,7 +125,7 @@ internal sealed class ReconciliationDecoderScaleTests
         using ReconciliationEncoder left = Encoder(shared);
         using ReconciliationEncoder right = Encoder(shared);
 
-        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         decoder.Absorb(left.ProduceNext().Combine(right.ProduceNext()));
 
         //An equal set difference is complete on the very first absorbed symbol with nothing decoded, even
@@ -133,13 +136,14 @@ internal sealed class ReconciliationDecoderScaleTests
     }
 
 
+    /// <summary>The pinned difference vector completes after exactly six symbols.</summary>
     [TestMethod]
     public void PinnedDifferenceVectorCompletesAfterExactlySixSymbols()
     {
         using ReconciliationEncoder left = Encoder([A1, A2, A3]);
         using ReconciliationEncoder right = Encoder([A1, B1]);
 
-        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         int absorbed = 0;
         while(!decoder.IsComplete)
         {
@@ -194,9 +198,10 @@ internal sealed class ReconciliationDecoderScaleTests
     }
 
 
+    /// <summary>Creates an encoder seeded with the supplied items.</summary>
     private static ReconciliationEncoder Encoder(byte[][] items)
     {
-        ReconciliationEncoder encoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        ReconciliationEncoder encoder = new(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(byte[] item in items)
         {
             encoder.Add(item);
@@ -206,6 +211,7 @@ internal sealed class ReconciliationDecoderScaleTests
     }
 
 
+    /// <summary>Returns sorted hexadecimal representations of the supplied items.</summary>
     private static IEnumerable<string> HexSet(byte[][] items)
     {
         return items.Select(Convert.ToHexString).Order();

@@ -91,7 +91,7 @@ Init ==
     /\ diffPush \in BOOLEAN /\ diffFetch \in BOOLEAN
     /\ diffDrops \in BOOLEAN /\ diffTrail \in BOOLEAN
     /\ diffTrail => diffFetch
-    \* Both prologues have run, so an offer and a context frame are already on each outbound queue (AES:318-326).
+    \* Both prologues have run, so an offer and a context frame are already on each outbound queue (AES:402-410).
     /\ cIR = <<Fr("offer"), Fr("context")>>
     /\ cRI = <<Fr("offer"), Fr("context")>>
     /\ irClosed = FALSE /\ riClosed = FALSE
@@ -104,7 +104,7 @@ Init ==
 -----------------------------------------------------------------------------
 (* Initiator frame receipt. The consumer is serial: a frame dispatches only
    between handlers (pc = idle), and a completed initiator returned early and
-   never dispatches again (AES:333-336). *)
+   never dispatches again (AES:423-426). *)
 
 InitiatorReceiveEnabled == ~i.stopped /\ i.pc = "idle" /\ i.st # "Completed" /\ cRI # <<>>
 
@@ -139,7 +139,7 @@ InitiatorFailClosed ==
     /\ UNCHANGED <<diffs, cIR, cRI, irClosed, riClosed, r, pushApplied, trailApplied, answerApplied>>
 
 -----------------------------------------------------------------------------
-(* The collapsed decode and the CompleteDecode micro-steps (AES:633-721).
+(* The collapsed decode and the CompleteDecode micro-steps (AES:780-868).
    Cut (a): decode fires spontaneously at Reconciling once the context is
    captured; done is sent first, before every transfer the initiator ever
    sends. Each micro-step boundary is an await in the code. *)
@@ -150,7 +150,7 @@ InitiatorDecode ==
     /\ i' = [i EXCEPT !.pc = "decodeDrops"]
     /\ UNCHANGED <<diffs, cRI, irClosed, riClosed, r, pushApplied, trailApplied, answerApplied>>
 
-(* The local-drop arm (AES:666-686): apply-and-fold now only when no fetch is
+(* The local-drop arm (AES:813-833): apply-and-fold now only when no fetch is
    outstanding; defer otherwise. The buggy variant folds eagerly regardless. *)
 InitiatorDecodeDrops ==
     /\ ~i.stopped /\ i.pc = "decodeDrops"
@@ -168,7 +168,7 @@ InitiatorDecodeFetch ==
     /\ UNCHANGED <<diffs, cRI, irClosed, riClosed, r, pushApplied, trailApplied, answerApplied>>
 
 (* After the push, a fetchless exchange proceeds to the terminal micro-steps;
-   a fetch-bearing one parks at Resolving awaiting the answer (AES:699-720). *)
+   a fetch-bearing one parks at Resolving awaiting the answer (AES:846-867). *)
 InitiatorDecodePush ==
     /\ ~i.stopped /\ i.pc = "decodePush"
     /\ cIR' = IF diffPush /\ ~irClosed THEN Append(cIR, Fr("elements")) ELSE cIR
@@ -188,13 +188,13 @@ InitiatorDecodeCompletion ==
     /\ i' = [i EXCEPT !.pc = "decodeFinish"]
     /\ UNCHANGED <<diffs, cRI, irClosed, riClosed, r, pushApplied, trailApplied, answerApplied>>
 
-\* A completed initiator's loop returns without ever draining (the early return at AES:333-336).
+\* A completed initiator's loop returns without ever draining (the early return at AES:423-426).
 InitiatorDecodeFinish ==
     /\ ~i.stopped /\ i.pc = "decodeFinish"
     /\ i' = [i EXCEPT !.pc = "idle", !.st = "Completed", !.conv = TRUE, !.stopped = TRUE]
     /\ UNCHANGED <<diffs, cIR, cRI, irClosed, riClosed, r, pushApplied, trailApplied, answerApplied>>
 
-(* The fetch-answer handler micro-steps (AES:781-854). The elements apply
+(* The fetch-answer handler micro-steps (AES:930-1003). The elements apply
    runs first and its fold rides the same hook call as the entries that fold
    covers; the deferred drops follow. A crash at any boundary in the handler
    therefore never leaves a folded context covering unapplied entries -
@@ -237,7 +237,7 @@ InitiatorAnswerFinish ==
     /\ i' = [i EXCEPT !.pc = "idle", !.st = "Completed", !.conv = TRUE, !.stopped = TRUE]
     /\ UNCHANGED <<diffs, cIR, cRI, irClosed, riClosed, r, pushApplied, trailApplied, answerApplied>>
 
-(* The drain epilogue (AES:339-346): the loop exits once the closed inbound is
+(* The drain epilogue (AES:429-436): the loop exits once the closed inbound is
    empty. The shipped epilogue folds nothing and maps a non-responder to
    Interrupted; the buggy variant folds a captured, unfolded context and
    reports Completed unconditionally. *)
@@ -281,7 +281,7 @@ ResponderReceiveContext ==
     /\ cIR' = Tail(cIR)
     /\ UNCHANGED <<diffs, cRI, irClosed, riClosed, i, pushApplied, trailApplied, answerApplied>>
 
-\* Done attests the decode covered the whole difference; the responder converges here, pre-terminally (AES:747).
+\* Done attests the decode covered the whole difference; the responder converges here, pre-terminally (AES:895).
 ResponderReceiveDone ==
     /\ ResponderReceiveEnabled /\ Head(cIR).t = "done" /\ r.st = "Reconciling" /\ r.captured
     /\ r' = [r EXCEPT !.st = "Resolving", !.conv = TRUE]
@@ -308,7 +308,7 @@ ResponderReceiveDrop ==
     /\ cIR' = Tail(cIR)
     /\ UNCHANGED <<diffs, cRI, irClosed, riClosed, i, pushApplied, answerApplied>>
 
-(* The licensed terminal fold (AES:897-944): add-only, role and phase guards
+(* The licensed terminal fold (AES:1052-1099): add-only, role and phase guards
    are structural here; the count check is the explicit guard. It has no
    folded-already gate - the license is the count. *)
 ResponderReceiveCompletion ==
@@ -324,7 +324,7 @@ ResponderFailClosed ==
     /\ r' = [r EXCEPT !.stopped = TRUE]
     /\ UNCHANGED <<diffs, cIR, cRI, irClosed, riClosed, i, pushApplied, trailApplied, answerApplied>>
 
-(* The responder's drain (AES:1040-1051): past done it completes, otherwise it
+(* The responder's drain (AES:1212-1224): past done it completes, otherwise it
    is interrupted; a frame-earned Completed is preserved. The shipped epilogue
    folds nothing. *)
 ResponderDrain ==

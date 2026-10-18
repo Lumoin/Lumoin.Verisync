@@ -9,7 +9,7 @@ namespace Lumoin.Verisync.Tests;
 /// Contract.cs:69) and the existing <c>MasqueradeIsWidthBoundedAndKeyRefuses</c> exercises exactly one
 /// hand-crafted degree-two collision. This drives a WHOLE decode of a many-item difference under a
 /// deliberately weak checksum width (the sanctioned adversarial-test width one, well-known key, honest trust
-/// domain — no crafted collision, no secret-key path) and counts decoded items that were in NEITHER set:
+/// domain -- no crafted collision, no secret-key path) and counts decoded items that were in NEITHER set:
 /// "phantom" decodes, each the sum of a degree-two-or-higher cell that passed the purity gate at
 /// <see cref="ReconciliationDecoder"/> Decoder.cs:204. A per-cell reading predicts about one collision per
 /// cell; the union over the O(D ln D) peel produces many, which is the finding's point. The count is
@@ -22,6 +22,7 @@ internal sealed class ReconciliationAggregateMasqueradeProbeTests
         ReconciliationContract.ForAdversarialTesting(ReconciliationItemDomain.Structural, 8, 1, ReconciliationContract.WellKnownChecksumKeyLow, ReconciliationContract.WellKnownChecksumKeyHigh);
 
 
+    /// <summary>Aggregate false acceptance grows with the peel count at a weak checksum width.</summary>
     [TestMethod]
     public void AggregateFalseAcceptScalesWithPeelCountAtWeakWidth()
     {
@@ -31,8 +32,8 @@ internal sealed class ReconciliationAggregateMasqueradeProbeTests
         const int symbolCount = 2400;
 
         var trueItems = new HashSet<string>(StringComparer.Ordinal);
-        using ReconciliationEncoder left = new(WeakWellKnown, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
-        using ReconciliationEncoder emptyPeer = new(WeakWellKnown, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder left = new(WeakWellKnown, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
+        using ReconciliationEncoder emptyPeer = new(WeakWellKnown, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         for(long counter = 1; counter <= itemCount; counter++)
         {
@@ -44,7 +45,7 @@ internal sealed class ReconciliationAggregateMasqueradeProbeTests
         //Absorb a fixed prefix rather than stopping at completion: phantoms injected mid-decode corrupt the
         //peel, so IsComplete is not a reliable stop, and more absorbed cells means more degree-two purity
         //checks, which is exactly the peel-count union the finding describes. Over-absorbing is legal.
-        using ReconciliationDecoder decoder = new(WeakWellKnown, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(WeakWellKnown, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         for(int n = 0; n < symbolCount; n++)
         {
             decoder.Absorb(left.ProduceNext().Combine(emptyPeer.ProduceNext()));

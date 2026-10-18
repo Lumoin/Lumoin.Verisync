@@ -17,14 +17,14 @@ namespace Lumoin.Verisync.Tests;
 /// <see cref="DottedReconciliationProjection{T}"/>: the initiator decodes the symmetric difference of the
 /// two present-entry digest sets and classifies each decoded dot against the peer's exchanged causal
 /// context, the responder serves fetches with elements only, and each side folds the peer context only
-/// alongside the applies that carry entries or drops — the initiator alone folds terminally, when it
+/// alongside the applies that carry entries or drops -- the initiator alone folds terminally, when it
 /// completes an exchange in which no apply folded, because only the decoder knows the exchange finished. The
 /// master law is that reconcile-then-apply equals
 /// <see cref="DottedVersionVectorSet{T}.Merge(DottedVersionVectorSet{T})"/>, including the resurrection case
-/// the design critique caught — an entry the initiator observed-and-removed but the responder still holds
-/// must not come back. The companion laws cover one-session bidirectional context convergence — the responder
+/// the design critique caught -- an entry the initiator observed-and-removed but the responder still holds
+/// must not come back. The companion laws cover one-session bidirectional context convergence -- the responder
 /// now folds the initiator's exchanged context on the completion frame, so a single session converges both
-/// contexts, with a reverse session only confirming quiescence — the completion frame surviving a wind-down as
+/// contexts, with a reverse session only confirming quiescence -- the completion frame surviving a wind-down as
 /// a preserved Completed with the folded context intact, an interrupted initiator emitting no completion frame,
 /// no false drop in a follow-up session on the completed path, the interrupted wind-down folding nothing (the
 /// false-drop guard, on both a responder and an initiator whose local drops defer while its fetch is
@@ -148,6 +148,7 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
+    /// <summary>A completed exchange converges both causal contexts in one session.</summary>
     [TestMethod]
     public async Task ContextLawACompletedExchangeConvergesBothContextsInOneSession()
     {
@@ -157,7 +158,7 @@ internal sealed class RemoveAwareReconciliationLawTests
 
         //Equal entry sets but divergent contexts: both replicas hold the same dots, yet each has observed (and
         //removed) an element the other never saw, so their causal contexts differ while their values do not. The
-        //completion frame closes the gap the reverse session used to fill — the responder folds the initiator's
+        //completion frame closes the gap the reverse session used to fill -- the responder folds the initiator's
         //exchanged context on a verified-complete exchange, so ONE session converges both contexts.
         DottedVersionVectorSet<string> shared = DvvSet().Add(R1, "alpha").Add(R1, "beta");
         DottedVersionVectorSet<string> initiatorStart = shared.Add(R2, "initiatorGhost").RemoveValue("initiatorGhost");
@@ -175,9 +176,9 @@ internal sealed class RemoveAwareReconciliationLawTests
         Assert.AreEqual(expectedValue, initiatorHost.Current);
         Assert.AreEqual(expectedValue, responderHost.Current);
 
-        //The quiescence strengthening: a reverse session between the now-converged states transfers nothing —
+        //The quiescence strengthening: a reverse session between the now-converged states transfers nothing --
         //equal snapshots leave the symmetric difference empty, so no fetch, elements, or drop frame crosses in
-        //either direction — and both replicas stay at the merge, confirming the one-session fold was complete.
+        //either direction -- and both replicas stay at the merge, confirming the one-session fold was complete.
         (RemoveAwareReconciliationHost reverseInitiator, RemoveAwareReconciliationHost reverseResponder, FrameCensus reverseToResponder, FrameCensus reverseToInitiator) =
             await ReconcileOnceWithCensusAsync(responderHost.Current, initiatorHost.Current, cancellationToken).ConfigureAwait(false);
 
@@ -190,6 +191,7 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
+    /// <summary>Winding down after a completion frame preserves completion and convergence.</summary>
     [TestMethod]
     public async Task AWindDownAfterTheCompletionFrameStaysCompletedAndConverged()
     {
@@ -200,7 +202,7 @@ internal sealed class RemoveAwareReconciliationLawTests
         //The drain-preservation pin: the responder reaches Completed on the completion frame with the initiator's
         //context folded, THEN the host winds it down with Complete(). The drain must keep the frame-earned
         //Completed and the folded context rather than overwrite them with Interrupted. Divergent contexts over
-        //equal entry sets isolate the fold — nothing transfers, so only the completion frame can advance the
+        //equal entry sets isolate the fold -- nothing transfers, so only the completion frame can advance the
         //responder's context.
         DottedVersionVectorSet<string> shared = DvvSet().Add(R1, "alpha").Add(R1, "beta");
         DottedVersionVectorSet<string> initiatorStart = shared.Add(R2, "initiatorGhost").RemoveValue("initiatorGhost");
@@ -239,7 +241,7 @@ internal sealed class RemoveAwareReconciliationLawTests
         await Task.WhenAll(initiatorRun, responderRun).ConfigureAwait(false);
 
         //The responder stayed Completed through the wind-down, still attests convergence, and kept the folded
-        //context — the merged context, reachable on this quiescent exchange only through the completion frame.
+        //context -- the merged context, reachable on this quiescent exchange only through the completion frame.
         Assert.AreEqual(AntiEntropySessionState.Completed, responder.State);
         Assert.IsTrue(responder.IsConverged, "A responder that folded on the completion frame attests convergence.");
         Assert.AreEqual(expectedContext, responderHost.Current.Context);
@@ -248,6 +250,7 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
+    /// <summary>An interrupted initiator emits no completion frame.</summary>
     [TestMethod]
     public async Task AnInterruptedInitiatorNeverEmitsACompletionFrame()
     {
@@ -261,7 +264,7 @@ internal sealed class RemoveAwareReconciliationLawTests
         DottedVersionVectorSet<string> shared = DvvSet().Add(R1, "alpha");
         DottedVersionVectorSet<string> responderStart = shared.Add(R3, "unicorn");
 
-        //Phase A: interrupted before the decode completes — only the offer and the context ever went out.
+        //Phase A: interrupted before the decode completes -- only the offer and the context ever went out.
         {
             RemoveAwareReconciliationHost initiatorHost = new(shared);
             using AntiEntropySession<DottedEntry<string>> initiator = new(AntiEntropyRole.Initiator, ContentHashContract, initiatorHost.Items, DefaultBatchSize, BaseMemoryPool.Shared, localContext: initiatorHost.LocalContext);
@@ -293,7 +296,7 @@ internal sealed class RemoveAwareReconciliationLawTests
             Assert.AreEqual(0, completions);
         }
 
-        //Phase B: interrupted at Resolving with a fetch outstanding — driven there by a scratch encoder over the
+        //Phase B: interrupted at Resolving with a fetch outstanding -- driven there by a scratch encoder over the
         //peer's items, then wound down before any answer arrives.
         {
             RemoveAwareReconciliationHost initiatorHost = new(shared);
@@ -323,7 +326,7 @@ internal sealed class RemoveAwareReconciliationLawTests
             await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForOffer(ReconciliationOffer.FromContract(ContentHashContract)), cancellationToken).ConfigureAwait(false);
             await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForContext(new ReconciliationContext(responderHost.LocalContext)), cancellationToken).ConfigureAwait(false);
 
-            using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+            using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
             foreach(ReadOnlyMemory<byte> item in responderHost.Items)
             {
                 remote.Add(item.Span);
@@ -349,6 +352,7 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
+    /// <summary>A follow-up to a completed session introduces no false removals.</summary>
     [TestMethod]
     public async Task ACompletedPathFollowUpSessionDropsNothingFalsely()
     {
@@ -358,7 +362,7 @@ internal sealed class RemoveAwareReconciliationLawTests
 
         //The no-false-drop probe on the completed/folded path: after one-session convergence (the responder folded
         //the initiator's context on the completion frame), a follow-up session between the same peers must be
-        //quiescent and drop no live entry — the fold rode a completed exchange, so no context covers a dot whose
+        //quiescent and drop no live entry -- the fold rode a completed exchange, so no context covers a dot whose
         //entry was never transferred.
         (DottedVersionVectorSet<string> initiatorStart, DottedVersionVectorSet<string> responderStart) = BuildDivergence(DivergenceShape.Mixed);
         DottedVersionVectorSet<string> expected = initiatorStart.Merge(responderStart);
@@ -369,7 +373,7 @@ internal sealed class RemoveAwareReconciliationLawTests
         Assert.AreEqual(expected, responderHost.Current);
 
         //The follow-up session over the converged states transfers nothing and keeps every live entry, with the
-        //removed probe still absent — no legitimate entry is falsely dropped.
+        //removed probe still absent -- no legitimate entry is falsely dropped.
         (RemoveAwareReconciliationHost followUpInitiator, RemoveAwareReconciliationHost followUpResponder, FrameCensus toResponder, FrameCensus toInitiator) =
             await ReconcileOnceWithCensusAsync(initiatorHost.Current, responderHost.Current, cancellationToken).ConfigureAwait(false);
 
@@ -388,6 +392,7 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
+    /// <summary>An interrupted exchange folds no context and causes no false removals in a follow-up session.</summary>
     [TestMethod]
     public async Task AnInterruptedExchangeFoldsNoContextAndCausesNoFalseDropsInAFollowUpSession()
     {
@@ -426,7 +431,7 @@ internal sealed class RemoveAwareReconciliationLawTests
             mergeContext: countingMerge,
             cancellationToken: cancellationToken);
 
-        //The initiator gets as far as its offer and its causal context — which covers the unicorn dot — and
+        //The initiator gets as far as its offer and its causal context -- which covers the unicorn dot -- and
         //then crashes: no symbol, done, fetch, elements, or drop frame ever arrives.
         await responder.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForOffer(ReconciliationOffer.FromContract(ContentHashContract)), cancellationToken).ConfigureAwait(false);
         await responder.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForContext(new ReconciliationContext(initiatorFull.Context.ToState())), cancellationToken).ConfigureAwait(false);
@@ -450,6 +455,7 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
+    /// <summary>An initiator interrupted during a fetch applies no deferred drops and folds no context.</summary>
     [TestMethod]
     public async Task AnInitiatorInterruptedWithAFetchOutstandingDefersItsLocalDropsAndFoldsNothing()
     {
@@ -460,7 +466,7 @@ internal sealed class RemoveAwareReconciliationLawTests
         //The initiator-side twin of the drain-fold hazard: the responder observed-and-removed "ghost" (which
         //the initiator still holds) and holds the live "unicorn" (which the initiator lacks), so the decode
         //classifies ghost a local drop and unicorn a fetch. Applying the drop before the answer would fold the
-        //responder's full context — covering the never-fetched unicorn dot — and an interruption at Resolving
+        //responder's full context -- covering the never-fetched unicorn dot -- and an interruption at Resolving
         //would persist it, making the next session false-drop the live entry. The drops must instead ride to
         //the answer's apply, so an interrupted initiator has folded and dropped nothing.
         DottedVersionVectorSet<string> shared = DvvSet().Add(R1, "alpha");
@@ -487,11 +493,11 @@ internal sealed class RemoveAwareReconciliationLawTests
 
         //Feed the initiator the responder's offer, context, and coded symbols from a scratch encoder over the
         //responder's items; it decodes, sends done and the unicorn fetch into the void, and parks in Resolving
-        //with the ghost drop pending — then the host winds it down before any answer arrives.
+        //with the ghost drop pending -- then the host winds it down before any answer arrives.
         await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForOffer(ReconciliationOffer.FromContract(ContentHashContract)), cancellationToken).ConfigureAwait(false);
         await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForContext(new ReconciliationContext(responderHost.LocalContext)), cancellationToken).ConfigureAwait(false);
 
-        using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in responderHost.Items)
         {
             remote.Add(item.Span);
@@ -530,6 +536,7 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
+    /// <summary>A failed fetch-answer apply leaves deferred drops unapplied and folds no context.</summary>
     [TestMethod]
     public async Task AFaultingFetchAnswerApplyLeavesTheDeferredDropsUnappliedAndFoldsNothing()
     {
@@ -538,7 +545,7 @@ internal sealed class RemoveAwareReconciliationLawTests
         CancellationToken cancellationToken = timeoutSource.Token;
 
         //The crash-window law behind the deferral: every drop applier folds the FULL peer context, so on the
-        //answer path the entries must apply first — the fold then rides the same hook call as the entries it
+        //answer path the entries must apply first -- the fold then rides the same hook call as the entries it
         //covers. A faulting elements apply must therefore leave the deferred drops unapplied and nothing
         //folded; a context folded over the never-applied unicorn classifies it observed-and-removed in the
         //next session, a permanent false drop.
@@ -582,7 +589,7 @@ internal sealed class RemoveAwareReconciliationLawTests
         await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForOffer(ReconciliationOffer.FromContract(ContentHashContract)), cancellationToken).ConfigureAwait(false);
         await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForContext(new ReconciliationContext(responderHost.LocalContext)), cancellationToken).ConfigureAwait(false);
 
-        using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in responderHost.Items)
         {
             remote.Add(item.Span);
@@ -616,7 +623,7 @@ internal sealed class RemoveAwareReconciliationLawTests
 
         await Assert.ThrowsExactlyAsync<NotSupportedException>(() => initiatorRun).ConfigureAwait(false);
 
-        //The regression: the fault landed before the drop applier ran, so nothing dropped and nothing folded —
+        //The regression: the fault landed before the drop applier ran, so nothing dropped and nothing folded --
         //the local state is byte-identical and the ghost is still held.
         Assert.AreEqual(0, dropApplierCalls, "A faulting fetch-answer apply must leave the deferred local drops unapplied.");
         Assert.AreEqual(initiatorStart, initiatorHost.Current);
@@ -634,6 +641,7 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
+    /// <summary>A failed deferred-drop apply after the answer causes no false drop.</summary>
     [TestMethod]
     public async Task AFaultingDeferredDropApplyAfterTheAnswerCausesNoFalseDrop()
     {
@@ -641,8 +649,8 @@ internal sealed class RemoveAwareReconciliationLawTests
         timeoutSource.CancelAfter(Timeout);
         CancellationToken cancellationToken = timeoutSource.Token;
 
-        //The elements-first order's own crash window, pinned safe: the answer applies and folds — the fold
-        //riding the hook call that carries the entries it covers — and THEN the deferred drop applier faults.
+        //The elements-first order's own crash window, pinned safe: the answer applies and folds -- the fold
+        //riding the hook call that carries the entries it covers -- and THEN the deferred drop applier faults.
         //The ghost is still held with the peer context folded over it, which is exactly the shape the next
         //session re-classifies as a genuine local drop; nothing here can false-drop live data.
         DottedVersionVectorSet<string> shared = DvvSet().Add(R1, "alpha");
@@ -684,7 +692,7 @@ internal sealed class RemoveAwareReconciliationLawTests
         await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForOffer(ReconciliationOffer.FromContract(ContentHashContract)), cancellationToken).ConfigureAwait(false);
         await initiator.SubmitAsync(ReconciliationEnvelope<DottedEntry<string>>.ForContext(new ReconciliationContext(responderHost.LocalContext)), cancellationToken).ConfigureAwait(false);
 
-        using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in responderHost.Items)
         {
             remote.Add(item.Span);
@@ -723,7 +731,7 @@ internal sealed class RemoveAwareReconciliationLawTests
         Assert.Contains(ResurrectionProbe, initiatorHost.Current.Values);
 
         //The follow-up session converges to the oracle: the ghost re-classifies as a local drop against the
-        //responder's context and the unicorn stays alive — the fault cost one session, never data.
+        //responder's context and the unicorn stays alive -- the fault cost one session, never data.
         (RemoveAwareReconciliationHost followUpInitiator, RemoveAwareReconciliationHost followUpResponder) = await ReconcileOnceAsync(initiatorHost.Current, responderStart, cancellationToken).ConfigureAwait(false);
 
         Assert.AreEqual(expected, followUpInitiator.Current);
@@ -897,6 +905,7 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
+    /// <summary>An add-only exchange converges element sets without context or drop frames.</summary>
     [TestMethod]
     public async Task AddOnlyDegeneracyWithNullLocalContextConvergesElementSetsAndSendsNoContextOrDropFrames()
     {
@@ -905,7 +914,7 @@ internal sealed class RemoveAwareReconciliationLawTests
         CancellationToken cancellationToken = timeoutSource.Token;
 
         //The add-only socket-proof shape: a shared ancestor plus a per-side surplus, with a null local context
-        //so the sessions are byte-for-byte the add-only path — no context exchange, no drop frame.
+        //so the sessions are byte-for-byte the add-only path -- no context exchange, no drop frame.
         OrSet<string> ancestor = OrSet<string>.Empty.Add("alpha", R1).Add("beta", R1).Add("gamma", R1);
         OrSet<string> initiatorSet = ancestor.Add("delta", R2).Add("epsilon", R2);
         OrSet<string> responderSet = ancestor.Add("zeta", R3);
@@ -1098,7 +1107,7 @@ internal sealed class RemoveAwareReconciliationLawTests
 
     /// <summary>
     /// Runs one remove-aware session like ReconcileOnceAsync but wraps each side's send in a FrameCensus, so a
-    /// caller can assert which payloads crossed — used where the proof is quiescence (no fetch/elements/drop)
+    /// caller can assert which payloads crossed -- used where the proof is quiescence (no fetch/elements/drop)
     /// rather than only the converged values.
     /// </summary>
     private static async Task<(RemoveAwareReconciliationHost Initiator, RemoveAwareReconciliationHost Responder, FrameCensus ToResponder, FrameCensus ToInitiator)> ReconcileOnceWithCensusAsync(
@@ -1147,7 +1156,7 @@ internal sealed class RemoveAwareReconciliationLawTests
     /// </summary>
     /// <remarks>
     /// A shared ancestor seeds both sides; the shapes layer per-side adds and an observed remove on top,
-    /// including the resurrection probe — a dot the initiator observed and removed while the responder still
+    /// including the resurrection probe -- a dot the initiator observed and removed while the responder still
     /// holds it.
     /// </remarks>
     private static (DottedVersionVectorSet<string> Initiator, DottedVersionVectorSet<string> Responder) BuildDivergence(DivergenceShape shape)
@@ -1206,12 +1215,14 @@ internal sealed class RemoveAwareReconciliationLawTests
     }
 
 
+    /// <summary>Creates a sender that forwards envelopes to the peer session.</summary>
     private static SendReconciliationEnvelopeDelegate<DottedEntry<string>> Forward(AntiEntropySession<DottedEntry<string>> peer)
     {
         return (envelope, cancellationToken) => ForwardTo(peer, envelope, cancellationToken);
     }
 
 
+    /// <summary>Submits an envelope to the peer and discards it if the peer has already closed its channel.</summary>
     private static ValueTask ForwardTo(AntiEntropySession<DottedEntry<string>> peer, ReconciliationEnvelope<DottedEntry<string>> envelope, CancellationToken cancellationToken)
     {
         try
@@ -1221,11 +1232,13 @@ internal sealed class RemoveAwareReconciliationLawTests
         catch(ChannelClosedException)
         {
             //A completed peer is a wound-down session; dropping the late send is exactly the transport's behaviour.
+
             return ValueTask.CompletedTask;
         }
     }
 
 
+    /// <summary>Discards an envelope and completes synchronously.</summary>
     private static ValueTask DiscardEnvelope(ReconciliationEnvelope<DottedEntry<string>> envelope, CancellationToken cancellationToken)
     {
         return ValueTask.CompletedTask;
