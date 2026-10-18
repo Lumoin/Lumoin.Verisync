@@ -2,14 +2,14 @@ using Lumoin.Base;
 using Lumoin.Verisync.Core;
 using System.Buffers;
 using System.Diagnostics.Metrics;
-using System.Threading;
+using System.Runtime.InteropServices;
 
 namespace Lumoin.Verisync.Tests;
 
 /// <summary>
 /// Focused deterministic coverage of the append-only item arena in isolation: construction range validation,
 /// the exact-width round-trip append contract and its wrong-length rejection, the central never-relocate
-/// invariant that an early slice still reads its original bytes after many block grows, disposal semantics,
+/// invariant that an early slice still reads its original bytes once the arena spans three blocks, disposal semantics,
 /// the pooled growth zero-leak balance, and the full-overwrite-on-append soundness contract that needs no
 /// clear-on-rent. The encoder and decoder behaviour that consumes the arena is covered by the existing suite,
 /// which is the oracle.
@@ -17,7 +17,7 @@ namespace Lumoin.Verisync.Tests;
 /// <remarks>
 /// The pooled-rental test observes the library's process-global rental instruments, so the class is marked
 /// <see cref="DoNotParallelizeAttribute"/> to keep their measurement totals free of rentals emitted by other
-/// pool-using tests running concurrently — the same isolation the other metric-observing suites use.
+/// pool-using tests running concurrently -- the same isolation the other metric-observing suites use.
 /// </remarks>
 [TestClass]
 [DoNotParallelize]
@@ -32,26 +32,17 @@ internal sealed class ReconciliationItemArenaTests
     }
 
 
+    /// <summary>Every non-negative hint can presize the block table without renting item memory.</summary>
     [TestMethod]
-    public void ConstructionRejectsHintsThatWouldOverflowTheBacking()
+    public void ConstructionAcceptsLargeHintsWithoutRenting()
     {
-        //A hint near int's range would, in the unguarded power-of-two rounding, double past 2^30 into the sign
-        //flip and then to zero and spin forever; the 64-bit rounding instead reaches 2^31 and the widened bound
-        //check rejects it with the hint's own name. The arena validates eagerly at construction WITHOUT renting,
-        //so the rejection is allocation-free and its lazy-first-block property still holds.
-        ArgumentOutOfRangeException farPastInt = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationItemArena(8, BaseMemoryPool.Shared, itemCapacityHint: int.MaxValue));
-        Assert.AreEqual("itemCapacityHint", farPastInt.ParamName);
-
-        //A hint far below int's range is still rejected when its power-of-two first block times the stride
-        //overflows: 2^21 + 1 rounds up to 2^22, and at the maximum stride of 1024 bytes that block is 2^32 bytes,
-        //past the maximum array length. The widened product fires here rather than wrapping the int rental size.
-        ArgumentOutOfRangeException widthOverflow = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new ReconciliationItemArena(1024, BaseMemoryPool.Shared, itemCapacityHint: (1 << 21) + 1));
-        Assert.AreEqual("itemCapacityHint", widthOverflow.ParamName);
-
-        //A modest hint at a small stride still constructs and stays empty until the first append: the rejection is
-        //a ceiling on pathological hints, not a regression of the ordinary pre-sizing path.
-        using ReconciliationItemArena ok = new(8, BaseMemoryPool.Shared, itemCapacityHint: 1000);
-        Assert.AreEqual(0, ok.Count);
+        using RentalAccountant accountant = new();
+        using BaseMemoryPool pool = new();
+        using ReconciliationItemArena largestHint = new(8, pool, itemCapacityHint: int.MaxValue);
+        using ReconciliationItemArena widestStride = new(1024, pool, itemCapacityHint: (1 << 21) + 1);
+        Assert.AreEqual(0, largestHint.Count);
+        Assert.AreEqual(0, widestStride.Count);
+        Assert.AreEqual(0L, accountant.Rented);
     }
 
 
@@ -89,15 +80,14 @@ internal sealed class ReconciliationItemArenaTests
     }
 
 
+    /// <summary>Early slices retain their bytes after multiple fixed blocks are rented.</summary>
     [TestMethod]
     public void AppendedSlicesNeverMoveAcrossGrowth()
     {
         const int Stride = 8;
-        const int Items = 1000;
+        const int Items = (2 * 65_536) + 1;
 
-        //A zero hint pins the smallest first block at four items, so a thousand appends force several block
-        //grows; if any grow relocated stored bytes the held early slices below would read moved-or-recycled
-        //bytes.
+        //Appending into a third block must leave the held early slices at their original bytes.
         using ReconciliationItemArena arena = new(Stride, BaseMemoryPool.Shared, itemCapacityHint: 0);
 
         //Capture the live slices and an independent copy of the expected bytes for a spread of early indices
@@ -122,7 +112,7 @@ internal sealed class ReconciliationItemArenaTests
             next++;
         }
 
-        //Drive the arena well past several block grows.
+        //Drive the arena across two block boundaries into a third block.
         for(; next < Items; next++)
         {
             _ = arena.Append(BuildItem(Stride, next));
@@ -170,19 +160,19 @@ internal sealed class ReconciliationItemArenaTests
     }
 
 
+    /// <summary>Disposing an arena returns every fixed block rented across growth.</summary>
     [TestMethod]
     public void PooledGrowthLeavesNoActiveRentals()
     {
         const int Stride = 8;
-        const int Items = 1000;
+        const int Items = (2 * 65_536) + 1;
 
         RentalAccountant accountant = new();
         using(accountant)
         {
             using BaseMemoryPool pool = new();
 
-            //A zero hint pins the small initial block, so a thousand items force several doubling block rents on
-            //the pooled path, each renting an additional block and never relocating a prior one.
+            //The corpus fills two blocks and starts a third on the pooled path.
             ReconciliationItemArena arena = new(Stride, pool, itemCapacityHint: 0);
 
             for(int n = 0; n < Items; n++)
@@ -203,10 +193,10 @@ internal sealed class ReconciliationItemArenaTests
             arena.Dispose();
         }
 
-        //Disposal returns every grown block, so the net active gauge balances to zero and the arena rented at
-        //least its initial block plus a block per grow, returning exactly as many as it took.
+        //Disposal returns every block, so the net active gauge balances to zero; the corpus spans exactly three
+        //blocks, so the arena rented exactly three and returned exactly as many as it took.
         Assert.AreEqual(0L, accountant.NetActive);
-        Assert.IsGreaterThan(0L, accountant.Rented);
+        Assert.AreEqual(3L, accountant.Rented);
         Assert.AreEqual(accountant.Rented, accountant.Returned);
     }
 
@@ -254,18 +244,25 @@ internal sealed class ReconciliationItemArenaTests
     }
 
 
-    /// <summary>Pins that only the very first grow sizes from the hint floor; every later grow doubles the running total capacity instead of repeating the small first-block size.</summary>
+    /// <summary>Each grow rents another block of the same item capacity.</summary>
     [TestMethod]
-    public void GrowthDoublesTheRunningCapacityAfterTheFirstBlock()
+    public void GrowthKeepsEveryBlockAtTheSameCapacity()
     {
         const int Stride = 8;
-        const int Items = 1000;
+        const int Items = (3 * 65_536) + 1;
 
         RentalAccountant accountant = new();
         using(accountant)
         {
-            using BaseMemoryPool pool = new();
-            ReconciliationItemArena arena = new(Stride, pool, itemCapacityHint: 0);
+            using var meter = new Meter(BaseMemoryPoolMetrics.MeterName);
+            List<int> segmentSizes = [];
+            using BaseMemoryPool pool = new(meter, capacityStrategy: size =>
+            {
+                segmentSizes.Add(size);
+
+                return 1;
+            });
+            using ReconciliationItemArena arena = new(Stride, pool, itemCapacityHint: 0);
 
             for(int n = 0; n < Items; n++)
             {
@@ -273,22 +270,25 @@ internal sealed class ReconciliationItemArenaTests
             }
 
             Assert.AreEqual(Items, arena.Count);
+            Assert.HasCount(4, segmentSizes);
+            foreach(int size in segmentSizes)
+            {
+                Assert.AreEqual(65_536 * Stride, size);
+            }
+
             arena.Dispose();
         }
 
-        //A zero hint pins the first block at four items; doubling the running total thereafter (4, 8, 16, ..., 1024)
-        //reaches 1000 items in nine block rents. A broken grow that re-sized every later block from the hint floor
-        //instead of doubling the running total would need roughly Items / 4 rents to hold the same 1000 items.
-        Assert.IsLessThan(20L, accountant.Rented);
+        Assert.AreEqual(4L, accountant.Rented);
     }
 
 
-    /// <summary>Pins that the zero-hint first block holds exactly the documented four-item floor, not one power of two further.</summary>
+    /// <summary>The first block holds exactly 65,536 items before another rental is needed.</summary>
     [TestMethod]
-    public void ZeroHintFirstBlockHoldsExactlyFourItemsBeforeGrowing()
+    public void ZeroHintFirstBlockHoldsExactly65536ItemsBeforeGrowing()
     {
         const int Stride = 8;
-        const int FloorItems = 4;
+        const int FloorItems = 65_536;
 
         RentalAccountant accountant = new();
         using(accountant)
@@ -303,24 +303,24 @@ internal sealed class ReconciliationItemArenaTests
 
             Assert.AreEqual(1L, accountant.Rented);
 
-            //A fifth append overflows the four-item first block and forces a second rent; a first block rounded up
-            //to eight (the next power of two past four) would still have room and rent only once.
+            Assert.AreEqual(FloorItems, arena.Count);
             _ = arena.Append(BuildItem(Stride, FloorItems));
 
             Assert.AreEqual(2L, accountant.Rented);
+            Assert.AreEqual(FloorItems + 1, arena.Count);
 
             arena.Dispose();
         }
     }
 
 
-    /// <summary>Pins that Dispose clears each block's whole logical region in defence in depth, even when the injected pool's own rental does not clear on return.</summary>
+    /// <summary>Disposal clears full blocks and the used last-block region while leaving unused bytes untouched.</summary>
     [TestMethod]
-    public void DisposalClearsEachBlocksLogicalRegionEvenWhenThePoolDoesNot()
+    public void DisposalClearsOnlyEachBlocksUsedRegionEvenWhenThePoolDoesNot()
     {
         const int Stride = 8;
         using DirtyMemoryPool pool = new();
-        ReconciliationItemArena arena = new(Stride, pool, itemCapacityHint: 0);
+        using ReconciliationItemArena arena = new(Stride, pool, itemCapacityHint: 0);
 
         byte[] item = new byte[Stride];
         for(int b = 0; b < Stride; b++)
@@ -328,16 +328,28 @@ internal sealed class ReconciliationItemArenaTests
             item[b] = (byte)(b + 1);
         }
 
-        ReadOnlyMemory<byte> slice = arena.Append(item);
+        ReadOnlyMemory<byte> first = arena.Append(item);
+        for(int index = 1; index < 65_536; index++)
+        {
+            _ = arena.Append(item);
+        }
+
+        ReadOnlyMemory<byte> last = arena.Append(item);
+        Assert.IsTrue(MemoryMarshal.TryGetArray(first, out ArraySegment<byte> firstBlock));
+        Assert.IsTrue(MemoryMarshal.TryGetArray(last, out ArraySegment<byte> lastBlock));
+        Assert.IsNotNull(firstBlock.Array);
+        Assert.IsNotNull(lastBlock.Array);
 
         //Sanity: the slice reads the written, non-zero bytes before disposal.
-        Assert.IsFalse(slice.Span.SequenceEqual(new byte[Stride]));
+        Assert.IsTrue(first.Span.SequenceEqual(item));
+        Assert.IsTrue(last.Span.SequenceEqual(item));
 
         arena.Dispose();
 
-        //Disposal clears the block's logical region in defence in depth: the dirty pool's own owner does not clear
-        //on return, so only the arena's own explicit clear could zero these bytes.
-        Assert.IsTrue(slice.Span.SequenceEqual(new byte[Stride]));
+        //The dirty pool never clears on return, so these checks observe the arena's own clearing boundaries.
+        Assert.AreEqual(-1, firstBlock.Array.AsSpan().IndexOfAnyExcept((byte)0));
+        Assert.AreEqual(-1, lastBlock.Array.AsSpan(0, Stride).IndexOfAnyExcept((byte)0));
+        Assert.AreEqual(-1, lastBlock.Array.AsSpan(Stride).IndexOfAnyExcept((byte)0xFF));
     }
 
 
@@ -350,31 +362,97 @@ internal sealed class ReconciliationItemArenaTests
     }
 
 
-    /// <summary>Pins that a hint above the block floor pre-sizes the first block to the hint, not the floor.</summary>
+    /// <summary>A large hint rents nothing at construction and one fixed block on the first append.</summary>
     [TestMethod]
-    public void ConstructionPreSizesTheFirstBlockFromAHintAboveTheFloor()
+    public void LargeHintLeavesTheFirstBlockLazyAndFixedSize()
     {
         const int Stride = 8;
-        const int Hint = 100;
+        const int Hint = 200_000;
 
         RentalAccountant accountant = new();
         using(accountant)
         {
-            using BaseMemoryPool pool = new();
-            ReconciliationItemArena arena = new(Stride, pool, itemCapacityHint: Hint);
-
-            for(int n = 0; n < Hint; n++)
+            using var meter = new Meter(BaseMemoryPoolMetrics.MeterName);
+            List<int> segmentSizes = [];
+            using BaseMemoryPool pool = new(meter, capacityStrategy: size =>
             {
-                _ = arena.Append(BuildItem(Stride, n));
-            }
+                segmentSizes.Add(size);
 
-            Assert.AreEqual(Hint, arena.Count);
-            arena.Dispose();
+                return 1;
+            });
+            using ReconciliationItemArena arena = new(Stride, pool, itemCapacityHint: Hint);
+            Assert.AreEqual(0L, accountant.Rented);
+            Assert.IsEmpty(segmentSizes);
+
+            _ = arena.Append(BuildItem(Stride, 0));
+
+            Assert.AreEqual(1, arena.Count);
+            Assert.AreEqual(1L, accountant.Rented);
+            Assert.HasCount(1, segmentSizes);
+            Assert.AreEqual(65_536 * Stride, segmentSizes[0]);
         }
 
-        //The first block's capacity is the smallest power of two at or above the hint (128 for a hint of 100), so
-        //appending exactly the hinted count fits in the single rented first block with no grow.
         Assert.AreEqual(1L, accountant.Rented);
+        Assert.AreEqual(1L, accountant.Returned);
+    }
+
+
+    /// <summary>Every append index returns the original memory view across a block boundary.</summary>
+    [TestMethod]
+    public void ItemAtReturnsAppendMemoryAcrossABlockBoundary()
+    {
+        const int Stride = 4;
+        const int Items = 65_540;
+        using ReconciliationItemArena arena = new(Stride, BaseMemoryPool.Shared);
+        ReadOnlyMemory<byte>[] appended = new ReadOnlyMemory<byte>[Items];
+        for(int index = 0; index < Items; index++)
+        {
+            appended[index] = arena.Append(BuildItem(Stride, index));
+        }
+
+        for(int index = 0; index < Items; index++)
+        {
+            Assert.AreEqual(appended[index], arena.ItemAt(index));
+        }
+    }
+
+
+    /// <summary>The next append index is outside the readable range, including for an empty arena.</summary>
+    [TestMethod]
+    public void ItemAtRejectsCount()
+    {
+        using ReconciliationItemArena arena = new(4, BaseMemoryPool.Shared);
+        ArgumentOutOfRangeException empty = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => arena.ItemAt(arena.Count));
+        Assert.AreEqual("index", empty.ParamName);
+
+        _ = arena.Append(new byte[4]);
+
+        ArgumentOutOfRangeException populated = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => arena.ItemAt(arena.Count));
+        Assert.AreEqual("index", populated.ParamName);
+    }
+
+
+    /// <summary>A negative append index is rejected with its parameter name.</summary>
+    [TestMethod]
+    public void ItemAtRejectsNegativeIndex()
+    {
+        using ReconciliationItemArena arena = new(4, BaseMemoryPool.Shared);
+        ArgumentOutOfRangeException exception = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => arena.ItemAt(-1));
+        Assert.AreEqual("index", exception.ParamName);
+    }
+
+
+    /// <summary>Disposal prevents index lookup before any released block can be accessed.</summary>
+    [TestMethod]
+    public void ItemAtRejectsUseAfterDispose()
+    {
+        using ReconciliationItemArena arena = new(4, BaseMemoryPool.Shared);
+        _ = arena.Append(new byte[4]);
+        arena.Dispose();
+
+        Assert.ThrowsExactly<ObjectDisposedException>(() => arena.ItemAt(0));
+        Assert.ThrowsExactly<ObjectDisposedException>(() => arena.ItemAt(-1));
+        Assert.ThrowsExactly<ObjectDisposedException>(() => arena.ItemAt(arena.Count));
     }
 
 

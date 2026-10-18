@@ -123,7 +123,7 @@ internal sealed class MasqueradePerDecodeScalingProbe
     private static (bool SawPhantom, bool Completed) DecodeOnce(int d, long trialBase)
     {
         var truth = new HashSet<string>(d);
-        using ReconciliationEncoder full = new(WeakContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder full = new(WeakContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         for(int i = 0; i < d; i++)
         {
             byte[] item = BitConverter.GetBytes(trialBase + i);
@@ -131,10 +131,10 @@ internal sealed class MasqueradePerDecodeScalingProbe
             truth.Add(Convert.ToHexString(item));
         }
 
-        using ReconciliationEncoder empty = new(WeakContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder empty = new(WeakContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         int cap = 100 + (20 * d);
-        using ReconciliationDecoder decoder = new(WeakContract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(WeakContract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         int absorbed = 0;
         while(!decoder.IsComplete && absorbed < cap)
         {

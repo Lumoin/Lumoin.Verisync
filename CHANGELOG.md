@@ -14,6 +14,26 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Security
 -->
 
+## [Unreleased]
+
+### Added
+
+- `ReconciliationSnapshotEncoder` encodes a pinned snapshot through an `EnumerateReconciliationItemsDelegate` and retains only the produced cells. `AntiEntropySession<TElement>` can run over the same delegate; each batch is one pass over the snapshot, so pick a batch size in the hundreds or thousands.
+- `ReconciliationCapacityHint` carries separate item and cell hints.
+- A scale probe in the benchmarks measures encoder retention per pool kind.
+
+### Changed
+
+- **Breaking.** `ReconciliationEncoder` and `ReconciliationDecoder` take a `ReconciliationCapacityHint` in place of the integer cell hint. No wire-format change in this release.
+- The incremental encoder retains 48 bytes per item, down from 64, and the item arena rents fixed blocks of 65,536 items, so a default `BaseMemoryPool` serves sets past 2^25 items.
+- `AntiEntropySession<TElement>` sizes its cells by the batch size and keeps no second copy of the snapshot.
+- The codecs, the item arena, the cell buffer and the session release every rental on `Dispose` even when one release throws, clear their collections, rent last during construction and release what they hold when construction fails.
+- Dependencies move past the October 2026 NuGet advisories. Release notes are written by hand in this file; `SIL.ReleaseTasks` is gone.
+
+### Fixed
+
+- The cell buffer clears retired backings before returning them to the pool on growth.
+
 ## [0.0.14] - 2026-09-15
 
 ### Changed
@@ -68,7 +88,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 - **Breaking.** `QuePaxaVersionedNode<TValue>.Self` is a `HostId`, and the constructor takes one. The membership filter then refuses a host whose store the active membership does not admit, which is the same rule as the one that refuses a host no membership lists, one dimension over.
 
-- **Breaking.** `QuePaxaVersionedNodeState<TValue>` carries the host that wrote it, and `QuePaxaVersionedNode<TValue>.FromState` takes a `HostId` and refuses a snapshot written by another host with `StateRestoreRefusal.HostIdentityMismatch`. That refuses a store attached to the wrong machine, a store restored under a replica it never served, and a deployment restating its store's incarnation as the value the membership admits rather than the one its store holds — which is the claim the membership filter would otherwise be testing instead of a fact. A store that came back empty reaches the constructor and not the restore, because there is no snapshot to restore from, so the constructor is the one path on which a deployment's word about its own store is taken.
+- **Breaking.** `QuePaxaVersionedNodeState<TValue>` carries the host that wrote it, and `QuePaxaVersionedNode<TValue>.FromState` takes a `HostId` and refuses a snapshot written by another host with `StateRestoreRefusal.HostIdentityMismatch`. That refuses a store attached to the wrong machine, a store restored under a replica it never served, and a deployment restating its store's incarnation as the value the membership admits rather than the one its store holds -- which is the claim the membership filter would otherwise be testing instead of a fact. A store that came back empty reaches the constructor and not the restore, because there is no snapshot to restore from, so the constructor is the one path on which a deployment's word about its own store is taken.
 
 - **Breaking.** `StateRestoreRefusal` gains `HostIdentityMismatch`, and the acceptor and Raft members that followed it move up by one so the host family stays contiguous.
 
@@ -88,7 +108,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 - `StateRestoreException` and `StateRestoreRefusal`. Every durable-state restore now names the rule it refused on, across the QuePaxa recorder, the versioned host, the Fast CASPaxos acceptor and the Raft node, so a caller switches on the refusal instead of matching the sentence beside it. It derives from `ArgumentException` and keeps `ParamName`, which names which argument was refused and is a separate question from which rule refused it: the chain check reports `HostForeignChain` whether it is raised against a record handed to a constructor or a snapshot handed to a restore.
 
-- `ConsensusRefusedException` and `ConsensusRefusal`, the same for the refusals a running register and host raise: a concurrent write, a spent version range, a reconfiguration with nothing committed, a readiness report without a member query, a probe answered by another member, and a misrouted decision. The two families stay apart because they answer different questions — durable state a host was handed, against an operation asked for on state that is already sound. `VersionRangeSpent` is reported by both sites that raise it, which carried the same sentence and so could not be told apart at all.
+- `ConsensusRefusedException` and `ConsensusRefusal`, the same for the refusals a running register and host raise: a concurrent write, a spent version range, a reconfiguration with nothing committed, a readiness report without a member query, a probe answered by another member, and a misrouted decision. The two families stay apart because they answer different questions -- durable state a host was handed, against an operation asked for on state that is already sound. `VersionRangeSpent` is reported by both sites that raise it, which carried the same sentence and so could not be told apart at all.
 
 - Metrics and spans for the consensus surface, on the meter and activity source the library already publishes: membership size and quorum, per-member probe outcomes, the write status distribution and the fast-path rate.
 
@@ -255,8 +275,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Changed
 
-- `CheckpointedSequence.Promote` proposes a `CheckpointCommitment` — the digest of the snapshot's
-  canonical bytes — through the CASPaxos register instead of the snapshot itself. Consensus payloads
+- `CheckpointedSequence.Promote` proposes a `CheckpointCommitment` -- the digest of the snapshot's
+  canonical bytes -- through the CASPaxos register instead of the snapshot itself. Consensus payloads
   stay metadata-sized regardless of sequence length; the content stays local and travels the CRDT
   plane, verifiable against the agreed commitment. `Create` takes the canonicalize and digest
   delegates; the register type is `CasPaxosRegister<CheckpointCommitment>`.
@@ -288,7 +308,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   cycles are rejected rather than silently dropping vertices from traversal. Tombstones for absent
   dots remain accepted and documented.
 - The JSON channel deserializer is strict: a payload that is the JSON literal `null` and any payload
-  with trailing data after the message are rejected with `JsonException` — many-bytes-to-one-message
+  with trailing data after the message are rejected with `JsonException` -- many-bytes-to-one-message
   laxity breaks canonical-bytes assumptions near digest-relevant content.
 - `TaggedMemory` equality members fail closed after dispose; the memory pool validates slab sizing
   before allocation (no more wrapped products), disposes its rental activity on a throwing rent,
@@ -304,7 +324,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Added
 
 - `OffsetAnchoredSequence<TValue>` and `OffsetAnchor`, registered as `verisync.sequence.offset.v1`:
-  the checkpoint-offset sequence strategy — collaborative edits over an immutable, consensus-agreed
+  the checkpoint-offset sequence strategy -- collaborative edits over an immutable, consensus-agreed
   base snapshot, with anchors as stable base offsets or live dot identities and the same Lamport
   intention-preservation rule as the RGA strategy. Merging is generation-aligned and fails closed
   across differing bases. Passes the full shared law harness.
@@ -317,75 +337,75 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   and replica-independent. `TranslateAnchor` serves previous-generation anchors from dot- and
   offset-translation maps that compose across generations, so dot anchors stay translatable
   indefinitely while base anchors serve exactly the one-generation window the stability rule permits.
-  The shared law harness gains the two remaining compaction laws — compact/merge commutation at or
-  above the frontier and anchor servability across compaction — and the
+  The shared law harness gains the two remaining compaction laws -- compact/merge commutation at or
+  above the frontier and anchor servability across compaction -- and the
   `TranslateAnchorDelegate` now receives the sequence, since translation maps are strategy state.
 - `verisync.sequence.rga-rle.v1` (`WellKnownSequenceStrategies.CreateRgaRle`): the compactable RGA
-  strategy — identical RGA semantics and identifiers, plus ghost-based waterline compaction with no
+  strategy -- identical RGA semantics and identifiers, plus ghost-based waterline compaction with no
   re-anchoring of any kind. A stable tombstone persists as a ghost while any descendant survives;
   only recursively childless stable tombstones drop (head-anchored ones never do, since no element
   exists to translate to), so the visible order provably never changes. `Rga<TValue>.Compact`
   verifies the agreed checkpoint against the stable visible content fail-closed, and
   `TranslateAnchor` serves dropped dots from a translation map that composes across generations.
-  `ToRunState`/`FromRunState` add the run-length serialized state — maximal same-replica
+  `ToRunState`/`FromRunState` add the run-length serialized state -- maximal same-replica
   predecessor-chained vertex runs, per-replica tombstone spans, and translation entries, validated
-  fail-closed on reconstruction — while `ToState` now refuses to serialize an instance carrying
+  fail-closed on reconstruction -- while `ToState` now refuses to serialize an instance carrying
   translations rather than silently dropping them. Both compaction strategies pass the same four
   shared compaction laws.
 - Serialization for both compaction strategies: `OffsetAnchoredSequence<TValue>.ToState`/`FromState`
   with the `OffsetAnchoredSequenceState` record family (vertices with anchors, removed offsets, and
   both translation maps; deterministic replica-major output; reconstruction validates anchors,
   ranges, duplicates, and anchor-graph acyclicity fail-closed), and `CrdtStateJson` codecs for
-  `OffsetAnchoredSequenceState` and `RgaRunState` — hand-written and AOT-safe like the existing
+  `OffsetAnchoredSequenceState` and `RgaRunState` -- hand-written and AOT-safe like the existing
   state codecs, with codec-level shape validation (`JsonException`) layered under the state-level
   relational validation (`ArgumentException`).
 - Fast CASPaxos next-ballot piggybacking: a successful accept may carry the next fast ballot, raising
-  the acceptor's promise to it and establishing the next fast round coordinator-free — recurring
+  the acceptor's promise to it and establishing the next fast round coordinator-free -- recurring
   one-round-trip fast commits, as in the original design. All reject rules ignore the piggyback, the
   promise only ever rises, and an acceptor that never saw the piggyback keeps rejecting that fast
   round via the equality rule, so blind writes at un-established rounds remain impossible. The wire
   encoding's `next` field is optional and back-compatible.
 - The Raft production story around the safety core: `RaftNode.ToState`/`FromState` with
   `RaftNodeState` (the Figure 2 durable triple, validated fail-closed on restore; a restored node is
-  a follower at commit zero rediscovering the volatile commit index), `RaftRunner` — a
+  a follower at commit zero rediscovering the volatile commit index), `RaftRunner` -- a
   single-consumer message-driven loop preserving the node's single-threaded contract with the
-  universal handle → persist → apply → send sequencing, named seams
+  universal handle -> persist -> apply -> send sequencing, named seams
   (`SendRaftEnvelopeDelegate`, `PersistRaftStateDelegate`, `ApplyCommittedDelegate`), host-triggered
   elections and heartbeats (still no timers or entropy in the library), propose with a faulting task
-  on non-leaders, and self-quiescing follower catch-up off append replies — plus `RaftJson` wire
+  on non-leaders, and self-quiescing follower catch-up off append replies -- plus `RaftJson` wire
   codecs for the envelope and the durable state, mirroring the consensus message codecs' strictness.
   Apply is exactly-once per process lifetime and at-least-once across restarts, documented on the
   seam. Proven over real localhost sockets: election, replication, identical applied sequences on
   every node, and a follower restarted from its persisted state converging after reconnect.
 - A naive, safety-correct, in-memory Raft node (`RaftNode<TCommand>` and its message records): the
-  complete Figure 2 safety core — election restriction, log matching with conflict truncation and
-  idempotent re-delivery, and the current-term commit rule — with liveness explicitly external
+  complete Figure 2 safety core -- election restriction, log matching with conflict truncation and
+  idempotent re-delivery, and the current-term commit rule -- with liveness explicitly external
   (host-triggered elections, no timers). The within-trust-domain log-replication primitive
   complementing the register (metadata-grade anchors) and the CRDT plane (no ordering). The test
   suite was authored blind against the same specification and includes the Figure 8 scenario.
 - `StabilityFrontier`, `CompactSequenceDelegate`, `TranslateAnchorDelegate`, and a `Compact` step on
-  `CheckpointedSequence`: the waterline seams — the frontier (element-wise group minimum, in-library
+  `CheckpointedSequence`: the waterline seams -- the frontier (element-wise group minimum, in-library
   because a silent member must pin the floor) is the WHEN of compaction, the agreed checkpoint the
   WHAT; the first two compaction laws wait in the shared harness for the first compacting strategy.
 - A shared sequence-strategy law harness in the test suite: every registered strategy inherits the
   join-semilattice laws, merge-order convergence, and local intention preservation as property tests
-  exercised through the strategy context — the contract future strategies (including the compaction
+  exercised through the strategy context -- the contract future strategies (including the compaction
   strategies) are built against. The RGA strategy is the first registration.
 - `PersistAcceptorDelegate<TValue>` and an optional durability hook on `ConsensusNode.RunAsync`:
   when supplied, the acceptor state is made durable after every state-changing request and before the
-  matching reply is sent, so an unpersisted promise is never observable — the documented crash-safety
+  matching reply is sent, so an unpersisted promise is never observable -- the documented crash-safety
   contract is now a seam instead of a caller obligation. A throwing hook fail-closes the reply.
 - `SequenceCrdtContext<TSequence, TValue, TAnchor>` with named operation delegates and
   `WellKnownSequenceStrategies`: the sequence CRDT behind `CheckpointedSequence` is now pluggable.
   A strategy (addressing model, merge, ordering) is injected as a delegate bundle and named by a
-  stable identifier that is part of the document's replication contract — merging containers carrying
+  stable identifier that is part of the document's replication contract -- merging containers carrying
   different strategy identifiers fails closed, since mismatched strategies silently diverge.
   `CheckpointedSequence<TValue>` became `CheckpointedSequence<TSequence, TValue, TAnchor>` created
   via `Create(context)`; the RGA-backed strategy (`verisync.sequence.rga.v1`) is the first
   registration and preserves the previous behavior exactly.
 - `FramePadding`: opt-in padded framing for the message channel. Frames are padded up to size
   buckets (powers-of-two or fixed ladders) with an inner real-length prefix, so a network observer
-  cannot distinguish message types or content sizes within a bucket — a metadata-privacy measure
+  cannot distinguish message types or content sizes within a bucket -- a metadata-privacy measure
   from the sealed-segments design. The unpadded wire format is unchanged byte for byte; both
   endpoints must share the policy, and the attacker-influenced inner length is never trusted past
   the frame bounds.
@@ -394,7 +414,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   message channel. The seal deserializer re-derives the canonical bytes and digest through
   `SegmentSeal.Create` and fails closed on a digest mismatch, so a tampered seal is rejected at the
   codec.
-- `MerkleFrontier`: the bounded-state companion to `MerkleLogTree` — an append-only root tracker
+- `MerkleFrontier`: the bounded-state companion to `MerkleLogTree` -- an append-only root tracker
   holding only the O(log n) frontier peaks, producing roots byte-identical to the full tree (verified
   by an exhaustive size sweep against it). Proofs still come from `MerkleLogTree` over archived
   leaves; the frontier is how a live replica tracks its root without holding history.
@@ -404,7 +424,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
   In the single-tree composition a `SegmentSeal` whose commitment is the tree root at its boundary is
   an attested head, so consecutive seals prove their own consistency.
 - `SegmentSeal<TProof>` with `AttestSealDelegate` and `VerifySealAttestationDelegate`: sealed log
-  segments — a versioned, byte-for-byte pinned commitment to a contiguous entry range, chained by seal
+  segments -- a versioned, byte-for-byte pinned commitment to a contiguous entry range, chained by seal
   digest with in-library link verification (digest linkage, index continuity, genesis rules).
   Attestation evidence covers the seal digest and rides outside the digested bytes. Combined with an
   `AuthenticatedRegister` whose accumulator is a `MerkleLogTree` folding entry digests, sealing a

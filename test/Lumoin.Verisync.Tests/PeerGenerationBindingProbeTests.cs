@@ -40,6 +40,7 @@ internal sealed class PeerGenerationBindingProbeTests
         new(ReconciliationItemDomain.Structural, 8, 8, GenerationKeyGPrimeLow, GenerationKeyGPrimeHigh);
 
 
+    /// <summary>Peers using the same generation key decode exactly the symmetric difference.</summary>
     [TestMethod]
     public void SameGenerationKeyPeelsToExactlyTheSymmetricDifference()
     {
@@ -50,7 +51,7 @@ internal sealed class PeerGenerationBindingProbeTests
 
         using ReconciliationEncoder left = Encoder(ContractG, [.. shared, .. leftOnly]);
         using ReconciliationEncoder right = Encoder(ContractG, [.. shared, .. rightOnly]);
-        using ReconciliationDecoder decoder = new(ContractG, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(ContractG, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         int d = leftOnly.Length + rightOnly.Length;
         int cap = 200 + (20 * d);
@@ -69,6 +70,7 @@ internal sealed class PeerGenerationBindingProbeTests
     }
 
 
+    /// <summary>Identical content encoded with different generation keys does not complete decoding.</summary>
     [TestMethod]
     public void CrossGenerationKeyOnIdenticalContentFailsToComplete()
     {
@@ -80,7 +82,7 @@ internal sealed class PeerGenerationBindingProbeTests
 
         using ReconciliationEncoder local = Encoder(ContractG, content);
         using ReconciliationEncoder peer = Encoder(ContractGPrime, content);
-        using ReconciliationDecoder decoder = new(ContractG, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(ContractG, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         int cap = 500;
         int absorbed = 0;
@@ -94,6 +96,7 @@ internal sealed class PeerGenerationBindingProbeTests
     }
 
 
+    /// <summary>Overlapping sets encoded with different generation keys do not complete decoding.</summary>
     [TestMethod]
     public void CrossGenerationKeyOnOverlappingSetsFailsToComplete()
     {
@@ -103,7 +106,7 @@ internal sealed class PeerGenerationBindingProbeTests
 
         using ReconciliationEncoder local = Encoder(ContractG, [.. shared, .. leftOnly]);
         using ReconciliationEncoder peer = Encoder(ContractGPrime, [.. shared, .. rightOnly]);
-        using ReconciliationDecoder decoder = new(ContractG, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(ContractG, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         int cap = 500;
         int absorbed = 0;
@@ -128,9 +131,10 @@ internal sealed class PeerGenerationBindingProbeTests
     }
 
 
+    /// <summary>Creates an encoder seeded with the supplied items.</summary>
     private static ReconciliationEncoder Encoder(ReconciliationContract contract, byte[][] items)
     {
-        ReconciliationEncoder encoder = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        ReconciliationEncoder encoder = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(byte[] item in items)
         {
             encoder.Add(item);
@@ -152,6 +156,7 @@ internal sealed class PeerGenerationBindingProbeTests
     }
 
 
+    /// <summary>Returns hexadecimal representations of the supplied bytes.</summary>
     private static IEnumerable<string> Hex(byte[][] items)
     {
         return items.Select(Convert.ToHexString).Order();

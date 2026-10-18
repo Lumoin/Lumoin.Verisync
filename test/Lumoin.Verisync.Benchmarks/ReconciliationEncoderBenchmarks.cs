@@ -60,7 +60,7 @@ public class ReconciliationEncoderBenchmarks
     [Benchmark]
     public ReconciliationSymbol Encode()
     {
-        using var encoder = new ReconciliationEncoder(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using var encoder = new ReconciliationEncoder(Contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(byte[] item in Items)
         {
             encoder.Add(item);

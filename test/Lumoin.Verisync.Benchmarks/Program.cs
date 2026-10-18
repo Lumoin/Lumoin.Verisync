@@ -3,6 +3,7 @@ using BenchmarkDotNet.Running;
 
 namespace Lumoin.Verisync.Benchmarks;
 
+/// <summary>Dispatches benchmark and diagnostic console modes.</summary>
 internal static class Program
 {
     /// <summary>
@@ -19,10 +20,11 @@ internal static class Program
     /// runs one benchmark class.
     /// </para>
     /// <para>
-    /// The driver intercepts two custom flags before the switcher:
+    /// The driver intercepts three custom flags before the switcher:
     /// <c>--reconciliation-overhead</c> runs <see cref="ReconciliationOverheadReport.Run"/>, a seed-pinned
     /// wire-cost measurement; <c>--reconciliation-soak</c> runs <see cref="ReconciliationSoak.Run"/>, a
-    /// long-running throughput and allocation baseline. Neither is a timing benchmark. Every other flag after
+    /// long-running throughput and allocation baseline; <c>--reconciliation-scale</c> runs
+    /// <see cref="ReconciliationScaleProbe.Run"/> for one encoder retention configuration. Every other flag after
     /// the bare <c>--</c> is handed to BenchmarkDotNet's own argument parser.
     /// </para>
     /// </remarks>
@@ -38,6 +40,13 @@ internal static class Program
         if(Array.Exists(args, argument => string.Equals(argument, "--reconciliation-soak", StringComparison.Ordinal)))
         {
             ReconciliationSoak.Run();
+
+            return;
+        }
+
+        if(Array.Exists(args, argument => string.Equals(argument, "--reconciliation-scale", StringComparison.Ordinal)))
+        {
+            ReconciliationScaleProbe.Run(args);
 
             return;
         }

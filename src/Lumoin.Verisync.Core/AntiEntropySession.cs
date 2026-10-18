@@ -2,6 +2,8 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -10,42 +12,42 @@ namespace Lumoin.Verisync.Core;
 
 /// <summary>
 /// Drives one point-to-point reconciliation session over a message-driven loop, the host-side runner for a
-/// single set-reconciliation exchange. All inbound work — a peer envelope through <see cref="SubmitAsync"/> or
-/// a host batch trigger through <see cref="TriggerBatchAsync"/> — is enqueued onto an unbounded single-reader
+/// single set-reconciliation exchange. All inbound work -- a peer envelope through <see cref="SubmitAsync"/> or
+/// a host batch trigger through <see cref="TriggerBatchAsync"/> -- is enqueued onto an unbounded single-reader
 /// channel; <see cref="RunAsync"/> is the sole consumer and the only code that touches the encoder, the
 /// decoder, and the state machine.
 /// </summary>
 /// <typeparam name="TElement">The application element type the items identify and the elements messages carry.</typeparam>
 /// <remarks>
 /// <para>
-/// A host runs a session when it finds itself out of step with a peer — a replica whose
+/// A host runs a session when it finds itself out of step with a peer -- a replica whose
 /// <see cref="GossipDigest.IsBehind"/> or <see cref="GossipDigest.IsAheadOf"/> against a peer holds reconciles
 /// against it. That selection of peer and roles is host-side gossip policy, above this runner; the runner adds
 /// no timers and draws no entropy, so a responder streams a batch only when the host calls
 /// <see cref="TriggerBatchAsync"/>.
 /// </para>
 /// <para>
-/// A session pins ONE set version: the constructor copies the projected item snapshot and builds the encoder
-/// (both roles) and the decoder (initiator) over it once, so a stream prefix covers a single set version. A
-/// host may restrict the projected snapshot — for example to above-frontier state, to keep the difference
-/// small — but the restriction boundary must be one below which the two replicas' restricted states are KNOWN
-/// identical, for example a previously certified convergence point, not merely event-stable, because
-/// observed-remove knowledge is not a dotted event and does not travel with clock stability.
+/// A session pins ONE set version: the constructor either seeds the encoder from the projected item snapshot
+/// or binds an enumeration of one pinned snapshot, and builds the decoder (initiator) once, so a stream prefix
+/// covers a single set version. A host may restrict the projected snapshot -- for example to above-frontier state,
+/// to keep the difference small -- but the restriction boundary must be one below which the two replicas'
+/// restricted states are KNOWN identical, for example a previously certified convergence point, not merely
+/// event-stable, because observed-remove knowledge is not a dotted event and does not travel with clock stability.
 /// </para>
 /// <para>
-/// A session is add-only by default — a difference of present elements converges — and becomes remove-aware
+/// A session is add-only by default -- a difference of present elements converges -- and becomes remove-aware
 /// when constructed with a local causal context. A remove-aware session exchanges each side's context once,
 /// right after the offer, and propagates observed removes as drops, so a tombstone never resurrects; an
-/// add-only session sends and accepts no context and is byte-for-byte as before. Each side folds the peer's
-/// context together with the applies that carry the peer's entries or drops — and a responder folds once more on
-/// the initiator's completion frame, which the ordered channel delivers after every one of those applies — never
-/// on a bare wind-down, because a context folded without its entries would cover dots the local side never
-/// received, and the next session would classify those entries as observed-and-removed: a permanent false drop.
-/// An initiator whose fetch is outstanding even holds its local drops back until the answer applies, so a
-/// session wound down before the exchange finishes has folded nothing at all and reports
-/// <see cref="AntiEntropySessionState.Interrupted"/>. Because every outbound send
-/// happens inside the single consumer loop, the session's writes to the transport are serialized BY
-/// CONSTRUCTION — two tasks cannot tear a frame on one shared writer.
+/// add-only session sends and accepts no context. Each side folds the peer's context together with the
+/// applies that carry the peer's entries or drops -- and a responder folds once more on the initiator's
+/// completion frame, which the ordered channel delivers after every one of those applies -- never on a
+/// bare wind-down, because a context folded without its entries would cover dots the local side never
+/// received, and the next session would classify those entries as observed-and-removed: a permanent
+/// false drop. An initiator whose fetch is outstanding even holds its local drops back until the answer
+/// applies, so a session wound down before the exchange finishes has folded nothing at all and reports
+/// <see cref="AntiEntropySessionState.Interrupted"/>. Because every outbound send happens inside the single
+/// consumer loop, the session's writes to the transport are serialized BY CONSTRUCTION -- two tasks cannot tear
+/// a frame on one shared writer.
 /// </para>
 /// </remarks>
 public sealed class AntiEntropySession<TElement>: IDisposable
@@ -58,7 +60,10 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         SingleReader = true
     });
 
-    private readonly ReconciliationEncoder encoder;
+    /// <summary>The incremental encoder of an item-list session, null over an enumeration.</summary>
+    private readonly ReconciliationEncoder? encoder;
+    /// <summary>The snapshot encoder of an enumeration session, null over an item list.</summary>
+    private readonly ReconciliationSnapshotEncoder? snapshotEncoder;
     private readonly ReconciliationDecoder? decoder;
 
     //Advisory lifecycle phase, written only by the consumer loop and read by hosts. Stored as the int backing
@@ -89,13 +94,13 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     //fetch pending the drops ride along to the answer's apply. Written and read only by the consumer loop.
     private ImmutableArray<DotState> deferredLocalDrops = ImmutableArray<DotState>.Empty;
 
-    //The number of transfer envelopes — carrying an Elements or Drop payload — this initiator has sent in this
+    //The number of transfer envelopes -- carrying an Elements or Drop payload -- this initiator has sent in this
     //session; it stamps the completion frame at the two Completed transitions. Written and read only by the
     //consumer loop, like the state fields, and incremented immediately after each transfer send returns.
     private int initiatorTransferCount;
 
     //The number of transfer envelopes this responder has applied in this session, one per pushed elements and
-    //one per received drop. A completion frame's transfer count must equal it before the terminal fold — a
+    //one per received drop. A completion frame's transfer count must equal it before the terminal fold -- a
     //cardinality cross-check that catches a lost, truncated, or duplicated transfer. Written and read only by
     //the consumer loop.
     private int responderTransferCount;
@@ -106,6 +111,10 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// encoder's and decoder's cell stores from <paramref name="pool"/> so the session's reconciliation memory
     /// is tracked and accountable.
     /// </summary>
+    /// <remarks>
+    /// The session copies each item exactly once, into the encoder, and holds no reference to the caller's
+    /// memories after construction.
+    /// </remarks>
     /// <param name="role">The fixed role this side plays for the session's lifetime.</param>
     /// <param name="contract">The contract both sides must agree on before symbols subtract.</param>
     /// <param name="items">The projected item snapshot this set version reconciles.</param>
@@ -121,9 +130,13 @@ public sealed class AntiEntropySession<TElement>: IDisposable
 
     /// <summary>
     /// Creates a session over <paramref name="items"/> with the given batch size, renting the encoder's and
-    /// decoder's cell stores from <paramref name="pool"/>, copying the items into a pinned snapshot and
-    /// building the encoder (and, for an initiator, the decoder) over it.
+    /// decoder's cell stores from <paramref name="pool"/> and seeding the encoder from the items.
+    /// If construction fails after a component was built, that component is released before the failure propagates.
     /// </summary>
+    /// <remarks>
+    /// The session copies each item exactly once, into the encoder, and holds no reference to the caller's
+    /// memories after construction.
+    /// </remarks>
     /// <param name="role">The fixed role this side plays for the session's lifetime.</param>
     /// <param name="contract">The contract both sides must agree on before symbols subtract.</param>
     /// <param name="items">The projected item snapshot this set version reconciles.</param>
@@ -131,13 +144,14 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// <param name="pool">The pool the session's encoder and decoder rent from. The session never disposes it.</param>
     /// <param name="localContext">
     /// The local causal context the session exchanges to become remove-aware, typically a dotted projection's
-    /// context; <see langword="null"/> for an add-only session, which sends and accepts no context and behaves
-    /// byte-for-byte as before. When non-null it is reconstructed with <see cref="VectorClock.FromState"/>, so a
-    /// malformed context fails closed at construction exactly as the snapshot does.
+    /// context; <see langword="null"/> for an add-only session, which sends and accepts no context. When non-null
+    /// it is reconstructed with <see cref="VectorClock.FromState"/>, so a malformed context fails closed at
+    /// construction, as the item snapshot does.
     /// </param>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="contract"/>, <paramref name="items"/>, or <paramref name="pool"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="role"/> is not a defined value or <paramref name="batchSize"/> is below one.</exception>
     /// <exception cref="ArgumentException">Thrown when an item's length differs from the contract's item width, two items are byte-equal, or <paramref name="localContext"/> carries a negative counter.</exception>
+    /// <exception cref="AggregateException">Thrown when construction fails after a component was built and that component's release also fails; both failures are carried.</exception>
     public AntiEntropySession(AntiEntropyRole role, ReconciliationContract contract, IReadOnlyCollection<ReadOnlyMemory<byte>> items, int batchSize, MemoryPool<byte> pool, VectorClockState? localContext = null)
     {
         if(role is not (AntiEntropyRole.Initiator or AntiEntropyRole.Responder))
@@ -162,20 +176,88 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         //validation so a malformed context fails closed at construction, as the snapshot does.
         LocalContext = localContext is null ? null : VectorClock.FromState(localContext);
 
-        //Copy every item into the pinned snapshot, validating width and rejecting duplicates that would
-        //XOR-cancel silently, then feed the encoder once. The injectivity obligation surfaces here as a throw.
-        ImmutableArray<ReadOnlyMemory<byte>> snapshot = CopyAndValidate(contract, items);
-        Snapshot = snapshot;
+        //Reject width mismatches and duplicates before copying each item into the encoder.
+        Validate(contract, items);
 
-        //The snapshot size is the lower bound on the symbols and cells the session touches, so it pre-sizes
-        //the cell stores past the doubling churn; the pool flows through so the rentals are tracked.
-        encoder = new ReconciliationEncoder(contract, ReconciliationInjectivityEnforcement.None, pool, snapshot.Length);
-        foreach(ReadOnlyMemory<byte> item in snapshot)
+        encoder = new ReconciliationEncoder(contract, ReconciliationInjectivityEnforcement.None, pool,
+            new ReconciliationCapacityHint(items: items.Count, cells: batchSize));
+        try
         {
-            encoder.Add(item.Span);
+            foreach(ReadOnlyMemory<byte> item in items)
+            {
+                encoder.Add(item.Span);
+            }
+
+            decoder = role == AntiEntropyRole.Initiator ? new ReconciliationDecoder(contract, pool, new ReconciliationCapacityHint(items: 0, cells: batchSize)) : null;
+        }
+        catch(Exception exception)
+        {
+            ThrowAfterFailedConstruction(exception);
+        }
+    }
+
+
+    /// <summary>
+    /// Creates a session over the pinned snapshot that <paramref name="enumerate"/> visits, producing every
+    /// batch of coded symbols in one pass through a <see cref="ReconciliationSnapshotEncoder"/>, so the session
+    /// retains the produced cells alone and never the items.
+    /// If construction fails after a component was built, that component is released before the failure propagates.
+    /// </summary>
+    /// <remarks>
+    /// Nothing is enumerated at construction; the first pass runs at a responder's first trigger or an
+    /// initiator's first absorbed batch. Each batch costs one full pass over the snapshot: one per trigger on
+    /// a responder, and one per inbound batch on an initiator, whose size the responder's batch size sets.
+    /// A large snapshot wants a batch size in the hundreds or thousands rather than the default of four the
+    /// item-list constructors use. The source must visit every item of one pinned snapshot once each, in an
+    /// order stable across passes, and remain restartable until the session is disposed; each item must be
+    /// exactly the contract's item width. The session makes no duplicate check: an item visited twice cancels
+    /// out of the symbols silently. A throwing, wrong-width, or cancelled enumeration faults the session and
+    /// propagates out of <see cref="RunAsync"/>.
+    /// </remarks>
+    /// <param name="role">The fixed role this side plays for the session's lifetime.</param>
+    /// <param name="contract">The contract both sides must agree on before symbols subtract.</param>
+    /// <param name="enumerate">The enumeration of the pinned snapshot this set version reconciles; see <see cref="EnumerateReconciliationItemsDelegate"/>.</param>
+    /// <param name="batchSize">The number of symbols a responder produces per host trigger, and the cell count the encoder and decoder presize; at least one.</param>
+    /// <param name="pool">The pool the session's encoder and decoder rent from. The session never disposes it.</param>
+    /// <param name="localContext">
+    /// The local causal context the session exchanges to become remove-aware, typically a dotted projection's
+    /// context; <see langword="null"/> for an add-only session, which sends and accepts no context. When non-null
+    /// it is reconstructed with <see cref="VectorClock.FromState"/>, so a malformed context fails closed at
+    /// construction.
+    /// </param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="contract"/>, <paramref name="enumerate"/>, or <paramref name="pool"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="role"/> is not a defined value or <paramref name="batchSize"/> is below one.</exception>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="localContext"/> carries a negative counter.</exception>
+    /// <exception cref="AggregateException">Thrown when construction fails after a component was built and that component's release also fails; both failures are carried.</exception>
+    public AntiEntropySession(AntiEntropyRole role, ReconciliationContract contract, EnumerateReconciliationItemsDelegate enumerate, int batchSize, MemoryPool<byte> pool, VectorClockState? localContext = null)
+    {
+        if(role is not (AntiEntropyRole.Initiator or AntiEntropyRole.Responder))
+        {
+            throw new ArgumentOutOfRangeException(nameof(role), role, "The role must be a defined value.");
         }
 
-        decoder = role == AntiEntropyRole.Initiator ? new ReconciliationDecoder(contract, pool, snapshot.Length) : null;
+        ArgumentNullException.ThrowIfNull(contract);
+        ArgumentNullException.ThrowIfNull(enumerate);
+        ArgumentNullException.ThrowIfNull(pool);
+
+        if(batchSize < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(batchSize), batchSize, "A batch size must be at least one.");
+        }
+
+        Role = role;
+        Contract = contract;
+        BatchSize = batchSize;
+        LocalContext = localContext is null ? null : VectorClock.FromState(localContext);
+        snapshotEncoder = new ReconciliationSnapshotEncoder(contract, enumerate, pool, cellCapacityHint: batchSize);
+        try
+        {
+            decoder = role == AntiEntropyRole.Initiator ? new ReconciliationDecoder(contract, pool, new ReconciliationCapacityHint(items: 0, cells: batchSize)) : null;
+        }
+        catch(Exception exception)
+        {
+            ThrowAfterFailedConstruction(exception);
+        }
     }
 
 
@@ -197,7 +279,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// A terminal <see cref="AntiEntropySessionState.Completed"/> means the exchange finished, as distinct from
     /// a wind-down before it, which lands <see cref="AntiEntropySessionState.Interrupted"/>.
     /// <see cref="IsConverged"/> is the convergence attestation: at a terminal state it agrees with this
-    /// split — <see cref="AntiEntropySessionState.Completed"/> exactly when converged — and it additionally
+    /// split -- <see cref="AntiEntropySessionState.Completed"/> exactly when converged -- and it additionally
     /// reads <see langword="true"/> pre-terminally once a responder's done signal has attested the decode.
     /// </remarks>
     public AntiEntropySessionState State => (AntiEntropySessionState)Volatile.Read(ref stateValue);
@@ -206,9 +288,9 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// Whether the session converged through the reconciliation path, as distinct from merely terminating.
     /// For an initiator it is set when the decoder recovered the whole symmetric difference AND the resolution
     /// finished (the push sent and any fetch answered); for a responder it is set when the peer's done signal
-    /// attested a complete decode against this session's snapshot — the strongest convergence evidence a
+    /// attested a complete decode against this session's snapshot -- the strongest convergence evidence a
     /// responder receives. It stays <see langword="false"/> for a session wound down by <see cref="Complete"/>
-    /// before that point — the terminal <see cref="AntiEntropySessionState.Interrupted"/> case, which it
+    /// before that point -- the terminal <see cref="AntiEntropySessionState.Interrupted"/> case, which it
     /// agrees with, while also reading <see langword="true"/> pre-terminally for a responder still resolving
     /// fetches. Written only by the consumer loop
     /// and read with a volatile-safe read, so a host may read it from another thread; a converged session's
@@ -222,8 +304,6 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// </summary>
     public IReadOnlyList<ReadOnlyMemory<byte>> DecodedItems => decoder?.DecodedItems ?? [];
 
-
-    private ImmutableArray<ReadOnlyMemory<byte>> Snapshot { get; }
 
     //The local causal context when remove-aware, or null when add-only. Non-null gates every remove-aware
     //behaviour: the context exchange, the context and drop dispatch arms, the local drops, and the terminal merge.
@@ -244,7 +324,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// <param name="applyDrops">The seam that drops named dots from the local replica; required for both roles when remove-aware, unused when add-only.</param>
     /// <param name="mergeContext">
     /// The terminal context-fold seam a side runs when it completes an exchange in which no apply folded: an
-    /// initiator at either of its Completed transitions, and — the direction the completion frame opens — a
+    /// initiator at either of its Completed transitions, and -- the direction the completion frame opens -- a
     /// responder on receiving the initiator's completion frame, which attests the initiator's exchange work was
     /// complete, so every transfer preceded the frame and the fold covers nothing untransferred. A single
     /// session therefore converges both directions when the exchange completes; an interrupted exchange still
@@ -258,13 +338,14 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// <remarks>
     /// A throwing <paramref name="send"/>, <paramref name="resolveDifference"/>, <paramref name="serveFetch"/>,
     /// <paramref name="applyElements"/>, <paramref name="applyDrops"/>, or <paramref name="mergeContext"/>
-    /// propagates out of this method and ends the loop — the fail-closed posture. Every dispatch-rule violation
-    /// throws <see cref="InvalidOperationException"/> naming the rule. A remove-aware initiator's completion frame
-    /// is its last send, after the terminal merge and before it marks itself
-    /// <see cref="AntiEntropySessionState.Completed"/>; if that send faults once its bytes are already on the
-    /// wire, this method throws and the initiator ends faulted and non-terminal — neither
-    /// <see cref="AntiEntropySessionState.Completed"/> nor <see cref="AntiEntropySessionState.Interrupted"/>, a
-    /// third terminal condition the host recovers as it does any faulted session, while a responder that
+    /// propagates out of this method and ends the loop, as does a faulting enumeration on a
+    /// session built over one -- the fail-closed posture. Every dispatch-rule violation throws
+    /// <see cref="InvalidOperationException"/> naming the rule. A remove-aware initiator's
+    /// completion frame is its last send, after the terminal merge and before it marks itself
+    /// <see cref="AntiEntropySessionState.Completed"/>; if that send faults once its bytes are already
+    /// on the wire, this method throws and the initiator ends faulted and non-terminal -- neither
+    /// <see cref="AntiEntropySessionState.Completed"/> nor <see cref="AntiEntropySessionState.Interrupted"/>,
+    /// a third terminal condition the host recovers as it does any faulted session, while a responder that
     /// received the frame still folds soundly because every transfer preceded it. The run yields to the thread
     /// pool after the offer and context sends and before consuming its inbound channel, so the exchange loop
     /// never resumes on the caller's synchronization context and a host that blocks its starting thread on the
@@ -329,8 +410,8 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         }
 
         //The run leaves the caller's thread here, before consuming: every await in the loop below then resumes
-        //on a pool thread with no synchronization context, whatever shape the host drove the session in — an
-        //envelope pre-queued before this call included — so a host that blocks its starting thread on the run
+        //on a pool thread with no synchronization context, whatever shape the host drove the session in -- an
+        //envelope pre-queued before this call included -- so a host that blocks its starting thread on the run
         //cannot deadlock it.
         await Task.CompletedTask.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
 
@@ -349,7 +430,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         //context here. An initiator reaches this drain only when the exchange never completed (a completed
         //initiator returns from the loop above), and a responder can never verify the initiator's trailing
         //element and drop frames all arrived, so on both roles the fold would risk covering dots of entries
-        //never transferred — which the next session would classify as observed-and-removed, a permanent,
+        //never transferred -- which the next session would classify as observed-and-removed, a permanent,
         //cluster-wide false drop. The peer context folds only alongside the applies that carry the peer's
         //entries or drops; the terminal state below makes a wind-down before a finished exchange observable.
         SetState(DrainState());
@@ -397,7 +478,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     /// Completes the work channel: no further work is accepted, and <see cref="RunAsync"/> drains the queued
     /// items, sets <see cref="State"/> to its terminal value, and returns. The host calls this to wind the
     /// transport down, because a responder cannot know a fetch is not still coming. A responder past the done
-    /// signal ends at <see cref="AntiEntropySessionState.Completed"/> — the done signal already converged it,
+    /// signal ends at <see cref="AntiEntropySessionState.Completed"/> -- the done signal already converged it,
     /// so <see cref="IsConverged"/> reads <see langword="true"/> there; a wind-down in any earlier phase, on
     /// either role, ends at <see cref="AntiEntropySessionState.Interrupted"/> with <see cref="IsConverged"/>
     /// <see langword="false"/> and folds no peer context. After this call a <see cref="SubmitAsync"/> or
@@ -411,10 +492,11 @@ public sealed class AntiEntropySession<TElement>: IDisposable
 
     /// <summary>
     /// Disposes the encoder and decoder this session owns, releasing their pooled cell stores; the call is
-    /// idempotent. The host disposes the session after <see cref="RunAsync"/> returns — disposing mid-run is
+    /// idempotent. The host disposes the session after <see cref="RunAsync"/> returns -- disposing mid-run is
     /// the caller's error, guarded only by the existing single-run <see cref="Interlocked"/> gate. The injected
     /// pool is never disposed here: the session owns its rentals, not the pool, so the host may share one pool
     /// across many sessions and dispose it once they have all completed.
+    /// If a component's release throws, every remaining component is still released and the first failure propagates afterwards.
     /// </summary>
     public void Dispose()
     {
@@ -424,14 +506,65 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         }
 
         disposed = true;
-        encoder.Dispose();
-        decoder?.Dispose();
+        Exception? failure = null;
+
+        try
+        {
+            encoder?.Dispose();
+        }
+        catch(Exception exception)
+        {
+            failure = exception;
+        }
+
+        try
+        {
+            snapshotEncoder?.Dispose();
+        }
+        catch(Exception exception)
+        {
+            failure ??= exception;
+        }
+
+        try
+        {
+            decoder?.Dispose();
+        }
+        catch(Exception exception)
+        {
+            failure ??= exception;
+        }
+
+        if(failure is not null)
+        {
+            ExceptionDispatchInfo.Throw(failure);
+        }
     }
 
 
-    private static ImmutableArray<ReadOnlyMemory<byte>> CopyAndValidate(ReconciliationContract contract, IReadOnlyCollection<ReadOnlyMemory<byte>> items)
+    /// <summary>Releases held components and propagates the construction failure, carrying any release failure alongside it.</summary>
+    /// <param name="constructionFailure">The construction failure to propagate after releasing held components.</param>
+    /// <exception cref="AggregateException">Thrown when releasing held components also fails; the construction failure is first.</exception>
+    [DoesNotReturn]
+    private void ThrowAfterFailedConstruction(Exception constructionFailure)
     {
-        ImmutableArray<ReadOnlyMemory<byte>>.Builder copies = ImmutableArray.CreateBuilder<ReadOnlyMemory<byte>>(items.Count);
+        try
+        {
+            Dispose();
+        }
+        catch(Exception releaseFailure)
+        {
+            throw new AggregateException(constructionFailure, releaseFailure);
+        }
+
+        ExceptionDispatchInfo.Throw(constructionFailure);
+    }
+
+
+    /// <summary>Validates each item's width and rejects byte-equal duplicates without copying the caller's memories.</summary>
+    private static void Validate(ReconciliationContract contract, IReadOnlyCollection<ReadOnlyMemory<byte>> items)
+    {
+        HashSet<ContentAddress> seen = new(items.Count);
         foreach(ReadOnlyMemory<byte> item in items)
         {
             if(item.Length != contract.ItemWidth)
@@ -439,18 +572,11 @@ public sealed class AntiEntropySession<TElement>: IDisposable
                 throw new ArgumentException($"An item must be exactly {contract.ItemWidth} bytes.", nameof(items));
             }
 
-            for(int j = 0; j < copies.Count; j++)
+            if(!seen.Add(new ContentAddress(item)))
             {
-                if(copies[j].Span.SequenceEqual(item.Span))
-                {
-                    throw new ArgumentException("A pinned snapshot cannot carry duplicate items.", nameof(items));
-                }
+                throw new ArgumentException("A pinned snapshot cannot carry duplicate items.", nameof(items));
             }
-
-            copies.Add(item.ToArray());
         }
-
-        return copies.ToImmutable();
     }
 
 
@@ -594,6 +720,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     }
 
 
+    /// <summary>Absorbs an ordered symbol batch and resolves the difference when decoding completes.</summary>
     private async ValueTask HandleSymbolsAsync(
         ReconciliationSymbolBatch batch,
         SendReconciliationEnvelopeDelegate<TElement> send,
@@ -611,6 +738,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         if(state == AntiEntropySessionState.Resolving)
         {
             //Stragglers that raced the done signal are ignored, not absorbed, so AbsorbedCount stays put.
+
             return;
         }
 
@@ -625,20 +753,30 @@ public sealed class AntiEntropySession<TElement>: IDisposable
             throw new InvalidOperationException("A symbol batch must start at the decoder's absorbed count for gap-free, in-order streaming.");
         }
 
-        foreach(ReconciliationSymbol remoteSymbol in batch.Symbols)
+        if(snapshotEncoder is not null)
         {
-            localDecoder.Absorb(encoder.ProduceNext().Combine(remoteSymbol));
+            snapshotEncoder.Produce(batch.Symbols.Length, cancellationToken);
+        }
+
+        for(int i = 0; i < batch.Symbols.Length; i++)
+        {
+            ReconciliationSymbol local = snapshotEncoder is not null
+                ? snapshotEncoder.SymbolAt(batch.StartIndex + i)
+                : encoder!.ProduceNext();
+            localDecoder.Absorb(local.Combine(batch.Symbols[i]));
             if(localDecoder.IsComplete)
             {
                 await CompleteDecodeAsync(localDecoder, send, resolveDifference!, applyDrops, mergeContext, cancellationToken).ConfigureAwait(false);
 
                 //Remaining symbols of this batch after completion are not absorbed.
+
                 return;
             }
         }
     }
 
 
+    /// <summary>Classifies the decoded difference and sends the required transfers before completing or awaiting a fetch answer.</summary>
     private async ValueTask CompleteDecodeAsync(
         ReconciliationDecoder localDecoder,
         SendReconciliationEnvelopeDelegate<TElement> send,
@@ -669,14 +807,14 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         //context (its documented contract), and that fold is sound only once every decoded dot is held, pushed,
         //or dropped: with a fetch outstanding it would cover the never-fetched entries' dots, and a wind-down
         //before the answer would persist a context that classifies those live entries observed-and-removed in
-        //the next session — the same permanent false drop the old drain-path fold caused. A remove-aware
+        //the next session -- the same permanent false drop the old drain-path fold caused. A remove-aware
         //initiator therefore defers its local drops to the answer's apply; if the exchange never completes, the
         //entries the peer removed simply stay put and re-classify in the next session.
         if(!resolution.LocalDrops.IsEmpty)
         {
             //An add-only session carries no drop path: it accepts no local context, wires no drop applier, and
             //its terminal merge folds nothing. A resolver that hands it local drops is misuse, so fail closed
-            //here — the earliest honest point, since the drops arrive at dispatch time, not construction — rather
+            //here -- the earliest honest point, since the drops arrive at dispatch time, not construction -- rather
             //than dereference the null applier, mirroring the add-only rejection of the context and drop frames.
             if(LocalContext is null)
             {
@@ -730,6 +868,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     }
 
 
+    /// <summary>Accepts a responder's done signal only after the required reconciliation state and context checks.</summary>
     private void HandleDone()
     {
         if(Role != AntiEntropyRole.Responder)
@@ -743,15 +882,15 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         }
 
         //The ordered channel delivers a remove-aware peer's context before its done signal, so an honest peer
-        //never completes the stream without one; guard so a missing context fails closed here — mirroring the
-        //initiator's decode-completion guard — instead of the later applies classifying against an empty clock.
+        //never completes the stream without one; guard so a missing context fails closed here -- mirroring the
+        //initiator's decode-completion guard -- instead of the later applies classifying against an empty clock.
         if(LocalContext is not null && peerContext is null)
         {
             throw new InvalidOperationException("A remove-aware responder received the done signal before the peer's causal context arrived.");
         }
 
         //The done signal attests the initiator's decoder recovered the whole symmetric difference against this
-        //session's snapshot — the strongest convergence evidence a responder receives, so it converges here
+        //session's snapshot -- the strongest convergence evidence a responder receives, so it converges here
         //even though it keeps resolving fetches until the host winds the channel down.
         MarkConverged();
         SetState(AntiEntropySessionState.Resolving);
@@ -787,6 +926,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     }
 
 
+    /// <summary>Validates and applies received elements, completing outstanding fetch resolution when applicable.</summary>
     private async ValueTask HandleElementsAsync(
         ReconciliationElements<TElement> elements,
         SendReconciliationEnvelopeDelegate<TElement> send,
@@ -809,7 +949,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
         //covered; the applier folds the peer context, so this side's context is merged whenever entries arrive.
         //It runs before the deferred local drops because every applier folds the FULL peer context and only this
         //one carries the entries that context covers: folding here first means no fault between the two applies
-        //can persist a context that covers entries this side never applied — the same permanent false drop the
+        //can persist a context that covers entries this side never applied -- the same permanent false drop the
         //deferral exists to prevent. An unapplied local drop merely re-classifies in the next session.
         ImmutableArray<DotState> drops = await applyElements(elements.Entries, PeerContextState(), cancellationToken).ConfigureAwait(false);
         if(LocalContext is not null)
@@ -829,14 +969,14 @@ public sealed class AntiEntropySession<TElement>: IDisposable
 
         //A responder counts the initiator's pushed elements toward the completion frame's cardinality
         //cross-check. The initiator reaches this arm applying its own fetch answer, which it received rather than
-        //transferred, so it does not count here — only the responder branch does.
+        //transferred, so it does not count here -- only the responder branch does.
         if(Role == AntiEntropyRole.Responder)
         {
             responderTransferCount++;
         }
 
         //The initiator applying its fetch answer may surface local tombstones the peer must honour; it sends one
-        //drop. The responder applying the initiator's pre-filtered push surfaces none, so it sends nothing —
+        //drop. The responder applying the initiator's pre-filtered push surfaces none, so it sends nothing --
         //and if a hook violated that contract, the counter stays the initiator's alone.
         if(!drops.IsEmpty)
         {
@@ -867,6 +1007,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     }
 
 
+    /// <summary>Validates and applies received observed removals against the peer context.</summary>
     private async ValueTask HandleDropAsync(
         ReconciliationDrop drop,
         ApplyReconciliationDropsDelegate<TElement>? applyDrops,
@@ -879,7 +1020,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
 
         //On the ordered channel the responder's fetch answer precedes any drop it might send, and a completed
         //initiator returns without draining further, so a drop dispatched on a running initiator is always a
-        //peer violating the exchange order — applying it would fold the peer context before the fetch answer,
+        //peer violating the exchange order -- applying it would fold the peer context before the fetch answer,
         //covering entries never received.
         if(Role != AntiEntropyRole.Responder)
         {
@@ -907,13 +1048,14 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     }
 
 
+    /// <summary>Validates a responder's completion frame and folds context only after all transfers arrive.</summary>
     private async ValueTask HandleCompletionAsync(
         ReconciliationCompletion completion,
         MergeReconciliationContextDelegate? mergeContext,
         CancellationToken cancellationToken)
     {
-        //The guards run in the same order as the drop handler — add-only, then role, then phase, then the count
-        //check — and every one fails closed before any fold, so a rejected frame leaves the local context
+        //The guards run in the same order as the drop handler -- add-only, then role, then phase, then the count
+        //check -- and every one fails closed before any fold, so a rejected frame leaves the local context
         //untouched.
         if(LocalContext is null)
         {
@@ -927,7 +1069,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
             throw new InvalidOperationException("Only a responder receives the completion frame; an initiator ends its own exchange.");
         }
 
-        //Legal only while resolving — the mirror of the done-only-while-reconciling guard. A duplicate completion
+        //Legal only while resolving -- the mirror of the done-only-while-reconciling guard. A duplicate completion
         //trips this same guard, because the first one already left resolving for the terminal Completed.
         if(State != AntiEntropySessionState.Resolving)
         {
@@ -945,18 +1087,19 @@ public sealed class AntiEntropySession<TElement>: IDisposable
 
         //The responder's first and only terminal fold. Ordered delivery places this frame after every element
         //and drop the initiator sent, all applied above, so folding the initiator's exchanged context covers
-        //nothing untransferred — the direction dbdd3e4 fenced as unsafe, now licensed by the verified-complete
+        //nothing untransferred -- the direction dbdd3e4 fenced as unsafe, now licensed by the verified-complete
         //frame.
         await MergePeerContextAsync(mergeContext!, cancellationToken).ConfigureAwait(false);
 
         //Terminal. IsConverged was set when the done signal arrived, so the Completed and IsConverged pair holds.
-        //The responder keeps consuming after this — any later frame fails closed through the existing phase
-        //guards, none of which accepts Completed — and a wind-down now drains to Completed rather than
+        //The responder keeps consuming after this -- any later frame fails closed through the existing phase
+        //guards, none of which accepts Completed -- and a wind-down now drains to Completed rather than
         //overwriting the frame-earned terminal.
         SetState(AntiEntropySessionState.Completed);
     }
 
 
+    /// <summary>Produces and sends one symbol batch while the responder is reconciling.</summary>
     private async ValueTask HandleTriggerAsync(SendReconciliationEnvelopeDelegate<TElement> send, CancellationToken cancellationToken)
     {
         //A trigger only streams while reconciling; in any other phase the done signal has already raced past
@@ -966,11 +1109,24 @@ public sealed class AntiEntropySession<TElement>: IDisposable
             return;
         }
 
-        int startIndex = encoder.ProducedCount;
+        int startIndex;
         ImmutableArray<ReconciliationSymbol>.Builder symbols = ImmutableArray.CreateBuilder<ReconciliationSymbol>(BatchSize);
-        for(int i = 0; i < BatchSize; i++)
+        if(snapshotEncoder is not null)
         {
-            symbols.Add(encoder.ProduceNext());
+            startIndex = snapshotEncoder.ProducedCount;
+            snapshotEncoder.Produce(BatchSize, cancellationToken);
+            for(int i = 0; i < BatchSize; i++)
+            {
+                symbols.Add(snapshotEncoder.SymbolAt(startIndex + i));
+            }
+        }
+        else
+        {
+            startIndex = encoder!.ProducedCount;
+            for(int i = 0; i < BatchSize; i++)
+            {
+                symbols.Add(encoder!.ProduceNext());
+            }
         }
 
         await send(ReconciliationEnvelope<TElement>.ForSymbols(new ReconciliationSymbolBatch(startIndex, symbols.MoveToImmutable())), cancellationToken).ConfigureAwait(false);
@@ -1005,11 +1161,12 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     }
 
 
+    /// <summary>Sends the initiator's transfer count on completion of a remove-aware exchange.</summary>
     private async ValueTask SendCompletionAsync(SendReconciliationEnvelopeDelegate<TElement> send, CancellationToken cancellationToken)
     {
         //The completion frame rides only remove-aware exchanges, where a context is exchanged and the responder
         //has a context to fold; an add-only exchange carries no contexts and never sends it. It stamps the count
-        //of transfer envelopes this initiator sent — the cardinality the responder cross-checks before folding.
+        //of transfer envelopes this initiator sent -- the cardinality the responder cross-checks before folding.
         if(LocalContext is null)
         {
             return;
@@ -1030,6 +1187,7 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     }
 
 
+    /// <summary>Returns the peer context, or the empty context for an add-only exchange, rejecting a missing required context.</summary>
     private VectorClockState PeerContextState()
     {
         //The peer's context as state when remove-aware (captured before the decode), or the empty clock's state
@@ -1050,13 +1208,15 @@ public sealed class AntiEntropySession<TElement>: IDisposable
     }
 
 
+    /// <summary>Returns the terminal state for a drained session according to its role and progress.</summary>
     private AntiEntropySessionState DrainState()
     {
         //A responder past the done signal has served the full symbol stream and applied every element or drop
-        //that followed — the documented graceful wind-down, so it completes; a responder that already reached
+        //that followed -- the documented graceful wind-down, so it completes; a responder that already reached
         //Completed on the initiator's completion frame stays Completed, so the host's wind-down never overwrites
-        //that frame-earned terminal — and its folded context — with Interrupted. Any earlier phase, on either
+        //that frame-earned terminal -- and its folded context -- with Interrupted. Any earlier phase, on either
         //role, is an exchange the host abandoned mid-flight and is reported as interrupted.
+
         return Role == AntiEntropyRole.Responder
             && State is AntiEntropySessionState.Resolving or AntiEntropySessionState.Completed
             ? AntiEntropySessionState.Completed

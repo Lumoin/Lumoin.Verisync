@@ -43,6 +43,7 @@ internal sealed class WalkVersionDivergenceProbe
     private static byte[] HashE { get; } = Digest("e");
 
 
+    /// <summary>Peers sharing an index walk decode exactly the symmetric difference.</summary>
     [TestMethod]
     public void SharedWalkDecodesExactlyTheSymmetricDifference()
     {
@@ -53,7 +54,7 @@ internal sealed class WalkVersionDivergenceProbe
 
         using ReconciliationEncoder a = LoadEncoder(Contract, left);
         using ReconciliationEncoder b = LoadEncoder(Contract, right);
-        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         const int cap = 256;
         for(int i = 0; i < cap && !decoder.IsComplete; i++)
@@ -69,6 +70,7 @@ internal sealed class WalkVersionDivergenceProbe
     }
 
 
+    /// <summary>A peer with a different index walk cannot complete with an incorrect difference in the tested vectors.</summary>
     [TestMethod]
     public void ForkedWalkPeerNeverProducesAWrongCompleteDecode()
     {
@@ -84,7 +86,7 @@ internal sealed class WalkVersionDivergenceProbe
         const int cap = 512;
         using ReconciliationEncoder a = LoadEncoder(Contract, left);
         ReconciliationSymbol[] b = ForkedEncode(Contract, right, cap, gapConstant: 3.0);
-        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(Contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         bool everCompletedWrong = false;
         bool sharedLeaked = false;
@@ -183,9 +185,10 @@ internal sealed class WalkVersionDivergenceProbe
     }
 
 
+    /// <summary>Creates an encoder seeded with the supplied items.</summary>
     private static ReconciliationEncoder LoadEncoder(ReconciliationContract contract, byte[][] items)
     {
-        ReconciliationEncoder encoder = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        ReconciliationEncoder encoder = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(byte[] item in items)
         {
             encoder.Add(item);
@@ -195,12 +198,14 @@ internal sealed class WalkVersionDivergenceProbe
     }
 
 
+    /// <summary>Returns the SHA-256 digest of the element's UTF-8 bytes.</summary>
     private static byte[] Digest(string element)
     {
         return SHA256.HashData(Encoding.UTF8.GetBytes(element));
     }
 
 
+    /// <summary>Returns the hexadecimal representation of the supplied bytes.</summary>
     private static string ToHex(ReadOnlySpan<byte> bytes)
     {
         return Convert.ToHexString(bytes);

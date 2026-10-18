@@ -1,6 +1,7 @@
 using Lumoin.Base;
 using Lumoin.Verisync.Core;
 using System.Collections.Immutable;
+using System.Diagnostics.Metrics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
@@ -16,7 +17,7 @@ namespace Lumoin.Verisync.Tests;
 /// tolerance, the submit shape guard, snapshot pinning, the resolution record's validation and equality, the
 /// <see cref="AntiEntropySessionState.Interrupted"/> wind-down report, the add-only rejection of the
 /// remove-aware context and drop frames, the add-only fail-closed on resolver-supplied local drops, and the
-/// session completion frame's normative guard order — add-only (a), role (b), phase (c), and transfer-count
+/// session completion frame's normative guard order -- add-only (a), role (b), phase (c), and transfer-count
 /// (d) rejections, each constructed to be non-vacuous, plus the emergent no-frame-after-completion contract.
 /// </summary>
 [TestClass]
@@ -150,6 +151,55 @@ internal sealed class AntiEntropySessionTests
         Assert.HasCount(3, initiator.DecodedItems);
         Assert.IsTrue(initiatorRun.IsCompletedSuccessfully);
         Assert.IsTrue(responderRun.IsCompletedSuccessfully);
+    }
+
+
+    /// <summary>Overwriting caller-owned arrays preserves the construction-time difference in an in-process session pair.</summary>
+    [TestMethod]
+    public async Task OverwrittenCallerArraysPreserveTheConstructionTimeDifference()
+    {
+        CancellationToken cancellationToken = TestContext.CancellationToken;
+        byte[] shared = A1.ToArray();
+        byte[] surplus = A2.ToArray();
+        List<ReadOnlyMemory<byte>> items = [shared, surplus];
+        ReadOnlyMemory<byte>[] originalItems = [A1, A2];
+        ReadOnlyMemory<byte>[] responderItems = [A1];
+        using AntiEntropySession<string> initiator = new(AntiEntropyRole.Initiator, StructuralContract, items, BaseMemoryPool.Shared);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, responderItems, BaseMemoryPool.Shared);
+
+        Array.Fill(shared, (byte)0xEE);
+        Array.Fill(surplus, (byte)0xFF);
+
+        ResolveReconciliationDifferenceDelegate<string> resolve = (decoded, _) =>
+        {
+            Assert.HasCount(1, decoded);
+            Assert.AreSequenceEqual(A2, decoded[0].ToArray());
+
+            return new ReconciliationDifferenceResolution<string>([], [new ReconciliationElementEntry<string>(decoded[0], "surplus")]);
+        };
+        List<string> received = [];
+        ApplyReconciliationElementsDelegate<string> apply = (entries, _, _) =>
+        {
+            foreach(ReconciliationElementEntry<string> entry in entries)
+            {
+                Assert.AreSequenceEqual(A2, entry.Item.ToArray());
+                received.Add(entry.Element);
+            }
+
+            return new ValueTask<ImmutableArray<DotState>>(ImmutableArray<DotState>.Empty);
+        };
+
+        Task initiatorRun = initiator.RunAsync(Forward(responder), resolve, null, null, cancellationToken: cancellationToken);
+        Task responderRun = responder.RunAsync(Forward(initiator), null, ServeNothing, apply, cancellationToken: cancellationToken);
+
+        await DriveInitiatorToCompletionAsync(initiatorRun, responder, StructuralContract, originalItems, responderItems, cancellationToken).ConfigureAwait(false);
+        responder.Complete();
+        await Task.WhenAll(initiatorRun, responderRun).ConfigureAwait(false);
+
+        Assert.HasCount(1, received);
+        Assert.AreEqual("surplus", received[0]);
+        Assert.AreEqual(AntiEntropySessionState.Completed, initiator.State);
+        Assert.AreEqual(AntiEntropySessionState.Completed, responder.State);
     }
 
 
@@ -423,6 +473,7 @@ internal sealed class AntiEntropySessionTests
     }
 
 
+    /// <summary>Symbols received after resolution are ignored without faults or additional absorption.</summary>
     [TestMethod]
     public async Task StragglerSymbolsAfterResolvingAreIgnoredWithoutFaultingOrAbsorbing()
     {
@@ -451,19 +502,19 @@ internal sealed class AntiEntropySessionTests
         //A local mirror reproduces the initiator's decoder over the same items and the peer's coded symbols, so it
         //names the exact prefix that completes the decode and parks the initiator in Resolving with its fetch
         //outstanding; the mirror's decoded count is the count a later straggler must leave untouched.
-        using ReconciliationEncoder local = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder local = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in initiatorItems)
         {
             local.Add(item.Span);
         }
 
-        using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in responderItems)
         {
             remote.Add(item.Span);
         }
 
-        using ReconciliationDecoder mirror = new(ContentHashContract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder mirror = new(ContentHashContract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         while(!mirror.IsComplete)
         {
             int startIndex = remote.ProducedCount;
@@ -702,6 +753,7 @@ internal sealed class AntiEntropySessionTests
     }
 
 
+    /// <summary>An add-only session rejects local drops without invoking a missing drop handler.</summary>
     [TestMethod]
     public async Task AnAddOnlySessionHandedLocalDropsFailsClosedInsteadOfDereferencingAMissingDropPath()
     {
@@ -720,8 +772,8 @@ internal sealed class AntiEntropySessionTests
 
         //An add-only session carries no local context, no drop applier, and no terminal merge, so a resolver that
         //hands it local drops has no honest path to apply them. On decode completion it must fail closed with
-        //InvalidOperationException at that dispatch — the earliest honest point, since the drops arrive at
-        //resolution time — rather than dereference the null applier, mirroring the add-only frame rejections above.
+        //InvalidOperationException at that dispatch -- the earliest honest point, since the drops arrive at
+        //resolution time -- rather than dereference the null applier, mirroring the add-only frame rejections above.
         ImmutableArray<byte> replica = [.. new byte[ReplicaId.Size]];
         ReconciliationDifferenceResolution<string> withDrops = new([], [], [new DotState(replica, 1)]);
         ResolveReconciliationDifferenceDelegate<string> resolve = (_, _) => withDrops;
@@ -733,19 +785,19 @@ internal sealed class AntiEntropySessionTests
         //A local mirror reproduces the initiator's decoder over the same items and the peer's coded symbols, so it
         //names the exact prefix that completes the decode; the ordered channel then dispatches the drop-bearing
         //resolution the moment the last symbol lands.
-        using ReconciliationEncoder local = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder local = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in initiatorItems)
         {
             local.Add(item.Span);
         }
 
-        using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(ContentHashContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in responderItems)
         {
             remote.Add(item.Span);
         }
 
-        using ReconciliationDecoder mirror = new(ContentHashContract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder mirror = new(ContentHashContract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         while(!mirror.IsComplete)
         {
             int startIndex = remote.ProducedCount;
@@ -761,6 +813,7 @@ internal sealed class AntiEntropySessionTests
     }
 
 
+    /// <summary>An initiator rejects an inbound completion frame.</summary>
     [TestMethod]
     public async Task ACompletionFrameOnAnInitiatorFailsClosed()
     {
@@ -769,7 +822,7 @@ internal sealed class AntiEntropySessionTests
         CancellationToken cancellationToken = timeoutSource.Token;
 
         //Completion travels initiator-to-responder only. A remove-aware initiator driven to Resolving satisfies
-        //the add-only (a) and phase (c) guards, so the role guard (b) is the one that fails closed — non-vacuously,
+        //the add-only (a) and phase (c) guards, so the role guard (b) is the one that fails closed -- non-vacuously,
         //since guard (c) at Resolving cannot mask it.
         ReadOnlyMemory<byte>[] initiatorItems = [A1];
         ReadOnlyMemory<byte>[] peerItems = [A1, A2];
@@ -784,19 +837,19 @@ internal sealed class AntiEntropySessionTests
         await initiator.SubmitAsync(ReconciliationEnvelope<string>.ForOffer(ReconciliationOffer.FromContract(StructuralContract)), cancellationToken).ConfigureAwait(false);
         await initiator.SubmitAsync(ReconciliationEnvelope<string>.ForContext(new ReconciliationContext(SamplePeerContext)), cancellationToken).ConfigureAwait(false);
 
-        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in peerItems)
         {
             remote.Add(item.Span);
         }
 
-        using ReconciliationEncoder local = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder local = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in initiatorItems)
         {
             local.Add(item.Span);
         }
 
-        using ReconciliationDecoder mirror = new(StructuralContract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder mirror = new(StructuralContract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         while(!mirror.IsComplete)
         {
             int startIndex = remote.ProducedCount;
@@ -811,6 +864,7 @@ internal sealed class AntiEntropySessionTests
     }
 
 
+    /// <summary>A completion frame with an incorrect transfer count is rejected without folding context.</summary>
     [TestMethod]
     public async Task ACompletionFrameCountMismatchFailsClosedWithoutFolding()
     {
@@ -819,7 +873,7 @@ internal sealed class AntiEntropySessionTests
         CancellationToken cancellationToken = timeoutSource.Token;
 
         //Transfer-count guard (d): zero transfer frames were delivered, so a completion claiming one is a
-        //cardinality mismatch — loss, truncation, or forgery. It fails closed before any fold, so the recording
+        //cardinality mismatch -- loss, truncation, or forgery. It fails closed before any fold, so the recording
         //merge never runs and the responder's context stays at its session start.
         int mergeCalls = 0;
         MergeReconciliationContextDelegate recordingMerge = (_, _) =>
@@ -834,7 +888,7 @@ internal sealed class AntiEntropySessionTests
 
         Task responderRun = responder.RunAsync(Discard, null, ServeNothing, ApplyNoElements, applyDrops: ApplyNoDrops, mergeContext: recordingMerge, cancellationToken: cancellationToken);
 
-        //Lone responder to Resolving via the envelope feed: offer, context, done — no transfer frame between.
+        //Lone responder to Resolving via the envelope feed: offer, context, done -- no transfer frame between.
         await responder.SubmitAsync(ReconciliationEnvelope<string>.ForOffer(ReconciliationOffer.FromContract(StructuralContract)), cancellationToken).ConfigureAwait(false);
         await responder.SubmitAsync(ReconciliationEnvelope<string>.ForContext(new ReconciliationContext(SamplePeerContext)), cancellationToken).ConfigureAwait(false);
         await responder.SubmitAsync(ReconciliationEnvelope<string>.ForDone(new ReconciliationDone(1)), cancellationToken).ConfigureAwait(false);
@@ -846,6 +900,7 @@ internal sealed class AntiEntropySessionTests
     }
 
 
+    /// <summary>A completion frame received before the done signal is rejected.</summary>
     [TestMethod]
     public async Task ACompletionFrameBeforeTheDoneSignalFailsClosed()
     {
@@ -857,7 +912,7 @@ internal sealed class AntiEntropySessionTests
         //(before the done signal) satisfies the add-only (a) and role (b) guards, so guard (c) is the one that
         //fires. The context frame is delivered first, deliberately: with the peer context held and the count
         //matching, dropping or weakening the phase guard would fold and complete instead of throwing from a
-        //missing peer context — the same exception type — so delivering the context isolates the phase guard.
+        //missing peer context -- the same exception type -- so delivering the context isolates the phase guard.
         ReadOnlyMemory<byte>[] items = [A1, A2];
         using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, items, BatchSize, BaseMemoryPool.Shared, localContext: EmptyContext);
 
@@ -871,6 +926,7 @@ internal sealed class AntiEntropySessionTests
     }
 
 
+    /// <summary>An add-only session rejects a completion frame.</summary>
     [TestMethod]
     public async Task AnAddOnlySessionRejectsTheCompletionFrame()
     {
@@ -879,7 +935,7 @@ internal sealed class AntiEntropySessionTests
         CancellationToken cancellationToken = timeoutSource.Token;
 
         //Add-only guard (a): an add-only session carries no context to fold, so it rejects the completion frame
-        //even at Resolving — where the role (b) and phase (c) guards would both pass — so the rejection is non-vacuous.
+        //even at Resolving -- where the role (b) and phase (c) guards would both pass -- so the rejection is non-vacuous.
         ReadOnlyMemory<byte>[] items = [A1, A2];
         using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, items, BaseMemoryPool.Shared);
 
@@ -894,6 +950,7 @@ internal sealed class AntiEntropySessionTests
     }
 
 
+    /// <summary>A frame received after completion is rejected.</summary>
     [TestMethod]
     public async Task AFrameAfterTheCompletionFrameFailsClosed()
     {
@@ -902,7 +959,7 @@ internal sealed class AntiEntropySessionTests
         CancellationToken cancellationToken = timeoutSource.Token;
 
         //The emergent guard (e): a verified completion folds and lands the responder terminal, but it keeps
-        //consuming, so any later frame fails closed through the existing phase guards — here a drop, legal only
+        //consuming, so any later frame fails closed through the existing phase guards -- here a drop, legal only
         //while Resolving. This pins the no-frame-after-completion contract with no new guard code.
         ReadOnlyMemory<byte>[] items = [A1, A2];
         using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract, items, BatchSize, BaseMemoryPool.Shared, localContext: EmptyContext);
@@ -1034,19 +1091,19 @@ internal sealed class AntiEntropySessionTests
         await initiator.SubmitAsync(ReconciliationEnvelope<string>.ForOffer(ReconciliationOffer.FromContract(StructuralContract)), cancellationToken).ConfigureAwait(false);
         await initiator.SubmitAsync(ReconciliationEnvelope<string>.ForContext(new ReconciliationContext(SamplePeerContext)), cancellationToken).ConfigureAwait(false);
 
-        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in peerItems)
         {
             remote.Add(item.Span);
         }
 
-        using ReconciliationEncoder local = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder local = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in initiatorItems)
         {
             local.Add(item.Span);
         }
 
-        using ReconciliationDecoder mirror = new(StructuralContract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder mirror = new(StructuralContract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         while(!mirror.IsComplete)
         {
             int startIndex = remote.ProducedCount;
@@ -1084,7 +1141,7 @@ internal sealed class AntiEntropySessionTests
 
         await initiator.SubmitAsync(ReconciliationEnvelope<string>.ForOffer(ReconciliationOffer.FromContract(StructuralContract)), cancellationToken).ConfigureAwait(false);
 
-        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in items)
         {
             remote.Add(item.Span);
@@ -1239,19 +1296,19 @@ internal sealed class AntiEntropySessionTests
         await initiator.SubmitAsync(ReconciliationEnvelope<string>.ForOffer(ReconciliationOffer.FromContract(StructuralContract)), cancellationToken).ConfigureAwait(false);
         await initiator.SubmitAsync(ReconciliationEnvelope<string>.ForContext(new ReconciliationContext(SamplePeerContext)), cancellationToken).ConfigureAwait(false);
 
-        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in peerItems)
         {
             remote.Add(item.Span);
         }
 
-        using ReconciliationEncoder local = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder local = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in initiatorItems)
         {
             local.Add(item.Span);
         }
 
-        using ReconciliationDecoder mirror = new(StructuralContract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder mirror = new(StructuralContract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         while(!mirror.IsComplete)
         {
             int startIndex = remote.ProducedCount;
@@ -1398,7 +1455,7 @@ internal sealed class AntiEntropySessionTests
         await initiator.SubmitAsync(ReconciliationEnvelope<string>.ForOffer(ReconciliationOffer.FromContract(StructuralContract)), cancellationToken).ConfigureAwait(false);
         await initiator.SubmitAsync(ReconciliationEnvelope<string>.ForContext(new ReconciliationContext(SamplePeerContext)), cancellationToken).ConfigureAwait(false);
 
-        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in items)
         {
             remote.Add(item.Span);
@@ -1524,7 +1581,7 @@ internal sealed class AntiEntropySessionTests
 
         await initiator.SubmitAsync(ReconciliationEnvelope<string>.ForOffer(ReconciliationOffer.FromContract(StructuralContract)), cancellationToken).ConfigureAwait(false);
 
-        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in items)
         {
             remote.Add(item.Span);
@@ -1582,7 +1639,7 @@ internal sealed class AntiEntropySessionTests
 
     /// <summary>
     /// Two resolutions with the same number of push entries but a different entry at the same position are
-    /// unequal — the per-position comparison, not merely the count, decides push equality.
+    /// unequal -- the per-position comparison, not merely the count, decides push equality.
     /// </summary>
     [TestMethod]
     public void EqualsIsFalseWhenPushContentDiffersAtTheSameLength()
@@ -1635,19 +1692,19 @@ internal sealed class AntiEntropySessionTests
         await initiator.SubmitAsync(ReconciliationEnvelope<string>.ForOffer(ReconciliationOffer.FromContract(StructuralContract)), cancellationToken).ConfigureAwait(false);
         await initiator.SubmitAsync(ReconciliationEnvelope<string>.ForContext(new ReconciliationContext(SamplePeerContext)), cancellationToken).ConfigureAwait(false);
 
-        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in peerItems)
         {
             remote.Add(item.Span);
         }
 
-        using ReconciliationEncoder local = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder local = new(StructuralContract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in initiatorItems)
         {
             local.Add(item.Span);
         }
 
-        using ReconciliationDecoder mirror = new(StructuralContract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder mirror = new(StructuralContract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         while(!mirror.IsComplete)
         {
             int startIndex = remote.ProducedCount;
@@ -1704,7 +1761,7 @@ internal sealed class AntiEntropySessionTests
 
     /// <summary>
     /// The hash code is sensitive to each local-drop dot's replica bytes and counter, and to the aggregate they
-    /// feed into the overall hash — not only to the local-drop count.
+    /// feed into the overall hash -- not only to the local-drop count.
     /// </summary>
     [TestMethod]
     public void HashCodeIncludesEachLocalDropsReplicaCounterAndAggregate()
@@ -1725,6 +1782,35 @@ internal sealed class AntiEntropySessionTests
         Assert.AreNotEqual(
             sameReplicaDifferentCounterFirst.GetHashCode(),
             sameReplicaDifferentCounterSecond.GetHashCode());
+    }
+
+
+    /// <summary>An incremental responder sends exactly one batch of the configured size for one trigger.</summary>
+    [TestMethod]
+    public async Task AnIncrementalResponderTriggerSendsExactlyOneBatchOfTheBatchSize()
+    {
+        CancellationToken cancellationToken = TestContext.CancellationToken;
+        using Meter meter = new(BaseMemoryPoolMetrics.MeterName);
+        using BaseMemoryPool pool = new(meter, capacityStrategy: segmentSize => segmentSize > 32 ? int.MaxValue : 1, tracingEnabled: false);
+        using AntiEntropySession<string> responder = new(AntiEntropyRole.Responder, StructuralContract,
+            Array.Empty<ReadOnlyMemory<byte>>(), BatchSize, pool);
+        List<ReconciliationEnvelope<string>> sent = [];
+        SendReconciliationEnvelopeDelegate<string> send = (envelope, _) =>
+        {
+            sent.Add(envelope);
+
+            return ValueTask.CompletedTask;
+        };
+        Task run = responder.RunAsync(send, null, ServeNothing, null, cancellationToken: cancellationToken);
+
+        await responder.SubmitAsync(ReconciliationEnvelope<string>.ForOffer(ReconciliationOffer.FromContract(StructuralContract)), cancellationToken).ConfigureAwait(false);
+        await responder.TriggerBatchAsync(cancellationToken).ConfigureAwait(false);
+        responder.Complete();
+        await run.ConfigureAwait(false);
+
+        Assert.HasCount(2, sent);
+        Assert.AreEqual(0, sent[1].Symbols!.StartIndex);
+        Assert.HasCount(4, sent[1].Symbols!.Symbols);
     }
 
 
@@ -1969,7 +2055,7 @@ internal sealed class AntiEntropySessionTests
 
     /// <summary>
     /// Two resolutions with equal fetch counts but a different push-entry count, or a different local-drop count,
-    /// are unequal — each count is checked on its own, not folded into the other counts.
+    /// are unequal -- each count is checked on its own, not folded into the other counts.
     /// </summary>
     [TestMethod]
     public void EqualsReturnsFalseWhenPushOrLocalDropsCountsDiffer()
@@ -2002,19 +2088,19 @@ internal sealed class AntiEntropySessionTests
         IReadOnlyList<ReadOnlyMemory<byte>> responderItems,
         CancellationToken cancellationToken)
     {
-        using ReconciliationEncoder local = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder local = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in initiatorItems)
         {
             local.Add(item.Span);
         }
 
-        using ReconciliationEncoder remote = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using ReconciliationEncoder remote = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(ReadOnlyMemory<byte> item in responderItems)
         {
             remote.Add(item.Span);
         }
 
-        using ReconciliationDecoder mirror = new(contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder mirror = new(contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         int symbols = 0;
         while(!mirror.IsComplete)
         {
@@ -2032,6 +2118,7 @@ internal sealed class AntiEntropySessionTests
     }
 
 
+    /// <summary>Creates a sender that forwards envelopes to the peer session.</summary>
     private static SendReconciliationEnvelopeDelegate<string> Forward(AntiEntropySession<string> peer)
     {
         return (envelope, cancellationToken) => ForwardTo(peer, envelope, cancellationToken);
@@ -2119,7 +2206,7 @@ internal sealed class AntiEntropySessionTests
     /// A host may queue envelopes before starting the run, which makes the first channel read complete
     /// synchronously; the run still leaves the caller's thread before dispatching, so the dispatch work runs
     /// off the starting thread and a dispatch that parks on the host's send resumes off the caller's
-    /// synchronization context — a host that blocks its starting thread on the run cannot deadlock it.
+    /// synchronization context -- a host that blocks its starting thread on the run cannot deadlock it.
     /// </summary>
     [TestMethod]
     public async Task APreQueuedDispatchParkedOnTheHostsSendDoesNotResumeOnTheCallersContext()
@@ -2158,6 +2245,7 @@ internal sealed class AntiEntropySessionTests
     }
 
 
+    /// <summary>Submits an envelope to the peer and discards it if the peer has already closed its channel.</summary>
     private static ValueTask ForwardTo(AntiEntropySession<string> peer, ReconciliationEnvelope<string> envelope, CancellationToken cancellationToken)
     {
         try
@@ -2167,11 +2255,13 @@ internal sealed class AntiEntropySessionTests
         catch(ChannelClosedException)
         {
             //A completed peer is a wound-down session; dropping the late send is exactly the transport's behaviour.
+
             return ValueTask.CompletedTask;
         }
     }
 
 
+    /// <summary>Discards an envelope and completes synchronously.</summary>
     private static ValueTask Discard(ReconciliationEnvelope<string> envelope, CancellationToken cancellationToken)
     {
         return ValueTask.CompletedTask;
@@ -2219,6 +2309,7 @@ internal sealed class AntiEntropySessionTests
     }
 
 
+    /// <summary>Returns the set elements in sorted order.</summary>
     private static string[] Sorted(OrSet<string> set)
     {
         return [.. set.Elements.Order()];

@@ -64,12 +64,13 @@ internal static class ReconciliationOverheadReport
     }
 
 
+    /// <summary>Returns the number of symbols needed to reconcile the generated sets.</summary>
     private static int SymbolsToComplete(ReconciliationContract contract, int seed, int leftOnly, int rightOnly)
     {
         long differenceBase = CorpusSize + ((long)seed * CorpusSize);
 
-        using var left = new ReconciliationEncoder(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
-        using var right = new ReconciliationEncoder(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        using var left = new ReconciliationEncoder(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
+        using var right = new ReconciliationEncoder(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         //The shared corpus is common to both sides and cancels in the difference stream.
         for(int i = 0; i < CorpusSize; i++)
@@ -90,7 +91,7 @@ internal static class ReconciliationOverheadReport
             right.Add(BuildItem(differenceBase + (CorpusSize / 2) + i));
         }
 
-        using var decoder = new ReconciliationDecoder(contract, BaseMemoryPool.Shared);
+        using var decoder = new ReconciliationDecoder(contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         int index = 0;
         while(true)
         {

@@ -13,7 +13,7 @@ namespace Lumoin.Verisync.Benchmarks;
 /// <summary>
 /// A long-running, seed-pinned soak that establishes the throughput and allocation baseline the reconciliation
 /// streaming hot path runs at today. The ladder pass reconciles a fixed corpus across a spread of difference
-/// sizes and reports symbols per second, wire throughput, and — the figure that motivates a flat cell buffer —
+/// sizes and reports symbols per second, wire throughput, and -- the figure that motivates a flat cell buffer --
 /// bytes allocated per coded symbol. The churn pass runs many short sessions back to back and tracks bytes
 /// allocated and live heap per batch, so a future pooled cell buffer can be measured against a constant
 /// per-session, flat-heap baseline rather than a recollection.
@@ -157,6 +157,7 @@ internal static class ReconciliationSoak
     }
 
 
+    /// <summary>Reconciles the supplied sets and reports the resulting decode or measurement.</summary>
     private static long Reconcile(ReconciliationContract contract, int corpus, int leftOnly, int rightOnly, int seed, bool measureAllocation, MemoryPool<byte> pool, out int symbols, out double elapsedMs)
     {
         //Disjoint counter ranges: the shared corpus sits low, the one-sided buckets sit far above it and far
@@ -190,15 +191,13 @@ internal static class ReconciliationSoak
         long before = measureAllocation ? GC.GetTotalAllocatedBytes(precise: true) : 0;
         long startTicks = Stopwatch.GetTimestamp();
 
-        //The corpus size is the lower bound on the cells a session touches, so it pre-sizes the cell stores;
-        //pool is null on the ladder (heap fallback, an apples-to-apples allocation read) and the shared pool
-        //on the churn pass (the tracked, pooled path the leak meter watches).
+        //The corpus count sizes the item storage; the unknown symbol count lets cells grow from their minimum.
         int hint = corpus + Math.Max(leftOnly, rightOnly);
 
         int index;
-        using(var leftEncoder = new ReconciliationEncoder(contract, ReconciliationInjectivityEnforcement.None, pool, hint))
-        using(var rightEncoder = new ReconciliationEncoder(contract, ReconciliationInjectivityEnforcement.None, pool, hint))
-        using(var decoder = new ReconciliationDecoder(contract, pool, hint))
+        using(var leftEncoder = new ReconciliationEncoder(contract, ReconciliationInjectivityEnforcement.None, pool, new ReconciliationCapacityHint(items: hint, cells: 0)))
+        using(var rightEncoder = new ReconciliationEncoder(contract, ReconciliationInjectivityEnforcement.None, pool, new ReconciliationCapacityHint(items: hint, cells: 0)))
+        using(var decoder = new ReconciliationDecoder(contract, pool, new ReconciliationCapacityHint(items: hint, cells: 0)))
         {
             for(int i = 0; i < corpus; i++)
             {

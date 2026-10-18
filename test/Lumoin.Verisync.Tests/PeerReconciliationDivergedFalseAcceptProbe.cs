@@ -32,6 +32,7 @@ internal sealed class PeerReconciliationDivergedFalseAcceptProbe
     private static byte[] HashE { get; } = Digest("e");
 
 
+    /// <summary>Demonstrates that a same-domain divergent projection can accept and propagate corrupt content.</summary>
     [TestMethod]
     public void DivergedSameDomainPeerFalseAcceptsAndHealsCorrupt()
     {
@@ -52,7 +53,7 @@ internal sealed class PeerReconciliationDivergedFalseAcceptProbe
         //Gate A (line 282, second clause): RecoveredCount == lost.ItemCount. Here |S triangle P| = |{e}| = 1 == 1.
         Assert.HasCount(lostItemCount, recovered, "The recovered count equals the lost-block item count, so the count gate passes.");
 
-        //Gate B (line 296): RecoveredItemsArePeerOnly — every recovered item is absent from the survivors S.
+        //Gate B (line 296): RecoveredItemsArePeerOnly -- every recovered item is absent from the survivors S.
         HashSet<string> survivorHex = [.. survivors.Select(h => ToHex(h))];
         bool recoveredItemsArePeerOnly = recovered.All(item => !survivorHex.Contains(ToHex(item.Span)));
         Assert.IsTrue(recoveredItemsArePeerOnly, "The recovered item e is peer-only (not in the survivors), so the peer-only gate passes.");
@@ -82,17 +83,19 @@ internal sealed class PeerReconciliationDivergedFalseAcceptProbe
     }
 
 
+    /// <summary>A matching checksum key alone does not reject a peer with a divergent projection.</summary>
     [TestMethod]
     public void KeyCheckDoesNotRejectASameDomainDivergedPeer()
     {
         //The only Verisync-side reject signal is checksum-key disagreement, surfaced through the offer's
         //KeyCheck. A same-domain diverged peer shares the well-known key, so the KeyCheck MATCHES and the
-        //session proceeds — the guard cannot see the generation divergence.
+        //session proceeds -- the guard cannot see the generation divergence.
         ReconciliationOffer peerOffer = ReconciliationOffer.FromContract(SameDomainContract);
         Assert.IsTrue(peerOffer.Matches(SameDomainContract), "A same-domain peer's offer matches: the key-check guard does not fire on a generation divergence.");
     }
 
 
+    /// <summary>A peer using a different checksum key cannot complete reconciliation.</summary>
     [TestMethod]
     public void CrossKeyPeerIsTheOnlyThingVerisyncRejects()
     {
@@ -109,7 +112,7 @@ internal sealed class PeerReconciliationDivergedFalseAcceptProbe
 
         using ReconciliationEncoder left = LoadEncoder(survivorKey, survivors);
         using ReconciliationEncoder right = LoadEncoder(peerSecretKey, peer);
-        using ReconciliationDecoder decoder = new(survivorKey, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(survivorKey, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         for(int n = 0; n < 64 && !decoder.IsComplete; n++)
         {
@@ -123,11 +126,12 @@ internal sealed class PeerReconciliationDivergedFalseAcceptProbe
     }
 
 
+    /// <summary>Reconciles the supplied sets and reports the resulting decode or measurement.</summary>
     private static IReadOnlyList<ReadOnlyMemory<byte>> Reconcile(ReconciliationContract contract, byte[][] leftItems, byte[][] rightItems, out bool isComplete)
     {
         using ReconciliationEncoder left = LoadEncoder(contract, leftItems);
         using ReconciliationEncoder right = LoadEncoder(contract, rightItems);
-        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared);
+        using ReconciliationDecoder decoder = new(contract, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
 
         int cap = 100 + (20 * (leftItems.Length + rightItems.Length));
         for(int n = 0; n < cap && !decoder.IsComplete; n++)
@@ -141,9 +145,10 @@ internal sealed class PeerReconciliationDivergedFalseAcceptProbe
     }
 
 
+    /// <summary>Creates an encoder seeded with the supplied items.</summary>
     private static ReconciliationEncoder LoadEncoder(ReconciliationContract contract, byte[][] items)
     {
-        ReconciliationEncoder encoder = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared);
+        ReconciliationEncoder encoder = new(contract, ReconciliationInjectivityEnforcement.None, BaseMemoryPool.Shared, ReconciliationCapacityHint.None);
         foreach(byte[] item in items)
         {
             encoder.Add(item);
@@ -153,12 +158,14 @@ internal sealed class PeerReconciliationDivergedFalseAcceptProbe
     }
 
 
+    /// <summary>Returns the SHA-256 digest of the element's UTF-8 bytes.</summary>
     private static byte[] Digest(string element)
     {
         return SHA256.HashData(Encoding.UTF8.GetBytes(element));
     }
 
 
+    /// <summary>Returns the hexadecimal representation of the supplied bytes.</summary>
     private static string ToHex(ReadOnlySpan<byte> bytes)
     {
         return Convert.ToHexString(bytes);

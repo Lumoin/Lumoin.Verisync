@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.ExceptionServices;
 
 namespace Lumoin.Verisync.Core;
 
@@ -20,8 +21,8 @@ namespace Lumoin.Verisync.Core;
 /// mutation no longer subtracts cleanly against a peer's prefix.
 /// </para>
 /// <para>
-/// The net set is the set of items whose total operation count — <see cref="Add(ReadOnlySpan{byte})"/> plus
-/// <see cref="Remove(ReadOnlySpan{byte})"/>, both self-inverse under XOR — is odd. Because of the
+/// The net set is the set of items whose total operation count -- <see cref="Add(ReadOnlySpan{byte})"/> plus
+/// <see cref="Remove(ReadOnlySpan{byte})"/>, both self-inverse under XOR -- is odd. Because of the
 /// history-erasure law, at any moment <see cref="SymbolAt(int)"/> equals the symbol a fresh encoder over the
 /// current net set would produce at that index; the incremental machinery (produced cell buffers plus a heap
 /// of pending walk cursors) is an implementation detail and never observable.
@@ -44,34 +45,33 @@ namespace Lumoin.Verisync.Core;
 /// </remarks>
 public sealed class ReconciliationEncoder: IDisposable
 {
-    //The dense, contiguous store of produced cells; symbol n is the snapshot of cell n's sum and checksum.
+    /// <summary>The dense, contiguous store of produced cells; symbol n is the snapshot of cell n's sum and checksum.</summary>
     private ReconciliationCellBuffer Cells { get; }
 
-    //The per-add item bytes, kept stable so the Members keys and the pending walk cursors can view them
-    //without a copy of their own; the arena never relocates a stored item.
+    /// <summary>The stable item bytes viewed by membership keys and addressed by pending cursors through append indices.</summary>
     private ReconciliationItemArena Items { get; }
 
-    //Cursors for item contributions not yet folded into produced cells, ordered by the next walk index each
-    //will visit. Duplicate cursors for the same bytes are legal and cancel under XOR (set semantics).
-    private PriorityQueue<WalkCursor, long> PendingCursors { get; } = new();
+    /// <summary>Pending item contributions ordered by their next walk index; duplicate cursors cancel under XOR.</summary>
+    private PriorityQueue<WalkCursor, long> PendingCursors { get; }
 
-    //Membership bookkeeping, populated only under DebugAssert or Strict enforcement.
+    /// <summary>Membership bookkeeping, populated only under DebugAssert or Strict enforcement.</summary>
     private HashSet<ContentAddress> Members { get; } = [];
 
+    /// <summary>Whether the rentals have been released.</summary>
     private bool disposed;
 
 
     /// <summary>
     /// Initializes an encoder over <paramref name="contract"/> with the given injectivity enforcement, renting
-    /// the produced-cell store from <paramref name="pool"/> and pre-sizing it with <paramref name="cellCapacityHint"/>.
+    /// the produced-cell store from <paramref name="pool"/> and pre-sizing the cells and item arena independently with <paramref name="hint"/>.
     /// </summary>
     /// <param name="contract">The contract pinning item width, checksum width, and checksum key.</param>
     /// <param name="enforcement">How strictly the encoder polices duplicate adds and unmatched removes.</param>
     /// <param name="pool">The pool the cell store rents from. The encoder never disposes the pool.</param>
-    /// <param name="cellCapacityHint">A lower bound on the cells the session will touch, pre-sizing the store; must not be negative.</param>
+    /// <param name="hint">The item hint sizes the item arena and pending cursors; the cell hint sizes the cell store.</param>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="contract"/> or <paramref name="pool"/> is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="enforcement"/> is not a defined value or <paramref name="cellCapacityHint"/> is negative.</exception>
-    public ReconciliationEncoder(ReconciliationContract contract, ReconciliationInjectivityEnforcement enforcement, MemoryPool<byte> pool, int cellCapacityHint = 0)
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if <paramref name="enforcement"/> is not a defined value or the cell hint rounds up to a capacity whose backing would exceed the maximum array length.</exception>
+    public ReconciliationEncoder(ReconciliationContract contract, ReconciliationInjectivityEnforcement enforcement, MemoryPool<byte> pool, ReconciliationCapacityHint hint)
     {
         ArgumentNullException.ThrowIfNull(contract);
         ArgumentNullException.ThrowIfNull(pool);
@@ -83,15 +83,11 @@ public sealed class ReconciliationEncoder: IDisposable
 
         Contract = contract;
         Enforcement = enforcement;
-        Cells = new ReconciliationCellBuffer(contract.ItemWidth, contract.ChecksumWidth, pool, cellCapacityHint);
+        Items = new ReconciliationItemArena(contract.ItemWidth, pool, hint.Items);
+        PendingCursors = new PriorityQueue<WalkCursor, long>(hint.Items);
 
-        //No try/catch guard is needed building the arena after the cell buffer: the arena rents nothing here (its
-        //first block is lazy), so it has nothing to leak. Neither of its ctor failure modes can fire once the cell
-        //buffer succeeded — stride validation cannot trigger (contract.ItemWidth is validated to one through 1024),
-        //and its eager hint bound-check rejects on capacity * ItemWidth > Array.MaxLength, the same product the cell
-        //buffer already checked first and more strictly (also against the checksum width), so any hint the cell
-        //buffer accepted the arena accepts too.
-        Items = new ReconciliationItemArena(contract.ItemWidth, pool, cellCapacityHint);
+        //The cell store is rented last so that no later step can fail.
+        Cells = new ReconciliationCellBuffer(contract.ItemWidth, contract.ChecksumWidth, pool, hint.Cells);
     }
 
 
@@ -103,6 +99,22 @@ public sealed class ReconciliationEncoder: IDisposable
 
     /// <summary>The number of symbols produced so far, which is the index of the next symbol <see cref="ProduceNext"/> will yield.</summary>
     public int ProducedCount => Cells.Count;
+
+
+    /// <summary>The number of pending walk cursors; zero after disposal.</summary>
+    internal int PendingCursorCount => PendingCursors.Count;
+
+
+    /// <summary>The capacity of the pending cursor backing; zero after disposal.</summary>
+    internal int PendingCursorCapacity => PendingCursors.EnsureCapacity(0);
+
+
+    /// <summary>The number of membership keys; zero after disposal.</summary>
+    internal int MemberCount => Members.Count;
+
+
+    /// <summary>The capacity of the membership backing; trimmed on disposal.</summary>
+    internal int MemberCapacity => Members.EnsureCapacity(0);
 
 
     /// <summary>
@@ -159,11 +171,13 @@ public sealed class ReconciliationEncoder: IDisposable
         //Fold in every pending cursor that visits this index, then advance and re-queue it past the index.
         while(PendingCursors.TryPeek(out _, out long nextIndex) && nextIndex == index)
         {
-            WalkCursor cursor = PendingCursors.Dequeue();
-            FoldInto(Cells.SumAt(i), Cells.ChecksumAt(i), cursor);
+            PendingCursors.TryDequeue(out WalkCursor cursor, out long cursorIndex);
+            var position = new ReconciliationWalkPosition(cursorIndex, cursor.State);
+            FoldInto(Cells.SumAt(i), Cells.ChecksumAt(i), Items.ItemAt(cursor.ItemIndex).Span, cursor.Checksum);
 
-            cursor.Position = ReconciliationIndexWalk.Next(cursor.Position);
-            PendingCursors.Enqueue(cursor, cursor.Position.Index);
+            position = ReconciliationIndexWalk.Next(position);
+            cursor.State = position.State;
+            PendingCursors.Enqueue(cursor, position.Index);
         }
 
         return new ReconciliationSymbol(Cells.SumAt(i), Cells.ChecksumAt(i));
@@ -192,9 +206,10 @@ public sealed class ReconciliationEncoder: IDisposable
 
 
     /// <summary>
-    /// Disposes the produced-cell store, releasing its rentals; the call is idempotent. After it, the
-    /// encoder's mutators and readers throw <see cref="ObjectDisposedException"/>. The injected pool, if any,
-    /// is not disposed — the encoder owns its cell store, not the pool.
+    /// Releases the cell and item rentals, pending cursors, and membership storage; the call is idempotent.
+    /// After it, the encoder's mutators and readers throw <see cref="ObjectDisposedException"/>.
+    /// The injected pool is not disposed.
+    /// If a component's release throws, every remaining component is still released and the first failure propagates afterwards.
     /// </summary>
     public void Dispose()
     {
@@ -204,11 +219,70 @@ public sealed class ReconciliationEncoder: IDisposable
         }
 
         disposed = true;
-        Cells.Dispose();
-        Items.Dispose();
+        Exception? failure = null;
+
+        try
+        {
+            Cells.Dispose();
+        }
+        catch(Exception exception)
+        {
+            failure = exception;
+        }
+
+        try
+        {
+            Items.Dispose();
+        }
+        catch(Exception exception)
+        {
+            failure ??= exception;
+        }
+
+        try
+        {
+            PendingCursors.Clear();
+        }
+        catch(Exception exception)
+        {
+            failure ??= exception;
+        }
+
+        try
+        {
+            PendingCursors.TrimExcess();
+        }
+        catch(Exception exception)
+        {
+            failure ??= exception;
+        }
+
+        try
+        {
+            Members.Clear();
+        }
+        catch(Exception exception)
+        {
+            failure ??= exception;
+        }
+
+        try
+        {
+            Members.TrimExcess();
+        }
+        catch(Exception exception)
+        {
+            failure ??= exception;
+        }
+
+        if(failure is not null)
+        {
+            ExceptionDispatchInfo.Throw(failure);
+        }
     }
 
 
+    /// <summary>Copies an item and folds its contribution into produced cells and pending walk cursors.</summary>
     private void ApplyOperation(ReadOnlySpan<byte> item, bool isAdd)
     {
         if(item.Length != Contract.ItemWidth)
@@ -216,13 +290,13 @@ public sealed class ReconciliationEncoder: IDisposable
             throw new ArgumentException($"An item must be exactly {Contract.ItemWidth} bytes.", nameof(item));
         }
 
-        //Copy the item once into the never-moved arena; both the membership key and the walk cursor view this
-        //stable slice, so an item costs one tracked copy instead of two naked arrays. The append happens before
-        //EnforceMembership, which under Strict throws on a duplicate add / missing remove before recording the
-        //key or enqueuing the cursor — so a rejected op leaves an orphaned arena slice (dead bytes until
-        //dispose). That is acceptable: the slice is owned and returned on dispose so accountability still
-        //balances, and Members cannot be probed by a bare span without first materializing the bytes, which is
-        //exactly this append.
+        //Copy the item once into the never-moved arena; the membership key views this stable slice and the walk
+        //cursor names it by its append index. The append precedes EnforceMembership, which under Strict throws
+        //on a duplicate add or a missing remove before the key is recorded or the cursor enqueued, so a rejected
+        //operation leaves an orphaned arena slice until dispose. The slice stays owned and is returned on
+        //dispose, so accountability still balances, and Members cannot be probed by a bare span without first
+        //materializing the bytes.
+        int itemIndex = Items.Count;
         ReadOnlyMemory<byte> itemBytes = Items.Append(item);
 
         EnforceMembership(itemBytes, isAdd);
@@ -243,10 +317,11 @@ public sealed class ReconciliationEncoder: IDisposable
             position = ReconciliationIndexWalk.Next(position);
         }
 
-        PendingCursors.Enqueue(new WalkCursor(itemBytes, checksum, position), position.Index);
+        PendingCursors.Enqueue(new WalkCursor(itemIndex, checksum, position.State), position.Index);
     }
 
 
+    /// <summary>Checks and updates membership according to the configured enforcement mode.</summary>
     private void EnforceMembership(ReadOnlyMemory<byte> itemBytes, bool isAdd)
     {
         if(Enforcement == ReconciliationInjectivityEnforcement.None)
@@ -286,29 +361,37 @@ public sealed class ReconciliationEncoder: IDisposable
     }
 
 
-    private void FoldInto(Span<byte> sum, Span<byte> checksum, in WalkCursor cursor)
+    /// <summary>Folds the item bytes and their contract-width checksum into the supplied cell spans.</summary>
+    private void FoldInto(Span<byte> sum, Span<byte> checksum, ReadOnlySpan<byte> item, ulong itemChecksum)
     {
-        ReconciliationXor.Fold(sum, cursor.ItemBytes.Span);
+        ReconciliationXor.Fold(sum, item);
 
-        //Materialize the stored checksum into the contract-width form and fold it; this is byte-for-byte the
-        //array the cursor used to carry, so the fold is unchanged.
+        //Materialize the stored checksum into the contract-width form before folding it.
         Span<byte> checksumBytes = stackalloc byte[Contract.ChecksumWidth];
-        ReconciliationChecksum.Write(cursor.Checksum, checksumBytes);
+        ReconciliationChecksum.Write(itemChecksum, checksumBytes);
         ReconciliationXor.Fold(checksum, checksumBytes);
     }
 
 
-    //A non-compared internal priority-queue carrier reused by value across folds; the item bytes and the
-    //checksum are fixed for the item's lifetime, only the next walk index advances.
+    /// <summary>
+    /// Names an item by its arena index and carries its checksum and the walk's generator state; the next
+    /// walk index lives only in the queue's priority. Cursors are reused by value and never compared.
+    /// </summary>
+    /// <param name="itemIndex">The item's append index in the arena.</param>
+    /// <param name="checksum">The item's fixed checksum.</param>
+    /// <param name="state">The generator state at the queued walk index.</param>
     [SuppressMessage("Usage", "CA1815", Justification = "A non-compared internal priority-queue carrier; cursors are never compared, only enqueued and dequeued.")]
-    private struct WalkCursor(ReadOnlyMemory<byte> itemBytes, ulong checksum, ReconciliationWalkPosition position)
+    private struct WalkCursor(int itemIndex, ulong checksum, ulong state)
     {
-        public ReadOnlyMemory<byte> ItemBytes { get; } = itemBytes;
+        /// <summary>The item's append index in the arena.</summary>
+        public int ItemIndex { get; } = itemIndex;
 
 
+        /// <summary>The item's fixed checksum.</summary>
         public ulong Checksum { get; } = checksum;
 
 
-        public ReconciliationWalkPosition Position { get; set; } = position;
+        /// <summary>The generator state at the walk index held in the queue's priority.</summary>
+        public ulong State { get; set; } = state;
     }
 }
