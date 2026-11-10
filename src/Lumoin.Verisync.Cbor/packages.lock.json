@@ -10,9 +10,9 @@
       },
       "Microsoft.NET.ILLink.Tasks": {
         "type": "Direct",
-        "requested": "[11.0.0-rc.1.26425.128, )",
-        "resolved": "11.0.0-rc.1.26425.128",
-        "contentHash": "oMgihfjNcxZpR9B/O5Ke8Qmr8CJcpdzG4PnVYtA6Ja4g41NELxLRuiqqh5ys7w+ourEBNng2IIZnrlMJXfncmQ=="
+        "requested": "[11.0.0, )",
+        "resolved": "11.0.0",
+        "contentHash": "gK2aq4XvChj5kvozpPHrkfKkr7zc5Z4xoTrJb4GPZzDEPMlCk0TX632bwY3LsWcX2UVcVRQBBGzsBGC2lq6YhA=="
       },
       "Microsoft.Sbom.Targets": {
         "type": "Direct",
@@ -22,21 +22,21 @@
       },
       "System.Formats.Cbor": {
         "type": "Direct",
-        "requested": "[10.0.13, )",
-        "resolved": "10.0.13",
-        "contentHash": "WdxppUxfamltxOsieYg3gJCJW+lB/udiWrya4UCUg0DjTr/w07E4XoivqS35xoM5kVfMyyXEkRgPBRb24H+fWA=="
+        "requested": "[11.0.0, )",
+        "resolved": "11.0.0",
+        "contentHash": "2ULEPU67LRt4YVwBnCk1OhjsJspIBzg1JlDkN2hnZm9im3fC9bSbVQorLraOIcLMlA6/8eWQG1fjTpurHkIFZw=="
       },
       "lumoin.verisync.core": {
         "type": "Project",
         "dependencies": {
-          "Lumoin.Base": "[0.0.14, )"
+          "Lumoin.Base": "[0.0.15, )"
         }
       },
       "Lumoin.Base": {
         "type": "CentralTransitive",
-        "requested": "[0.0.14, )",
-        "resolved": "0.0.14",
-        "contentHash": "r7OY0s3JyyZzm89TZrkCLKIWiRQBVvjV0ratDc6rJeciV7aNjBxvMU+oq19O+NFznPeBZBJ0yZjML4dHfvhK5w=="
+        "requested": "[0.0.15, )",
+        "resolved": "0.0.15",
+        "contentHash": "OQyV4xge7DR+EGO0P8k+Qdzk56qhpPlONLny0uYuPGuwDROWNZZguE5Y1j7Ut1gF/cmiIkeJPJLz5lJ+5Kplig=="
       }
     }
   }

@@ -71,6 +71,13 @@ dotnet add package Lumoin.Verisync.Cbor
 
 The codebase runs on Windows, Linux, and macOS.
 
+The three libraries also run inside `dotnet.wasm`. The `test/Lumoin.Verisync.WasmSmoke` console host proves their browser execution under the workload's Node in CI and requires the `wasm-tools` workload. From that directory, publish and run it with the following commands, replacing the Node path with the workload's Node pack path:
+
+```powershell
+dotnet publish -c Release
+& "<workload's Node pack>/tools/bin/node.exe" --experimental-wasm-exnref bin/Release/net11.0/publish/wwwroot/main.mjs
+```
+
 Protocol designs are model-checked with TLA+ before implementation. The modules and the re-runnable model configurations are in the `tla/` directory.
 
 Press **.** on the repository page to open the codebase in VS Code web editor for quick exploration.

@@ -95,7 +95,7 @@ jobs:
     steps:
     - name: Harden Runner
       if: ${{ matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-24.04-arm' }}
-      uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25
+      uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a
       with:
         disable-sudo: true
         egress-policy: block
@@ -108,7 +108,7 @@ jobs:
         fetch-tags: true
 
     - name: Set up .NET SDK
-      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+      uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
       with:
         cache: true
         cache-dependency-path: '**/packages.lock.json'
@@ -165,7 +165,7 @@ jobs:
 
     - name: Create test summary
       if: ${{ matrix.os == 'ubuntu-latest' && github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' }}
-      uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d
+      uses: EnricoMi/publish-unit-test-result-action@da5b7be67623cd59bbbd1a0ce4f022050a55605f
       with:
         trx_files: '${{ github.workspace }}/reports/**/*.trx'
 
@@ -247,6 +247,56 @@ jobs:
         name: nupkg-libraries
         path: ./nupkgs/*.*
 
+  wasm-smoke:
+    name: Browser-wasm smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    env:
+      # The smoke has its own restore because it is outside the locked solution restore.
+      SMOKE_DIR: test/Lumoin.Verisync.WasmSmoke
+    steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a
+      with:
+        disable-sudo: true
+        egress-policy: block
+        allowed-endpoints: ${{ env.COMMON_ALLOWED_ENDPOINTS }}
+
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+    # The default .NET install requires sudo for workloads, and sudo is disabled.
+    # GITHUB_ENV supplies a writable install because runner is unavailable in workflow-level env.
+    - name: Point the .NET install at a runner-writable directory
+      run: |
+        echo "DOTNET_INSTALL_DIR=$RUNNER_TEMP/dotnet" >> "$GITHUB_ENV"
+        echo "DOTNET_ROOT=$RUNNER_TEMP/dotnet" >> "$GITHUB_ENV"
+
+    - name: Set up .NET SDK
+      uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
+      with:
+        global-json-file: global.json
+
+    # The smoke requires the wasm-tools workload of the SDK pinned by global.json.
+    - name: Install the wasm-tools workload
+      working-directory: ${{ env.SMOKE_DIR }}
+      run: dotnet workload install wasm-tools
+
+    - name: Publish the smoke app
+      working-directory: ${{ env.SMOKE_DIR }}
+      run: dotnet publish -c Release
+
+    - name: Run the smoke under the workload's Node
+      working-directory: ${{ env.SMOKE_DIR }}
+      run: |
+        set -euo pipefail
+        node="$(ls -d "$DOTNET_ROOT"/packs/Microsoft.NET.Runtime.Emscripten.*.Node.linux-x64/*/tools/bin/node | head -n 1)"
+        "$node" --version
+        # The .NET 11 wasm runtime uses exnref, which needs this flag until enabled by default in the workload's V8.
+        "$node" --experimental-wasm-exnref bin/Release/net11.0/publish/wwwroot/main.mjs
+
   # Pre-release goes to GitHub Packages on the develop branch. The release deploy goes
   # to NuGet.org on tagged GitHub releases via NuGet trusted publishing (OIDC) — no
   # API key needed beyond a registered nuget.org profile.
@@ -259,7 +309,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a
         with:
           disable-sudo: true
           egress-policy: block
@@ -292,7 +342,7 @@ jobs:
     environment: Release
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a
         with:
           disable-sudo: true
           egress-policy: block

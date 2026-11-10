@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Security
 -->
 
+## [Unreleased]
+
+### Added
+
+- A browser-wasm smoke exercises the three libraries inside `dotnet.wasm`, with a CI job that publishes the console host and runs it under the wasm-tools workload's Node.
+
+### Changed
+
+- The SDK pin moves to the released .NET 11 SDK 11.0.100 with no prerelease allowance, and the projects compile with the SDK's default C# language version. Dependencies move to `Lumoin.Base` 0.0.15, `MSTest.Sdk` 4.5.2, `CsCheck` 5.0.1, `dotnet-stryker` 5.1.0, `step-security/harden-runner` v2.22.4, `actions/setup-dotnet` v6.1.0 and `EnricoMi/publish-unit-test-result-action` v2.26.0. `Lumoin.Verisync.Cbor` now depends on `System.Formats.Cbor` 11.0.0 as its shipped dependency floor.
+
 ## [0.0.15] - 2026-10-18
 
 ### Added
