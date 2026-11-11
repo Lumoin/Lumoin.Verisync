@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+
+    <!-- The host exercises the adapters rather than shipping a reusable trim or AOT contract. -->
+    <IsAotCompatible>false</IsAotCompatible>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+
+    <!-- The smoke drives the JSON and CBOR adapters and reports literal diagnostics to the console. -->
+    <EnableSerializationBan>false</EnableSerializationBan>
+    <NoWarn>$(NoWarn);CA1303</NoWarn>
+
+    <!-- This project stays outside Lumoin.Verisync.slnx and its locked restore because the pinned
+         SDK's implicit net11.0 package graph shifts per SDK release, so a committed lock file
+         would churn without adding integrity. Its restore leaves the referenced projects'
+         committed packages.lock.json files unchanged. -->
+    <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Lumoin.Verisync.Core/Lumoin.Verisync.Core.csproj" />
+    <ProjectReference Include="../../src/Lumoin.Verisync.Json/Lumoin.Verisync.Json.csproj" />
+    <ProjectReference Include="../../src/Lumoin.Verisync.Cbor/Lumoin.Verisync.Cbor.csproj" />
+  </ItemGroup>
+
+</Project>

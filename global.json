@@ -1,10 +1,9 @@
 {
     "sdk": {
-        "allowPrerelease": true,
-        "version": "11.0.100-rc.1.26425.128"
+        "version": "11.0.100"
     },
     "msbuild-sdks": {
-        "MSTest.Sdk": "4.5.1"
+        "MSTest.Sdk": "4.5.2"
     },
     "test": {
         "runner": "Microsoft.Testing.Platform"

@@ -17,14 +17,14 @@
       "lumoin.verisync.core": {
         "type": "Project",
         "dependencies": {
-          "Lumoin.Base": "[0.0.14, )"
+          "Lumoin.Base": "[0.0.15, )"
         }
       },
       "Lumoin.Base": {
         "type": "CentralTransitive",
-        "requested": "[0.0.14, )",
-        "resolved": "0.0.14",
-        "contentHash": "r7OY0s3JyyZzm89TZrkCLKIWiRQBVvjV0ratDc6rJeciV7aNjBxvMU+oq19O+NFznPeBZBJ0yZjML4dHfvhK5w=="
+        "requested": "[0.0.15, )",
+        "resolved": "0.0.15",
+        "contentHash": "OQyV4xge7DR+EGO0P8k+Qdzk56qhpPlONLny0uYuPGuwDROWNZZguE5Y1j7Ut1gF/cmiIkeJPJLz5lJ+5Kplig=="
       }
     }
   }
